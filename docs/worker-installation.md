@@ -299,3 +299,24 @@ finishes; the retained supervisor can roll back on its existing startup deadline
 Initial manual setup remains
 stopped until pairing and service activation; CI is checked on enabled paired
 computers during production installation and subsequent automatic updates.
+
+### Managed Foreman Code MCP on paired computers
+
+Pairing approves the managed Foreman Code MCP installation. When the Worker selects
+an installed Agent harness, it installs its bundled launcher and adds the managed
+connection to that Worker's user configuration. Startup, harness activation and
+Agent MCP inspection repair missing entries. Other native MCP entries and policies
+are preserved; an explicitly disabled or customized connection stays unchanged.
+
+The Operator can supply a paired device `hostRef` to
+`harness_mcp_managed_request`, `harness_mcp_servers_list` and
+`harness_mcp_detection_get`. Omit it to use Main. Devices support the Foreman Code
+preset for Codex and Claude. The authenticated Worker channel validates the paired
+installation and authorization revision. Writes retain command retries and audit
+records; uncertain writes require `harness_mcp_change_reconcile` and are never
+replayed. Pairing adds no new caller grants: management still requires
+`harnesses:update` and `harnesses:read`, and detection retains its workspace grants.
+
+Computer cards show each harness's installation state read-only. Configuration
+inspection reports `status_unavailable` until native connection health is known;
+installation alone is not a connected-session result. Changes go through Operator.

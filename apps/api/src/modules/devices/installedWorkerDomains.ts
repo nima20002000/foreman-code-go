@@ -1,3 +1,5 @@
+import { createInstalledWorkerManagedMcp } from '../harnesses/installedWorkerManagedMcp.js'
+import { createWorkerManagedMcpExtension } from '../harnesses/workerManagedMcp.js'
 import { createInstalledWorkerAccounts } from '../provider-accounts/installedWorkerAccounts.js'
 import { createProviderAccountWorkerExtension, workerProviderAccountResolver, type WorkerAccountOperationPorts } from '../provider-accounts/workerOperations.js'
 import { inventoryPayloadFingerprints } from '../harnesses/payloadFingerprintCache.js'
@@ -88,6 +90,7 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 interface InstalledWorkerInput {
   stateDirectory: string
+  launcherSource?: URL
   pairing: WorkerPairingConfiguration
   bootId: string
   /** The packaged Worker's existing exclusive state socket remains held during journal recovery. */
@@ -109,6 +112,7 @@ interface InstalledWorkerInput {
 
 interface InstalledWorkerComposition {
   input: InstalledWorkerInput
+  managedMcp: ReturnType<typeof createInstalledWorkerManagedMcp>
   lifetime: AbortController
   configuration: InstalledWorkflowConfigurationLocation | null
   configurationLocation: InstalledWorkflowConfigurationLocation
@@ -255,6 +259,12 @@ async function configureWorkerTransfers(composition: InstalledWorkerComposition)
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = composition.approved = await input.approvedRoots()
+  composition.managedMcp = createInstalledWorkerManagedMcp({ stateDirectory: input.stateDirectory,
+    configuration: composition.configurationLocation, availableConfiguration: () => composition.configuration,
+    registry, launcherSource: input.launcherSource })
+  if (approved) await composition.managedMcp.ensureReady({ signal: lifetime.signal }).catch(error => {
+    componentLogger('devices').warn({ err: error }, 'Managed Foreman Code MCP setup needs repair')
+  })
   composition.profileChecks = approved ? await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
     configuration: composition.configuration, pairing: input.pairing, current, registry }) : null
   const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
@@ -442,6 +452,7 @@ async function configureWorkerSources(composition: InstalledWorkerComposition) {
 }
 
 async function configureWorkerComputers(composition: InstalledWorkerComposition) {
+  composition.extensions.push(createWorkerManagedMcpExtension(composition.managedMcp.worker, composition.current))
   const {
     input,
     lifetime,
@@ -659,6 +670,7 @@ async function configureWorkerExecution(composition: InstalledWorkerComposition)
       await readInstalledWorkflowConfiguration(location)
       lifetime.signal.throwIfAborted()
       composition.configuration = location
+      await composition.managedMcp.ensureReady()
       await composition.openWorkflow?.(location)
       composition.profileChecks ??= await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
         configuration: composition.configuration, pairing: input.pairing, current, registry })
@@ -805,7 +817,14 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
       updateDrain.assertAdmission(extension.namespace, payload)
     }
     catch (error) { return Promise.reject(error) }
-    const task = extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+    const task = (async () => {
+      if (extension.namespace === 'execution-v1' && payload && typeof payload === 'object'
+        && 'method' in payload && ['inspect-mcp', 'conversation.inspect-mcp'].includes(String(payload.method))) {
+        await composition.managedMcp.ensureReady({ signal: AbortSignal.any([context.signal, lifetime.signal,
+          ...(context.connectionSignal ? [context.connectionSignal] : [])]) })
+      }
+      return extension.handle!(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) })
+    })()
     active.set(task, extension.namespace)
     void task.then(() => active.delete(task), () => active.delete(task))
     return task
@@ -858,6 +877,10 @@ export function createWorkerRuntimeDrain(ports: {
 }
 
 function isWorkerAdmission(namespace: string, payload: unknown): boolean {
+  if (namespace === 'managed-mcp-v1' && payload && typeof payload === 'object' && 'request' in payload) {
+    const request = payload.request
+    if (request && typeof request === 'object' && 'operation' in request) return request.operation === 'apply'
+  }
   if (namespace === 'harness-discovery-v1' || namespace === 'host-harness-check-v1') return true
   if (!payload || typeof payload !== 'object') return false
   if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && 'method' in payload) {

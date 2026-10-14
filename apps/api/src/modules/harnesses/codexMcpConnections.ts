@@ -19,7 +19,8 @@ export function codexMcpOwnership(layers: unknown[], userLayer: Record<string, u
 /** No workflow/Operator credentials, thread, model turn or legacy exec invocation. */
 export class CodexMcpConnections implements NativeMcpAdapter {
   constructor(private readonly binary: string | (() => string), private readonly directory: string,
-    private readonly processRecovery?: NativeProcessRecovery) {}
+    private readonly processRecovery?: NativeProcessRecovery,
+    private readonly installLauncher: (signal: AbortSignal) => Promise<void> = installAppLauncher) {}
   private async control<T>(work: (transport: CodexStdioTransport, binary: string, environment: NodeJS.ProcessEnv) => Promise<T>, signal: AbortSignal): Promise<T> {
     const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
     for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
@@ -75,7 +76,7 @@ export class CodexMcpConnections implements NativeMcpAdapter {
         const source = await readNativeUserFile(file, { whenMissing: '', requireDirectory: true })
         await backupNativeUserFile(file, source)
         signal.throwIfAborted()
-        if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher(signal)
+        if (managed?.preset === 'graphql' && change.kind === 'add') await this.installLauncher(signal)
         signal.throwIfAborted()
         // A later error cannot establish whether the native write was delivered.
         writing()

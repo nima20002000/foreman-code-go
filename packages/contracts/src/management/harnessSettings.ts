@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DeviceProvisioningHostReferenceSchema } from '../deviceResources.js'
 
 // This module deliberately has no runtime import from management/index.ts.
 const Harness = z.enum(['codex'])
@@ -41,21 +42,23 @@ export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSche
 const HarnessMcpPlanPresetSchema = z.enum(['graphql', 'linear', 'operator', 'worker'])
 /** `legacy`: old graphql-app/graphql-operator entries remain; applying the preset replaces them. */
 const HarnessMcpPresetStatus = z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited', 'legacy'])
-const HarnessMcpManagedBase = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
-  commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.') })
+const ManagedHarness = z.enum(['codex', 'claude'])
+const HostRef = DeviceProvisioningHostReferenceSchema.optional()
+const HarnessMcpManagedBase = z.object({ harness: ManagedHarness, hostRef: HostRef, preset: HarnessMcpManagedPresetSchema,
+  commandId: CommandId.default(() => crypto.randomUUID()), expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.') })
 export const HarnessMcpManagedInputSchema = z.union([
   HarnessMcpManagedBase.extend({ installed: z.boolean() }).strict(),
   HarnessMcpManagedBase.extend({ enabled: z.boolean() }).strict(),
 ])
 export type HarnessMcpManagedInput = z.infer<typeof HarnessMcpManagedInputSchema>
-export const HarnessMcpListInputSchema = z.object({ harness: Harness }).strict()
+export const HarnessMcpListInputSchema = z.object({ harness: ManagedHarness, hostRef: HostRef }).strict()
 const HarnessMcpServerSummarySchema = z.object({
   name: z.string(), transport: z.enum(['remote', 'stdio', 'unknown']), label: z.string(), enabled: z.boolean(),
   endpoint: z.string().url().optional(),
   origin: z.enum(['user', 'inherited']), protected: z.boolean(), editable: z.boolean(),
 }).strict()
 export const HarnessMcpListResultSchema = z.object({
-  harness: Harness, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
+  harness: ManagedHarness, hostRef: HostRef, revision: Revision, servers: z.array(HarnessMcpServerSummarySchema),
   presets: z.object({ graphql: HarnessMcpPresetStatus, linear: HarnessMcpPresetStatus.exclude(['legacy']) }).strict().optional(),
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()
@@ -63,7 +66,7 @@ export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>
 export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'), change: HarnessMcpChangeSchema }).strict()
 export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
-  id: z.string().uuid(), harness: z.enum(['codex', 'opencode']), revision: Revision, change: HarnessMcpChangeSchema,
+  id: z.string().uuid(), harness: z.enum(['codex', 'claude', 'opencode']), hostRef: HostRef, revision: Revision, change: HarnessMcpChangeSchema,
   managedPreset: HarnessMcpPlanPresetSchema.nullable().optional(),
   requestedBy: z.string(), status: z.enum(['pending', 'submitting', 'applied', 'rejected', 'failed', 'uncertain', 'reconciled']),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }),

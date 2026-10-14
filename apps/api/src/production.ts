@@ -1,3 +1,5 @@
+import { MANAGED_MCP_NAMESPACE } from '@foreman-code/contracts/managed-mcp-channel'
+import { DeviceManagedMcp } from './modules/harnesses/deviceManagedMcp.js'
 import { RunWorktrees } from './modules/runs/runWorktrees.js'
 import { withTransaction } from './infrastructure/transaction.js'
 import { ComputerActivityService } from './modules/computers/activity.js'
@@ -695,6 +697,7 @@ function configureDeviceRuntime(composition: ProductionComposition) {
         releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)),
       }),
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
+      { namespace: MANAGED_MCP_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: AGENT_SNAPSHOT_JSON_BYTES, maxBinaryBytes: 0 },
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
@@ -2938,6 +2941,8 @@ async function initializeHarnessServices(composition: ProductionComposition, mac
     database,
   } = composition
 
+  harnessSettings.mcp.configureDevices(new DeviceManagedMcp(database.pool, machine.installationId,
+    () => deviceRuntime.endpointForDomains(), commands))
   await startupDatabase(() => harnessRegistry.initialize(machine.installationId))
   assertOpen()
   if (processRegistry instanceof NativeProcessRegistry) {

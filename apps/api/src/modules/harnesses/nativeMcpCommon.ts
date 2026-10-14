@@ -9,7 +9,7 @@ export type JsonObject = Record<string, unknown>
 export const record = (value: unknown): JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
 export const fingerprint = (value: unknown): string => `sha256:${createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy(value)).digest('hex')}`
 export interface NativeMcpSnapshot {
-  harness: 'codex'; revision: string; effective: JsonObject; user: JsonObject
+  harness: 'codex' | 'claude'; revision: string; effective: JsonObject; user: JsonObject
   userConfig: JsonObject; version: string; file: string
   /** False means that the effective member has another native configuration source. */
   ownership?: Readonly<Record<string, boolean>>
@@ -268,14 +268,14 @@ export function applyMcpEdits(user: JsonObject, edits: readonly { name: string; 
   return next
 }
 export function mcpUserFingerprint(snapshot: NativeMcpSnapshot): string {
-  const key = 'mcp_servers'
+  const key = snapshot.harness === 'claude' ? 'mcpServers' : 'mcp_servers'
   return fingerprint({ ...snapshot.userConfig, [key]: snapshot.user })
 }
 /** Opaque durable evidence; the raw native configuration never enters a receipt. */
 export function expectedMcpUserFingerprint(snapshot: NativeMcpSnapshot, change: HarnessMcpChange,
   managed?: { preset: HarnessMcpManagedPreset; endpoint: string }): string {
   const user = applyMcpEdits(snapshot.user, mcpEdits(snapshot, change, managed))
-  const key = 'mcp_servers'
+  const key = snapshot.harness === 'claude' ? 'mcpServers' : 'mcp_servers'
   return fingerprint({ ...snapshot.userConfig, [key]: user })
 }
 export function publicMcpList(snapshot: NativeMcpSnapshot): HarnessMcpList {

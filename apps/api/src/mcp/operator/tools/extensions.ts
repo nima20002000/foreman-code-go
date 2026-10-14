@@ -44,9 +44,17 @@ export const extendedOperatorTools = [
     name: 'harness_mcp_detection_get',
     requires: [['harnesses:read', 'workspace'], ['workspace_locations:read', 'workspace']],
     enabled: s => !!s.extensions?.workspace,
-    description: "Inspect MCP configuration in the validated saved workspace directory; requires location-read permission.", inputSchema: contracts.HarnessMcpDetectionInputSchema, outputSchema: contracts.HarnessMcpDetectionResultSchema,
+    description: "Inspect MCP configuration in the saved workspace directory. Optional hostRef inspects the paired device’s native user configuration through its authenticated Worker; Main is the default. Requires location-read permission.", inputSchema: contracts.HarnessMcpDetectionInputSchema, outputSchema: contracts.HarnessMcpDetectionResultSchema,
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
-    run: (context, input) => context.services.extensions!.workspace.diagnostics(context.principal,input),
+    run: async (context, input) => {
+      if (input.hostRef?.kind === 'device') {
+        requireAuthorization(context.principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
+        const detected = await context.services.harnessSettings!.mcp.detectDevice(context.principal, input.harness,
+          input.hostRef, { workspaceId: input.workspaceId })
+        return detected
+      }
+      return context.services.extensions!.workspace.diagnostics(context.principal, input)
+    },
   }),
   defineOperatorTool({
     name: 'agent_create',
