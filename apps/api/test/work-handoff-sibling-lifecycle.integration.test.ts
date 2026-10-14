@@ -84,6 +84,10 @@ describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
         await drive
         const final = await read()
         expect(final.run).toMatchObject({ executionState: 'completed', outcome: failPreflight ? 'failed' : 'succeeded' })
+        const activations = await f.db.pool.query<{ state: string }>(
+          'select state from run_work_activations where run_id=$1', [f.f.run.id])
+        expect(activations.rows).toHaveLength(4)
+        expect(activations.rows.every(activation => activation.state === 'completed')).toBe(true)
         expect(final.cleanupPending).toBe(false)
         expect(final.executions).toHaveLength(4)
         for (const node of [coordinator, first, queued]) {
@@ -116,4 +120,74 @@ describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
         await f.close()
       }
     }, 60_000)
+
+  it('retains both sibling launch causes and completes their work activations', async () => {
+    const fixture = workHandoffSiblings()
+    const [coordinator, healthy, first, second] = fixture.version.definition.nodes
+    if (!coordinator || !healthy || !first || !second) throw new Error('Four nodes are required')
+    const firstEntered = deferred()
+    const secondEntered = deferred()
+    const release = deferred()
+    const codes = new Map([
+      [first.id, 'APP_MCP_PREFLIGHT_FAILED'],
+      [second.id, 'APP_MCP_PREFLIGHT_TIMEOUT'],
+    ])
+    const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [], workerParallelism: 3,
+      outputFor: handoffOutput })
+    const prepare = WorkerLaunchCredentialService.prototype.prepare
+    vi.spyOn(WorkerLaunchCredentialService.prototype, 'prepare').mockImplementation(async function (
+      this: WorkerLaunchCredentialService, input,
+    ) {
+      const execution = await f.runs.getExecution(input.executionId)
+      if (!execution) throw new Error('The launch execution is required')
+      const code = codes.get(execution.workflowNodeId)
+      if (!code) return prepare.call(this, input)
+      if (execution.workflowNodeId === first.id) firstEntered.resolve()
+      else secondEntered.resolve()
+      await release.promise
+      throw new DomainError(code, 'The selected MCP configuration is not ready.', 409)
+    })
+    let driveFailure: unknown
+    const drive = f.engine.start(f.f.run.id).catch((error: unknown) => { driveFailure = error })
+    const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
+    try {
+      await Promise.race([
+        Promise.all([firstEntered.promise, secondEntered.promise]),
+        drive.then(() => { throw new Error('The Run closed before both launch attempts entered') }),
+      ])
+      release.resolve()
+      await drive
+      expect(driveFailure).toMatchObject({ code: 'WORK_SELECTED_EXECUTION_FAILED' })
+      const result = decodeMcpToolResult(await f.client.callTool({
+        name: 'run_get', arguments: { ...scope, detail: 'full' },
+      })) as { run: { executionState: string; outcome: string; result: { error: { code: string } } };
+        cleanupPending: boolean; executions: Array<{ id: string; workflowNodeId: string; state: string;
+          result: { outcome: string; error?: { code: string } } }> }
+      expect(result.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
+      expect([...codes.values()]).toContain(result.run.result.error.code)
+      expect(result.cleanupPending).toBe(false)
+      expect(result.executions).toHaveLength(4)
+      for (const [nodeId, code] of codes) {
+        expect(result.executions.find(execution => execution.workflowNodeId === nodeId))
+          .toMatchObject({ state: 'completed', result: { outcome: 'failed', error: { code } } })
+        expect(f.provider.startedNodes).not.toContain(nodeId)
+      }
+      for (const node of [coordinator, healthy]) {
+        expect(result.executions.find(execution => execution.workflowNodeId === node.id))
+          .toMatchObject({ state: 'completed', result: { outcome: 'succeeded' } })
+      }
+      const activations = await f.db.pool.query<{ state: string }>(
+        'select state from run_work_activations where run_id=$1', [f.f.run.id])
+      expect(activations.rows).toHaveLength(4)
+      expect(activations.rows.every(activation => activation.state === 'completed')).toBe(true)
+      const denied = await f.access.issue({ name: 'Unrelated run reader', audience: 'operator',
+        grants: [{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }],
+      })
+      await expectMcpAccessDenied((await f.connect(denied.token)).callTool({ name: 'run_get', arguments: scope }))
+    } finally {
+      release.resolve()
+      await drive
+      await f.close()
+    }
+  }, 60_000)
 })
