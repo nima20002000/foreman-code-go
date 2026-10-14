@@ -145,7 +145,12 @@ export class HostCiService {
     void this.dispatch()
   }
 
-  close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
+  close() {
+    clearInterval(this.timer)
+    this.timer = undefined
+    this.reads.close()
+    return this.dispatching
+  }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
     const started = performance.now()
@@ -490,8 +495,8 @@ export class HostCiService {
     return CiRunRecordSchema.parse(row.record)
   }
 
-  get(caller: ManagementPrincipal, input: Parameters<HostCiReads['get']>[1]) {
-    return this.reads.get(caller, input)
+  get(caller: ManagementPrincipal, input: Parameters<HostCiReads['get']>[1], signal?: AbortSignal) {
+    return this.reads.get(caller, input, signal)
   }
 
   tests(caller: ManagementPrincipal, input: Parameters<HostCiReads['tests']>[1]) {

@@ -77,5 +77,6 @@ export interface OperatorServices {
 
 export interface OperatorRequestContext {
   principal: ManagementPrincipal
+  signal?: AbortSignal
   services: OperatorServices
 }

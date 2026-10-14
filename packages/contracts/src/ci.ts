@@ -69,9 +69,14 @@ const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
 export const CiGetInputSchema = CiTicketInputSchema.extend({
+  waitSeconds: z.number().min(0).max(300).optional().describe('Defaults to 0. Wait up to 300 seconds for the ticket’s '
+    + 'state or step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
+  logTail: z.boolean().optional().describe('Defaults to true. Set false to omit the 32 KiB log tail while waiting; '
+    + 'read logs once at the end with ci_logs_read.'),
   testStatus: CiTestStatusFilterSchema.optional().describe('Include the ticket’s structured test results, limited to '
     + 'tests with these statuses (passed, failed, skipped). tests is null until a finished unit or integration run reports them.'),
 }).strict()
+export type CiGetInput = z.infer<typeof CiGetInputSchema>
 export const CI_FAILURE_HISTORY_LIMITS = { entries: 50, runs: 20, days: 14 } as const
 export const CiFailureHistorySchema = z.object({ file: z.string().min(1), test: z.string().min(1).nullable(),
   failedRuns: z.number().int().nonnegative(), runs: z.number().int().nonnegative() }).strict()
@@ -80,7 +85,7 @@ export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: I
 export const CiGetOutputSchema = z.object({
   run: CiRunRecordSchema,
   partitions: z.array(CiRunRecordSchema).optional().describe('Run records ordered by suite, part and numeric shard index.'),
-  logTail: z.string(),
+  logTail: z.string().optional(),
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
   tests: CiTestResultsSchema.nullable().optional(),

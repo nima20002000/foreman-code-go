@@ -85,6 +85,7 @@ function requestOperatorTools(context: GraphqlMcpContext, registration: McpReque
     const registered: OperatorRequestTools = { tools: [] }
     pending = collectTools(server => registerOperatorTools(server, {
       principal: context.principal, services: context.operator!,
+      ...(context.signal ? { signal: context.signal } : {}),
     }, callbackContext => registered.catalog?.(callbackContext) ?? Promise.resolve([])))
       .then(tools => {
         registered.tools = tools
@@ -171,7 +172,8 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext, request
     await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions,
       ...(context.bugReports ? { bugReports: context.bugReports } : {}),
       ...(context.signal ? { signal: context.signal } : {}) })
-    if (context.operator) registerCiTools(enabled, { principal: context.principal, services: context.operator })
+    if (context.operator) registerCiTools(enabled, { principal: context.principal, services: context.operator,
+      ...(context.signal ? { signal: context.signal } : {}) })
   }
   return server
 }

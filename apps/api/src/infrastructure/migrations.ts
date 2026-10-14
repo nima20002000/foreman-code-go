@@ -23,6 +23,7 @@ import { databaseHotQueriesMigration } from './databaseHotQueriesMigration.js'
 import { workflowOrderMigration } from './workflowOrderMigration.js'
 import { ciFileDurationsMigration } from './ciFileDurationsMigration.js'
 import { ciResultCacheMigration } from './ciResultCacheMigration.js'
+import { ciTicketChangesMigration } from './ciTicketChangesMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
@@ -935,6 +936,7 @@ export const migrations = [
   ciHostSlotsMigration,
   checkpointOwnerMigration,
   ciResultCacheMigration,
+  ciTicketChangesMigration,
   workflowAuthoringMigration,
   ciGrantMigration,
   deviceManagedMcpMigration,

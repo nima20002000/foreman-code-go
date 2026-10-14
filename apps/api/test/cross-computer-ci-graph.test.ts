@@ -19,6 +19,14 @@ function assignment(index: number, suite: ScenarioAgent['suite']): ScenarioAgent
 }
 
 describe('cross-computer CI graph', () => {
+  it('instructs CI Agents to wait without log tails and read logs after every ticket finishes', () => {
+    const { graph } = buildCrossComputerCiGraph(base, [assignment(0, null), assignment(1, 'build')])
+    const node = graph.nodes[1]!
+    if (node.kind === 'job') throw new Error('Expected a CI Agent')
+    expect(node.initialPrompt).toContain('waitSeconds 300 and logTail false')
+    expect(node.initialPrompt).toContain('Once all are terminal, read ci_logs_read for EVERY ticket')
+  })
+
   it.each(['graphql', 'demo'] as const)('starts every %s suite as an independent parallel Agent', project => {
     const assignments = [assignment(0, null), ...projectSuites[project].map((suite, index) => assignment(index + 1, suite))]
     const { graph, agents } = buildCrossComputerCiGraph(base, assignments)
