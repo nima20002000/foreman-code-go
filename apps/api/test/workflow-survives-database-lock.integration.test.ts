@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { withTransaction } from '../src/infrastructure/transaction.js'
 import { faultWorkflowFixture, expectRecoveredFault } from './helpers/faultWorkflowFixture.js'
@@ -22,8 +21,12 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
     const hold = withTransaction(fixture.base.db.pool, async sql => {
       await sql.query('select id from runs where id=$1 for update', [fixture.base.f.run.id])
       const started = performance.now()
-      locked.resolve((await sql.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid)
-      await delay(6_010)
+      const lockerPid = (await sql.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+      locked.resolve(lockerPid)
+      await readUntil(async () => (await fixture.base.db.pool.query<{ waiting: boolean }>(
+        'select exists(select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting',
+        [lockerPid])).rows[0]!.waiting, waiting => waiting && performance.now() - started >= 6_010,
+      { timeoutMs: 10_000, description: 'Agent reporting still blocked after six seconds of Run contention' })
       heldMs = performance.now() - started
     })
     const settledLock = Promise.allSettled([hold])

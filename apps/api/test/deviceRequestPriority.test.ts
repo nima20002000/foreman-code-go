@@ -68,6 +68,7 @@ function fixture() {
   const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 600_000),
     worker.run(workerSocket.messages[Symbol.asyncIterator](), 300_000)].map(task => task.catch(error => error))
   const requests: Promise<unknown>[] = []
+  // Requests handle rejections and are joined by close(), including intentionally unawaited load.
   const request = (id: string, namespace = 'execution-v1', payload = {}, options = {}) => {
     const result = main.request(namespace, { ...payload, id }, { timeoutMs: 120_000, ...options })
       .then(value => value, error => error)
@@ -103,7 +104,7 @@ it('queues foreground requests in order and makes background yield until capacit
   vi.useFakeTimers()
   const f = fixture()
   try {
-    for (let index = 0; index < 8; index++) f.request(`active-${index}`)
+    for (let index = 0; index < 8; index++) void f.request(`active-${index}`)
     await vi.advanceTimersByTimeAsync(0)
     const first = f.request('first')
     const second = f.request('second')
@@ -127,7 +128,7 @@ it('bounds the foreground wait and never sends a request after its queue deadlin
   vi.useFakeTimers()
   const f = fixture()
   try {
-    for (let index = 0; index < 8; index++) f.request(`active-${index}`)
+    for (let index = 0; index < 8; index++) void f.request(`active-${index}`)
     await vi.advanceTimersByTimeAsync(0)
     let settled = false
     const waiting = f.request('expired').then(result => { settled = true; return result })
@@ -145,11 +146,11 @@ it('bounds the queue size and cancels queued callers without running their handl
   vi.useFakeTimers()
   const f = fixture()
   try {
-    for (let index = 0; index < 8; index++) f.request(`active-${index}`)
+    for (let index = 0; index < 8; index++) void f.request(`active-${index}`)
     await vi.advanceTimersByTimeAsync(0)
     const canceled = new AbortController()
     const waiting = f.request('canceled', 'execution-v1', {}, { signal: canceled.signal })
-    for (let index = 1; index < 64; index++) f.request(`queued-${index}`)
+    for (let index = 1; index < 64; index++) void f.request(`queued-${index}`)
     expect(await f.request('overflow')).toMatchObject({ code: 'backpressure', retryable: true })
     canceled.abort()
     expect(await waiting).toMatchObject({ code: 'cancelled' })
@@ -163,7 +164,7 @@ it('allows foreground overrides and yields background CI observations that read 
   vi.useFakeTimers()
   const f = fixture()
   try {
-    for (let index = 0; index < 7; index++) f.request(`background-${index}`, 'ci-host-v1', { operation: 'status' })
+    for (let index = 0; index < 7; index++) void f.request(`background-${index}`, 'ci-host-v1', { operation: 'status' })
     await vi.advanceTimersByTimeAsync(0)
     let observation: unknown
     void f.request('poll', 'ci-host-v1', { operation: 'read' }, { priority: 'background' })
@@ -183,14 +184,31 @@ it('waits for upload capacity instead of rejecting a foreground request before s
   const f = fixture()
   try {
     const options = { bytes: Buffer.alloc(1_048_576) }
-    f.request('upload-first', 'execution-v1', { text: 'x'.repeat(1_048_000) }, options)
+    const first = f.request('upload-first', 'execution-v1', { text: 'x'.repeat(1_048_000) }, options)
     const second = f.request('upload-second', 'execution-v1', { text: 'x'.repeat(1_048_000) }, options)
     await vi.advanceTimersByTimeAsync(0)
     expect(f.started).toEqual(['upload-first'])
     f.release('upload-first')
     await vi.advanceTimersByTimeAsync(1000)
+    expect(await first).toEqual({ payload: 'upload-first' })
     expect(f.started).toEqual(['upload-first', 'upload-second'])
     f.release('upload-second')
     expect(await second).toEqual({ payload: 'upload-second' })
+  } finally { await f.close() }
+})
+
+it('keeps captured request busy state live as foreground requests finish', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    const captured = f.main.captureRequest('execution-v1')
+    expect(captured.busy).toBe(false)
+    const request = captured.request({ id: 'captured' })
+    const result = expect(request).resolves.toEqual({ payload: 'captured' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(captured.busy).toBe(true)
+    f.release('captured')
+    await result
+    expect(captured.busy).toBe(false)
   } finally { await f.close() }
 })

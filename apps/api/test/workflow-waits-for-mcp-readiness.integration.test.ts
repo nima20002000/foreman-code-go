@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { faultWorkflowFixture, expectRecoveredFault } from './helpers/faultWorkflowFixture.js'
 import { readUntil } from './helpers/observableCondition.js'
@@ -18,7 +17,6 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
     expect(before.executions.filter(execution => execution.workflowNodeId === fixture.affected.id)
       .every(execution => !fixture.worker.replay.starts.some(turn =>
         turn.correlationId === `execution:${execution.id}`))).toBe(true)
-    await delay(300)
     fixture.makeMcpReady()
     fixture.release()
     expectRecoveredFault(await fixture.finished(), fixture, /mcp|readiness|unavailable|retry/i)
