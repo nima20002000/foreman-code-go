@@ -82,24 +82,25 @@ function pruneRetiredOwner(directory: string): void {
   const names = directoryEntries(directory)
   if (names.some(name => name !== 'retired.json' && name !== 'closed')) return
   const retired = recordObject(readRecord(path))
-  const observation = NativeProcessObservationSchema.parse(retired.observation)
+  // Archiving is startup housekeeping: receipts it cannot verify (older ones carry no observation) stay in place.
+  const parsed = NativeProcessObservationSchema.safeParse(retired.observation)
+  if (!parsed.success) return
+  const observation = parsed.data
   const ownerKey = basename(directory)
   if (retired.format !== 2 || retired.owner !== observation.owner || retired.id !== observation.launchId
     || observation.lifecycle !== 'closed' || !observation.closureEvidence
-    || createHash('sha256').update(observation.owner).digest('hex') !== ownerKey) {
-    throw new Error('Invalid native retirement receipt.')
-  }
+    || createHash('sha256').update(observation.owner).digest('hex') !== ownerKey) return
   if (observation.bootId === bootIdentity()
     && [observation.guardian, observation.provider].some(process => process && identityAlive(process))) return
   const local = join(directory, 'closed')
-  const certificates = directoryEntries(local).map(name => {
-    if (!/^[0-9a-f-]{36}\.json$/.test(name)) throw new Error('Unexpected native closure archive entry.')
-    const raw = readRecord(join(local, name))
-    const row = NativeProcessObservationSchema.parse(raw)
-    if (row.owner !== observation.owner || `${row.launchId}.json` !== name
-      || row.lifecycle !== 'closed' || !row.closureEvidence) throw new Error('Invalid native closure archive record.')
-    return { name, row }
-  })
+  const certificates: { name: string; row: typeof observation }[] = []
+  for (const name of directoryEntries(local)) {
+    if (!/^[0-9a-f-]{36}\.json$/.test(name)) return
+    const row = NativeProcessObservationSchema.safeParse(readRecord(join(local, name)))
+    if (!row.success || row.data.owner !== observation.owner || `${row.data.launchId}.json` !== name
+      || row.data.lifecycle !== 'closed' || !row.data.closureEvidence) return
+    certificates.push({ name, row: row.data })
+  }
   if (certificates.some(({ row }) => row.bootId === bootIdentity()
     && [row.guardian, row.provider].some(process => process && identityAlive(process)))) return
   const archive = privateDirectory(join(dirname(directory), 'closed'))
@@ -115,11 +116,22 @@ function pruneRetiredOwner(directory: string): void {
   syncDirectory(dirname(directory))
 }
 
-/** Startup maintenance runs once per root; passive telemetry never performs GC. */
+/** Owners visited so far per root: maintenance resumes where the previous registry construction stopped. */
+const retirementCursors = new Map<string, string>()
+/** Each registry construction spends at most this long on maintenance, so a large backlog never blocks startup. */
+export const REGISTRY_RETIREMENT_BUDGET_MS = 100
+
+/** Maintenance runs until each root has been swept once; passive telemetry never performs GC. */
 export function prepareRegistryRetirement(root: string, retire: (directory: string) => void): void {
   if (preparedRoots.has(root) || !existingPrivateDirectory(root)) return
+  const deadline = performance.now() + REGISTRY_RETIREMENT_BUDGET_MS
   nativeRegistryProjection(root).retirementBatch(() => {
-    for (const ownerKey of directoryEntries(root)) {
+    const cursor = retirementCursors.get(root)
+    // Archived owners leave the listing, so resume after the last visited owner name rather than an index.
+    const owners = directoryEntries(root).sort().filter(name => cursor === undefined || name > cursor)
+    for (const ownerKey of owners) {
+      if (performance.now() > deadline) return
+      retirementCursors.set(root, ownerKey)
       if (!/^[0-9a-f]{64}$/.test(ownerKey)) continue
       const directory = join(root, ownerKey)
       for (const name of directoryEntries(directory)) {
@@ -134,6 +146,7 @@ export function prepareRegistryRetirement(root: string, retire: (directory: stri
       }
       pruneRetiredOwner(directory)
     }
+    retirementCursors.delete(root)
     preparedRoots.add(root)
   })
 }
