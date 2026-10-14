@@ -45,6 +45,7 @@ it('recovers abandoned nested invocations, native reservations and databases aft
   }
   const admin = await resources.testAdminPool()
   const caller = createTestPool({ connectionString: saved.fixture.databaseUrl, max: 1 })
+  let callerClosed = false
   try {
     await chmod(saved.readonly, 0o500)
     expect((await caller.query('select 1 as connected')).rows).toEqual([{ connected: 1 }])
@@ -52,6 +53,7 @@ it('recovers abandoned nested invocations, native reservations and databases aft
     expect(existsSync(saved.root.directory)).toBe(true)
     expect((await caller.query('select 1 as retained')).rows).toEqual([{ retained: 1 }])
     await caller.end()
+    callerClosed = true
     await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
     expect(existsSync(saved.root.directory)).toBe(false)
     const databases = await admin.query('select datname from pg_database where datname = any($1::text[])',
@@ -60,7 +62,7 @@ it('recovers abandoned nested invocations, native reservations and databases aft
     await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
     expect(existsSync(saved.slot.directory)).toBe(false)
   } finally {
-    if (!caller.ended) await caller.end()
+    if (!callerClosed) await caller.end()
     if (existsSync(saved.readonly)) await chmod(saved.readonly, 0o700)
     // Preserve failed recovery journals for the orchestrator's inspection.
     if (!existsSync(saved.root.directory)) await rm(parent, { recursive: true, force: true })

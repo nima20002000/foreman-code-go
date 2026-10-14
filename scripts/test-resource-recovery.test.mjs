@@ -22,6 +22,23 @@ function fixture(t) {
       }
     }
     writable(parent)
+    const roots = []
+    const collect = directory => {
+      for (const name of readdirSync(directory)) {
+        const path = join(directory, name)
+        if (lstatSync(path).isDirectory()) collect(path)
+      }
+      const marker = join(directory, '.graphql-test-owner.json')
+      if (existsSync(marker)) roots.push(JSON.parse(readFileSync(marker, 'utf8')))
+    }
+    collect(parent)
+    for (const resource of roots) {
+      for (const name of existsSync(join(resource.directory, '.graphql-test-cleanup'))
+        ? readdirCleanup(resource.directory) : []) {
+        resources.completeTestResourceCleanup(resource, name.slice(0, -5))
+      }
+      resources.removeTestRoot(resource)
+    }
     rmSync(parent, { recursive: true, force: true })
   })
   return parent
@@ -41,7 +58,12 @@ function abandonedRoot(parent, program = '') {
 }
 
 function adminWithoutDatabases() {
-  return { query: async () => ({ rows: [{ acquired: true }] }) }
+  let first = true
+  return { query: async () => {
+    if (!first) return { rows: [] }
+    first = false
+    return { rows: [{ acquired: true }] }
+  } }
 }
 
 const noContainers = () => ''
@@ -155,5 +177,25 @@ test('normal cleanup also removes read-only owned directories', t => {
   writeFileSync(join(directory, 'data'), 'disposable')
   chmodSync(directory, 0o500)
   resources.removeTestRoot(resource)
+  assert.equal(existsSync(resource.directory), false)
+})
+
+test('recovery keeps an abandoned root while a surviving process holds its working directory', async t => {
+  const parent = fixture(t)
+  const resource = abandonedRoot(parent)
+  const { spawn } = await import('node:child_process')
+  const { once } = await import('node:events')
+  const child = spawn(process.execPath, ['-e', "console.log('ready'); setInterval(() => {}, 1000)"],
+    { cwd: resource.directory, stdio: ['ignore', 'pipe', 'inherit'] })
+  const exited = once(child, 'exit')
+  try {
+    await once(child.stdout, 'data')
+    await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+    assert.equal(existsSync(resource.directory), true)
+  } finally {
+    child.kill()
+    await exited
+  }
+  await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
   assert.equal(existsSync(resource.directory), false)
 })
