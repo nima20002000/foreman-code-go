@@ -90,7 +90,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     const eligible = clouds.filter(item => item.computer.hostRef.provider !== 'circleci' || runsOnCircleCi(part))
     const target = [...eligible].sort((left, right) => left.checkMs - right.checkMs)[0]
     if (!target) throw new DomainError('CI_GATE_CAPACITY_REQUIRED', `No cloud executor can run ${part.part ?? part.suite}.`, 409)
-    const expectedDurationMs = part.suite === 'unit' ? 210_000 : 150_000
+    const expectedDurationMs = part.expectedDurationMs ?? (part.suite === 'unit' ? 210_000 : 150_000)
     target.checkMs += expectedDurationMs
     placed.set(part, { ...part, plannedHostKey: target.computer.key, expectedDurationMs })
   }

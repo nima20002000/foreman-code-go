@@ -32,7 +32,7 @@ it('sizes unit shards from measured durations and caps them to the available fil
   const files = ['a', 'b', 'c'].map(name => `apps/api/test/${name}.test.ts`)
   const durations = Object.fromEntries(files.map(file => [file, 90_000]))
   const parts = planCiParts({ suite: 'unit', commandId: 'measured' }, durations, { files, durations, heavy: [] })
-  expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(2)
+  expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(3)
   expect(parts.filter(part => part.part === 'unit-web')).toHaveLength(0)
 })
 
