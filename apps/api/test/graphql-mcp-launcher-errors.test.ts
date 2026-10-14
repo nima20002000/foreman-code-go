@@ -2,6 +2,78 @@ import { describe, expect, it } from 'vitest'
 import { mcpLauncherFixture } from './support/mcpLauncher.js'
 
 describe('MCP launcher failure guidance', () => {
+  const fastStartup = `
+    const schedule = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, milliseconds, ...args) =>
+      schedule(callback, [1000, 2000].includes(milliseconds) ? 1 : milliseconds, ...args);
+    const timeout = AbortSignal.timeout;
+    AbortSignal.timeout = milliseconds =>
+      timeout([10000, 120000].includes(milliseconds) ? 100 : milliseconds);
+  `
+
+  it.each(['initialize', 'tools/list'])('retries transient HTTP failures during %s', async method => {
+    const requests: unknown[] = []
+    const f = await mcpLauncherFixture((message, response) => {
+      requests.push(message)
+      if (requests.length < 3) response.writeHead(requests.length === 1 ? 500 : 503).end()
+      else response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        jsonrpc: '2.0', id: message.id, result: method === 'initialize'
+          ? { protocolVersion: '2025-03-26' } : { tools: [{ name: 'context_get' }] },
+      }))
+    }, { preload: fastStartup })
+    try {
+      f.send({ id: 'startup', method })
+      expect(await f.receive('startup')).toMatchObject({ id: 'startup', result: expect.any(Object) })
+      expect(requests).toHaveLength(3)
+      expect(requests[1]).toEqual(requests[0])
+      expect(requests[2]).toEqual(requests[0])
+      expect(f.messages.filter(message => message.id === 'startup')).toHaveLength(1)
+    } finally { await f.close() }
+  }, 10_000)
+
+  it.each(['initialize', 'tools/list'])('retries a timeout during %s', async method => {
+    let requests = 0
+    const f = await mcpLauncherFixture((message, response) => {
+      requests++
+      if (requests > 1) response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        jsonrpc: '2.0', id: message.id, result: { tools: [{ name: 'context_get' }] },
+      }))
+    }, { preload: fastStartup })
+    try {
+      f.send({ id: 'startup-timeout', method })
+      expect(await f.receive('startup-timeout')).toMatchObject({ result: expect.any(Object) })
+      expect(requests).toBe(2)
+    } finally { await f.close() }
+  }, 10_000)
+
+  it('bounds startup retries and reports the final retryable failure', async () => {
+    let requests = 0
+    const f = await mcpLauncherFixture((_message, response) => {
+      requests++
+      response.writeHead(500).end()
+    }, { preload: fastStartup })
+    try {
+      f.send({ id: 'startup-failed', method: 'initialize' })
+      expect(await f.receive('startup-failed')).toMatchObject({ error: {
+        data: { kind: 'service_unavailable', httpStatus: 500, retryable: true },
+      } })
+      expect(requests).toBe(3)
+    } finally { await f.close() }
+  }, 10_000)
+
+  it.each([401, 403])('does not retry permanent startup HTTP %s', async status => {
+    let requests = 0
+    const f = await mcpLauncherFixture((_message, response) => {
+      requests++
+      response.writeHead(status).end()
+    }, { preload: fastStartup })
+    try {
+      f.send({ id: 'startup-denied', method: 'initialize' })
+      expect(await f.receive('startup-denied')).toMatchObject({ error: { data: { httpStatus: status } } })
+      expect(requests).toBe(1)
+    } finally { await f.close() }
+  }, 10_000)
+
   it.each([
     { status: 401, kind: 'authentication', guidance: 'Refresh the owning app credential' },
     { status: 403, kind: 'forbidden', guidance: 'grants and scope' },
