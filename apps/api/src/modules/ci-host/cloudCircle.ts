@@ -28,7 +28,6 @@ function lifecycle(status: string) {
 }
 
 export class CircleRest {
-  private readonly jobs = new Map<string, number>()
   constructor(private readonly http: CloudHttp) {}
 
   get transport() { return this.http.transport }
@@ -82,10 +81,6 @@ export class CircleRest {
     const mapped = await Promise.all(workflows.map(async workflow => {
       const jobs = await this.list<JobRef>(`/api/v2/workflow/${workflow.id}/job`, args, timeoutMs)
       if (!jobs) return null
-      for (const job of jobs) {
-        if (job.job_number !== undefined) this.jobs.set(job.id, job.job_number)
-        if (this.jobs.size > 1000) this.jobs.delete(this.jobs.keys().next().value!)
-      }
       return { ...lifecycle(workflow.status), stopped_at: workflow.stopped_at, jobs }
     }))
     if (mapped.some(workflow => workflow === null)) return null
@@ -144,7 +139,8 @@ export class CircleRest {
     options: { allowMissing?: boolean; execution?: number; raw?: boolean } = {}) {
     const execution = options.execution ?? 0
     const responses = await Promise.all(['stdout', 'stderr'].map(stream =>
-      this.http.request(`/api/v3/jobs/${id}/${stream}?execution=${execution}&step_num=${step}`, { timeoutMs })))
+      this.http.request(`/api/v3/jobs/${id}/${stream}?filter%5Bexecution%5D=${execution}&filter%5Bstep_num%5D=${step}`,
+        { timeoutMs })))
     if (responses.some(response => response === null)) return null
     let text = ''
     for (const response of responses) {
@@ -172,11 +168,13 @@ export class CircleRest {
     }
   }
 
-  async artifacts(mirror: string, id: string): Promise<string | null> {
-    const number = this.jobs.get(id)
-    if (number === undefined) return null
-    const artifacts = await this.http.operation(60_000, () => this.list<{ path: string; url: string }>(
-      `/api/v2/project/gh/${mirror}/job/${number}/artifacts`, ['job', 'artifact'], 60_000))
+  async artifacts(id: string): Promise<string | null> {
+    const artifacts = await this.http.operation(60_000, async () => {
+      const response = await this.read(`/api/v3/jobs/${id}/artifacts`, ['job', 'artifact'], 60_000)
+      if (!response) return null
+      return (await this.http.json<{ data: { attributes: { path: string; url: string } }[] }>(response))
+        .data.map(item => item.attributes)
+    })
     return artifacts ? JSON.stringify(artifacts) : null
   }
 

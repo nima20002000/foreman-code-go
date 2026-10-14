@@ -486,7 +486,7 @@ export class CircleCiProvider implements CloudProvider {
     const { job } = await this.job(run)
     if (!job) return noArtifacts
     // Read result metadata, not the per-slot logs and archives, which can outlast the download timeout.
-    const listed = await this.rest.artifacts(run.mirror, job.id)
+    const listed = await this.rest.artifacts(job.id)
       ?? await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
     const finishedAt = Date.parse(run.finishedAt ?? '')
     if ((JSON.parse(listed) as unknown[]).length === 0 && run.state === 'passed'
