@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ExecutionLocationSchema } from '@foreman-code/contracts'
-import { WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootPolicySchema, WorkspaceLocationIdentitySchema, type WorkspaceRootSelection, type WorkspaceRootPolicy } from '@foreman-code/contracts/workspace-root-policies'
+import { WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema, WorkspaceRootAttestationSchema, WorkspaceRootPolicySchema, WorkspaceLocationIdentitySchema, type WorkspaceRootSelection, type WorkspaceRootPolicy, type WorkspaceRootAttestation } from '@foreman-code/contracts/workspace-root-policies'
 import { WorkspaceBoundLocationGetInputSchema, WorkspaceBoundLocationSetInputSchema, WorkspaceBoundLocationReadbackSchema,
   WorkspaceBoundLocationValidationSchema, WorkspaceBoundLocationBrowseResultSchema, type WorkspaceBoundLocationReadback, type WorkspaceBoundLocationSetInput } from '@foreman-code/contracts/workspace-bound-location'
 import { WorkspaceRootConfigurationAdoptSchema } from '@foreman-code/contracts/workspace-bound-location'
