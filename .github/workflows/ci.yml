@@ -64,6 +64,7 @@ jobs:
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
+      FOREMAN_CODE_CI_CLIS_PREFIX: .logs/ci-clis
       SUITE: ${{ inputs.suite }}
       SLICE: ${{ inputs.slice }}
       SCOPE: ${{ inputs.scope }}
@@ -92,6 +93,14 @@ jobs:
           fi
           # A stable per-shard key, so each shard's warm cache is reused by the same shard of later runs.
           echo "shard=$(printf '%s|%s' "$SLICE" "$CI_PARTITION" | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          # The CLIs install with the 48-hour package age rule; a weekly key refreshes them.
+          echo "clis=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      # Harness CLIs installed by the suite's start step; restored before it so a hit skips the install.
+      - if: contains(fromJSON('["unit","unit-api","integration"]'), inputs.suite)
+        uses: actions/cache@v4
+        with:
+          path: .logs/ci-clis
+          key: clis-v1-${{ runner.os }}-${{ runner.arch }}-node22.23.2-${{ steps.cache-inputs.outputs.clis }}
       - run: scripts/ci-suite.sh start
       # Installed packages without the pnpm store: half the size, so the restore is twice as fast.
       - id: packages

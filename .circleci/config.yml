@@ -49,6 +49,7 @@ jobs:
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
+      FOREMAN_CODE_CI_CLIS_PREFIX: .logs/ci-clis
       SUITE: << pipeline.parameters.suite >>
       SLICE: << pipeline.parameters.slice >>
       SCOPE: << pipeline.parameters.scope >>
@@ -112,9 +113,20 @@ jobs:
             node --version
             mkdir -p .logs
             node scripts/ci-packages.mjs key "$PWD" > .logs/ci-packages-key
+            # The harness CLIs install with the 48-hour package age rule; a weekly key refreshes them.
+            date -u +%G-W%V > .logs/ci-clis-key
             if [ "$SUITE" != install ]; then
               node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
             fi
+      - when:
+          condition:
+            matches:
+              pattern: '^(unit|unit-api|integration)$'
+              value: << pipeline.parameters.suite >>
+          steps:
+            - restore_cache:
+                keys:
+                  - clis-v1-{{ arch }}-node22.23.2-{{ checksum ".logs/ci-clis-key" }}
       - run: scripts/ci-suite.sh start
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - restore_cache:
@@ -170,6 +182,16 @@ jobs:
       - store_artifacts:
           path: .logs/test-integration
           destination: integration-logs
+      - when:
+          condition:
+            matches:
+              pattern: '^(unit|unit-api|integration)$'
+              value: << pipeline.parameters.suite >>
+          steps:
+            - save_cache:
+                key: clis-v1-{{ arch }}-node22.23.2-{{ checksum ".logs/ci-clis-key" }}
+                paths:
+                  - .logs/ci-clis
       # Immutable keys already restored exactly need no save; a hit on all three ends the job here.
       - run:
           name: Skip saves of restored caches
