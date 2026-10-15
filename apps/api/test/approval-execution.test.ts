@@ -105,7 +105,7 @@ it('rejects unsupported Claude configuration before allocating the approval fixt
   assert.throws(() => fixture('claude'), /supports only Codex/)
 })
 
-function fixture(harness: AgentHarness = 'codex') {
+function fixture(harness: AgentHarness = 'codex', options: { remote?: boolean } = {}) {
   if (harness === 'claude') throw new Error('Approval execution fixture supports only Codex')
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
@@ -179,7 +179,7 @@ function fixture(harness: AgentHarness = 'codex') {
     throw new Error(`Unscripted approval execution recovery SQL: ${q}`)
   } } as unknown as pg.ClientBase, () => owner.assertOwned())
   connections.push(connection)
-  const owner = { runId: candidate.runId, assertOwned() {}, client: {}, oneShotConnection: () => connection,
+  const owner = { runId: candidate.runId, assertOwned() {}, retain: () => async () => {}, client: {}, oneShotConnection: () => connection,
     readOneShotFence: async () => { owner.assertOwned(); return { ownerId: 'approval-unit-owner', fence: '1' } },
   } as unknown as RunOwnership
   const runs = {
@@ -315,7 +315,8 @@ function fixture(harness: AgentHarness = 'codex') {
     undefined, closures, undefined, { capture(input) {
       capturedSourceKinds.push(input.source.type)
       return captures.capture.capture(input)
-    } })
+    } }, undefined, undefined, undefined, options.remote ? async context => ({ ...context,
+      acceptedPlacement: { hostRef: { kind: 'device' } } as NonNullable<typeof context.acceptedPlacement> }) : undefined)
   const controller = new AbortController()
   const input = { execution: candidate, store, request, approval: { handler: 'user' as const }, workflowId: 'workflow-1',
     graphThreadId: candidate.runId, owner, signal: controller.signal }
@@ -353,8 +354,8 @@ it('captures complete native history only when needed for a pending request or t
 })
 
 /** ciRuns stands in for ci_runs rows this execution initiated, by run ID. */
-function workResultFixture(results: ExecutionResult[], outputSchema?: Record<string, unknown>, ciRuns = new Set<string>()) {
-  const f = fixture()
+function workResultFixture(results: ExecutionResult[], outputSchema?: Record<string, unknown>, ciRuns = new Set<string>(), options: { remote?: boolean } = {}) {
+  const f = fixture('codex', options)
   const pinned = makeCurrentWorkflowFixture('result-repair')
   const version = WorkflowVersionV3Schema.parse({ ...pinned.version,
     definition: { ...pinned.version.definition, handoffs: { contractVersion: 1 },
@@ -1087,6 +1088,15 @@ describe('workflow Agent deliverable contract', () => {
     expect(f.manager.turns[1]!.input.prompt).toContain('"path":"/summary"')
     expect(f.manager.turns[1]!.input.clientCorrelationId).toBe(`execution:${f.candidate.id}:result-repair:1`)
     expect(f.executions.get(f.candidate.id)?.result).toEqual(valid)
+  })
+
+  it('fails a remote schema mismatch without reserving or submitting a repair turn', async () => {
+    const f = workResultFixture([answer({ status: 'done' })], outputSchema, new Set(), { remote: true })
+    const result = await f.coordinator.observeExact(f.input)
+    expect(result).toMatchObject({ state: 'completed', result: { outcome: 'failed',
+      error: { code: 'OUTPUT_SCHEMA_MISMATCH', retryable: false } } })
+    expect(f.manager.turns).toHaveLength(1)
+    expect(f.reservations.size).toBe(0)
   })
 
   it('fails the attempt with OUTPUT_SCHEMA_MISMATCH after two invalid corrections', async () => {
