@@ -17,6 +17,7 @@ import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.j
 import { readRepeatExecutionLocked, type StoredRepeatExecution } from './repeatPostgres.js'
 import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { prepareRepeatNativeUpdate } from './repeatNode.js'
+import { workflowDeliverableFailure } from './workflowDeliverable.js'
 import type { RepeatNativeBoundaryEvidence, RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { assertWorkflowNativeEntryPermitLocked, assertWorkflowNativeEntryRow,
   type NativeEntryRow, workflowNativeReservation } from './workflowNativeEntry.js'
@@ -569,7 +570,8 @@ export class WorkflowNativeProofServices {
       await assertWorkflowCorrelation(sql, incoming.id, command)
       this.validateObservation(capture, previous, incoming, command)
       const expected = prepareRepeatNativeUpdate(snapshot.version, scope, ref, previous, incoming,
-        { workResultRepair: command !== `execution:${incoming.id}` })
+        { workResultRepair: command !== `execution:${incoming.id}`,
+          deliverableFailure: await workflowDeliverableFailure(sql, snapshot.version, incoming) })
       const source = await this.persistCapturedOriginalLocked(sql, run, evidence, owner, capture, current)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history

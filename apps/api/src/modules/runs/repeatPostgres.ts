@@ -6,6 +6,7 @@ import {
 import { readSystemPromptSetting } from '../settings/foundation.js'
 import { readWorkflowSessionContinuation } from './sessionContinuation.js'
 import { readWorkResultRepairAttempt } from './workResultRepair.js'
+import { workflowDeliverableFailure } from './workflowDeliverable.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, ExecutionResultSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
@@ -697,8 +698,8 @@ export class RepeatRunRepository {
     return this.transaction(async (context) => {
       this.active(context)
       const stored = await this.execution(context, executionId)
-      if (!context.version.definition.handoffs || repeatTickIndex(stored.execution.input) !== undefined
-        || stored.execution.state === 'completed') return repeatConflict('WORK_RESULT_REPAIR_CONFLICT')
+      // Interval checks have no result contract, so they never get a corrective turn.
+      if (repeatTickIndex(stored.execution.input) !== undefined || stored.execution.state === 'completed') return repeatConflict('WORK_RESULT_REPAIR_CONFLICT')
       await this.recordedEffect(context, 'input.bind', executionId)
       await this.launchReceipt(context, stored)
       await context.hooks.assertAuthorityLocked(context.sql)
@@ -738,8 +739,9 @@ export class RepeatRunRepository {
       // may persist original native sources on this transaction.
       const workResultRepair = context.version.definition.handoffs && incoming.result?.outcome === 'failed'
         ? await readWorkResultRepairAttempt(context.sql, incoming.id) > 0 : false
+      const deliverableFailure = await workflowDeliverableFailure(context.sql, context.version, incoming)
       const next = prepareRepeatNativeUpdate(context.version, context.scope, stored.ref, stored.execution, incoming,
-        { workResultRepair })
+        { workResultRepair, deliverableFailure })
       await this.launchReceipt(context, stored)
       await context.hooks.assertAuthorityLocked(context.sql)
       const original = await native.assertUpdateLocked(context.sql, structuredClone(stored.execution), structuredClone(incoming),

@@ -5,6 +5,9 @@ import { ApprovalHandlerSchema,
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS,
   AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS,
   AGENT_INTERVAL_PROMPT_MAX_LENGTH } from './workflowShape.js'
+import { OUTPUT_REFERENCE_KEYWORD, OUTPUT_REFERENCE_KINDS, OUTPUT_SCHEMA_MAX_BYTES } from './outputContract.js'
+const OUTPUT_DEFAULT_RULE = 'plain final answer not blank; handoff or repeat-exit latestDeliverable not null; choice or artifactOutputs data checked only against a declared schema' as const
+const OUTPUT_NATIVE_STRUCTURED = 'Codex turn outputSchema for plain-answer nodes whose schema is strict (object root, additionalProperties false and every property required); otherwise validation and repair only' as const
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './graphPrimitives.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
@@ -103,6 +106,13 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
     minimumSeconds: z.literal(AGENT_INTERVAL_MIN_SECONDS), maximumSeconds: z.literal(AGENT_INTERVAL_MAX_SECONDS),
     maximumChecksPerRun: z.null(), defaultEnabled: z.literal(false), routesGraph: z.literal(false), runStatusTool: z.literal('run_status_get'),
     requires: z.literal('approval handler native, or a Codex Agent with approvalPolicy never; no artifactOutputs') }).strict(),
+  agentOutputSchema: z.object({ field: z.literal('node.outputSchema'), dialect: z.literal('json-schema-2020-12'),
+    maximumBytes: z.literal(OUTPUT_SCHEMA_MAX_BYTES), referenceKeyword: z.literal(OUTPUT_REFERENCE_KEYWORD),
+    referenceKinds: z.array(z.enum(OUTPUT_REFERENCE_KINDS)), defaultRule: z.literal(OUTPUT_DEFAULT_RULE),
+    repairTurns: z.literal(2), failureCodes: z.tuple([z.literal('OUTPUT_SCHEMA_MISMATCH'), z.literal('OUTPUT_REFERENCE_UNKNOWN')]),
+    nativeStructuredOutput: z.literal(OUTPUT_NATIVE_STRUCTURED) }).strict(),
+  agentSkills: z.object({ field: z.literal('node.skills'), add: z.literal('exact {skillId, version} workspace skill references'),
+    remove: z.literal('skill IDs the Agent assigns') }).strict(),
   approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
     z.literal('approval'), z.literal('bounded_repeat')]),
@@ -140,6 +150,10 @@ export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.p
     promptMaxLength: AGENT_INTERVAL_PROMPT_MAX_LENGTH, minimumSeconds: AGENT_INTERVAL_MIN_SECONDS,
     maximumSeconds: AGENT_INTERVAL_MAX_SECONDS, maximumChecksPerRun: null, defaultEnabled: false, routesGraph: false, runStatusTool: 'run_status_get',
     requires: 'approval handler native, or a Codex Agent with approvalPolicy never; no artifactOutputs' },
+  agentOutputSchema: { field: 'node.outputSchema', dialect: 'json-schema-2020-12', maximumBytes: OUTPUT_SCHEMA_MAX_BYTES,
+    referenceKeyword: OUTPUT_REFERENCE_KEYWORD, referenceKinds: [...OUTPUT_REFERENCE_KINDS], defaultRule: OUTPUT_DEFAULT_RULE,
+    repairTurns: 2, failureCodes: ['OUTPUT_SCHEMA_MISMATCH', 'OUTPUT_REFERENCE_UNKNOWN'], nativeStructuredOutput: OUTPUT_NATIVE_STRUCTURED },
+  agentSkills: { field: 'node.skills', add: 'exact {skillId, version} workspace skill references', remove: 'skill IDs the Agent assigns' },
   approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
   worktrees: { workflowDefault: true, agentBranchOverride: true, rootOverride: 'node.placement',

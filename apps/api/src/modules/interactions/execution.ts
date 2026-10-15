@@ -33,6 +33,7 @@ import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import { workResultRepairPrompt } from './workResultRepair.js'
+import { deliverableRepairPrompt, deliverableVerdict, nativeOutputSchema, type DeliverableContract } from './deliverable.js'
 import { NATIVE_EVENT_BATCH_SIZE } from './nativeEventBatches.js'
 import { assertOriginalWorkflowTerminal } from './workflowTerminalSource.js'
 import { workResultRepairCorrelation } from '../runs/workResultRepair.js'
@@ -145,6 +146,8 @@ interface ApprovalObservationInput {
   owner: RunOwnership
   signal: AbortSignal
   workHandoffContract?: string | undefined
+  /** Enforced deliverable contract for every workflow Agent execution. */
+  deliverable?: DeliverableContract | undefined
   onStarted?: (() => void) | undefined
 }
 
@@ -2571,7 +2574,7 @@ export class ApprovalExecutionCoordinator {
       observation.execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs))
     const settled = await this.resumeWorkflowBudget(observation)
     if (settled) return settled
-    if (input.workHandoffContract) {
+    if (input.workHandoffContract || input.deliverable) {
       observation.workResultRepairs = await observation.bookkeeping(() => this.runs.readWorkResultRepairAttempt(observation.execution.id, input.owner))
       observation.workflowCorrelation = workResultRepairCorrelation(observation.execution.id, observation.workResultRepairs)
     }
@@ -2745,6 +2748,7 @@ export class ApprovalExecutionCoordinator {
         })
         input.onStarted?.()
       }
+      const nativeSchema = input.deliverable ? nativeOutputSchema(input.deliverable) : undefined
       let nativeEvents: AsyncIterable<NativeHarnessEvent[]>
       let rejectObserved: ((error: unknown) => void) | undefined
       try {
@@ -2757,6 +2761,7 @@ export class ApprovalExecutionCoordinator {
           })
           nativeEvents = manager.startInitialTurnBatches(start, {
             prompt: buildHarnessPrompt(request), clientCorrelationId: observation.workflowCorrelation,
+            ...(nativeSchema ? { outputSchema: nativeSchema } : {}),
             onTurnOffered: () => { observation.nativeTurnOffered = true },
             onSessionObserved: async (native) => {
               resolveObserved(native)
@@ -2768,6 +2773,7 @@ export class ApprovalExecutionCoordinator {
             timeRuntimeOperation('harness', 'native.create_session', () => manager.createSession(start, observation.signal)))
           nativeEvents = manager.startTurnBatches(observed, {
             prompt: buildHarnessPrompt(request), clientCorrelationId: observation.workflowCorrelation,
+            ...(nativeSchema ? { outputSchema: nativeSchema } : {}),
             onSessionReady: () => publishObservedSession(observed),
             onTurnOffered: () => { observation.nativeTurnOffered = true },
           }, observation.signal)
@@ -2860,6 +2866,7 @@ export class ApprovalExecutionCoordinator {
     const ownedSession = observation.ownedSession!
     const { input, repeat } = observation
     if (!observation.session) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed session identity.', 409)
+    const nativeSchema = input.deliverable ? nativeOutputSchema(input.deliverable) : undefined
     const observed = await manager.withLane(observation.session!, observation.workflowCorrelation, observation.signal, async (nativeManager, lane) => {
       let idleDelayMs = 100
       for (;;) {
@@ -2896,8 +2903,12 @@ export class ApprovalExecutionCoordinator {
         const waiting = await observation.observePending(observed, lease)
         if (waiting) return { waiting }
         if (exactTerminal) {
-          const repairPrompt = input.workHandoffContract
+          const handoffPrompt = input.workHandoffContract
             ? workResultRepairPrompt(observed.terminalTurn!.result, input.workHandoffContract) : undefined
+          // The deliverable is judged once the handoff envelope itself is valid.
+          const verdict = input.deliverable && !handoffPrompt
+            ? await observation.bookkeeping(() => deliverableVerdict(observed.terminalTurn!.result, input.deliverable!)) : undefined
+          const repairPrompt = handoffPrompt ?? (verdict ? deliverableRepairPrompt(verdict, input.deliverable!.outputSchema) : undefined)
           if (repairPrompt && observation.workResultRepairs < 2) {
             assertOriginalWorkflowTerminal(observation.execution, observation.session!, observed, observation.workflowCorrelation)
             const reserved = await observation.bookkeeping(() => this.runs.reserveWorkResultRepair(
@@ -2922,7 +2933,7 @@ export class ApprovalExecutionCoordinator {
                 lane.providerId = providerId
               }
               const events = nativeManager.startTurn(observation.session!, {
-                prompt: repairPrompt, clientCorrelationId: observation.workflowCorrelation,
+                prompt: repairPrompt, ...(nativeSchema ? { outputSchema: nativeSchema } : {}), clientCorrelationId: observation.workflowCorrelation,
                 onSubmitted: acknowledge,
                 onMessageSubmitted: async receipt => {
                   if (receipt.nativeSessionId !== observation.session!.nativeSessionId
@@ -2949,6 +2960,7 @@ export class ApprovalExecutionCoordinator {
               continue
             }
           }
+          // The native result stays the evidence; a deliverable still failing after repair is failed where the terminal is normalized.
           const completed = HarnessExecutionSchema.parse({ ...observation.execution, state: 'completed',
             result: observation.safeValue(observed.terminalTurn!.result), finishedAt: capturedWorkflowNativeTime(captured) })
           // Terminal publication ends workflow credential authority before native disposal finishes.

@@ -29,6 +29,9 @@ import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
+import { resolveAssignedSkills } from '../skills/catalog.js'
+import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
+import { composeInstructionText, instructionsTooLarge } from '../skills/instructions.js'
 import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readImmutableAgentConfiguration,
@@ -371,6 +374,21 @@ export class CurrentWorkflowAuthoring {
     const version = parsedVersion.data
     const executable = ExecutableWorkflowV3Schema.safeParse({ version, configurations })
     if (!executable.success) throw new DomainError('GRAPH_INVALID', 'Fix the workflow settings below.', 409, { issues: workflowSaveIssues(executable.error.issues) })
+    for (const node of version.definition.nodes) {
+      if (node.kind === 'job') continue
+      const configuration = configurations.find(config => config.agentId === node.agentId)!
+      const additions = await resolveAssignedSkills(client, input.workspaceId, node.skills?.add ?? [],
+        base?.nodeSkillSnapshots?.[node.id])
+      if (additions.length) {
+        version.nodeSkillSnapshots ??= {}
+        version.nodeSkillSnapshots[node.id] = additions
+      }
+      const effective = node.skills ? configurationWithNodeSkills(configuration, node.skills, additions) : configuration
+      if (instructionsTooLarge(composeInstructionText(effective))) {
+        throw new DomainError('AGENT_INSTRUCTIONS_TOO_LARGE',
+          'Agent instructions and node skills exceed the 512 KiB limit. Remove skills or shorten the instructions.', 400)
+      }
+    }
     for (const config of configurations) {
       if (config.assignedSkills?.length) requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
       if (config.harness.harness === 'codex' && config.harness.sandbox === 'danger-full-access') requireAuthorization(principal, 'harnesses:update', input)

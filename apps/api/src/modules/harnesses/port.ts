@@ -115,6 +115,9 @@ export interface NativeTurnInput {
   onSettingsApplied?(): Promise<void>
   sessionPreferences?: SessionPreferences
   prompt: string
+  /** Native structured output for this turn when the harness supports it (Codex). Claude ignores it;
+   * Foreman validates every deliverable either way. */
+  outputSchema?: Record<string, unknown> | undefined
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>

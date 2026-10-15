@@ -12,6 +12,7 @@ import { DomainError } from '../errors.js'
 import { REPEAT_NATIVE_PENDING_MESSAGE } from '../interactions/repeatNativeEvidence.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import type { ApprovalExecutionCoordinator } from '../interactions/execution.js'
+import { workflowDeliverableContract } from './workflowDeliverable.js'
 import { assertSameRepeatExecution, type RepeatNativeLaunchStore, type RepeatNativeObservationStore } from '../interactions/repeatObservation.js'
 import { withFilesystemDeadline } from '../workspaces/filesystem.js'
 import { requiredLocationAccess, type WorkspaceLocationService } from '../workspaces/location.js'
@@ -171,7 +172,7 @@ export interface RepeatNativeObserverContext {
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
   /** Shared startup capacity, scoped to the execution's accepted computer. */
   admission: RunnerAdmission
-  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
+  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'resolveNodeSkills' | 'referenceCreatedByExecution'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
   executionHostKey?(execution: HarnessExecution): Promise<string>
@@ -245,15 +246,18 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         await native.observeExact({ ...common, execution, store, signal })
         return
       }
-      const configuration = await retryDatabaseOperation(
+      const pinnedConfiguration = await retryDatabaseOperation(
         () => context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId),
         (error) => isDatabaseTimeout(error) || isDatabasePoolTimeout(error), { signal, check },
       )
       check()
-      if (!node || node.kind === 'job' || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
-        || configuration.agentId !== node.agentId || configuration.workspaceId !== run.workspaceId) {
+      if (!node || node.kind === 'job' || !pinnedConfiguration || pinnedConfiguration.id !== context.version.agentConfigurationVersionIds[node.agentId]
+        || pinnedConfiguration.agentId !== node.agentId || pinnedConfiguration.workspaceId !== run.workspaceId) {
         throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Native work requires the immutable occurrence configuration.', 409)
       }
+      const configuration = node.skills ? await context.workflows.resolveNodeSkills(
+        pinnedConfiguration, node.skills, context.version.nodeSkillSnapshots?.[node.id],
+      ) : pinnedConfiguration
       assertNativeWorkflowConfiguration(configuration.harness, run.approval,
         run.approval.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
       const validate = async () => {
@@ -317,9 +321,11 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         version: context.version, configuration, workspaceId: run.workspaceId, executionContext })
       const workHandoffContract = context.version.definition.handoffs && repeatTickIndex(execution.input) === undefined
         ? currentInitialPrompt({ ...node, initialPrompt: undefined }, false, true) : undefined
+      const deliverable = workflowDeliverableContract(context.version, execution,
+        (kind, value) => context.workflows.referenceCreatedByExecution(kind, value, run.workspaceId, execution.id))
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal, onStarted: release,
-          workHandoffContract })
+          workHandoffContract, deliverable })
         execution = observation.execution
         if (observation.state === 'completed') {
           return

@@ -74,7 +74,7 @@ it('the native observer supplies caller context separately from a historical con
       assertResume: async () => { throw new Error('No approval is pending') },
     } as never,
     admission: new RunnerAdmission(1),
-    workflows: { getAgentConfiguration: async () => fixture.configurations[1] },
+    workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => fixture.configurations[1] },
     locations: { revalidateRunAuthorization: async () => undefined,
       revalidateSnapshot: async () => undefined } as never,
     directory: () => execution.runtimeDirectory!,

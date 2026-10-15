@@ -23,7 +23,7 @@ it.each(['main', 'device:worker'])('rejects a failed selected profile before wai
   }
   const context = { run: f.run, version: f.fixture.version, owner: f.owner as never, store,
     native: { observeExact, assertResume: async () => {} }, admission,
-    workflows: { getAgentConfiguration: async () => f.configuration },
+    workflows: { resolveNodeSkills: async () => { throw new Error('node skills are not used by this fixture') }, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => f.configuration },
     locations: { revalidateRunAuthorization: async () => {}, revalidateSnapshot: async () => {} },
     preparePlacement, executionHostKey: async () => hostKey, directory: () => '/workspace/runtime',
   }

@@ -84,7 +84,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement retur
         factory,
         native: { observeExact: unexpectedLaunch, assertResume: unexpectedLaunch, failIntervalCheck: unexpectedLaunch,
           abandonAttempt: unexpectedLaunch },
-        workflows: { getAgentConfiguration: unexpectedLaunch },
+        workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: unexpectedLaunch },
         locations: { revalidateRunAuthorization: unexpectedLaunch, revalidateSnapshot: unexpectedLaunch },
         nativeBoundaryEvidence: unexpectedLaunch,
         lifecycle: f.lifecycle,

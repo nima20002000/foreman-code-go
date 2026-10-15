@@ -66,7 +66,7 @@ describe('NIM-2691 native work result boundary', () => {
       native: { observeExact: async () => { nativeCalls++; throw new Error('Native must not be reached') },
         assertResume: async () => { throw new Error('No approval is pending') } } as never,
       admission: new RunnerAdmission(1),
-      workflows: { getAgentConfiguration: async () => fixture.configurations[0] },
+      workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => fixture.configurations[0] },
       locations: { revalidateRunAuthorization: async () => undefined,
         revalidateSnapshot: async () => undefined } as never,
       directory: () => execution.runtimeDirectory!,
@@ -132,7 +132,7 @@ describe('NIM-2691 native work result boundary', () => {
           return { state: 'completed', execution }
         } } as never,
         admission: new RunnerAdmission(1),
-        workflows: { getAgentConfiguration: async () => configuration },
+        workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => configuration },
         locations: { revalidateRunAuthorization: async () => undefined,
           revalidateSnapshot: async () => undefined } as never,
         directory: () => runtimeDirectory,

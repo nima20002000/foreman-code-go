@@ -6,7 +6,7 @@ import type {
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@foreman-code/contracts'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
@@ -27,6 +27,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/inte
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { referenceCreatedByExecution, workflowDeliverableContract, workflowDeliverableFailure } from '../src/modules/runs/workflowDeliverable.js'
 import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
 import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 
@@ -392,19 +393,28 @@ it('captures complete native history only when needed for a pending request or t
   assert.equal(f.capturedSourceKinds.filter((kind) => kind === 'history').length, 1)
 })
 
-function workResultFixture(results: ExecutionResult[]) {
+/** ciRuns stands in for ci_runs rows this execution initiated, by run ID. */
+function workResultFixture(results: ExecutionResult[], outputSchema?: Record<string, unknown>, ciRuns = new Set<string>()) {
   const f = fixture()
   const pinned = makeCurrentWorkflowFixture('result-repair')
   const version = WorkflowVersionV3Schema.parse({ ...pinned.version,
-    definition: { ...pinned.version.definition, handoffs: { contractVersion: 1 } } })
+    definition: { ...pinned.version.definition, handoffs: { contractVersion: 1 },
+      nodes: pinned.version.definition.nodes.map((item, index) => index === 0 && outputSchema ? { ...item, outputSchema } : item) } })
   const node = version.definition.nodes[0]!
   if (node.kind === 'job') throw new Error('The repair fixture requires an Agent node')
+  const ciRunsDb = { query: async (_text: string, values: unknown[]) =>
+    ({ rows: ciRuns.has(String(values[0])) && values[2] === f.candidate.id ? [{}] : [] }) }
+  const pinnedExecution = (execution: HarnessExecution) => ({
+    ...execution, runId: pinned.run.id, workflowNodeId: node.id, agentId: node.agentId,
+    agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!,
+  })
+  const deliverable = workflowDeliverableContract(version, pinnedExecution(f.candidate),
+    (kind, value) => referenceCreatedByExecution(ciRunsDb, kind, value, version.workspaceId, f.candidate.id))
   const update = f.runs.updateExecution.bind(f.runs)
   f.runs.updateExecution = async (execution, owner, evidence) => {
-    const normalized = normalizeRepeatTerminal(version, pinned.scope, { nodeId: node.id, occurrence: null }, {
-      ...execution, runId: pinned.run.id, workflowNodeId: node.id, agentId: node.agentId,
-      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!,
-    }, { workResultRepair: f.manager.turns.length > 1 })
+    const deliverableFailure = await workflowDeliverableFailure(ciRunsDb, version, pinnedExecution(execution))
+    const normalized = normalizeRepeatTerminal(version, pinned.scope, { nodeId: node.id, occurrence: null },
+      pinnedExecution(execution), { workResultRepair: f.manager.turns.length > 1, deliverableFailure })
     await update({ ...execution, ...(normalized.result ? { result: normalized.result } : {}) }, owner, evidence)
   }
   const reservations = new Set<string>()
@@ -438,7 +448,7 @@ function workResultFixture(results: ExecutionResult[]) {
     return { ...history, correlationId, nativeTurnId: providerId,
       terminalTurn: { correlationId, providerId, result: history.terminalResult! } }
   }
-  return { ...f, reservations, input: { ...f.input, workHandoffContract: currentInitialPrompt({}, false, true)! } }
+  return { ...f, reservations, input: { ...f.input, workHandoffContract: currentInitialPrompt({}, false, true)!, deliverable } }
 }
 
 const workData = { latestDeliverable: { summary: 'Done' }, remainingFindings: [] }
@@ -1133,3 +1143,54 @@ for (const boundary of ['terminal result', 'approval source', 'native error'] as
     }
   })
 }
+
+describe('workflow Agent deliverable contract', () => {
+  const ticket = '7d1c9a52-3f0e-4c41-9a43-3c7a8f1f2b10'
+  const outputSchema = {
+    type: 'object', required: ['status', 'summary', 'ticket'],
+    properties: {
+      status: { type: 'string', minLength: 1 }, summary: { type: 'string', minLength: 1 },
+      ticket: { type: 'string', 'x-foreman-reference': 'ciTicket' },
+    },
+  }
+  // A handoff workflow's final answer: the deliverable sits in data.latestDeliverable of the native text.
+  const answer = (value: unknown): ExecutionResult => ({ outcome: 'succeeded',
+    output: { text: JSON.stringify({ routing: { kind: 'finish' }, data: { latestDeliverable: value, remainingFindings: [] } }) } })
+  const valid = answer({ status: 'done', summary: 'Shipped.', ticket })
+
+  it('sends one same-session repair turn listing the exact issues, then accepts the corrected deliverable', async () => {
+    const f = workResultFixture([answer({ status: 'done' }), valid], outputSchema, new Set([ticket]))
+    const result = await f.coordinator.observeExact(f.input)
+    expect(result).toMatchObject({ state: 'completed', result: valid })
+    expect(f.manager.turns).toHaveLength(2)
+    expect(f.manager.turns[1]!.input.prompt).toContain('Validation issues:')
+    expect(f.manager.turns[1]!.input.prompt).toContain('"path":"/summary"')
+    expect(f.manager.turns[1]!.input.clientCorrelationId).toBe(`execution:${f.candidate.id}:result-repair:1`)
+    expect(f.executions.get(f.candidate.id)?.result).toEqual(valid)
+  })
+
+  it('fails the attempt with OUTPUT_SCHEMA_MISMATCH after two invalid corrections', async () => {
+    const f = workResultFixture([answer({ status: 'done' })], outputSchema)
+    await f.coordinator.observeExact(f.input)
+    expect(f.manager.turns).toHaveLength(3)
+    expect(f.reservations.size).toBe(2)
+    expect(f.executions.get(f.candidate.id)?.result).toMatchObject({ outcome: 'failed',
+      error: { code: 'OUTPUT_SCHEMA_MISMATCH', retryable: false } })
+  })
+
+  it('fails with OUTPUT_REFERENCE_UNKNOWN when the CI ticket was not created by this execution', async () => {
+    const f = workResultFixture([valid], outputSchema)
+    await f.coordinator.observeExact(f.input)
+    expect(f.manager.turns).toHaveLength(3)
+    expect(f.manager.turns[1]!.input.prompt).toContain('OUTPUT_REFERENCE_UNKNOWN')
+    expect(f.executions.get(f.candidate.id)?.result).toMatchObject({ outcome: 'failed',
+      error: { code: 'OUTPUT_REFERENCE_UNKNOWN', retryable: false } })
+  })
+
+  it('repairs a null latestDeliverable without a declared schema', async () => {
+    const f = workResultFixture([answer(null), answer({ summary: 'Done.' })])
+    await f.coordinator.observeExact(f.input)
+    expect(f.manager.turns).toHaveLength(2)
+    expect(f.executions.get(f.candidate.id)?.result).toEqual(answer({ summary: 'Done.' }))
+  })
+})
