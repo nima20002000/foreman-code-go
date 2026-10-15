@@ -150,3 +150,38 @@ it('allows reviews and continuation turns to finish existing workflows during an
     await updating
   }
 })
+
+it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'])(
+  'abandons a stalled %s drain and prevents late continuation', async stage => {
+    vi.useFakeTimers()
+    const stalled = deferred()
+    const active = stage === 'dispatches' ? [stalled.promise] : []
+    void stalled.promise.then(() => { active.splice(0) })
+    const stages: string[] = []
+    const step = async (name: string) => {
+      stages.push(name)
+      if (name === stage) await stalled.promise
+    }
+    const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+      active: () => [...active],
+      drainJobs: () => step('jobs'), drainQualifications: () => step('qualifications'),
+      drainMaintenance: () => step('maintenance'), quiescent: async () => { await step('quiescence'); return true } })
+    let outcome: unknown
+    const attempt = drain.run().then(() => { outcome = 'completed' }, error => { outcome = error })
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    try {
+      expect(outcome).toMatchObject({ code: 'WORKER_UPDATE_DRAIN_DEADLINE_EXCEEDED' })
+      expect(drain.isDraining()).toBe(false)
+      expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).not.toThrow()
+      const visited = [...stages]
+      stalled.resolve()
+      await attempt
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(stages).toEqual(visited)
+      expect(() => drain.assertAdmission('source-operations-v1', { operation: 'sources.release' })).not.toThrow()
+    } finally {
+      stalled.resolve()
+      await attempt
+    }
+  },
+)
