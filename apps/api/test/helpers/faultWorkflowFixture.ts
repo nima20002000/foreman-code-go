@@ -16,6 +16,10 @@ import type { DispatchIntent, NativeExecutionPlacement } from '@foreman-code/con
 import type { NativeManagerResolutionContext } from '../../src/modules/interactions/runtimePorts.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
 import { readOperationalFailures } from '../../src/modules/diagnostics/operationalFailures.js'
+import { credentialAuthority } from '../../src/modules/interactions/wave25/credentialAuthority.js'
+import { readLiveManagementPrincipal } from '../../src/modules/access/liveManagementPrincipal.js'
+import { interactionConnection } from '../../src/modules/interactions/connection.js'
+import { placedContinuationValidator } from '../../src/modules/placement/continuation.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { providerAppEndpoint } from './wave25Br1003Runtime.js'
 import { faultWorkflowWorker } from './faultWorkflowWorker.js'
@@ -26,6 +30,32 @@ import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 vi.hoisted(() => { process.env.LOG_LEVEL = 'warn' })
+
+function faultContinuation(base: Awaited<ReturnType<typeof currentOperatorIntegration>>,
+  placements: Awaited<ReturnType<typeof mixedComputerPlacement>>) {
+  return placedContinuationValidator(base.db.pool, base.locations, {
+    async prepare(executionId) {
+      const sql = interactionConnection.getStore() ?? base.db.pool
+      const placement = await readExecutionPlacement(sql, executionId)
+      if (!placement) return null
+      const intent = await readDispatchIntent(sql, executionId)
+      const executionPlacement = await readNativePlacement(sql, executionId)
+      if (!intent || !executionPlacement) throw new Error('Expected prepared execution placement')
+      return { placement, intent, executionPlacement }
+    },
+  }, {
+    async assertCurrent(binding, signal) {
+      const sql = interactionConnection.getStore() ?? base.db.pool
+      const run = await base.runs.get(binding.intent.runId)
+      if (!run) throw new Error('Expected the accepted Run')
+      const current = await credentialAuthority(sql, binding.intent.executionId, 'workflow')
+      await placements.producer.assertPinsCurrent(sql, binding.placement,
+        await readLiveManagementPrincipal(sql, run.authorizationPrincipalId), run.workspaceId,
+        current.nativeSessionId ? { purpose: 'resident' } : undefined)
+      signal?.throwIfAborted()
+    },
+  })
+}
 
 function faultWorkflowDefinition(options: { loop?: boolean }) {
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
@@ -54,6 +84,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   const intents = new Map<string, DispatchIntent>()
   const contexts = new Map<string, NativeManagerResolutionContext>()
   let placements: Awaited<ReturnType<typeof mixedComputerPlacement>>
+  let validatePlacement: ReturnType<typeof placedContinuationValidator>
   const nativePlacements = new Map<string, NativeExecutionPlacement>()
   let preparationFailure: { error: unknown } | undefined
   let mcpReady = !options.mcpUnavailable
@@ -61,6 +92,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   let entryStarted = false
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
+    validateContinuation: (executionId, signal) => validatePlacement(executionId, signal),
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
       await placements.producer.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId)
       const intent = await readDispatchIntent(sql, execution.id)
@@ -133,6 +165,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   })
   try {
     placements = await mixedComputerPlacement(base, directory)
+    validatePlacement = faultContinuation(base, placements)
     if (placements.remote.hostRef.kind !== 'device') throw new Error('Expected remote device placement')
     Object.assign(worker.connection, { mainId: placements.remote.hostRef.mainId,
       deviceId: placements.remote.hostRef.deviceId })
