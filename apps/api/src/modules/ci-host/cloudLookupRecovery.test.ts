@@ -52,6 +52,9 @@ it.each(['starting', 'running'] as const)('keeps an unreadable CircleCI pipeline
     f.control.error = 'permission denied'
     f.control.cancelError = 'service unavailable'
     const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }
+    f.advance(4_001)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state,
+      message: expect.stringContaining('could not be reconciled') } })
     f.advance(75_000)
     await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state,
       message: expect.stringContaining('Cancellation could not be confirmed') } })
