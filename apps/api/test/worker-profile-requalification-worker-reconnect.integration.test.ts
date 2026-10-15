@@ -16,6 +16,9 @@ describe('automatic Worker profile qualification', () => {
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
       const checksBefore = (await fixture.provider.calls()).filter(call => call.qualificationSuite).length
+      const systemChecks = () => fixture.db.pool.query<{ source: string; principal_id: string | null; details: unknown }>(
+        "select source,principal_id,details from management_audit where action='harness.instance.check' and source='system' order by sequence")
+      const auditBefore = (await systemChecks()).rows
       const inventoryBefore = await fixture.inventory()
       await fixture.restartWorker()
       const inventoryAfter = await waitForReplacementReviewInventory(fixture, inventoryBefore)
@@ -26,9 +29,9 @@ describe('automatic Worker profile qualification', () => {
       await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
       expect((await fixture.provider.calls()).filter(call => call.qualificationSuite)).toHaveLength(checksBefore)
-      const audit = await fixture.db.pool.query<{ source: string; principal_id: string | null; details: unknown }>(
-        "select source,principal_id,details from management_audit where action='harness.instance.check' and source='system'")
-      expect(audit.rows).toHaveLength(0)
+      const audit = await systemChecks()
+      expect(audit.rows).toEqual(auditBefore)
+      expect(audit.rows.every(row => row.principal_id === null)).toBe(true)
 
       const reader = await fixture.access.issue({ name: 'profile reader', audience: 'operator',
         grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
