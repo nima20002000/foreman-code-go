@@ -2315,6 +2315,7 @@ function configureRuntimeLifecycle(composition: ProductionComposition) {
       { name: 'initialization', run: () => composition.initialization?.then(() => undefined, () => undefined) },
       { name: 'native defaults initialization', run: () => composition.nativeDefaultsInitialization?.then(() => undefined, () => undefined) },
       { name: 'reconciliation', run: () => composition.reconciliation },
+      { name: 'source reservation reclamation', run: () => composition.jobRuntime?.drainMaterializationReservationReconciliation() },
     ],
     dispose: [
       { name: 'computer maintenance tasks', run: () => runtimeServices.computerMaintenance?.drain() },
@@ -2477,7 +2478,7 @@ function configureRuntimeHooks(composition: ProductionComposition) {
     composition.reconciliation = (async () => {
       await bugReports.detectStuckExecutions(config.stuckExecutionIdleMs ?? DEFAULT_STUCK_EXECUTION_IDLE_MS)
       if (composition.jobRuntime) await composition.jobRuntime.reconcileFailedCaptures(report)
-      if (composition.jobRuntime) await composition.jobRuntime.reconcileMaterializationReservations(report)
+      composition.jobRuntime?.startMaterializationReservationReconciliation(report)
       if (composition.jobRuntime) await closeCompletedWorkflowSources(database.pool, composition.jobRuntime.sources, report)
       // Age-based release is not urgent; storage pressure still releases on demand during approval and preparation.
       if (composition.jobRuntime && Date.now() - lastSnapshotRelease >= SNAPSHOT_RELEASE_INTERVAL_MS) {

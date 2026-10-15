@@ -18,6 +18,7 @@ export type SourceReservation = { reservationId: string; scopeId: string; ownerK
   storageCapacity?: SourceStorageCapacity;
   preparationClosure?: SourcePreparationClosure;
   referenceReclaimed?: true;
+  cleanupRetry?: { failures: number; nextAttemptAt: string };
   retainedSharedTree?: { id: string; bytes: number } }
 export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, operationId: string): Promise<void> {
   const fenced = await sql.query(`select 1 from source_storage_reservations

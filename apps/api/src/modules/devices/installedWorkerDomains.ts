@@ -905,7 +905,7 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
     return payload.method === 'prepare'
   }
   if (namespace === 'execution-v1' && 'method' in payload) {
-    return ['job-dispatch', 'prepare', 'prepare-review', 'start-turn', 'session-compact', 'capabilities', 'inspect-mcp',
+    return ['job-dispatch', 'prepare', 'session-compact', 'capabilities', 'inspect-mcp',
       'conversation.open', 'conversation.initial-turn', 'conversation.start-turn', 'conversation.compact',
       'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
       'conversation.file-copy']

@@ -241,6 +241,8 @@ export async function createProductionSources(input: ProductionSourcesInput) {
   })
   return { sources, policies, executions, snapshots, attempts, owners, transfers, lifecycle,
     reconcileMaterializationReservations: (report: (error: unknown) => void) => reclamations.reconcile(report),
+    startMaterializationReservationReconciliation: (report: (error: unknown) => void) => reclamations.startReconciliation(report),
+    drainMaterializationReservationReconciliation: () => reclamations.drain(),
     reconcileFailedCaptures: (report: (error: unknown) => void) => sources.reconcileCaptures(report),
     sourceExtension: createMainSourceOperationExtension(owners, transfers, lifecycle, async (reservationId, reclamationId, context) => {
       return withTransaction(input.pool, async (sql) => {

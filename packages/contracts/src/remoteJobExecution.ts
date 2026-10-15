@@ -110,7 +110,7 @@ export const RemoteJobExecutionRpcRequestRecordSchema = z.discriminatedUnion('me
   z.object({ method: z.literal('job-dispatch'), intent: RemoteJobDispatchIntentSchema,
     execution: JobExecutionRecordSchema }).strict(),
   RemoteJobExecutionRpcRequestSchema.options[1],
-  RemoteJobExecutionRpcRequestSchema.options[2],
+  RemoteJobExecutionRpcRequestSchema.options[2].extend({ execution: JobExecutionRecordSchema.optional() }),
 ])
 export const RemoteJobMainRpcRequestRecordSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('job-report'), receipt: RemoteJobOperationReceiptRecordSchema }).strict(),

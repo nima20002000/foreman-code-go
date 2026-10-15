@@ -54,6 +54,7 @@ export type WorkerArtifactManifest = z.infer<typeof WorkerArtifactManifestSchema
 const WorkerPublicationFieldsSchema = z.object({
   state: z.enum(['pending', 'published', 'failed']),
   lastError: z.string().max(2000).nullable(),
+  startedAt: z.string().datetime().optional(),
 }).strict()
 export const WorkerReleasePublicationSchema = WorkerPublicationFieldsSchema.extend({
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
@@ -71,6 +72,10 @@ export const WorkerArtifactIndexSchema = z.object({
   github: WorkerArtifactGitHubSchema.optional(),
   /** Published only after every GitHub asset has been downloaded and checksum verified. */
   publication: WorkerPublicationFieldsSchema.optional(),
+  publicationRecovery: z.object({
+    abandonedAttempts: z.number().int().nonnegative(),
+    lastAbandonedAt: z.string().datetime(),
+  }).strict().optional(),
   artifacts: z.array(z.object({
     target: WorkerArtifactTargetSchema,
     manifestSha256: digest,
