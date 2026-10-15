@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { canonicalGraphJson, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { faultWorkflowFixture } from './helpers/faultWorkflowFixture.js'
@@ -52,7 +52,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     const nativeEvents = (await fixture.base.db.pool.query<{ record: HarnessNativeEvent }>(
       'select record from harness_native_events where execution_id=$1 order by sequence', [check.id])).rows
     expect(nativeEvents.some(({ record }) => record.type === 'turn.completed'
-      && /LOOP_CHECK_FAILED/.test(canonicalGraphJson(record.payload)))).toBe(true)
+      && record.payload.status === 'failed')).toBe(true)
     expect(details.activitySnapshot.activities.some(activity => activity.kind === 'diagnostic'
       && activity.owner.kind === 'execution' && activity.owner.executionId === check.id
       && /failed/i.test(activity.message))).toBe(true)

@@ -354,7 +354,9 @@ export function expectBoundedNodeFault(details: ReturnType<typeof SavedRunDetail
   expect(last.state).toBe('completed')
   expect(['succeeded', 'failed']).toContain(last.result?.outcome)
   if (last.result?.outcome === 'failed') {
-    expect(affected.length).toBeGreaterThanOrEqual(2)
+    expect(affected.length, canonicalGraphJson(affected.map(execution => ({
+      id: execution.id, attempt: execution.attempt, result: execution.result,
+    })))).toBeGreaterThanOrEqual(2)
     expect(details.run.outcome).toBe('failed')
   } else {
     expect(details.run.outcome).toBe('succeeded')
