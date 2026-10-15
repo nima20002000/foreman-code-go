@@ -212,12 +212,14 @@ export async function deliveredReview(fixture: Fixture, interactionId: string) {
   }, value => value.state === 'completed', 'persisted completed remote review')
   // Retry the original MCP decision after its native terminal commits, without a global maintenance sweep.
   await fixture.provider.retryReview()
-  const interaction = await waitForRemoteReview(async () => {
+  // Graph resume and native acknowledgment advance the interaction revision after delivery.
+  const { interaction } = await waitForRemoteReview(async () => {
     const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
     if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
     await fixture.reconcileReviews()
-    return readInteraction(fixture, interactionId)
-  }, value => value.deliveryState === 'delivered', 'persisted native decision delivery', fixture.subscribeNativeChanges)
+    return GetInteractionResponseSchema.parse(await fixture.value('interaction_get', { interactionId }))
+  }, value => value.interaction.deliveryState === 'delivered' && value.activity?.workerAcknowledgment === 'confirmed',
+  'persisted native decision delivery and worker acknowledgment', fixture.subscribeNativeChanges)
   expect(interaction.selectedSemantic).toBe('approve_once')
   expect(interaction.deliveredAt).toBeDefined()
   expect(job.providerTurnOrMessageId).toBeDefined()
