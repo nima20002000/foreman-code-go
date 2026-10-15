@@ -12,6 +12,13 @@ function report() {
       observedStates: ['queued', 'running', 'passed'] }] }
 }
 
+it('takes the first reported ticket as the group handle when an Agent omits the redundant top-level ticketId', () => {
+  const value = report()
+  value.tickets.push({ ...value.tickets[0]!, ticketId: randomUUID(), part: 'build-other' })
+  const { ticketId, ...withoutTop } = value
+  expect(readAgentCiReport({ text: JSON.stringify(withoutTop) })).toEqual({ ...withoutTop, ticketId })
+})
+
 it('reads a complete cloud and physical-computer Agent report from a native text envelope', () => {
   const value = report()
   value.tickets.push({ ...value.tickets[0]!, ticketId: randomUUID(), part: 'build-other' })
