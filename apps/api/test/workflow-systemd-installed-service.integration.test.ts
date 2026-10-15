@@ -71,6 +71,7 @@ describe('installed API fixture packaging', () => {
     for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'scripts/require-pnpm.mjs']) {
       await copyFile(join(repository, name), join(directory, name))
     }
+    await cp(join(repository, 'patches'), join(directory, 'patches'), { recursive: true })
     for (const name of ['api', 'web', 'worker']) {
       await mkdir(join(directory, 'apps', name), { recursive: true })
       await copyFile(join(repository, 'apps', name, 'package.json'), join(directory, 'apps', name, 'package.json'))

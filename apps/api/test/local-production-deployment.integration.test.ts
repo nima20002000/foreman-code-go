@@ -62,6 +62,13 @@ it('keeps source development commands usable after successful and failed product
     const lock = parse(await readFile(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8'))
     // This minimal workspace has no patched dependencies.
     delete lock.patchedDependencies
+    // Offline installation verifies every locked package against the release-age policy, so keep only the
+    // development dependency and its own dependency that this minimal workspace installs.
+    const kept = new Set(['@types/node@26.5.1', 'undici-types@8.9.0'])
+    for (const section of ['packages', 'snapshots'] as const) {
+      lock[section] = Object.fromEntries(Object.entries(lock[section] as Record<string, unknown>)
+        .filter(([name]) => kept.has(name)))
+    }
     await writeFile(join(source, 'pnpm-lock.yaml'), JSON.stringify({ ...lock, importers: {
       '.': { devDependencies: { '@types/node': { specifier: '26.5.1', version: '26.5.1' } } },
       'apps/api': { dependencies: {
