@@ -274,7 +274,7 @@ describe('authenticated namespace carrier mechanics', () => {
     ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', true],
     ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
     ['NATIVE_ARTIFACT_AUTHORITY_DENIED', false],
-    ['WORKER_WORKFLOW_UNAVAILABLE', false],
+    ['WORKER_WORKFLOW_UNAVAILABLE', true],
     ['backpressure', true],
     ['job-publication-pending', true],
     ['source-repository-uncertain', false],

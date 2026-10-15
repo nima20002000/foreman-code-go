@@ -61,7 +61,7 @@ async function fixture() {
     if(text.includes('from source_snapshots'))return {rows:[{record:source,availability:'retained'}]}
     if(text.includes('from file_allocations'))return {rows:[{state:canonicalState,allocation_state:allocationState,expires_at:expires}]}
     if(text.startsWith('insert into management_command_receipts')){records.set(String(args[2]),JSON.parse(String(args[5])));return {rows:[],rowCount:1}}
-    if(text.includes("where principal_id = $1 and operation = $2 and command_id = $3")){const old=records.get(String(args[2]));return {rows:old?[{input_hash:commandInputHash(old.input),target_key:`job:${job.id}:output:${old.input.path}`,result:old}]:[]}}
+    if(text.includes("where principal_id = any($1::text[]) and operation = $2 and command_id = $3")){const old=records.get(String(args[2]));return {rows:old?[{principal_id:old.principalId,input_hash:commandInputHash(old.input),target_key:`job:${job.id}:output:${old.input.path}`,result:old}]:[]}}
     if(text.includes('where principal_id=$1 and operation=$2 and command_id=$3')){const old=records.get(String(args[2]));return {rows:old?[{result:old}]:[]}}
     if(text.includes("result #>> '{intent,transferId}'"))return {rows:[...records.values()].filter(r=>r.intent.transferId===args[1]).map(result=>({result}))}
     if(text.includes("result #>> '{input,executionId}'"))return {rows:[...records.values()].filter(r=>r.input.executionId===args[1]&&r.input.attemptId===args[2]&&r.input.path===args[3])}
