@@ -108,6 +108,34 @@ it.each(['backpressure', 'pending', 'partial'] as const)(
     } finally { await f.close() }
   })
 
+it('does not observe a ticket again from a stale read of the active runs while its backoff is pending', async () => {
+  const f = await collectionFixture('pending')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  // The dispatcher reads active runs as { id, record, host_key } rows.
+  const activeRows = (rows: unknown[]) => rows.filter(row => typeof row === 'object' && row !== null
+    && ['id', 'record', 'host_key'].every(key => key in row) && Object.keys(row).length === 3
+    && (row as { id: string }).id === f.record.id)
+  let beforeObservation: unknown[] | undefined
+  let replay = false
+  const query = f.pool.query.bind(f.pool) as (...args: unknown[]) => Promise<{ rows: unknown[] }>
+  vi.spyOn(f.pool, 'query').mockImplementation((async (...args: unknown[]) => {
+    const result = await query(...args)
+    const rows = activeRows(result.rows)
+    if (!rows.length) return result
+    beforeObservation ??= rows
+    // A pass whose read of the active runs predates a finished observation sees the older record.
+    return replay ? { ...result, rows: beforeObservation } : result
+  }) as never)
+  try {
+    await settle(f.ci)
+    expect(f.counts().collectionReads).toBe(1)
+    replay = true
+    await settle(f.ci)
+    expect(f.counts().collectionReads).toBe(1)
+    expect((await f.read()).run.observation).toMatchObject({ status: 'unavailable', consecutiveFailures: 1 })
+  } finally { await f.close() }
+})
+
 it('persists newly finished facts when collection fails and preserves that outcome on retry', async () => {
   const f = await collectionFixture('backpressure', 'running')
   vi.useFakeTimers({ toFake: ['Date'] })

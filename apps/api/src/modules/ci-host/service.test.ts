@@ -71,6 +71,12 @@ it('dispatches persisted tickets immediately when the service starts and keeps o
   }
 })
 
+/** A dispatch pass hands readiness reads and run observations to background work; wait for it and any pass it requests. */
+async function dispatchSettled(service: HostCiService) {
+  await service.dispatch()
+  await service.drain()
+}
+
 function dispatchFixture(settlementError?: Error) {
   const f = fixture()
   const active = f.read().record
@@ -323,8 +329,9 @@ it('persists sanitized dispatch errors on queued tickets', async () => {
     if (input.operation === 'start') throw new DomainError('BUILD_COMPUTER_DISABLED', 'Executor\0 unavailable\ud800', 409)
     return request(computer, input)
   })
-  await f.create().dispatch()
-  const result = await f.create().get(caller, { ticketId: f.queued.id })
+  const service = f.create()
+  await dispatchSettled(service)
+  const result = await service.get(caller, { ticketId: f.queued.id })
   expect(result.run).toMatchObject({ state: 'queued',
     message: 'No ready computer for lint; Builder: Executor unavailable\ufffd' })
 })
@@ -463,7 +470,7 @@ it.each([10, 40_000, 70_000])('persists a bounded %i-byte log with terminal stat
     const text = log.slice(request.afterOffset, request.afterOffset + request.maxBytes)
     return { operation: 'read', run: state, text, nextOffset: request.afterOffset + text.length }
   })
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   vi.mocked(f.endpoint.request).mockClear()
   const result = await f.create().get(caller, { workspaceId: 'workspace', ticketId: state.runId })
   expect(result.run.state).toBe('passed')
@@ -531,6 +538,7 @@ it('retries a CI read once after a statement timeout, then reports a retryable e
 
 it('retries an unknown start reply on the assigned executor without requeueing', async () => {
   const f = dispatchFixture()
+  f.records.splice(0, 1)
   const request = vi.mocked(f.endpoint.request).getMockImplementation()!
   const starts: { computer: HostCiComputer; runId: string }[] = []
   vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
@@ -541,13 +549,13 @@ it('retries an unknown start reply on the assigned executor without requeueing',
     return request(computer, input)
   })
   const service = f.create()
-  await service.dispatch()
+  await dispatchSettled(service)
   expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
     state: 'starting', computer: { hostRef: computer.hostRef },
     dispatchRequest: { operation: 'start', runId: f.queued.id },
   })
   expect(starts).toEqual([{ computer, runId: f.queued.id }])
-  await service.dispatch()
+  await dispatchSettled(service)
   expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
     state: 'running', computer: { hostRef: computer.hostRef },
   })
@@ -572,7 +580,7 @@ it('retries an unacknowledged gate on its assigned computer without releasing ow
     }
     return request(target, input)
   })
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run)
     .toMatchObject({ state: 'starting', startedAt: null, step: 'dispatch' })
 
@@ -583,7 +591,7 @@ it('retries an unacknowledged gate on its assigned computer without releasing ow
     key: 'device:replacement', hostRef: { kind: 'device', mainId: 'main', deviceId: 'replacement' },
     label: 'Replacement builder', priority: 100,
   }])
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
     state: 'passed', exitCode: 0, computer: { hostRef: computer.hostRef },
   })
@@ -606,7 +614,7 @@ it('retains ownership after bounded missing start acknowledgements across servic
     }
     return request(target, input)
   })
-  for (let attempt = 0; attempt < 4; attempt++) await f.create().dispatch()
+  for (let attempt = 0; attempt < 4; attempt++) await dispatchSettled(f.create())
   expect(starts).toBe(3)
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
     state: 'starting', computer: { hostRef: computer.hostRef },
@@ -643,7 +651,7 @@ it('bounds a hanging start and retains its assignment while status is unavailabl
     await vi.advanceTimersByTimeAsync(0)
     expect((await service.get(caller, { ticketId: f.queued.id })).run.state).toBe('starting')
     vi.mocked(f.endpoint.request).mockImplementation(request)
-    await service.dispatch()
+    await dispatchSettled(service)
     expect((await service.get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
   } finally {
     acknowledge()
@@ -671,7 +679,7 @@ it('accepts computer status as acknowledgement without sending a duplicate start
     }
     return request(target, input)
   })
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   await f.create().computers(caller, { workspaceId: 'workspace' })
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({ state: 'running' })
   expect(starts).toBe(1)

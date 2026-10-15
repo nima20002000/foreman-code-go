@@ -13,6 +13,7 @@ import { AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema,
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { acceptRunAuthority, bindRunAuthority, currentOperatorAuthority } from '../src/modules/access/runAuthority.js'
+import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { GitCiCommits } from '../src/modules/ci-host/commits.js'
 import { HostCiService } from '../src/modules/ci-host/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -167,9 +168,10 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
       })
       const ci = new HostCiService(f.db.pool, commands, new RunCiAuthority(f.db.pool), new GitCiCommits(ports),
         { computers: async () => [], request: async () => { throw new Error('No runner requested in admission test') } }, snapshots)
+      const bugReports = new BugReportService(f.db.pool, commands)
       app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-        operator: { access: f.access, services: { commands, ci } as unknown as OperatorServices },
-        appMcp: { access: f.access, commands, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands) } })
+        operator: { access: f.access, services: { commands, ci, bugReports } as unknown as OperatorServices },
+        appMcp: { access: f.access, commands, bugReports, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands) } })
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       const connect = async (token: string) => {
         const client = new Client({ name: 'Agent source CI', version: '1' })

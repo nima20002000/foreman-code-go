@@ -51,10 +51,11 @@ it('admits MCP requests and runs own-computer work while cloud publication is pe
     expect((await f.call(reader, 'ci_run', { ...input, commandId: randomUUID() })).isError).toBe(true)
     await run()
     await f.ci.dispatch()
+    await f.ci.drain()
     const cloudRun = await run()
     let timer: NodeJS.Timeout | undefined
     try {
-      await Promise.race([f.ci.dispatch(), new Promise<never>((_resolve, reject) => {
+      await Promise.race([f.ci.dispatch().then(() => f.ci.drain()), new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error('Cloud publication blocked dispatch')), 2000)
       })])
     } finally {
@@ -65,6 +66,7 @@ it('admits MCP requests and runs own-computer work while cloud publication is pe
     localRun = { ...localRun!, state: 'passed', exitCode: 0, finishedAt: new Date().toISOString() }
     const own = await run()
     await f.ci.dispatch()
+    await f.ci.drain()
     expect(localRun.runId).toBe(own.ticketId)
     expect(mirror.dispatched).toHaveLength(0)
     release()
