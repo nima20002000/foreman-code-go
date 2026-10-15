@@ -1,10 +1,7 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { handoffPlacementFixture } from './helpers/handoffPlacementFixture.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
-
-vi.hoisted(() => { vi.stubEnv('LOG_LEVEL', 'warn') })
-afterAll(() => vi.unstubAllEnvs())
 
 describe('handed-off node placement after a Worker reconnect', () => {
   it('runs the coordinator and all three Agents after requalification and reads success through MCP', async () => {
