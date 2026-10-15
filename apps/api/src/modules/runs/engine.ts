@@ -29,6 +29,7 @@ import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCh
 import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 import { readRunAcceptedPlacements } from '../placement/persistence.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { isTransientExecutionError } from './executionRetryPolicy.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -396,7 +397,10 @@ export class LangGraphWorkflowEngine {
 
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
-  private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number }>()
+  private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number; failures: number }>()
+  /** Transient recovery failures retry forever with backoff. After this many permanent ones the Run gets a failed
+   * cleanup request carrying the real cause, and the next sweep settles it through the ordinary cleanup path. */
+  private static readonly permanentReconciliationFailures = 10
   reconcile(onError: (error: unknown) => void = (error) => componentLogger('engine').error({ err: error }, 'run reconciliation failed')): Promise<void> {
     runtimeTimingPoint('engine', 'reconcile.request', { reused: this.reconciliation !== undefined })
     if (this.reconciliation) return this.reconciliation
@@ -429,8 +433,13 @@ export class LangGraphWorkflowEngine {
             if (error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
             const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
-            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs })
+            const permanent = !isTransientExecutionError(error) && !(error instanceof DomainError && error.status >= 500)
+            const failures = (retry?.failures ?? 0) + (permanent ? 1 : 0)
+            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs, failures })
             onError(error)
+            if (permanent && failures % LangGraphWorkflowEngine.permanentReconciliationFailures === 0) {
+              return this.failUnrecoverable(candidate.id, error).catch(onError)
+            }
           })
         }
         if (page.length < 100) {
@@ -442,6 +451,17 @@ export class LangGraphWorkflowEngine {
     })().finally(() => { finished(); if (this.reconciliation === task) this.reconciliation = undefined })
     this.reconciliation = task
     return task
+  }
+
+  private async failUnrecoverable(runId: string, error: unknown): Promise<void> {
+    const owner = await this.runs.acquireOwnership(runId, () => undefined)
+    if (!owner) return
+    try {
+      await this.runs.requestCleanup(runId, owner, { outcome: 'failed', error: {
+        code: error instanceof DomainError ? error.code : 'RUN_RECOVERY_FAILED',
+        message: (error instanceof Error && error.message ? error.message : 'Run recovery failed.').slice(0, 2_000),
+        retryable: false } })
+    } finally { await owner.release() }
   }
 
   /** Graceful restart is NOT Stop. Original transport close receipts precede
