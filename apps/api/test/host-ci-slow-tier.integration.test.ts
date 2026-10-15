@@ -22,22 +22,26 @@ it.each(['full', 'affected'] as const)(
       const fastRun = initial.partitions!.find(run => run.partition?.tier === 'fast')!
       const slowRun = initial.partitions!.find(run => run.partition?.tier === 'slow')!
       expect(fastRun.state).toBe('running')
-      expect(slowRun).toMatchObject({ state: 'queued', deferred: true })
+      expect(slowRun.state).toBe('running')
+      expect(slowRun.deferred).toBeUndefined()
       f.finish(fastRun.id, 1, 'Fast file failed.\n')
-      const afterFast = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: admitted.ticketId }))
+      const afterFast = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+        ticketId: fastRun.id, waitSeconds: 5,
+      }))
       expect(afterFast.partitions!.find(run => run.id === fastRun.id)).toMatchObject({ state: 'failed', exitCode: 1 })
-      expect(afterFast.partitions!.find(run => run.id === slowRun.id)?.state)
-        .toBe(scope === 'full' ? 'running' : 'canceled')
+      expect(afterFast.partitions!.find(run => run.id === slowRun.id)?.state).toBe('running')
       const launched = f.started.flatMap(({ request }) => request.operation === 'start'
         ? integrationPartition(files, request.durations ?? durations, request.partition!) : [])
-      expect(launched).toEqual(scope === 'full' ? [fast, slow] : [fast])
-      if (scope === 'full') f.finish(slowRun.id, 1, 'Slow file also failed.\n')
-      const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: admitted.ticketId }))
+      expect(launched.sort()).toEqual(files.slice().sort())
+      f.finish(slowRun.id, 1, 'Slow file also failed.\n')
+      const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+        ticketId: admitted.ticketId, waitUntil: 'group-terminal', waitSeconds: 5,
+      }))
+      expect(finished.wait?.status).toBe('settled')
       expect(finished.group?.state).toBe('failed')
       expect(finished.partitions!.find(run => run.id === fastRun.id)).toMatchObject({ state: 'failed', exitCode: 1 })
-      expect(finished.partitions!.find(run => run.id === slowRun.id)?.state)
-        .toBe(scope === 'full' ? 'failed' : 'canceled')
-      if (scope === 'full') expect(finished.partitions!.every(run => run.exitCode === 1)).toBe(true)
+      expect(finished.partitions!.find(run => run.id === slowRun.id)).toMatchObject({ state: 'failed', exitCode: 1 })
+      expect(finished.partitions!.every(run => run.exitCode === 1)).toBe(true)
       for (const run of finished.partitions!) {
         const stored = (await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record
         expect(stored).toEqual(run)
