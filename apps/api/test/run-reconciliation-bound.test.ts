@@ -8,7 +8,8 @@ test('a Run whose recovery keeps failing stops being retried and is reported onc
   vi.useFakeTimers()
   try {
     const reported: unknown[] = []
-    const runs = { reconciliationCandidates: vi.fn(async (after: string) => after === '' ? [{ id: 'run-stuck' }] : []) }
+    const runs = { repeatRepositoryFactory: () => ({}),
+      reconciliationCandidates: vi.fn(async (after: string) => after === '' ? [{ id: 'run-stuck' }] : []) }
     const engine = new LangGraphWorkflowEngine(runs as never, {} as never, { reconcileReviews: async () => {} } as never,
       new MemorySaver(), '/workspace/reconcile-bound', {} as never, {} as never, {} as never)
     const start = vi.spyOn(engine, 'start').mockRejectedValue(new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE',
