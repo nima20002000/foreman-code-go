@@ -153,7 +153,7 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       expect(supervisor.currentBinding()).toBeUndefined(); expect(reconcile).not.toHaveBeenCalled()
     } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
   })
-  it('live authorization-storage outage reconnects instead of permanently blocking', async () => {
+  it('live authorization-storage outage keeps the link instead of dropping or blocking it', async () => {
     vi.useFakeTimers()
     const query = vi.fn(async () => ({ rows: [{ record: registration, credential_expires_at: new Date(principal.expiresAt) }] }))
     const service = new PostgresDeviceAccessService({ query } as unknown as pg.Pool, main.mainId), device = endpoint(service)
@@ -163,9 +163,9 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       supervisor.start(); await flush(); expect(supervisor.status().phase).toBe('ready')
       query.mockRejectedValueOnce(Object.assign(new Error('DB restarting'), { code: 'ECONNREFUSED' }))
       sockets[0]!.send(JSON.stringify({ type: 'ping', connectionEpoch: sockets[0]!.peer!.frames[0]!.connectionEpoch })); await flush()
-      expect(supervisor.status()).toMatchObject({ phase: 'backoff', failure: 'transport' })
+      expect(supervisor.status()).toMatchObject({ phase: 'ready', failure: null })
       await vi.advanceTimersByTimeAsync(501); await flush()
-      expect(connect).toHaveBeenCalledTimes(2); expect(supervisor.status().phase).toBe('ready')
+      expect(connect).toHaveBeenCalledOnce(); expect(sockets[0]!.closed).toBe(false); expect(supervisor.status().phase).toBe('ready')
     } finally { await supervisor.stop(); device.close(); await Promise.allSettled(tasks) }
   })
   it.each([true, false])('old revoke preserves newer pairing and ticket with prior local fence %s', async (priorFence) => {
@@ -185,7 +185,7 @@ describe('W07 confirmed security and lifecycle regressions', () => {
       supervisor.start(); await flush(); expect(supervisor.status().phase).toBe('ready')
       port.query.mockClear(); expect(await service.revoke(manager, principal.deviceId, 1, commandId)).toEqual(revoked); await flush()
       expect(port.query.mock.calls.filter(([sql]) => sql.includes('device_registrations'))).toHaveLength(0)
-      expect(port.query.mock.calls.find(([sql]) => sql.includes('from management_command_receipts'))?.[1]).toEqual([manager.id, 'device_revoke', commandId])
+      expect(port.query.mock.calls.find(([sql]) => sql.includes('from management_command_receipts'))?.[1]).toEqual([[manager.id], 'device_revoke', commandId])
       expect(sockets[0]!.closed).toBe(false); expect(supervisor.status().phase).toBe('ready')
       const replacement = new Socket(); const task = device.acceptAuthenticated(ticket, adaptDeviceSocket(replacement)); tasks.push(task)
       replacement.frame({ ...identity, authorizationRevision: 3, type: 'hello', protocolVersion: 1, appVersion: 'build', nonce: Buffer.alloc(32).toString('base64url'), connectionGeneration: 1, connectionEpoch: randomUUID() }); await flush()

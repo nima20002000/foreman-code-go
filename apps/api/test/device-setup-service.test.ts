@@ -17,7 +17,7 @@ function fixture(){
     else if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:revoked?new Date():null,delegated_from:null}]
     else if(text.includes('from device_main_identity'))rows=[{mainPublicKey,mainPublicKeyFingerprint:publicKeyFingerprint(mainPublicKey)}]
     else if(text.includes('device_authorization_secret'))rows=[{secret:'a'.repeat(64)}]
-    else if(text.includes('select input_hash, target_key, result'))rows=receipts.has(`${values![1]}:${values![2]}`)?[receipts.get(`${values![1]}:${values![2]}`)]:[]
+    else if(text.includes('input_hash, target_key, result'))rows=receipts.has(`${values![1]}:${values![2]}`)?[receipts.get(`${values![1]}:${values![2]}`)]:[]
     else if(text.startsWith('select record from device_registrations'))rows=registrations.length?[{record:registrations[0]}]:[]
     if(text.startsWith('insert into management_command_receipts'))receipts.set(`${values![1]}:${values![2]}`,{input_hash:values![4],target_key:values![3],result:JSON.parse(values![5] as string)})
     if(text.startsWith('insert into device_registrations'))registrations.push(values![4])

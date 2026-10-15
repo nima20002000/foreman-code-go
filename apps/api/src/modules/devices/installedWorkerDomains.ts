@@ -838,8 +838,9 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
   composition.tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
     const task = (async () => {
-      if (requiresWorkerBundle(extension.namespace, payload)) await composition.input.assertBundleReady?.(context)
+      // Admission is decided when the request arrives, so a drain that starts during the bundle check waits for this task.
       updateDrain.assertAdmission(extension.namespace, payload)
+      if (requiresWorkerBundle(extension.namespace, payload)) await composition.input.assertBundleReady?.(context)
       if (extension.namespace === 'execution-v1' && payload && typeof payload === 'object'
         && 'method' in payload && ['inspect-mcp', 'conversation.inspect-mcp'].includes(String(payload.method))) {
         await composition.managedMcp.ensureReady({ signal: AbortSignal.any([context.signal, lifetime.signal,

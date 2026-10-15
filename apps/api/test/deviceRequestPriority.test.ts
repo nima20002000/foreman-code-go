@@ -229,12 +229,15 @@ it('keeps captured request busy state live as foreground requests finish', async
   try {
     const captured = f.main.captureRequest('execution-v1')
     expect(captured.busy).toBe(false)
-    const request = captured.request({ id: 'captured' })
-    const result = expect(request).resolves.toEqual({ payload: 'captured' })
+    const ids = Array.from({ length: 7 }, (_, index) => `captured-${index}`)
+    const results = ids.map(id => captured.request({ id }).then(value => value, error => error))
     await vi.advanceTimersByTimeAsync(0)
     expect(captured.busy).toBe(true)
-    f.release('captured')
-    await result
+    f.release('captured-0')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(captured.busy).toBe(false)
+    ids.slice(1).forEach(id => f.release(id))
+    expect(await Promise.all(results)).toEqual(ids.map(id => ({ payload: id })))
     expect(captured.busy).toBe(false)
   } finally { await f.close() }
 })

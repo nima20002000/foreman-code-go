@@ -93,7 +93,7 @@ describe('PR #5 runner locations', () => {
       const payload = { commandId: 'legacy-command', name: 'A' }
       const perform = vi.fn(async () => { throw new Error('Receipt must not repeat mutation') })
       const client = {
-        query: vi.fn(async (sql: string) => ({ rows: sql.includes('select input_hash')
+        query: vi.fn(async (sql: string) => ({ rows: sql.includes('from management_command_receipts')
           ? [{ input_hash: commandInputHash(payload), target_key: 'workspaces:new', result: legacy }] : [] })),
         release: vi.fn(),
       }
