@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: false
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@langchain/langgraph@1.4.15': fe44ef6a8bc930bd1da678aa0827cd6a915281485d1ad270bff97712279b44ab
+
 importers:
 
   .: {}
@@ -27,7 +30,7 @@ importers:
         version: 1.2.11(ws@8.22.0)
       '@langchain/langgraph':
         specifier: 1.4.15
-        version: 1.4.15(@langchain/core@1.2.11(ws@8.22.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.3)
+        version: 1.4.15(patch_hash=fe44ef6a8bc930bd1da678aa0827cd6a915281485d1ad270bff97712279b44ab)(@langchain/core@1.2.11(ws@8.22.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.3)
       '@langchain/langgraph-checkpoint':
         specifier: 1.1.5
         version: 1.1.5(@langchain/core@1.2.11(ws@8.22.0))
@@ -4295,7 +4298,7 @@ snapshots:
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
 
-  '@langchain/langgraph@1.4.15(@langchain/core@1.2.11(ws@8.22.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.3)':
+  '@langchain/langgraph@1.4.15(patch_hash=fe44ef6a8bc930bd1da678aa0827cd6a915281485d1ad270bff97712279b44ab)(@langchain/core@1.2.11(ws@8.22.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.3)':
     dependencies:
       '@langchain/core': 1.2.11(ws@8.22.0)
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.11(ws@8.22.0))

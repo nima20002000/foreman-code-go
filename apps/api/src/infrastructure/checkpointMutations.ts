@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { WRITES_IDX_MAP, type SerializerProtocol } from '@langchain/langgraph-checkpoint'
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres'
 import { DomainError } from '../modules/errors.js'
+import { retryDatabaseTimeout } from './databaseTimeout.js'
 import { withTransaction } from './transaction.js'
 
 /** The generation row serializes checkpoint commits with successor ownership. */
@@ -29,13 +30,15 @@ export class CheckpointMutationSaver extends PostgresSaver {
 
   override async put(...args: Parameters<PostgresSaver['put']>): ReturnType<PostgresSaver['put']> {
     const [config, checkpoint, metadata, versions] = args
-    if (!config.configurable?.checkpoint_owner_generation) return super.put(...args)
+    if (!config.configurable?.checkpoint_owner_generation) {
+      return retryDatabaseTimeout(() => super.put(...args), { signal: config.signal })
+    }
     const { thread_id: threadId, checkpoint_ns: namespace = '', checkpoint_id: parent } = config.configurable
     const [blobs, serializedMetadata] = await Promise.all([
       this._dumpBlobs(threadId, namespace, checkpoint.channel_values, versions), this._dumpMetadata(metadata),
     ])
     const serializedCheckpoint = this._dumpCheckpoint(checkpoint)
-    await withTransaction(this.mutationPool, async client => {
+    await retryDatabaseTimeout(() => withTransaction(this.mutationPool, async client => {
       await this.checkOwner(client, config)
       for (const blob of blobs) {
         await client.query(`insert into "${this.mutationOptions.schema}".checkpoint_blobs
@@ -47,25 +50,27 @@ export class CheckpointMutationSaver extends PostgresSaver {
         values($1,$2,$3,$4,$5,$6) on conflict(thread_id,checkpoint_ns,checkpoint_id)
         do update set checkpoint=excluded.checkpoint,metadata=excluded.metadata`,
       [threadId, namespace, checkpoint.id, parent, serializedCheckpoint, serializedMetadata])
-    })
+    }), { signal: config.signal })
     return { configurable: { thread_id: threadId, checkpoint_ns: namespace, checkpoint_id: checkpoint.id,
       checkpoint_owner_generation: config.configurable.checkpoint_owner_generation } }
   }
 
   override async putWrites(...args: Parameters<PostgresSaver['putWrites']>): Promise<void> {
     const [config, writes, taskId] = args
-    if (!config.configurable?.checkpoint_owner_generation) return super.putWrites(...args)
+    if (!config.configurable?.checkpoint_owner_generation) {
+      return retryDatabaseTimeout(() => super.putWrites(...args), { signal: config.signal })
+    }
     const { thread_id: threadId, checkpoint_ns: namespace = '', checkpoint_id: checkpointId } = config.configurable
     const dumped = await this._dumpWrites(threadId, namespace, checkpointId, taskId, writes)
     const upsert = writes.every(([channel]) => channel in WRITES_IDX_MAP)
     const conflict = upsert ? 'do update set channel=excluded.channel,type=excluded.type,blob=excluded.blob' : 'do nothing'
-    await withTransaction(this.mutationPool, async client => {
+    await retryDatabaseTimeout(() => withTransaction(this.mutationPool, async client => {
       await this.checkOwner(client, config)
       for (const write of dumped) {
         await client.query(`insert into "${this.mutationOptions.schema}".checkpoint_writes
           (thread_id,checkpoint_ns,checkpoint_id,task_id,idx,channel,type,blob) values($1,$2,$3,$4,$5,$6,$7,$8)
           on conflict(thread_id,checkpoint_ns,checkpoint_id,task_id,idx) ${conflict}`, write)
       }
-    })
+    }), { signal: config.signal })
   }
 }

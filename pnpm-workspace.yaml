@@ -14,3 +14,6 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   msw: true
+
+patchedDependencies:
+  '@langchain/langgraph@1.4.15': patches/@langchain__langgraph@1.4.15.patch
