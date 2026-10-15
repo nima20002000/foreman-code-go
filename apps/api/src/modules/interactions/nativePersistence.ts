@@ -31,7 +31,11 @@ export function nativePersistenceRedactor(secrets: readonly string[]) {
   }
   const error = (input: unknown): unknown => {
     if (input instanceof AggregateError) return new AggregateError([...input.errors].map(error), text(input.message))
-    if (input instanceof DomainError) return new DomainError(text(input.code), text(input.message), input.status, value(input.details))
+    if (input instanceof DomainError) {
+      const sanitized = new DomainError(text(input.code), text(input.message), input.status, value(input.details))
+      if (input.cause !== undefined) sanitized.cause = error(input.cause)
+      return sanitized
+    }
     if (input instanceof HarnessExecutionError) return new HarnessExecutionError(
       text(input.result.error?.code ?? 'NATIVE_EXECUTION_FAILED'), text(input.message), input.result.error?.retryable,
     )
