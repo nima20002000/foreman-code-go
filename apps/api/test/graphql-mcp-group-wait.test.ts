@@ -1,11 +1,11 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { afterEach, expect, it } from 'vitest'
-import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_TIMEOUTS, registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
 
 const cleanup: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
@@ -13,12 +13,15 @@ afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
 type Reply = (call: { waitSeconds: number; index: number }) => {
   status: number; result?: unknown; error?: unknown; delayMs?: number
 }
-const waitResult = (status: 'still-running' | 'settled') => ({ structuredContent: { run: {}, wait: {
+const waitResult = (status: 'still-running' | 'settled') => ({ structuredContent: {
+  run: { id: 'ticket', state: 'running' },
+  partitions: [{ id: 'ticket', state: 'running' }, { id: 'sibling', state: 'passed' }], wait: {
   until: 'group-terminal', status, tickets: 2, settledTickets: status === 'settled' ? 2 : 1 } }, content: [] })
 
 /** A fake authenticated MCP endpoint whose ci_get answers follow a script; the bridge is the unit under test. */
 async function fakeEndpoint(reply: Reply) {
   const calls: Array<{ waitSeconds: number; name?: string | undefined }> = []
+  const timers = new Set<ReturnType<typeof setTimeout>>()
   const server: Server = createServer((request, response) => {
     let body = ''
     request.on('data', chunk => { body += chunk })
@@ -28,15 +31,21 @@ async function fakeEndpoint(reply: Reply) {
       const index = calls.length
       calls.push({ name: message.params?.name, waitSeconds: message.params?.arguments.waitSeconds ?? 0 })
       const next = reply({ waitSeconds: message.params?.arguments.waitSeconds ?? 0, index })
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        timers.delete(timer)
         if (next.status !== 200) { response.writeHead(next.status).end(); return }
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: next.result, error: next.error }))
       }, next.delayMs ?? 0)
+      timers.add(timer)
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  cleanup.push(() => new Promise<void>(resolve => server.close(() => resolve())))
+  cleanup.push(() => new Promise<void>(resolve => {
+    for (const timer of timers) clearTimeout(timer)
+    server.closeAllConnections()
+    server.close(() => resolve())
+  }))
   const { port } = server.address() as { port: number }
   return { endpoint: `http://127.0.0.1:${port}/mcp`, calls }
 }
@@ -48,7 +57,7 @@ interface BridgeReply {
 }
 
 /** Starts the managed stdio bridge the way a harness launches it, with a route to the fake endpoint. */
-async function startBridge(endpoint: string) {
+async function startBridge(endpoint: string, options: { clockScale?: number; claudeTimeoutMs?: number } = {}) {
   const cache = join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(cache, { recursive: true })
   const directory = await mkdtemp(join(cache, 'graphql-group-wait-'))
@@ -56,11 +65,29 @@ async function startBridge(endpoint: string) {
   const launcher = join(directory, 'graphql-mcp.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const token = `group-wait-${Math.random().toString(36).slice(2)}`
-  await registerAppRoute(token, endpoint, new Date(Date.now() + 120_000).toISOString(), launcher)
+  await registerAppRoute(token, endpoint, new Date(Date.now() + 86_400_000).toISOString(), launcher)
+  const args: string[] = []
+  if (options.clockScale) {
+    const clock = join(directory, 'clock.mjs')
+    await writeFile(clock, `
+      import timers from 'node:timers/promises'
+      import { syncBuiltinESMExports } from 'node:module'
+      const now = Date.now.bind(Date)
+      const started = now()
+      Date.now = () => started + (now() - started) * ${options.clockScale}
+      const timeout = AbortSignal.timeout.bind(AbortSignal)
+      AbortSignal.timeout = ms => timeout(Math.max(1, Math.ceil(ms / ${options.clockScale})))
+      const wait = timers.setTimeout
+      timers.setTimeout = (ms, ...args) => wait(Math.ceil(ms / ${options.clockScale}), ...args)
+      syncBuiltinESMExports()
+    `)
+    args.push('--import', clock)
+  }
   const environment = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => name !== 'FOREMAN_CODE_MCP_TOKEN'))
-  const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [launcher],
-    { env: { ...environment, GRAPHQL_MCP_TOKEN: token }, stdio: 'pipe' })
+  const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [...args, launcher],
+    { env: { ...environment, GRAPHQL_MCP_TOKEN: token,
+      ...(options.claudeTimeoutMs ? { MCP_TOOL_TIMEOUT: String(options.claudeTimeoutMs) } : {}) }, stdio: 'pipe' })
   cleanup.push(() => { child.kill() })
   const replies = new Map<number, (message: BridgeReply) => void>()
   const lines: Array<{ id?: number }> = []
@@ -81,6 +108,32 @@ async function startBridge(endpoint: string) {
 
 const groupWait = (ticketId: string, waitSeconds: number) => ({ name: 'ci_get',
   arguments: { ticketId, waitUntil: 'group-terminal', waitSeconds, logTail: false } })
+
+it.each([
+  { claudeTimeoutMs: undefined, stall: false },
+  { claudeTimeoutMs: 120_000, stall: false },
+  { claudeTimeoutMs: undefined, stall: true },
+])('returns the running group before the client timeout ($claudeTimeoutMs, stalled=$stall)', async ({ claudeTimeoutMs, stall }) => {
+  const scale = 200
+  const timeoutMs = Math.min(APP_MCP_TIMEOUTS.tool_timeout_sec * 1000, claudeTimeoutMs ?? Infinity)
+  const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+    delayMs: stall && index > 0 ? timeoutMs / scale * 2 : 20, result: waitResult('still-running') }))
+  const bridge = await startBridge(fake.endpoint, { clockScale: scale, ...(claudeTimeoutMs ? { claudeTimeoutMs } : {}) })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const reply = await Promise.race([
+      bridge.request(24, 'tools/call', groupWait('ticket', 1800)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Client tool deadline reached')), timeoutMs / scale)
+      }),
+    ])
+    expect(reply.result).toEqual(waitResult('still-running'))
+    expect(fake.calls[0]!.waitSeconds).toBeLessThanOrEqual(timeoutMs * 0.9 / 1000)
+    expect(bridge.lines.filter(line => line.id === 24)).toHaveLength(1)
+  } finally {
+    clearTimeout(timer)
+  }
+})
 
 it('keeps one Agent tool call open across bounded chunks until the group settles', async () => {
   const fake = await fakeEndpoint(({ index }) => ({ status: 200, delayMs: 100,

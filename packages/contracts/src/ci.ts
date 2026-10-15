@@ -69,7 +69,7 @@ export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
-/** Longest ci_get wait budget; the managed launcher's native tool deadline is derived from it. */
+/** Longest requested ci_get wait budget; the bridge also caps each call below the client tool deadline. */
 export const CI_WAIT_MAX_SECONDS = 1800
 export const CiGetInputSchema = CiTicketInputSchema.extend({
   waitSeconds: z.number().min(0).max(CI_WAIT_MAX_SECONDS).optional().describe('Defaults to 0. With waitUntil, the whole '
@@ -77,7 +77,7 @@ export const CiGetInputSchema = CiTicketInputSchema.extend({
     + 'step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
   waitUntil: z.literal('group-terminal').optional().describe('Wait until every ticket of this ticket’s group is terminal '
     + 'and its test results are collected. Returns wait.status settled, or still-running with the ticket counts when the '
-    + 'budget ends; then call again with the same ticketId. Use one such call instead of polling.'),
+    + 'budget ends or the client tool deadline approaches; then call again with the same ticketId. Use one such call instead of polling.'),
   logTail: z.boolean().optional().describe('Defaults to true. Set false to omit the 32 KiB log tail while waiting; '
     + 'read logs once at the end with ci_logs_read.'),
   testStatus: CiTestStatusFilterSchema.optional().describe('Include the ticket’s structured test results, limited to '
