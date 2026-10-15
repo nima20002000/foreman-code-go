@@ -5,7 +5,8 @@ import type { AgentPlacementProducer } from './agentProducer.js'
 import { deriveDispatch, freezePlacement } from './binding.js'
 import { approvalFixture } from '../../../test/helpers/wave25ApprovalFixture.js'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
-import { assertRemoteExecutionAuthority } from './executionAuthority.js'
+import type pg from 'pg'
+import { assertRemoteExecutionAuthority, createExecutionAuthorityExtension } from './executionAuthority.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), installation: vi.fn(), principal: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -37,7 +38,15 @@ function fixture() {
     phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
     turnInput: { correlationId: 'execution:execution', promptDigest: digest, sessionMode: 'regular' },
     native: { sessionId: 'native-session', turnId: 'original-turn', processIdentityDigest: digest } }
+  let reads = 0
   const sql = { query: async (text: string) => {
+    reads++
+    if (text.startsWith('select i.record as dispatch')) return { rows: [{ dispatch: intent, transition: null,
+      placement, operation_id: intent.operationId, execution_id: intent.executionId, run_id: intent.runId,
+      node_id: intent.nodeId, binding_hash: intent.bindingHash, attempt_id: intent.attemptId,
+      authorization_principal_id: 'principal', workspace_id: 'workspace', workflow_id: 'workflow',
+      execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup, granted: state.grant,
+      connection: state.origin, receipt: state.receipt ? receipt : null, entered: true }], rowCount: 1 }
     if (text.startsWith('select r.record as run')) return { rows: state.reviewer ? [state.reviewer] : [],
       rowCount: state.reviewer ? 1 : 0 }
     if (text.startsWith('select 1 from review_jobs')) return { rows: state.reviewsPending ? [{}] : [],
@@ -58,7 +67,12 @@ function fixture() {
   ports.principal.mockResolvedValue({ id: 'principal' })
   const authorize = (action: 'start' | 'read' | 'control' | 'stop', authenticated = connection) =>
     assertRemoteExecutionAuthority(sql, locations, { version: 1, intent, placement, action }, authenticated, producer)
-  return { authorize, state, locations, pins, connection, intent, receipt }
+  const client = { query: sql.query, on() {}, removeListener() {}, release() {} }
+  const extension = createExecutionAuthorityExtension({ connect: async () => client } as unknown as pg.Pool,
+    locations, producer)
+  const request = (action: 'read' | 'control' = 'read') => extension.handle(
+    { version: 1, intent, placement, action }, { binding: connection } as Parameters<typeof extension.handle>[1])
+  return { authorize, state, locations, pins, connection, intent, receipt, request, reads: () => reads }
 }
 
 
@@ -202,5 +216,34 @@ describe('authenticated original execution reconnection', () => {
     await expect(f.authorize('stop', replacement)).resolves.toEqual({ cleanupOnly: true })
     f.state.grant = false
     await expect(f.authorize('read', replacement)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+})
+
+
+describe('remote execution authority reads', () => {
+  it('returns the original persisted authority with a bounded number of database reads', async () => {
+    const f = fixture()
+    const before = structuredClone(f.receipt)
+    const result = await f.request()
+    expect(result).toEqual({ payload: { version: 1, action: 'read', operationId: f.intent.operationId,
+      attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner } })
+    expect(f.receipt).toEqual(before)
+    // Includes transaction open and close plus two fresh authority snapshots.
+    expect(f.reads()).toBeLessThanOrEqual(4)
+  })
+
+  it('rejects a grant revoked between the initial read and the commit check', async () => {
+    const f = fixture()
+    f.pins.mockImplementationOnce(async () => { f.state.grant = false })
+    await expect(f.request()).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+
+  it('preserves cleanup-only reads without accepting revoked owner grants', async () => {
+    const f = fixture()
+    f.state.cleanup = true
+    expect(await f.request()).toMatchObject({ payload: { cleanupOnly: true } })
+    expect(f.pins).not.toHaveBeenCalled()
+    f.state.grant = false
+    await expect(f.request()).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 })
