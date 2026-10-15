@@ -57,6 +57,22 @@ function faultContinuation(base: Awaited<ReturnType<typeof currentOperatorIntegr
   })
 }
 
+async function readActiveRemoteRun(base: Awaited<ReturnType<typeof currentOperatorIntegration>>,
+  placements: Awaited<ReturnType<typeof mixedComputerPlacement>>, nodeId: string,
+  read: () => Promise<ReturnType<typeof SavedRunDetailsSchema.parse>>) {
+  const result = await readUntil(() => placements.reads.get(base.writer.principal, {
+    workspaceId: base.f.run.workspaceId, workflowId: base.f.run.workflowId, runId: base.f.run.id, nodeId,
+  }), value => value.readback.evidence === 'accepted' && value.readback.observations.some(observation =>
+    observation.phase === 'running' && typeof observation.native?.turnId === 'string'),
+  { timeoutMs: 4_000, minimumReadIntervalMs: 250, description: 'the persisted remote native turn' })
+  if (result.readback.evidence !== 'accepted') throw new Error('Expected an accepted remote placement')
+  const observation = result.readback.observations.find(value => value.phase === 'running')!
+  const details = await read()
+  expect(details.executions.find(execution => execution.id === observation.executionId))
+    .toMatchObject({ workflowNodeId: nodeId, state: 'running', nativeSessionId: observation.native!.sessionId })
+  return details
+}
+
 function faultWorkflowDefinition(options: { loop?: boolean }) {
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
   definition.version.definition.nodes = definition.version.definition.nodes.slice(0, 3)
@@ -237,13 +253,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         { timeoutMs: 4_000, minimumReadIntervalMs: 250, description: 'the initial graph entry completion' })
       },
       release() { releaseAffected = true; releaseSibling = true },
-      active: () => readUntil(readStartup, details => details.executions.some(execution =>
-        execution.workflowNodeId === affected.id && execution.state === 'running')
-        && details.activity.some(activity => activity.payload.nativeEventType === 'turn.started'
-          && details.executions.some(execution => execution.id === activity.harnessExecutionId
-            && execution.workflowNodeId === affected.id)),
-      { timeoutMs: 4_000, minimumReadIntervalMs: 250,
-        get description() { return `remote Agent turn admission: ${startupDescription}` } }),
+      active: () => readActiveRemoteRun(base, placements, affected.id, readStartup),
       async finished() {
         const details = await readUntil(read, value => value.run.executionState === 'completed'
           && value.cleanupPending === false,
