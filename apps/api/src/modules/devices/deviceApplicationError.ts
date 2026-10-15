@@ -65,7 +65,7 @@ const classes: Readonly<Record<string, FailureClass>> = {
   REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE: 'permanent',
   NATIVE_ARTIFACT_AUTHORITY_DENIED: 'permanent',
   NATIVE_ARTIFACT_CONTEXT_PENDING: 'transient',
-  WORKER_WORKFLOW_UNAVAILABLE: 'permanent',
+  WORKER_WORKFLOW_UNAVAILABLE: 'transient',
   HARNESS_INVENTORY_STALE: 'transient',
   HARNESS_QUALIFICATION_TARGET_CHANGED: 'transient',
   WORKER_EXECUTION_NOT_FOUND: 'permanent',

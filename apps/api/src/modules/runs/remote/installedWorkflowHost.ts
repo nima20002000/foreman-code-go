@@ -252,6 +252,8 @@ interface InstalledOperation {
   intent:DispatchIntent
   placement:AcceptedNodePlacement
   context:DeviceExtensionContext
+  /** Qualification follows the live link; the admission connection remains a saved fact. */
+  readonly connection:DeviceConnectionIdentity
   reader:QualificationReader
   capture:QualificationCapture
   scope:NativeProcessRecovery
@@ -411,7 +413,7 @@ class InstalledWorkflowHostRuntime {
     if (!resident.scope.launchId) return
     this.recovery.rememberEntry({ version: 1,
       ...(resident.placement.payload.kind === 'agent' && resident.placement.payload.accountBinding
-        ? { accountBinding: resident.placement.payload.accountBinding } : {}), intent: resident.intent, connection: connectionIdentity(resident.capture.binding),
+        ? { accountBinding: resident.placement.payload.accountBinding } : {}), intent: resident.intent, connection: resident.connection,
       owner: resident.scope.owner, initialLaunchId: resident.scope.launchId })
   }
 
@@ -483,7 +485,7 @@ class InstalledWorkflowHostRuntime {
         if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, owned.intent)
           || status.receipt.native?.sessionId !== owned.session.nativeSessionId
           || status.receipt.native?.processIdentityDigest !== owned.native.native.processIdentityDigest
-          || !isDeepStrictEqual(status.receipt.connection, connectionIdentity(owned.capture.binding))) {
+          || !isDeepStrictEqual(status.receipt.connection, owned.connection)) {
           unavailable('original_native_reconnection_conflict')
         }
         if (status.receipt.terminal ? !isDeepStrictEqual(observed, owned.physicalClosure) : observed.lifecycle !== 'active') {
@@ -547,7 +549,8 @@ class InstalledWorkflowHostRuntime {
         && savedHarness.accountId !== account?.accountId) unavailable('accepted_account_binding_missing')
       this.current(context.binding)
       if(this.operations.size>=1000)unavailable('operation_retention_full')
-      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,reader,capture,
+      owned={intent:structuredClone(intent),placement:structuredClone(placement),context,
+        connection:connectionIdentity(context.binding),reader,capture,
         scope:this.registry.scope(`execution:${intent.executionId}`),account,publications:new Map()}
       this.operations.set(intent.executionId,owned)
     }
@@ -781,7 +784,7 @@ class InstalledWorkflowHostRuntime {
         const state = await log.status(intent.operationId)
         const originalCapture = state.status === 'known' && state.receipt.native ? this.recovery.read(state.receipt) : undefined
         const captured = captureInstalledWorkflowNativeOwner(this.registry,
-          originalCapture?.connection ?? connectionIdentity(resident.capture.binding),
+          originalCapture?.connection ?? resident.connection,
           originalCapture?.intent ?? intent, session)
         if (resident.native && !isDeepStrictEqual(resident.native, captured)) unavailable('original_native_process_changed')
         resident.native ??= captured
@@ -802,7 +805,7 @@ class InstalledWorkflowHostRuntime {
           ...(resident.placement.payload.kind === 'agent' && resident.placement.payload.accountBinding
             ? { accountBinding: resident.placement.payload.accountBinding } : {}),
           intent: originalCapture?.intent ?? resident.intent,
-          connection: originalCapture?.connection ?? connectionIdentity(resident.capture.binding), native: resident.native.native,
+          connection: originalCapture?.connection ?? resident.connection, native: resident.native.native,
           session: resident.session, launch: RemoteWorkflowPhysicalReadoutSchema.shape.launch.parse(resident.native.launch),
           runtimeLeaf: resident.runtimeLeaf!, approvedRoots: ApprovedRootAllowlistSchema.parse(resident.runtimeRoots),
           source: RemoteWorkflowPhysicalReadoutSchema.shape.source.parse({
@@ -889,7 +892,7 @@ class InstalledWorkflowHostRuntime {
     const log = await this.journal()
     const state = await log.status(resident.intent.operationId)
     const receipt = state.status === 'known' ? state.receipt
-      : await log.accept(resident.intent, connectionIdentity(resident.capture.binding), randomUUID())
+      : await log.accept(resident.intent, resident.connection, randomUUID())
     if (receipt.native) {
       await this.recovery.reconcile(receipt, log, this.signal)
     } else if (receipt.entryAttempted) {
