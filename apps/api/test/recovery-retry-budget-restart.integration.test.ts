@@ -11,8 +11,8 @@ const cases = forms.flatMap(form =>
   (['graceful', 'crash'] as const).map(mode => ({ form, mode })))
 
 describeRetryBudget('finite technical retry budget: restart', () => {
-  it.each(cases)('$form: $mode restart retries the lost attempt but cannot reset the attempt limit', async ({ form, mode }) => {
-    // Attempt 2 is lost to the restart; attempt 3 is the last one the policy allows.
+  it.each(cases)('$form: $mode restart preserves the Agent failure budget across an infrastructure interruption', async ({ form, mode }) => {
+    // Attempt 2 is interrupted; attempts 1, 3 and 4 exhaust the three Agent failures.
     const f = await recoveryFixture(form, submission => submission.attempt === 2 ? 'durable_failure_gap' : 'retryable_failure')
     try {
       f.launch()
@@ -29,7 +29,7 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       const after = await executionRows(f), view = await readback(f)
       expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
       expect(view.record.cleanupPending).toBe(false)
-      expect(attempts(after)).toEqual([1, 2, 3]); sameSlot(after)
+      expect(attempts(after)).toEqual([1, 2, 3, 4]); sameSlot(after)
       const first = after.find((row) => row.execution.attempt === 1)!
       expect(first.execution).toEqual(before.find((row) => row.execution.attempt === 1)!.execution)
       await assertOriginalFailure(f, first.execution.id, true)
@@ -43,13 +43,15 @@ describeRetryBudget('finite technical retry budget: restart', () => {
         execution: { id: interruptedId, runId: f.base.f.run.id, attempt: 2 },
         durableGeneration: expect.stringMatching(/^[1-9][0-9]*$/),
       })
-      const final = after.find((row) => row.execution.attempt === 3)!
-      await assertOriginalFailure(f, final.execution.id, true)
+      const failures = after.filter(row => row.execution.id !== interruptedId)
+      expect(failures).toHaveLength(3)
+      for (const failure of failures) await assertOriginalFailure(f, failure.execution.id, true)
+      const final = after.find((row) => row.execution.attempt === 4)!
       expect(final.result_json).toBeNull()
-      // Further recovery ticks cannot reset the attempt counter or start a fourth attempt.
+      // Further recovery ticks cannot reset the failure budget or start a fifth attempt.
       for (let tick = 0; tick < 3; tick++) await f.runtime.engine.reconcile((error) => f.errors.push(error))
       expect(await readback(f)).toEqual(view)
-      expect(f.provider.counts.starts).toBe(3); expect(f.provider.counts.sessions).toBe(3)
+      expect(f.provider.counts.starts).toBe(4); expect(f.provider.counts.sessions).toBe(4)
       expect(f.provider.counts.attaches).toBe(0)
       expect(await occurrences(f)).toHaveLength(form === 'repeat' ? 1 : 0)
       expect(f.shutdownErrors).toEqual([])
