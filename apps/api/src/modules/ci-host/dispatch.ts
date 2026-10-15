@@ -37,7 +37,7 @@ export async function releaseCiDispatch(sql: SqlQuery, run: CiRunRecord, compute
     startedAt: null, finishedAt: null,
     dispatchHostKey: options.clearRetry ? undefined : run.dispatchHostKey ?? computer.key,
     dispatchAttempts: options.clearRetry ? undefined : run.dispatchAttempts ?? 1,
-    dispatchRequest: undefined, dispatchedAt: undefined, message: sanitizeCiText(message).slice(0, 2000) })
+    dispatchRequest: undefined, dispatchedAt: undefined, ...ciMessages(run, sanitizeCiText(message)) })
   const saved = await sql.query(`update ci_runs set state=$2, host_key=null, record=$4::jsonb
     where id=$1 and state='starting' and host_key=$3 and record=$5::jsonb`,
   [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])

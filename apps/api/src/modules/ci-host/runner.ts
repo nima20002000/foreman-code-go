@@ -373,7 +373,10 @@ export class HostCiRunner {
 
   private async reserveRun(request: StartRequest): Promise<RunMeta | CiHostRun> {
     const directory = this.runDirectory(request.runId)
-    if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
+    if (existsSync(join(directory, 'meta.json'))) {
+      const existing = await this.refresh(request.runId)
+      if (existing.state !== 'queued') return existing
+    }
     if (existsSync(join(directory, 'cancel-requested'))) return this.canceledBeforeStart(request.runId)
     this.startingRun = { runId: request.runId, state: 'starting', step: 'dispatch',
       startedAt: this.ports.now().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null }
@@ -448,6 +451,12 @@ export class HostCiRunner {
         return true
       } catch (error) {
         const current = await this.readMeta(meta.runId)
+        if (!current.cancellationRequested && error instanceof DomainError && error.code === 'CI_HOST_BUSY') {
+          await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
+            message: error.message })
+          this.activeRunRepositories.delete(meta.runId)
+          throw error
+        }
         await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null,
           error instanceof Error ? error.message : String(error))
         if (current.cancellationRequested) return false
@@ -847,7 +856,7 @@ export class HostCiRunner {
 
   private async finish(runId: string, state: CiHostRun['state'], exitCode: number | null, message: string | null) {
     const meta = await this.readMeta(runId)
-    if (!['starting', 'running'].includes(meta.state)) return
+    if (!['queued', 'starting', 'running'].includes(meta.state)) return
     const outcome = meta.cancellationRequested ? 'canceled' : state
     if (outcome === 'failed' || outcome === 'lost') this.invalidateReadiness()
     await this.writeMeta({ ...meta, state: outcome, exitCode, message, finishedAt: this.ports.now().toISOString() })
@@ -1022,7 +1031,7 @@ export class HostCiRunner {
       if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN') return null
       throw error
     })
-    if (!meta || ['starting', 'running'].includes(meta.state)) {
+    if (!meta || ['queued', 'starting', 'running'].includes(meta.state)) {
       const directory = this.runDirectory(runId)
       await mkdir(directory, { recursive: true, mode: 0o700 })
       try {
@@ -1032,6 +1041,9 @@ export class HostCiRunner {
         // The first marker keeps the cancellation timestamp stable on retries.
       }
       if (!meta) return this.refresh(runId)
+      if (meta.state === 'queued') {
+        await withHostCiRunLock(directory, () => this.finish(runId, 'canceled', null, 'Canceled before execution.'))
+      }
       await this.preparing.get(runId)
     }
     return this.refresh(runId)
