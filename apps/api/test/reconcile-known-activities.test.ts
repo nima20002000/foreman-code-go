@@ -1,6 +1,5 @@
 import type { ReadObservation } from '@foreman-code/contracts'
 import { expect, it, vi } from 'vitest'
-import type { ReadObservation } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { PostgresOperatorActivityRepository } from '../src/modules/conversations/operatorActivityRepository.js'
 import { reconcileKnownActivities } from '../src/modules/conversations/reconcileKnownActivities.js'

@@ -543,7 +543,7 @@ export class ApiClient {
     return this.request('/api/operator/conversations', ListOperatorConversationsResponseSchema, options)
   }
 
-  createOperatorConversation(input: z.infer<typeof CreateOperatorConversationRequestSchema> = {}, options?: RequestOptions) {
+  createOperatorConversation(input: z.input<typeof CreateOperatorConversationRequestSchema> = {}, options?: RequestOptions) {
     const request = parseRequest(CreateOperatorConversationRequestSchema, input)
     return this.request('/api/operator/conversations', CreateOperatorConversationResponseSchema, { ...options, method: 'POST', body: request })
   }
