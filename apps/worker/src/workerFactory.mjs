@@ -77,7 +77,7 @@ export async function initializeInstalledNativeRuntime(stateDirectory) {
 
 // Only supplied, actual domain registrations enter the authenticated transport.
 // The package never manufactures dispatch handlers or another workflow authority.
-export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync, readBootId }) {
+export async function startConfiguredWorker({ stateDirectory, extensions = [], executionDomains, rsync }) {
   const manifest = await prepareWorkerState(stateDirectory);
   stateDirectory = await realpath(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
@@ -97,7 +97,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     bindingDrains.add(task);
     void task.then(() => bindingDrains.delete(task), error => { bindingDrains.delete(task); bindingFailures.push(error); });
   };
-  const runtime = await startWorker({ stateDirectory, appVersion: manifest.version, ...(readBootId ? { readBootId } : {}),
+  const runtime = await startWorker({ stateDirectory, appVersion: manifest.version,
     loadIdentity: loadOrCreateWorkerIdentity, beforeUnlock: async () => {
     startupLifetime.abort(new Error('Worker stopped during CI smoke.'));
     const updaterClosing = updater?.close();

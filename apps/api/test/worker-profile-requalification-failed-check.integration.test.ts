@@ -6,8 +6,9 @@ import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { HarnessQualificationListSchema } from '@foreman-code/contracts/harness-qualification'
-import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, reportProfileCheckState } from './helpers/workerProfileRequalification.js'
+import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { installationUpdateFixture } from './helpers/harnessInstallationUpdate.js'
+import { latestEvidence } from './helpers/workerProfileRequalification.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 const execute = promisify(execFile)
@@ -28,10 +29,8 @@ describe('automatic Worker profile qualification', () => {
     }
   }, 120_000)
 
-  it('persists a failed automatic check and refuses Start without borrowing the previous generation', async () => {
-    const fixture = await remoteReviewProduction({
-      workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
-    })
+  it('persists a failed automatic check and refuses Start without borrowing the previous installation', async () => {
+    const fixture = await installationUpdateFixture({ workflow: 'sequential' })
     try {
       const before = await latestEvidence(fixture)
       expect(before).toHaveLength(fixture.profiles.length)
@@ -52,7 +51,7 @@ describe('automatic Worker profile qualification', () => {
         waitForRemoteReview(async () => {
           try { await fixture.start() } catch (error) { return error }
           throw new Error('A failed profile check admitted a Run.')
-        }, error => error instanceof Error && error.message.includes('HARNESS_PROFILE_UNAVAILABLE'),
+        }, error => error instanceof Error && error.message.includes(evidence[0]!.failure!.code),
         'Run refusal after the failed automatic check'),
         fixture.value('harness_qualifications_list', {}).then(result => HarnessQualificationListSchema.parse(result)),
       ])
@@ -70,9 +69,6 @@ describe('automatic Worker profile qualification', () => {
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
       expect(qualifications.qualifications.some(record => record.status === 'failed'
         && evidence.some(proof => proof.checkedAt === record.checkedAt))).toBe(true)
-    } catch (error) {
-      await reportProfileCheckState(fixture, 'Failed automatic check state', error)
-      throw error
     } finally { await fixture.close() }
   }, 240_000)
 })

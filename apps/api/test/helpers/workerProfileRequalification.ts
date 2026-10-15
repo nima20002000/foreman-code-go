@@ -72,20 +72,3 @@ export async function startWhenReady(fixture: Fixture) {
     }
   }, result => result !== undefined, 'Run admission after automatic profile checks')
 }
-
-/** Prints the persisted and live facts behind a profile-check timeout; the CI log is the only evidence of it. */
-export async function reportProfileCheckState(fixture: Fixture, label: string, error: unknown) {
-  const audit = await fixture.db.pool.query(`select outcome,details from management_audit
-    where source='system' and action='harness.instance.check' order by sequence`)
-  const inventory = await fixture.inventory().catch((reason: unknown) => String(reason))
-  console.error(label, { error: String(error), audit: audit.rows,
-    evidence: (await latestEvidence(fixture)).map(proof => ({ generation: proof.connectionGeneration,
-      qualified: proof.qualified, failure: proof.failure, checkedAt: proof.checkedAt })),
-    inventory: typeof inventory === 'string' ? inventory : { connection: inventory.hostMetadata?.connection,
-      installations: inventory.installations.map(installation => ({ driver: installation.driverId,
-        installed: installation.installed, qualified: installation.qualified,
-        generation: installation.connectionGeneration })) },
-    calls: (await fixture.provider.calls()).slice(-12).map(call => ({ method: call.method,
-      directory: call.workingDirectory, suite: call.qualificationSuite })),
-    failures: fixture.failures() })
-}

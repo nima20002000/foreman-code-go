@@ -9,10 +9,7 @@ if (process.argv[4] === 'initialize') {
   await worker.initializeInstalledNativeRuntime(stateDirectory)
   process.exit(0)
 }
-// A set boot identity stands for a restarted computer; otherwise the Worker reads the real boot.
-const bootId = process.env.REMOTE_REVIEW_WORKER_BOOT_ID
-const runtime = await worker.startConfiguredWorker({ stateDirectory,
-  ...(bootId ? { readBootId: async () => bootId } : {}) })
+const runtime = await worker.startConfiguredWorker({ stateDirectory })
 const { readWorkerStatus } = await import(pathToFileURL(join(releaseDirectory, 'src', 'runtime.mjs')).href)
 const timer = setInterval(() => {
   void readWorkerStatus(stateDirectory).then(view => process.send?.({ kind: 'status', view }))
