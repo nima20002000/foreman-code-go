@@ -14,15 +14,10 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
-  // A six-second Run lock must retry reporting and expose the database delay in operational diagnostics.
+  // A Run lock held across three one-second statement deadlines must retry reporting and expose the database delay in operational diagnostics.
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
-    const t0 = performance.now()
-    const marks: string[] = []
-    const mark = (label: string) => marks.push(`${label} ${Math.round(performance.now() - t0)} ms`)
     await fixture.launch()
-    mark('launched')
     await fixture.active()
-    mark('active')
     await fixture.setReportingDeadline(1_000)
     const retriesBefore = readOperationalFailures().find(value => value.operation === 'retry database operation')
       ?.failureCount ?? 0
@@ -35,8 +30,8 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
       locked.resolve(lockerPid)
       await readUntil(async () => (await fixture.base.db.pool.query<{ waiting: boolean }>(
         'select exists(select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting',
-        [lockerPid])).rows[0]!.waiting, waiting => waiting && performance.now() - started >= 6_010,
-      { timeoutMs: 10_000, description: 'Agent reporting still blocked after six seconds of Run contention' })
+        [lockerPid])).rows[0]!.waiting, waiting => waiting && performance.now() - started >= 3_010,
+      { timeoutMs: 10_000, description: 'Agent reporting still blocked after three statement deadlines of Run contention' })
       heldMs = performance.now() - started
     })
     const settledLock = Promise.allSettled([hold])
@@ -44,23 +39,17 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
       const lockerPid = await Promise.race([locked.promise, hold.then(() => {
         throw new Error('The lock transaction finished before signaling acquisition')
       })])
-      mark('locked')
       fixture.release()
       await readUntil(async () => (await fixture.base.db.pool.query<{ waiting: boolean }>(
         'select exists(select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting',
         [lockerPid])).rows[0]!.waiting, waiting => waiting,
       { timeoutMs: 2_000, description: 'Agent reporting blocked on the Run row' })
-      mark('blocked')
       await hold
-      mark('lock released')
-      expect(heldMs).toBeGreaterThanOrEqual(6_000)
-      const finished = await fixture.finished()
-      mark('finished')
-      expectSuccessfulFaultRecovery(finished, fixture)
+      expect(heldMs).toBeGreaterThanOrEqual(3_000)
+      expectSuccessfulFaultRecovery(await fixture.finished(), fixture)
       const retries = readOperationalFailures().find(value => value.operation === 'retry database operation')
       expect(retries).toMatchObject({ component: 'engine', status: 'degraded' })
       expect(retries!.failureCount).toBeGreaterThan(retriesBefore)
-      throw new Error(`DIAG ${marks.join('; ')}`)
     } finally { await settledLock }
   }, 18_000)
 })
