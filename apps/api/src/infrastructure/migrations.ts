@@ -971,6 +971,8 @@ export function assertMigrationVersions(entries: readonly { version: number }[])
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
   assertMigrationVersions(migrations)
   return withTransaction(pool, async (client) => {
+    // One-time migrations can exceed the pool's request deadline.
+    await client.query('set local statement_timeout = 0')
     const schema = (await client.query<{ schema: string | null }>('select current_schema() as schema')).rows[0]?.schema
     if (!schema) throw new Error('Application migrations require a current PostgreSQL schema.')
     // Independent test schemas can migrate together; retain the established
