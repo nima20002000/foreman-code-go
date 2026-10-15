@@ -2,8 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
-import { isDatabasePoolTimeout } from '../../infrastructure/databaseReadRetry.js'
-import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabasePoolTimeout, isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
 
 /** Attempts per work activation, including the first. At-least-once: an Agent
  * turn may run again after an infrastructure failure; only results are deduped. */

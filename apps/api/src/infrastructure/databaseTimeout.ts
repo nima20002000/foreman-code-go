@@ -1,21 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../modules/diagnostics/logger.js'
 
-export function isDatabaseTimeout(error: unknown): boolean {
-  const seen = new Set<object>()
-  while (error && typeof error === 'object' && !seen.has(error)) {
-    seen.add(error)
-    const code = 'code' in error ? error.code : undefined
-    // 57014 also covers explicit cancellation; only a statement timeout is transient.
-    if (code === '57014') return error instanceof Error && /time(d)? ?out/i.test(error.message)
-    if (code === 'DATABASE_READ_TIMEOUT') return true
-    if (code !== undefined && code !== 'GRAPH_TRANSACTION_FAILED') return false
-    if (error instanceof Error && error.message === 'Query read timeout') return true
-    if (error instanceof Error && error.message === 'Connection terminated due to connection timeout') return true
-    error = 'cause' in error ? error.cause : undefined
-  }
-  return false
-}
+import { isDatabaseTimeout } from './transientErrors.js'
+export { isDatabaseTimeout }
 
 export interface DatabaseRetryOptions {
   signal?: AbortSignal | undefined
