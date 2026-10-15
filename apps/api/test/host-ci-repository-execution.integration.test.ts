@@ -39,7 +39,7 @@ it.each([
 })
 
 it.each([0, 1250])(
-  'runs generic integration once despite requested partitions and falls back from an unconfigured cloud mirror after a %i ms launch delay',
+  'runs generic integration once on a build computer when no cloud mirror is configured after a %i ms launch delay',
   async launchDelayMs => {
   const repository = await genericCiRepository({ integration: true, cloud: true, beforeLaunch: async () => {
     // eslint-disable-next-line no-restricted-syntax
@@ -50,16 +50,19 @@ it.each([0, 1250])(
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run',
       { suite: 'integration', partitions: 4, commandId: 'generic-integration' }))
     expect(started.partitions).toBeUndefined()
-    await f.ci.dispatch()
+    await f.value(f.operator, 'ci_computers_list', {})
     await f.ci.dispatch()
     expect((await repository.waitForCompletion(started.ticketId)).code).toBe(0)
     await f.ci.dispatch()
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    }))
     expect(read.run).toMatchObject({ part: null, partition: null, state: 'passed',
       computer: { hostRef: { kind: 'main' } } })
     expect(read.logTail).toContain('npm run integration')
     expect(read.logTail?.split('\n').filter(line => line === 'npm run integration')).toHaveLength(1)
     expect(read.logTail).toContain('fixture integration passed')
+    expect(repository.cloudAttempts).toEqual([])
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
       [read.run.groupId])).rows.map(row => row.record)).toEqual([read.run])
   } finally {
@@ -77,12 +80,6 @@ it.each([
     // eslint-disable-next-line no-restricted-syntax
     await new Promise(resolve => setTimeout(resolve, launchDelayMs))
   } })
-  const computers = repository.endpoint.computers.bind(repository.endpoint)
-  // Make the unconfigured mirror the only candidate until fallback has been exercised.
-  repository.endpoint.computers = async () => {
-    const available = await computers()
-    return repository.cloudAttempts.length ? available : available.filter(computer => computer.hostRef.kind === 'cloud')
-  }
   const f = await fixture({ repositoryRunner: repository })
   try {
     const input = { suite, scope: 'affected', files: [], commit: repository.commit, commandId: 'generic-affected' }
@@ -96,17 +93,18 @@ it.each([
     const response = await f.app.inject({ method: 'POST', url, headers, payload: input })
     expect(response.statusCode).toBe(200)
     const started = CiRunOutputSchema.parse(response.json())
-    await f.ci.dispatch()
+    await f.value(f.operator, 'ci_computers_list', {})
     await f.ci.dispatch()
     expect((await repository.waitForCompletion(started.ticketId)).code).toBe(0)
     await f.ci.dispatch()
+    await f.value(f.operator, 'ci_get', { ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10 })
     const read = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}`, headers })
     expect(read.statusCode).toBe(200)
     const result = CiGetOutputSchema.parse(read.json())
     expect(result.run).toMatchObject({ state: 'passed', part: null, partition: null, scope: 'full', files: [],
       computer: { hostRef: { kind: 'main' } } })
     expect(result.logTail).toContain(`fixture ${suite} passed`)
-    expect(repository.cloudAttempts).toContain(started.ticketId)
+    expect(repository.cloudAttempts).toEqual([])
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId })).run)
       .toEqual(result.run)
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
