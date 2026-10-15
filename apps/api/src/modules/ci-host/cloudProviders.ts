@@ -169,7 +169,7 @@ export class GitHubActionsProvider implements CloudProvider {
   readonly id = 'github' as const
   readonly label = 'GitHub Actions'
   readonly userSystemd = { supported: true, reason: null }
-  readonly slots = 16
+  readonly slots = 20
   readonly cpus = 4
   readonly memoryBytes = 16 * 2 ** 30
   readonly loginHint = 'Log in to GitHub on Main (gh auth login) to run CI on GitHub Actions.'
@@ -312,13 +312,14 @@ function circleConclusion(outcome: string | undefined): 'success' | 'failure' | 
 }
 
 /** Large Linux machines (4 vCPUs, 15 GB); the free plan runs 30 jobs at once and open-source Linux builds are free. */
+/** The free plan runs 30 jobs at once. */
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
   readonly label = 'CircleCI'
   readonly userSystemd = { supported: true, reason: null }
   /** CircleCI rejects pipeline parameter values longer than 512 characters. */
   readonly parameterLimit = 500
-  readonly slots = 28
+  readonly slots = 30
   readonly cpus = 4
   readonly memoryBytes = 15 * 2 ** 30
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
