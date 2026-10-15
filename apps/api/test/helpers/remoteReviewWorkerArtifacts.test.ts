@@ -38,6 +38,7 @@ it('makes the installed review Worker bundle ready for new work using its publis
     })
     const readiness = await readWorkerBundleReadiness(options, {
       currentVersion: manifest.version,
+      targetVersion: null,
       target: manifest.target,
       manifestSha256,
       contentSha256,
