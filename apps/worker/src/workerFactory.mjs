@@ -120,7 +120,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         && !update.restart?.ciSmoke;
       updater = await new WorkerUpdater({ stateDirectory, version: manifest.version, manifestSha256,
         workerInstallationId: pairing.workerInstallationId, releaseDirectory, facts, assertStateOwnership,
-        connection: () => connection, drain: () => installed.drainForUpdate(),
+        connection: () => connection, drain: signal => installed.drainForUpdate(signal),
         resume: () => installed.resumeAfterUpdate(),
         reportError: error => process.stderr.write(`Worker update: ${error.message ?? error.code ?? 'worker_update_failed'}\n`),
         log: (msg, fields) => process.stdout.write(`${JSON.stringify({ level: 'info', time: new Date().toISOString(),

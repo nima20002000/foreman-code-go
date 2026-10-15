@@ -15,10 +15,13 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-async function computer({ prepareDatabase = false, beforeLaunch, afterRunning }: {
+async function computer({ prepareDatabase = false, beforeLaunch, afterRunning, expireUnit = false,
+  expireInstallLock = false }: {
   prepareDatabase?: boolean
   beforeLaunch?: () => Promise<void>
   afterRunning?: () => Promise<void>
+  expireUnit?: boolean
+  expireInstallLock?: boolean
 } = {}) {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
     ?? join(homedir(), '.cache/foreman-code/tests')
@@ -31,6 +34,9 @@ async function computer({ prepareDatabase = false, beforeLaunch, afterRunning }:
   const offlineFailure = join(root, 'offline-failure')
   await mkdir(origin)
   await mkdir(bin)
+  if (expireInstallLock) {
+    await writeFile(join(bin, 'flock'), '#!/bin/sh\n[ "$1" = "-s" ] && exit 0\nexit 1\n', { mode: 0o700 })
+  }
   await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture' } }))
   await writeFile(join(origin, 'pnpm-lock.yaml'), 'fixture-lock-one')
   if (prepareDatabase) {
@@ -92,6 +98,20 @@ if (args[1] === 'db:up') {
         const env = Object.fromEntries(args.filter(arg => arg.startsWith('--setenv='))
           .map(arg => arg.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
         const script = args.at(-1)!
+        if (expireUnit) {
+          starts.get(script)!.resolve()
+          launched.set(script, { cwd, done: Promise.resolve() })
+          const runtime = args.find(arg => arg.startsWith('--property=RuntimeMaxSec='))
+          expect(Number(runtime?.split('=').at(-1))).toBeGreaterThan(0)
+          expect(Number(runtime?.split('=').at(-1))).toBeLessThanOrEqual(3 * 60 * 60)
+          const stop = args.find(arg => arg.startsWith('--property=ExecStopPost='))
+          expect(stop).toBeDefined()
+          const done = system.run('/bin/bash', ['-c', stop!.slice('--property=ExecStopPost='.length)],
+            { cwd, env: { ...env, SERVICE_RESULT: 'timeout' } })
+          launched.set(script, { cwd, done })
+          starts.get(script)!.resolve()
+          return { code: 0, stdout: '', stderr: '' }
+        }
         launched.set(script, { cwd, done: system.run('/bin/bash', [script], { cwd, env }) })
         starts.get(script)!.resolve()
         return { code: 0, stdout: '', stderr: '' }
@@ -129,10 +149,32 @@ if (args[1] === 'db:up') {
   const removeDependencies = () => rm(join(slot, 'node_modules'), { recursive: true, force: true })
   // A checkout whose git link is broken cannot be reset to another commit.
   const breakCheckout = () => writeFile(join(slot, '.git'), 'gitdir: missing\n')
-  return { run, commands, origin, git, failOffline, removeDependencies, breakCheckout, checkout: (...args: string[]) => execFileSync('git', args, {
+  return { run, commands, origin, git, failOffline, removeDependencies, breakCheckout,
+    readRetained: async () => {
+      const retained = new HostCiRunner(join(root, 'runner'), ports, environment)
+      try { return await retained.handle({ operation: 'status' }) }
+      finally { await retained.beginDrain() }
+    }, checkout: (...args: string[]) => execFileSync('git', args, {
     cwd: join(root, 'runner/git/example/project'), env: environment, encoding: 'utf8',
   }).trim() }
 }
+
+it('bounds the entire unit and retains a timeout failure after the worker restarts', async () => {
+  const fixture = await computer({ expireUnit: true, prepareDatabase: true })
+  await expect(fixture.run()).resolves.toMatchObject({ run: {
+    state: 'failed', exitCode: 124, message: expect.stringContaining('CI_UNIT_DEADLINE_EXCEEDED'),
+  } })
+  await expect(fixture.readRetained()).resolves.toMatchObject({ runs: [{
+    state: 'failed', exitCode: 124, message: expect.stringContaining('CI_UNIT_DEADLINE_EXCEEDED'),
+  }] })
+})
+
+it('persists the reason when a shared installation lock cannot be acquired before its deadline', async () => {
+  const fixture = await computer({ expireInstallLock: true })
+  await expect(fixture.run()).resolves.toMatchObject({ run: {
+    state: 'failed', exitCode: 124, message: expect.stringContaining('CI_INSTALL_LOCK_DEADLINE_EXCEEDED'),
+  } })
+})
 
 it('warms once, installs offline on later jobs, and keeps the store private from suite mutations', async () => {
   const fixture = await computer()

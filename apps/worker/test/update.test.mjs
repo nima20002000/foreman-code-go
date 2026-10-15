@@ -26,10 +26,16 @@ before(async () => {
   bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-update-module-'));
   const output = join(bundleDirectory, 'drain.mjs');
   const domains = new URL('../../../apps/api/src/modules/devices/installedWorkerDomains.ts', import.meta.url);
+  const contracts = JSON.parse(await readFile(new URL('../../../packages/contracts/package.json', import.meta.url)));
+  const alias = Object.fromEntries(Object.entries(contracts.exports).map(([name, entry]) => [
+    name === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts${name.slice(1)}`,
+    fileURLToPath(new URL(`../../../packages/contracts/${entry.import.replace('./dist/', 'src/').replace(/\.js$/, '.ts')}`,
+      import.meta.url)),
+  ]));
   await build({ stdin: {
     contents: `export { createWorkerRuntimeDrain } from ${JSON.stringify(fileURLToPath(domains))};`,
     resolveDir: fileURLToPath(new URL('../../../', import.meta.url)),
-  }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['sharp'],
+  }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['sharp'], alias,
   banner: { js: "import { createRequire as testCreateRequire } from 'node:module'; const require = testCreateRequire(import.meta.url);" } });
   ({ createWorkerRuntimeDrain } = await import(pathToFileURL(output).href));
 });
@@ -137,6 +143,38 @@ async function until(predicate) {
   }
   throw new Error('Worker update did not reach the expected state.');
 }
+
+test('a stalled update attempt persists its deadline, resumes work, and can retry', async t => {
+  const f = await fixture(t);
+  let releaseDrain;
+  const blocked = new Promise(resolve => { releaseDrain = resolve; });
+  let resumed = 0;
+  let installs = 0;
+  let restarted = 0;
+  let stall = true;
+  const updater = await new WorkerUpdater({ ...f.options, attemptTimeoutMs: 150,
+    drain: () => stall ? blocked : Promise.resolve(), resume: () => { resumed++; },
+    stage: async options => { installs++; return { directory: options.artifact }; },
+    launchSupervisor: async () => { restarted++; } }).initialize();
+  t.after(async () => { releaseDrain(); await updater.close(); });
+  const attempt = updater.start().then(() => 'completed', error => error);
+  await until(async () => (await updater.status()).state === 'draining');
+  const outcome = await Promise.race([attempt, wait(300).then(() => 'still draining')]);
+  assert.equal(outcome.code, 'worker_update_deadline_exceeded');
+  const record = await readUpdateRecord(f.stateDirectory);
+  assert.equal(record.status.state, 'failed');
+  assert.match(record.status.lastError, /draining/);
+  assert.equal(record.failureCode, 'worker_update_deadline_exceeded');
+  assert.equal(resumed, 1);
+  releaseDrain();
+  await attempt;
+  assert.equal(installs, 0);
+  assert.equal(restarted, 0);
+  stall = false;
+  await updater.start();
+  assert.equal(installs, 1);
+  assert.equal(restarted, 1);
+});
 
 test('Worker status advertises the running manifest even after a failed target update', async t => {
   const f = await fixture(t);
@@ -504,11 +542,12 @@ test('runtime drain fences workflow and Job admission while allowing status read
     drainMaintenance: async () => { drained.push('maintenance'); },
     quiescent: async () => true });
   const completion = drain.run();
-  for (const method of ['prepare', 'start-turn', 'job-dispatch']) {
+  for (const method of ['prepare', 'job-dispatch']) {
     assert.throws(() => drain.assertAdmission('execution-v1', { method }),
       { code: 'WORKER_RUNTIME_DRAINING' });
   }
   assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'status' }));
+  assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'start-turn' }));
   await completion;
   assert.deepEqual(drained, ['jobs', 'qualifications', 'maintenance']);
   assert.throws(() => drain.assertAdmission('execution-v1', { method: 'prepare' }),

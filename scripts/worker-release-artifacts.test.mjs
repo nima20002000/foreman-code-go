@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -7,10 +7,67 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
-  readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
+  readCommittedWorkerTargets, workerPublicationServiceTemplate } from './worker-release-artifacts.mjs'
+import { WorkerArtifactIndexSchema } from '../packages/contracts/src/workerUpdate.ts'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
+
+test('a hung publication command persists its timeout and a retry time, then recovers', async t => {
+  const f = await fixture(t)
+  await buildWorkerReleaseArtifacts(f)
+  const bin = join(f.repository, 'bin')
+  await mkdir(bin)
+  await writeFile(join(bin, 'gh'), `#!${process.execPath}
+process.on('SIGTERM', () => {})
+require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(
+    `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(join(f.repository, 'orphan'))}, 'still running'), 400); setTimeout(() => process.exit(0), 800);`
+  )}], { stdio: 'inherit' })
+setTimeout(() => process.exit(9), 800)
+setInterval(() => {}, 100)
+`, { mode: 0o700 })
+  const timers = 'const original = globalThis.setTimeout; globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms >= 1000 ? 100 : ms, ...args);'
+  const child = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(timers)}`,
+    new URL('./worker-release-artifacts.mjs', import.meta.url).pathname, 'publish', f.directory,
+    'example/worker', f.commit], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: 'ignore' })
+  t.after(() => child.kill('SIGKILL'))
+  assert.equal(await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  }), 1)
+  const retained = WorkerArtifactIndexSchema.parse(JSON.parse(await readFile(join(f.directory, 'index.json'))))
+  assert.equal(retained.publication.state, 'failed')
+  assert.match(retained.publication.lastError, /WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED/)
+  assert.ok(Date.parse(retained.publication.nextRetryAt) > Date.now())
+  assert.equal(retained.github, undefined)
+  await assert.rejects(stat(join(f.repository, 'orphan')), { code: 'ENOENT' })
+  const github = { repository: 'example/worker', tag: `worker-${f.commit}` }
+  const recovered = await publishInstalledWorkerArtifacts({ directory: f.directory,
+    repositoryName: 'example/worker', commit: f.commit, run: f.run, publish: async () => github })
+  assert.deepEqual(recovered.github, github)
+  assert.equal(JSON.parse(await readFile(join(f.directory, 'index.json'))).publication.state, 'published')
+})
+
+test('publication unit timeouts retain a failure and restart after a bounded delay', async t => {
+  const f = await fixture(t)
+  await buildWorkerReleaseArtifacts(f)
+  const unit = workerPublicationServiceTemplate()
+  const runtime = Number(/^RuntimeMaxSec=(\d+)$/m.exec(unit)?.[1])
+  assert.ok(runtime > 0 && runtime <= 1800)
+  assert.match(unit, /^TimeoutStopSec=\d+$/m)
+  assert.match(unit, /^Restart=on-failure$/m)
+  assert.match(unit, /^RestartSec=60$/m)
+  const child = spawn(process.execPath, [new URL('./worker-release-artifacts.mjs', import.meta.url).pathname,
+    'stopped', f.repository], { env: { ...process.env, SERVICE_RESULT: 'timeout' }, stdio: 'ignore' })
+  assert.equal(await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', resolve)
+  }), 0)
+  const retained = WorkerArtifactIndexSchema.parse(JSON.parse(await readFile(join(f.directory, 'index.json'))))
+  assert.equal(retained.publication.state, 'failed')
+  assert.match(retained.publication.lastError, /DEADLINE_EXCEEDED/)
+  assert.ok(Date.parse(retained.publication.nextRetryAt) > Date.now())
+})
 
 test('does not publish the target until GitHub assets can be downloaded and verified', async t => {
   const f = await fixture(t)
