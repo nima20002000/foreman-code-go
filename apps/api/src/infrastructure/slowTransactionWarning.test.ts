@@ -38,7 +38,8 @@ describe('slow transaction warning', () => {
     expect(fields.betweenQueriesMs).toBeGreaterThanOrEqual(1_000)
     expect(fields.largestGapMs).toBeGreaterThanOrEqual(1_000)
     expect(fields.queryMs).toBeLessThan(fields.betweenQueriesMs)
-    expect(Number(fields.queries)).toBe(2)
+    // begin and commit are statements of the transaction too
+    expect(Number(fields.queries)).toBe(4)
   })
 
   it('reports a slow Run graph transaction including its commit checks', async () => {
@@ -55,7 +56,8 @@ describe('slow transaction warning', () => {
     expect(fields.caller).toEqual(expect.any(String))
     expect(fields.totalMs).toBeGreaterThanOrEqual(1_000)
     expect(fields.largestGapMs).toBeGreaterThanOrEqual(1_000)
-    expect(Number(fields.queries)).toBe(2)
+    // begin and commit are statements of the transaction too
+    expect(Number(fields.queries)).toBe(4)
   })
 
   it('stays quiet for a short transaction', async () => {

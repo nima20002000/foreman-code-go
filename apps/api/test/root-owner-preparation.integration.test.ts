@@ -127,6 +127,14 @@ describe.runIf(postgresEnabled)('Workspace root sharing and execution preparatio
       expect(execution).toMatchObject({ state: 'completed', result })
       expect(execution.nativeSessionId).toBeUndefined()
       expect(prepare).toHaveBeenCalledTimes(1)
+      // Cleanup is recorded after the Run settles; read the pages only once the Run's history is complete.
+      await expect.poll(async () => {
+        const settled = await f.client.callTool({ name: 'run_activities_get_v1', arguments: {
+          workspaceId: f.input.workspaceId, runId, limit: 100,
+        } })
+        return RunActivitiesPageSchema.parse(decodeMcpToolResult(settled)).items
+          .some(item => item.kind === 'recovery' && item.status === 'completed')
+      }, { timeout: 30000 }).toBe(true)
       const events = await f.client.callTool({ name: 'run_events_list', arguments: {
         workspaceId: f.input.workspaceId, runId, limit: 100,
       } })

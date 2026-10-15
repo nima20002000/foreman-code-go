@@ -100,13 +100,14 @@ it('preserves the original standalone publication command and accepted context',
 it('adds no graph-tool grants while advertising the authorized extension through actual /mcp', async () => {
   const f = fixture()
   registerGraphqlMcp(f.app, { access: { authenticate: async () => f.principal } as unknown as Parameters<typeof registerGraphqlMcp>[1]['access'],
-    interactions: { toolAccess: async () => ({ role: 'coder', tools: [] }), canRead: async () => false, canRespond: async () => false } as unknown as NonNullable<Parameters<typeof registerGraphqlMcp>[1]['interactions']>,
+    interactions: { toolAccess: async () => ({ role: 'coder', tools: ['context_get'] }), canRead: async () => false, canRespond: async () => false } as unknown as NonNullable<Parameters<typeof registerGraphqlMcp>[1]['interactions']>,
     workerArtifacts: () => f.mounted.extension })
   const response = await f.app.inject({ method: 'POST', url: '/mcp', headers: { host: '127.0.0.1', authorization: 'Bearer unit-worker', accept: 'application/json, text/event-stream' },
     payload: { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} } })
   expect(response.statusCode).toBe(200)
   const body = response.headers['content-type']?.startsWith('text/event-stream') ? JSON.parse(/^data: (.+)$/m.exec(response.payload)![1]!) : response.json()
-  expect(body.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['files.read_edge_input'])
+  // A Worker with no enabled tools is refused at discovery, so one graph tool stays enabled; the extension adds only its own read.
+  expect(body.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(['context_get', 'files.read_edge_input'])
 })
 it('denies and audits undeclared names on the standalone MCP endpoint', async () => {
   const f = fixture(true)
