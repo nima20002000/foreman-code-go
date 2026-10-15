@@ -694,17 +694,23 @@ it('persists native failure despite repeated database timeouts before releasing 
   assert.equal(f.manager.turns.length, 1)
 })
 
-it('fails closed for an existing attempt with no durable native identity rather than replaying a start', async () => {
+it('closes an attempt with no launch permit without replaying a start', async () => {
   const f = fixture()
   f.loseLaunch()
   await assert.rejects(f.coordinator.observeExact(f.input), { code: 'NATIVE_SESSION_START_UNCERTAIN' })
   assert.equal(f.manager.creates.length, 0)
   assert.equal(f.manager.turns.length, 0)
-  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
+  expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
+    state: 'completed', result: { outcome: 'failed', error: {
+      code: 'NATIVE_SESSION_START_UNCERTAIN', retryable: true,
+    } },
+  })
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+  assert.equal((await f.runs.getRepeatSnapshot(f.candidate.runId)).cleanupPending, false)
 })
 
 for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as const) {
-  it(`preserves uncertain execution after a ${failure} transport or persistence failure`, async () => {
+  it(`closes only the failed attempt after a ${failure} transport or persistence failure`, async () => {
     const f = fixture()
     const error = new Error(`${failure} failed`)
     f.snapshot('request-a')
@@ -714,12 +720,36 @@ for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as con
     if (failure === 'activity') f.failActivity(error)
     if (failure === 'budget') f.failBudget(error)
     await assert.rejects(f.coordinator.observeExact(f.input), error)
-    assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
-    assert.equal(f.negativeSettlements.length, 0)
-    assert.equal(f.executions.get(f.candidate.id)?.finishedAt, undefined)
-    assert.equal(f.revoked.length, 0)
+    expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
+      state: 'completed', finishedAt: now, result: { outcome: 'failed', error: {
+        code: 'NATIVE_EXECUTION_FAILED', message: error.message, retryable: true,
+      } },
+    })
+    assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+    assert.equal((await f.runs.getRepeatSnapshot(f.candidate.runId)).cleanupPending, false)
+    assert.equal(f.manager.creates.length, ['create', 'turn', 'activity'].includes(failure) ? 1 : 0)
+    assert.equal(f.manager.turns.length, ['turn', 'activity'].includes(failure) ? 1 : 0)
+    assert.equal(f.manager.attaches.length, 0)
+    assert.ok(f.revoked.includes(f.candidate.id))
   })
 }
+
+it('returns the settled transient failure on reobservation without replaying native work', async () => {
+  const f = fixture()
+  const error = new Error('native transport failed')
+  f.manager.turnError = error
+  await assert.rejects(f.coordinator.observeExact(f.input), error)
+  const completed = await f.coordinator.observeExact(f.input)
+  expect(completed).toMatchObject({ state: 'completed', result: {
+    outcome: 'failed', error: { code: 'NATIVE_EXECUTION_FAILED', retryable: true },
+  } })
+  assert.equal(f.manager.creates.length, 1)
+  assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.manager.attaches.length, 0)
+  assert.deepEqual(f.manager.canceled, [f.manager.session])
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+})
 
 it('settles resumed history failure using the durable identity and preserves the native failure code', async () => {
   const f = fixture()
@@ -742,11 +772,19 @@ it('does not return an old delivered interaction when cold attachment fails', as
   f.resolver.release({ harness: f.manager.harness, executionId: f.candidate.id, agentId: f.candidate.agentId,
     workingDirectory: f.candidate.workingDirectory!, configuration: f.configuration })
   f.manager.attachError = new Error('native session unavailable')
-  await assert.rejects(f.coordinator.observeExact(f.input), /native session unavailable/)
+  await assert.rejects(f.coordinator.observeExact(f.input), (error: unknown) => {
+    assert.ok(error instanceof AggregateError)
+    assert.equal((error.cause as Error).message, 'native session unavailable')
+    assert.ok(error.errors.some(failure => failure instanceof Error
+      && failure.cause instanceof DomainError && failure.cause.code === 'NATIVE_WORKFLOW_CLOSURE_CONFLICT'))
+    return true
+  })
   assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
   assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
   assert.equal(f.manager.creates.length, 1)
   assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.negativeSettlements.length, 0)
+  assert.equal([...f.records.values()].find(row => row.nativeRequestId === 'request-a')?.status, 'delivered')
 })
 
 it('handles cancellation during post-approval observation without replay', async () => {
@@ -961,7 +999,8 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.stops.length, 0)
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
-  assert.equal(f.manager.closed.length, 0)
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.coordinator.residentRunIds(), [])
 })
 
 it.each([undefined, 3_600_000])('initializes an execution budget from the workflow or server default (%s)', async (override) => {
