@@ -118,12 +118,17 @@ function verifyWorkflowActivity(workflow: RunningCiWorkflow, observation: Scenar
 async function verifyWorkflow(client: Client, workflow: RunningCiWorkflow, observation: ScenarioObservation) {
   const details = observation.runs.get(workflow.runId)!
   expect(details.run.outcome).toBe('succeeded')
-  expect(details.executions).toHaveLength(workflow.assignments.length)
+  // A retryable failure (e.g. a transient database timeout) adds an attempt; each Agent still succeeds exactly once.
+  const succeeded = details.executions.filter(value => value.result?.outcome === 'succeeded')
+  expect(succeeded).toHaveLength(workflow.assignments.length)
+  for (const retried of details.executions.filter(value => value.result?.outcome !== 'succeeded')) {
+    expect(retried.result?.error?.retryable, `Execution ${retried.id} failed without a retry`).toBe(true)
+  }
   const scope = { workspaceId: workflow.workspace.workspaceId, runId: workflow.runId }
   const executions = RunExecutionsPageSchema.parse(await callCiTool(client, 'run_executions_list', { ...scope, limit: 100 }))
   expect(executions.pageInfo.nextCursor).toBeNull()
   for (const assignment of workflow.assignments) {
-    const execution = details.executions.find(value => value.agentId === assignment.agentId)!
+    const execution = succeeded.find(value => value.agentId === assignment.agentId)!
     expect(execution.state).toBe('completed')
     expect(execution.result?.outcome).toBe('succeeded')
     const worktree = executions.items.find(value => value.executionId === execution.id)?.worktree
