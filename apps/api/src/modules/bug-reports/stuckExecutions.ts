@@ -26,8 +26,10 @@ export async function detectStuckExecutions(pool: pg.Pool, idleMs: number, now: 
       ) ci
       cross join lateral (
         select greatest(e.created_at,(e.record->>'startedAt')::timestamptz,
-          (select max(a.occurred_at) from run_activity a where a.run_id=e.run_id and a.harness_execution_id=e.id),
-          (select max((n.record->>'occurredAt')::timestamptz) from harness_native_events n where n.execution_id=e.id),
+          (select a.occurred_at from run_activity a where a.run_id=e.run_id and a.harness_execution_id=e.id
+            order by a.occurred_at desc limit 1),
+          (select n.occurred_at from harness_native_events n where n.execution_id=e.id and n.occurred_at is not null
+            order by n.occurred_at desc limit 1),
           ci.last_activity_at) as last_activity_at
       ) activity
       where e.record->>'state'='running' and r.execution_state in ('running','waiting')
