@@ -10,13 +10,13 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
     fixture = await faultWorkflowFixture()
+    await fixture.launch()
+    await fixture.active()
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   // A six-second Run lock must retry reporting and expose the database delay in operational diagnostics.
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
-    await fixture.launch()
-    await fixture.active()
     await fixture.setReportingDeadline(1_000)
     const retriesBefore = readOperationalFailures().find(value => value.operation === 'retry database operation')
       ?.failureCount ?? 0
