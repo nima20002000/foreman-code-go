@@ -431,16 +431,19 @@ export class PostgresInteractionCoordinationRepository {
     const payload = { ...DeviceHistoryGapSchema.parse(gap), correlationId: IdSchema.parse(correlationId) }
     await this.assertLaneLease(fence.id, fence.token)
     // Observation loss belongs to activity, not the provider's source-sequence namespace.
+    // Lock the Run before its activity trigger takes the per-Run advisory lock.
     await this.queryConnection.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
       select e.run_id,'backend','native_events_skipped',e.id,clock_timestamp(),$4::jsonb
       from native_session_lanes l
       join execution_native_sessions s on s.reference->>'nativeSessionId'=l.native_session_id
         and s.reference->>'harness'=l.harness and s.workflow_finalized_at is null
       join harness_executions e on e.id=s.execution_id
+      join runs r on r.id=e.run_id
       where l.id=$1 and l.record->>'leaseToken'=$2 and l.record->>'correlationId'=$3
         and (l.record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
         and not exists(select 1 from run_activity a where a.run_id=e.run_id and a.harness_execution_id=e.id
-          and a.kind='native_events_skipped' and a.payload=$4::jsonb)`,
+          and a.kind='native_events_skipped' and a.payload=$4::jsonb)
+      for key share of r`,
     [fence.id, fence.token, correlationId, JSON.stringify(payload)])
     await this.assertLaneLease(fence.id, fence.token)
   }
