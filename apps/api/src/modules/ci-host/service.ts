@@ -989,11 +989,13 @@ export class HostCiService {
 
   private refreshActiveRuns(active: { id: string; record: unknown; host_key: string | null }[],
     computers: HostCiComputer[]) {
-    const refresh = async (row: typeof active[number]) => {
-      const previous = CiRunRecordSchema.parse(row.record)
+    const refresh = async (listed: typeof active[number]) => {
+      const { workspaceId } = CiRunRecordSchema.parse(listed.record)
       try {
-        await this.refreshRun(row, computers)
-        const current = await this.read(row.id, previous.workspaceId)
+        // An observation that finished after this pass listed the ticket has rewritten it, including its backoff.
+        const previous = await this.read(listed.id, workspaceId)
+        await this.refreshRun({ ...listed, record: previous }, computers)
+        const current = await this.read(listed.id, workspaceId)
         if (['starting', 'running'].includes(previous.state) && !['starting', 'running'].includes(current.state)
           || previous.deadlineExceeded?.executor === 'retained' && current.deadlineExceeded?.executor === 'released') {
           void this.dispatch()
@@ -1001,9 +1003,9 @@ export class HostCiService {
       } catch (error) {
         reportServiceFailure('ci-observation', error)
         try {
-          await this.recordObservationFailure(row.id, previous.workspaceId, error)
+          await this.recordObservationFailure(listed.id, workspaceId, error)
         } catch {
-          log.warn({ runId: row.id }, 'CI observation failed and its status could not be persisted')
+          log.warn({ runId: listed.id }, 'CI observation failed and its status could not be persisted')
         }
       }
     }
