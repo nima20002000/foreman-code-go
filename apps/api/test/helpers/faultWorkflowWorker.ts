@@ -1,16 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { AcceptedNodePlacement, DispatchIntent, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { DeviceConnectionError } from '../../src/modules/devices/deviceWire.js'
+import { DomainError } from '../../src/modules/errors.js'
+import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
 import { CodexAppServerSessionManager } from '../../src/modules/harnesses/codexAppServer.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
 import { RemoteExecutionHost } from '../../src/modules/runs/remote/executionHost.js'
 import { RemoteNativeSessionManager } from '../../src/modules/runs/remote/nativeManagerProxy.js'
 import { RemoteOperationJournal } from '../../src/modules/runs/remote/operationJournal.js'
 import { ActivityProductionReplay } from './activityProductionReplay.js'
+import { pageNativeHistory } from '../../src/modules/runs/remote/nativeHistoryPage.js'
+import { deferred, type Deferred } from './deferred.js'
 
 const digest = 'a'.repeat(64)
 
@@ -47,6 +53,8 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
     },
   }
   const adapters: CodexAppServerSessionManager[] = []
+  const nativeOwners = new Map<string, { manager: NativeHarnessSessionManager; session: NativeSessionReference }>()
+  const closedHistory = new Map<string, NativeHistory>()
   const manager = () => {
     const adapter = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
       undefined, 'scoped', undefined, dependencies)
@@ -74,7 +82,11 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
       materializationId: executionPlacement?.workingTree.materializationId ?? 'fixture-materialization',
       materializationDigest: executionPlacement?.workingTree.materializationDigest ?? digest,
     }),
-    nativeEvidence: async (_intent, session) => ({ sessionId: session.nativeSessionId, processIdentityDigest: digest }),
+    nativeEvidence: async (intent, session, context) => {
+      if (!context) throw new Error('Expected the original native manager')
+      nativeOwners.set(intent.operationId, { manager: context.manager, session })
+      return { sessionId: session.nativeSessionId, processIdentityDigest: digest }
+    },
     settle: async (_intent, history) => history.terminalTurn ? {
       kind: history.terminalTurn.result.outcome === 'canceled' ? 'cancelled' : 'completed',
       result: history.terminalTurn.result, closureEvidenceDigest: digest,
@@ -84,6 +96,7 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
   const operations = new Set<string>()
   const interruptedExecutions = new Set<string>()
   let connected = true
+  let interruptedRequest: Deferred<void> | undefined
   let rejectedRequests = 0
   const methods: string[] = []
   return {
@@ -104,13 +117,20 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
     disconnect() { connected = false },
     reconnect() { connected = true },
     async restart() {
+      interruptedRequest = deferred()
       connected = false
+      await interruptedRequest.promise
       for (const operationId of operations) {
         const status = await journal.status(operationId)
         if (status.status === 'known' && status.receipt.native && !status.receipt.terminal) {
           interruptedExecutions.add(status.receipt.intent.executionId)
           replay.disconnect(status.receipt.native.sessionId)
         }
+      }
+      await host.drain()
+      for (const operationId of operations) {
+        const owner = nativeOwners.get(operationId)
+        if (owner) closedHistory.set(operationId, structuredClone(await owner.manager.history(owner.session)))
       }
       await host.shutdown()
       for (const operationId of operations) {
@@ -141,11 +161,22 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
           methods.push(method)
           if (!connected) {
             rejectedRequests += 1
-            throw new DeviceConnectionError('transport')
+            interruptedRequest?.resolve()
+            const error = new DomainError('DEVICE_TRANSPORT_ERROR', 'The recorded Worker connection was interrupted.', 503)
+            error.cause = new DeviceConnectionError('transport')
+            throw error
           }
           const payload = ['prepare', 'reattach', 'capabilities', 'inspect-mcp'].includes(method)
             ? { ...(raw as object), executionPlacement } : raw
-          return host.handle(RemoteExecutionRpcRequestSchema.parse(payload))
+          const frame = RemoteExecutionRpcRequestSchema.parse(payload)
+          const history = closedHistory.get(intent.operationId)
+          if (frame.method === 'history' && history) {
+            const status = await journal.status(intent.operationId)
+            if (status.status !== 'known' || !status.receipt.terminal
+              || !isDeepStrictEqual(status.receipt.intent, frame.intent)) throw new Error('Original closed Worker history is unavailable')
+            return { ...pageNativeHistory(history, frame.afterSequence, frame.metadata), status }
+          }
+          return host.handle(frame)
         } },
         controlFor: async ({ native }) => ({
           schemaVersion: 1, protocolVersion: 1, commandId: randomUUID(), operationId: intent.operationId,
