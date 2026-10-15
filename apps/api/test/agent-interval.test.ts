@@ -19,8 +19,10 @@ it('re-activates a looping node with its loop prompt in its own session without 
       interactions: new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands) },
   })
   const clients: Client[] = []
+  let finished: Promise<void> | undefined
+  let stopped = false
   try {
-    const finished = runtime.engine.start(f.run.id)
+    finished = runtime.engine.start(f.run.id)
     const checkId = await checkStarted.promise
     const executions = async () => (await runtime.db.pool.query<{ id: string; node: string; tick: number | null
       state: string; continued: string | null }>(`select id,workflow_node_id as node,tick_index as tick,record->>'state' as state,
@@ -85,6 +87,7 @@ it('re-activates a looping node with its loop prompt in its own session without 
     expect((await runtime.runs.get(f.run.id))?.executionState).toBe('running')
     await runtime.stop()
     await runtime.engine.cancel(f.run.id)
+    stopped = true
     await Promise.allSettled([finished])
     const after = await executions()
     expect(after.filter(row => row.node === worker.id)).toHaveLength(1)
@@ -106,6 +109,10 @@ it('re-activates a looping node with its loop prompt in its own session without 
       && prompt.includes('run_status_get'))).toBe(true)
   } finally {
     checkGate.resolve(); workerGate.resolve()
+    // A failed assertion must not leave the loop Run active: closing the runtime would then fail its
+    // restart cleanup and replace the assertion with a database cleanup error.
+    if (!stopped) await Promise.allSettled([runtime.stop().then(() => runtime.engine.cancel(f.run.id))])
+    await Promise.allSettled([finished])
     await Promise.allSettled(clients.map(client => client.close()))
     await app.close()
     await runtime.close()
