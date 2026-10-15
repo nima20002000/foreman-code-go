@@ -433,7 +433,8 @@ export class LangGraphWorkflowEngine {
             if (error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
             const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
-            const permanent = !isTransientExecutionError(error) && !(error instanceof DomainError && error.status >= 500)
+            const permanent = !repeatSettlementPending(error) && !isTransientExecutionError(error)
+              && !(error instanceof DomainError && error.status >= 500)
             const failures = (retry?.failures ?? 0) + (permanent ? 1 : 0)
             this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs, failures })
             onError(error)
