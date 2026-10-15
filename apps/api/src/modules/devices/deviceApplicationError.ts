@@ -1,4 +1,5 @@
 import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-application'
+import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
 
 const retryability: Readonly<Record<string, boolean>> = {
   'extension-rejected': false,
@@ -111,8 +112,11 @@ export function deviceApplicationFailure(error: unknown): DeviceApplicationFailu
     return { code: 'timeout', retryable: true }
   }
   const proposed = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
-  const code = typeof proposed === 'string' && Object.hasOwn(retryability, proposed) ? proposed : 'extension-rejected'
-  return { code, retryable: retryability[code]! }
+  if (typeof proposed === 'string' && Object.hasOwn(retryability, proposed)) {
+    return { code: proposed, retryable: retryability[proposed]! }
+  }
+  if (isTransientDatabaseOrSocketError(error)) return { code: 'unavailable', retryable: true }
+  return { code: 'extension-rejected', retryable: false }
 }
 
 export class DeviceApplicationError extends Error {
