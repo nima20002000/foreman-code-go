@@ -26,7 +26,12 @@ async function transport(options: {
   await value.start()
   return value
 }
-function observe<T>(value: Promise<T>): Promise<T> { void value.catch(() => undefined); return value }
+function observe<T>(value: Promise<T>): Promise<T> {
+  void value.catch(() => {
+    // ignore: the caller asserts the rejection; this only prevents an unhandled-rejection report meanwhile.
+  })
+  return value
+}
 
 describe.skipIf(process.platform === 'win32')('Codex owned stdio transport', () => {
   beforeEach(async () => { f = await fixture() })
@@ -104,13 +109,18 @@ void (async () => {
   })
 
   it('F13: successful and failed RPCs remove every abort listener', async () => {
-    const value = await transport()
+    // A short deadline would also bound initialization, which a loaded machine can exceed; cancel the failed RPC instead.
+    const value = await transport({ timeout: 30_000 })
     const controller = new AbortController()
     for (let index = 0; index < 25; index += 1) {
       assert.deepEqual(await value.request('test/echo', { index }, controller.signal), { index })
       assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
     }
-    await assert.rejects(value.request('test/noresponse', {}, controller.signal))
+    const failed = observe(value.request('test/noresponse', {}, controller.signal))
+    await until(async () => (await calls(f.directory)).some(({ wire }) =>
+      isObject(wire) && wire.method === 'test/noresponse') || undefined)
+    controller.abort()
+    await assert.rejects(failed)
     assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
   })
 

@@ -4,6 +4,7 @@ import { assertGraphTransaction, ExclusiveGraphConnection, type GraphTransaction
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type HarnessExecution,
   type NativeSessionReference, type ReviewJob } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { DEFAULT_WORKER_CREDENTIAL_TTL_MS } from '../src/modules/access/workerCredentials.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
@@ -199,7 +200,7 @@ export function native2Fixture(completed = true,
     if (reviewer) resident.context.purpose = 'reviewer'
     internals.ownedSessions.set(execution.id, resident)
     internals.managerCredentials.set(manager, { principalId: 'principal-native2-captured',
-      expiresAt: new Date(Date.now() + 300_000).toISOString(), environment: { variables: {} } })
+      expiresAt: new Date(Date.now() + DEFAULT_WORKER_CREDENTIAL_TTL_MS).toISOString(), environment: { variables: {} } })
   }
   const observe = () => coordinator.observeExact({ execution, store,
     workflowId: run.workflowId, graphThreadId: run.id, owner: owner as never, signal: new AbortController().signal })
