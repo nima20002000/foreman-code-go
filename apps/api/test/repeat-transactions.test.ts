@@ -557,7 +557,6 @@ describe('real repository with PostgreSQL-shaped scripted transactions (not real
     },
   )
   it.each([
-    new DomainError('APP_MCP_PREFLIGHT_TIMEOUT', 'MCP inspection timed out.', 409),
     new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'Source preparation was interrupted before activation.'),
     new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The saved native qualification is unavailable.', 409),
   ])('settles queued work after a launch preparation refusal: $code', async failure => {
@@ -593,15 +592,43 @@ describe('real repository with PostgreSQL-shaped scripted transactions (not real
     })).rejects.toBe(failure)
     expect(observations).toBe(1)
     expect(calls.indexOf('cleanup')).toBeLessThan(calls.indexOf('cancel'))
-    if (failure.code !== 'APP_MCP_PREFLIGHT_TIMEOUT') {
-      expect(cleanupResults).toContainEqual({ outcome: 'failed',
-        error: { code: failure.code, message: failure.message, retryable: false } })
-    }
+    expect(cleanupResults).toContainEqual({ outcome: 'failed',
+      error: { code: failure.code, message: failure.message, retryable: false } })
     expect(calls).toContain('cancel')
     expect(calls).toContain('settle')
     expect(calls.slice(-2)).toEqual(['finish native', 'finish cleanup'])
     expect(db.state().run.executionState).toBe('completed')
     expect([...db.state().executions.values()].map(row => row.record.workflowNodeId)).toEqual(['work'])
+  })
+  it('leaves the Run running for a retry after a transient launch preparation timeout', async () => {
+    const db = postgresShape(1)
+    const calls: string[] = []
+    const failure = new DomainError('APP_MCP_PREFLIGHT_TIMEOUT', 'MCP inspection timed out.', 409)
+    let observations = 0
+    await expect(executeRepeatRuntime({
+      runId: db.f.scope.runId, version: db.f.version, store: db.store, owner: db.owner,
+      signal: new AbortController().signal, checkpointer: new MemorySaver(),
+      lifecycle: {
+        preflight: async () => {}, markRunning: async () => {}, persistWait: async () => false,
+        currentState: async () => ({ executionState: db.state().run.executionState, stopRequested: false }),
+        requestCleanup: async () => { calls.push('cleanup') },
+        cancelNativeAndRequestCleanup: async () => { calls.push('cancel'); return true },
+        settleRun: async () => { calls.push('settle') },
+        finishNative: async () => { calls.push('finish native') },
+        finishCleanup: async () => { calls.push('finish cleanup') },
+      },
+      driver: {
+        candidate: (ref, attempt) => execution(db.f, ref.nodeId, 'timed-out-agent', attempt),
+        observe: async () => {
+          observations++
+          throw failure
+        },
+      },
+    })).rejects.toBe(failure)
+    expect(observations).toBe(1)
+    // The transient refusal fences neither the Run nor its other work; the engine retries the same checkpoint.
+    expect(calls).toEqual([])
+    expect(db.state().run.executionState).not.toBe('completed')
   })
   it('runs repeated static barriers on the existing LangGraph checkpointer and does not release final nodes early', async () => {
     const db = postgresShape(2), signal = new AbortController().signal, calls: string[] = []

@@ -27,7 +27,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
       details: unknown
     }>,
   }
-  let receipt: { input_hash: unknown; target_key: unknown; result: unknown } | undefined
+  let receipt: { principal_id: unknown; input_hash: unknown; target_key: unknown; result: unknown } | undefined
   let lockOwner: symbol | undefined
   let commits = 0
   let lockRequests = 0
@@ -46,14 +46,14 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
         if (lockOwner === owner) lockOwner = undefined
         state.unlocks++
       }
-      if (sql.includes('select input_hash')) {
+      if (sql.trimStart().startsWith('select') && sql.includes('from management_command_receipts')) {
         state.receiptReads++
         return { rows: receipt ? [receipt] : [], rowCount: receipt ? 1 : 0 }
       }
       if (sql.includes('insert into management_command_receipts')) {
         state.receiptWrites++
         pending = {
-          input_hash: values?.[4], target_key: values?.[3], result: JSON.parse(String(values?.[5])),
+          principal_id: values?.[0], input_hash: values?.[4], target_key: values?.[3], result: JSON.parse(String(values?.[5])),
         }
       }
       if (sql.includes('insert into management_audit')) {

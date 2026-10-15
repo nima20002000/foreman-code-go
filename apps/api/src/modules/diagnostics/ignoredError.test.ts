@@ -12,7 +12,8 @@ function captureLogs() {
     const record = (fields: Record<string, unknown>, message: string) => {
       lines.push({ fields: { ...bindings, ...fields }, message })
     }
-    return { warn: record, error: record } as ReturnType<typeof logger.child>
+    // Transaction statement metrics are info records, not the failures captured here.
+    return { warn: record, error: record, info: () => undefined } as ReturnType<typeof logger.child>
   })
   return lines
 }

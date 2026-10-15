@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
 } from '@foreman-code/contracts/wave25'
+import type { ResolvedSkill } from '@foreman-code/contracts'
 import { SkillCatalogService } from '../src/modules/skills/catalog.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -64,7 +65,12 @@ it('discovers, saves, rejects and reads back Agent output schemas and node skill
 
   // Each execution of the node receives the added skill's pinned instructions; the Agent configuration is unchanged.
   const pinned = f.configurations.find(config => config.agentId === node.agentId)!
-  const executionConfiguration = await new PostgresWorkflowRepository(db.pool).resolveNodeSkills(pinned, { add: [skill] })
+  const repository = new PostgresWorkflowRepository(db.pool)
+  const version = await repository.getSavedVersion(saved.version.id)
+  const snapshots = (version as typeof version & { nodeSkillSnapshots?: Record<string, ResolvedSkill[]> })
+    ?.nodeSkillSnapshots?.[node.id]
+  expect(snapshots).toMatchObject([{ skillId: skill.skillId, version: skill.version }])
+  const executionConfiguration = await repository.resolveNodeSkills(pinned, { add: [skill] }, snapshots)
   expect(composeInstructionText(executionConfiguration)).toContain('Write release notes for every change.')
   expect(pinned.assignedSkills).toEqual([])
 

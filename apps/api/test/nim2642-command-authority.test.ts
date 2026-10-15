@@ -12,8 +12,8 @@ describe('NIM-2642 exact command authority before replay', () => {
     const order: string[] = []
     const query = vi.fn(async (sql: string) => {
       order.push(sql)
-      return { rows: sql.includes('select input_hash')
-        ? [{ input_hash: commandInputHash(payload), target_key: 'draft:draft', result: { saved: 'version-1' } }] : [], rowCount: 1 }
+      return { rows: sql.trimStart().startsWith('select') && sql.includes('from management_command_receipts')
+        ? [{ principal_id: principal.id, input_hash: commandInputHash(payload), target_key: 'draft:draft', result: { saved: 'version-1' } }] : [], rowCount: 1 }
     })
     const release = vi.fn()
     const client = { query, release }
@@ -27,7 +27,7 @@ describe('NIM-2642 exact command authority before replay', () => {
       authorize: async () => { f.order.push('authorize') } })
     expect(result).toEqual({ value: { saved: 'version-1' }, replayed: true })
     expect(perform).not.toHaveBeenCalled()
-    const authorized = f.order.indexOf('authorize'), receipt = f.order.findIndex((sql) => sql.includes('select input_hash'))
+    const authorized = f.order.indexOf('authorize'), receipt = f.order.findIndex((sql) => sql.includes('from management_command_receipts'))
     expect(f.order.findIndex((sql) => sql.includes('pg_advisory_xact_lock'))).toBeLessThan(authorized)
     expect(authorized).toBeLessThan(receipt)
     expect(f.release).toHaveBeenCalledTimes(1)
@@ -36,7 +36,7 @@ describe('NIM-2642 exact command authority before replay', () => {
     const f = fixture(), perform = vi.fn(async () => ({ saved: 'new-version' }))
     await expect(f.coordinator.execute({ ...command, perform,
       authorize: async () => { throw new Error('authority lost') } })).rejects.toThrow('authority lost')
-    expect(f.order.some((sql) => sql.includes('select input_hash'))).toBe(false)
+    expect(f.order.some((sql) => sql.includes('from management_command_receipts'))).toBe(false)
     expect(f.order.some((sql) => sql.includes('insert into management_command_receipts'))).toBe(false)
     expect(f.order).toContain('rollback')
     expect(perform).not.toHaveBeenCalled()

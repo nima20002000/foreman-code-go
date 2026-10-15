@@ -1,5 +1,6 @@
 /// <reference types="../../types/pino-roll.d.ts" />
-import { readdir, readlink, stat, unlink } from 'node:fs/promises'
+import { once } from 'node:events'
+import { mkdir, readdir, readlink, stat, unlink } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { runtimeTimingChannel, type RuntimeTimingRecord } from './runtimeTiming.js'
 import type { LogComponent } from './logComponent.js'
@@ -36,11 +37,23 @@ export function serializeError(value: unknown, seen = new Set<unknown>(), depth 
     ...(value instanceof AggregateError ? { errors: value.errors.slice(0, 8).map(cause => serializeError(cause, seen, depth + 1)) } : {}),
     ...(error.cause !== undefined ? { cause: serializeError(error.cause, seen, depth + 1) } : {}) }
 }
-// Log backpressure must not block PostgreSQL replies on the API event loop.
+// Log backpressure must not block PostgreSQL replies on the API event loop. Lines are batched, so a
+// process that ends drains one ordered buffer instead of racing an in-flight asynchronous write.
+const stdout = pino.destination({ dest: 1, sync: false, minLength: 4096, periodicFlush: 50 })
 const streams = pino.multistream([{
   level: level === 'silent' ? 'fatal' : level as Level,
-  stream: pino.destination({ dest: 1, sync: false }),
+  stream: stdout,
 }])
+let fileStream: { flushSync(): void } | undefined
+
+/** Writes are asynchronous, so a process that is about to end drains them here to keep its final lines. */
+export function flushLogsSync(): void {
+  for (const stream of [stdout, fileStream]) {
+    try { stream?.flushSync() } catch {
+      // ignore: nothing can report a log destination that is closed or not open yet while the process ends.
+    }
+  }
+}
 
 /** The one API logger. Everything else is a child of it. */
 export const logger: Logger = pino({
@@ -137,11 +150,14 @@ export async function enableFileLogging(env: NodeJS.ProcessEnv = process.env): P
   const count = positive(env.LOG_MAX_FILES, 14)
   const days = positive(env.LOG_RETENTION_DAYS, 14)
   const { default: roll } = await import('pino-roll')
+  // The asynchronous destination creates its directory too late for the symlink pino-roll makes at startup.
+  await mkdir(dirname(file), { recursive: true })
   // Daily names prevent a roll from reopening a numbered file from an earlier day.
   const stream = await roll({ file: file.replace(/\.log$/, ''), extension: '.log', frequency: 'daily',
     dateFormat: 'yyyy-MM-dd', size: env.LOG_MAX_SIZE ?? '20m', mkdir: true, symlink: true, sync: false })
-  // pino.destination flushes stdout at exit; pino-roll needs the same final drain.
-  process.once('exit', () => stream.flushSync())
+  // Retention must see the opened active file, not race its asynchronous creation.
+  if ((stream as unknown as { fd: number }).fd < 0) await once(stream, 'ready')
+  fileStream = stream
   const pruned = await pruneLogFiles(file, count, days)
   let cleanup = Promise.resolve()
   // Reopen emits ready after the active symlink changes. Serialize retention across rolls.

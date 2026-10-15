@@ -194,7 +194,7 @@ function harness() {
       assert.equal(owned.interaction.graphInterruptId, record.graphInterruptId)
       calls.resumes++; await control.onResume(owned.interaction)
       // Explicit simulated checkpoint COMMIT, not a native acknowledgement.
-      if (control.commitResume) resumeReceipt = structuredClone(owned)
+      if (control.commitResume) resumeReceipt = { interaction: structuredClone(owned.interaction), ownerToken: owned.ownerToken }
     })
     return instance
   }
