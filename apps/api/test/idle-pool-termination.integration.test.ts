@@ -15,12 +15,8 @@ it('keeps the API ready after PostgreSQL terminates idle application and checkpo
     detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
-  const observeOutput = (chunk: Buffer) => {
-    output += chunk.toString()
-    process.stdout.write(chunk)
-  }
-  child.stdout?.on('data', observeOutput)
-  child.stderr?.on('data', observeOutput)
+  child.stdout?.on('data', chunk => { output += String(chunk) })
+  child.stderr?.on('data', chunk => { output += String(chunk) })
   const admin = new pg.Pool({ connectionString: resources.environment.TEST_DATABASE_URL, max: 1 })
   try {
     try {
