@@ -347,13 +347,33 @@ describe('original physical source selectors and Main SQL consumer',()=>{
 })
 
 describe('bounded physical readout retention and actual terminal correlation',()=>{
-  it('expires originals without selecting current/latest data',async()=>{
-    const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts(),now=Date.now()
-    readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},
-      observe:()=>f.captured.launch,closure:()=>null})
-    vi.spyOn(Date,'now').mockReturnValue(now+60_001)
-    await expect(readouts.read({intent:f.intent,placement:f.placement,receiptSequence:f.readout.receipt.sequence,sourceDigest:remoteWorkflowSourceDigest(f.source)})).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
-    await f.sqlConnection.close()
+  it('retains originals and event selectors until Main acknowledges after a delayed read', async () => {
+    const f = await physicalFixture()
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const now = Date.now()
+    const assertCurrent = vi.fn(async () => {})
+    const event = { sequence: 1, type: 'native.notification', occurredAt: new Date(now).toISOString(),
+      payload: { text: 'original reply' } }
+    const history = { ...f.source.history, events: [event] }
+    const source = { type: 'history' as const, history }
+    readouts.remember({ readout: { ...f.readout, history }, placement: f.placement, source,
+      leaseExpiresAt: new Date(now + 30_000).toISOString(), assertOwnerCurrent: async () => {}, assertCurrent,
+      observe: () => f.captured.launch, closure: () => null })
+    const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,
+      sourceDigest: remoteWorkflowSourceDigest(source) }
+    const eventSelector = { ...selector, sourceDigest: remoteWorkflowSourceDigest({ type: 'event',
+      event: { ...event, executionId: f.intent.executionId } }) }
+    vi.spyOn(Date, 'now').mockReturnValue(now + 120_000)
+    try {
+      const result = await readouts.read(selector)
+      expect(result.history).toEqual(history)
+      expect(Date.parse(result.expiresAt)).toBeGreaterThan(Date.now())
+      expect(await readouts.read(eventSelector)).toEqual(result)
+      expect(assertCurrent).toHaveBeenCalledTimes(2)
+      expect(await readouts.ack(selector)).toMatchObject({ status: 'retired' })
+      await expect(readouts.read(selector)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+      await expect(readouts.read(eventSelector)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+    } finally { await f.sqlConnection.close() }
   })
   it('refuses a 129th retained original for one operation instead of silently inventing eviction readback',async()=>{
     const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
@@ -362,9 +382,21 @@ describe('bounded physical readout retention and actual terminal correlation',()
       readouts.remember({readout:{...f.readout,history:source.history},placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',
         assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
     }
-    const source={type:'history' as const,history:{...f.source.history,nextSequence:128}}
-    expect(()=>readouts.remember({readout:{...f.readout,history:source.history},placement:f.placement,source,leaseExpiresAt:'2099-01-01T00:00:00.000Z',
-      assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('retention is full')
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000)
+    const source = { type: 'history' as const, history: { ...f.source.history, nextSequence: 128 } }
+    const observation = { readout: { ...f.readout, history: source.history,
+      expiresAt: new Date(Date.now() + 60_000).toISOString() }, placement: f.placement, source,
+      leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+      observe: () => f.captured.launch, closure: () => null }
+    expect(() => readouts.remember(observation)).toThrow(expect.objectContaining({
+      code: 'REMOTE_NATIVE_PHYSICAL_BACKPRESSURE',
+    }))
+    const first = { type: 'history' as const, history: { ...f.source.history, nextSequence: 0 } }
+    const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence,
+      sourceDigest: remoteWorkflowSourceDigest(first) }
+    expect((await readouts.read(selector)).history).toEqual(first.history)
+    expect(await readouts.ack(selector)).toMatchObject({ status: 'retired' })
+    expect(() => readouts.remember(observation)).not.toThrow()
     await f.sqlConnection.close()
   })
   it.each(['matching','closure-digest','result-digest','foreign-result','missing-positive-closure','foreign-closure-launch'] as const)('requires original provider + positive closure + exact text output for %s terminal proof',async defect=>{

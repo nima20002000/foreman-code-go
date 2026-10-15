@@ -32,3 +32,15 @@ it('retains and redacts the original credential failure through domain error log
   expect(JSON.stringify(serializeError(redacted))).not.toContain(secret)
   expect(original.cause).toBe(databaseError)
 })
+
+it('preserves explicit remote retryability and its code while redacting the message', () => {
+  const secret = 'scoped-test-token'
+  const failure = Object.assign(new Error(`Remote failure with ${secret}`), {
+    code: 'REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', retryable: true, environment: { token: secret },
+  })
+  const redacted = nativePersistenceRedactor([secret]).error(failure)
+  expect(redacted).toMatchObject({ code: failure.code, retryable: true,
+    message: 'Remote failure with [REDACTED]' })
+  expect(redacted).not.toHaveProperty('environment')
+  expect(isTransientExecutionError(redacted)).toBe(true)
+})
