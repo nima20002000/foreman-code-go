@@ -89,7 +89,7 @@ async function fixture() {
     else if (text.includes('from agent_configuration_versions')) rows = [{ record: configuration }]
     else if (text.includes('from source_root_bindings')) rows = [{ record: sourceRoot }]
     else if (text.includes('from harness_instance_settings')) rows = [{ record: override }]
-    else if (text.includes('from harness_instance_profile_evidence')) rows = [{ record: profileProof }]
+    else if (text.includes('from harness_instance_profile_evidence')) rows = [{ instance_revision: String(override.revision), record: profileProof }]
     else if (text.includes('from harness_qualifications')) rows = [{ harness: 'codex', version: '0.156.1', binary_sha256: digest,
       suite_revision: 'codex-live-4', profile: 'codex-0.156', checks: [{ id: 'fixture-check', passed: true, detail: null }],
       failure_reason: null, started_at: f.createdAt, checked_at: f.createdAt }]

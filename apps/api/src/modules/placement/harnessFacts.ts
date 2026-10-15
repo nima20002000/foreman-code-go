@@ -62,11 +62,20 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   const installation = HostHarnessInstallationSchema.parse(installed)
   let selected: { override: HostHarnessOverride; acceptedProof: HostHarnessProfileEvidence;
     profileProof: HostHarnessProfileEvidence; requalified: boolean } | undefined
+  const evidence = await sql.query<{ instance_revision: string; record: unknown }>(`
+    select instance_revision,record from harness_instance_profile_evidence
+    where instance_id=$1 and instance_revision=any($2::bigint[])
+    order by created_at desc,check_id desc for share`,
+  [payload.instanceId, [...new Set(candidates.map(override => override.revision))]])
+  const proofsByRevision = new Map<string, unknown[]>()
+  for (const row of evidence.rows) {
+    const proofs = proofsByRevision.get(String(row.instance_revision)) ?? []
+    proofs.push(row.record)
+    proofsByRevision.set(String(row.instance_revision), proofs)
+  }
   for (const override of candidates) {
-    const evidence = await sql.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
-      where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc for share`,
-    [override.instanceId, override.revision])
-    const proofs = evidence.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
+    const proofs = (proofsByRevision.get(String(override.revision)) ?? [])
+      .map(record => HostHarnessProfileEvidenceSchema.parse(record))
     const acceptedProof = payload.profileProofDigest
       ? proofs.find(proof => placementDigest(proof) === payload.profileProofDigest) : proofs[0]
     if (acceptedProof) {

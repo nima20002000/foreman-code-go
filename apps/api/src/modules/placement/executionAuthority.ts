@@ -3,6 +3,7 @@ import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { readPlacement } from './binding.js'
+import { readExecutionAuthoritySnapshot } from './executionAuthorityRead.js'
 import { readExecutionPlacement, readNativePlacement } from './persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
@@ -29,8 +30,9 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   // Owner transactions that write keep these rows locked until COMMIT. A Worker's read-only admission
   // check reads the latest committed rows instead and must not queue behind a busy Run.
   const share = (clause: string) => lock ? ` ${clause}` : ''
-  const current = await readReconciledDispatchIntent(sql, input.intent.operationId, lock)
-  const persisted = await readExecutionPlacement(sql, input.intent.executionId)
+  const snapshot = lock ? undefined : await readExecutionAuthoritySnapshot(sql, input.intent)
+  const current = lock ? await readReconciledDispatchIntent(sql, input.intent.operationId, true) : snapshot?.current
+  const persisted = lock ? await readExecutionPlacement(sql, input.intent.executionId) : snapshot?.placement
   if (!current || !persisted || !sameWorkflowValue(current, input.intent) || !sameWorkflowValue(pin, persisted)
     || pin.hostRef.kind !== 'device' || !pin.registration || authenticated.mainId !== pin.mainId
     || authenticated.deviceId !== pin.hostRef.deviceId || authenticated.workerInstallationId !== pin.registration.workerInstallationId
@@ -38,7 +40,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration!.workerInstallationId)
   if (!registration || registration.keyRevision !== pin.registration!.keyRevision
     || registration.authorizationRevision !== pin.registration!.authorizationRevision) denied()
-  const row = (await sql.query<{ authorization_principal_id: string; workspace_id: string; workflow_id: string;
+  const row = snapshot?.row ?? (await sql.query<{ authorization_principal_id: string; workspace_id: string; workflow_id: string;
     execution_state: string; stopped: boolean; cleanup: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
       r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped,
       exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
@@ -46,11 +48,12 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     [current!.runId, current!.executionId])).rows[0]
   if (!row) denied()
   const cleanup = row!.cleanup && (input.action === 'stop' || input.action === 'read')
-  const grant = await sql.query(`select 1 from execution_dispatch_owner_grants
+  const grantCount = snapshot ? Number(snapshot.row.granted) : (await sql.query(`select 1 from execution_dispatch_owner_grants
     where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked${share('for share')}`,
-    [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])
-  if (grant.rowCount !== 1) denied()
-  const origin = (await sql.query<{ connection: unknown }>(`select connection from remote_dispatch_origins where operation_id=$1${share('for share')}`,
+    [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])).rowCount
+  if (grantCount !== 1) denied()
+  const origin = snapshot ? snapshot.origin
+    : (await sql.query<{ connection: unknown }>(`select connection from remote_dispatch_origins where operation_id=$1${share('for share')}`,
     [current!.operationId])).rows[0]
   if (!origin) denied()
   const connection = DeviceConnectionIdentitySchema.parse(origin!.connection)
@@ -62,7 +65,8 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   const changedBoot = connection.bootId !== authenticated.bootId
   let resident: boolean
   {
-    const stored = (await sql.query<{ receipt: unknown }>(
+    const stored = snapshot ? snapshot.stored
+      : (await sql.query<{ receipt: unknown }>(
       `select receipt from remote_execution_receipts where operation_id=$1${share('for share')}`, [current!.operationId])).rows[0]
     const receipt = RemoteOperationReceiptSchema.safeParse(stored?.receipt)
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
@@ -84,9 +88,9 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   if (input.action === 'start') {
     if (!await readNativePlacement(sql, current!.executionId)) denied()
     if (row!.stopped || !['running', 'waiting'].includes(row!.execution_state)) denied()
-    const entry = await sql.query(`select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered'${share('for share')}`,
-      [current!.executionId, current!.runId])
-    if (entry.rowCount !== 1) denied()
+    const entryCount = snapshot ? Number(snapshot.row.entered) : (await sql.query(`select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered'${share('for share')}`,
+      [current!.executionId, current!.runId])).rowCount
+    if (entryCount !== 1) denied()
   }
   if (input.action === 'retain-reviewer' || input.action === 'review') {
     if (row!.stopped || row!.cleanup || !['running', 'waiting'].includes(row!.execution_state)) denied()
