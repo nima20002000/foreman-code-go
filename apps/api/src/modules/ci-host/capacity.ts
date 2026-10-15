@@ -51,8 +51,9 @@ export function hostCiCapacity(resources: {
   const cpuCount = Math.max(1, Math.floor(resources.cpuCount / cpuSlots))
   const freeSlots = Math.max(0, Math.min(cpuSlots - reservations.length,
     Math.floor((resources.cpuCount - reservedCpu) / cpuCount), Math.floor(freeMemory / memoryPerSlot)))
-  const slotsTotal = Math.max(1, reservations.length + freeSlots)
-  const memoryBytes = Math.max(1, Math.floor(Math.min(memoryBudget / slotsTotal,
+  // Without a gibibyte for even one slot, advertise none instead of a ticket with an unusable memory limit.
+  const slotsTotal = reservations.length || freeSlots || freeMemory >= gib ? Math.max(1, reservations.length + freeSlots) : 0
+  const memoryBytes = slotsTotal === 0 ? 0 : Math.max(1, Math.floor(Math.min(memoryBudget / slotsTotal,
     freeMemory / Math.max(1, freeSlots))))
   return { slotsTotal, slotsUsed: reservations.length, cpuCount, memoryBytes, memoryBudget }
 }

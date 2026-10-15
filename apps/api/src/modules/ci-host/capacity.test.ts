@@ -20,6 +20,13 @@ it('bounds slots by available memory and keeps one slot for a small computer', (
     .toMatchObject({ slotsTotal: 1, slotsUsed: 0, cpuCount: 2, memoryBytes: 2 * 2 ** 30 })
 })
 
+it('advertises no slot when not even one gibibyte of memory is free', () => {
+  expect(hostCiCapacity({ ...machine, availableMemoryBytes: 0 }))
+    .toMatchObject({ slotsTotal: 0, slotsUsed: 0, memoryBytes: 0 })
+  expect(hostCiCapacity({ cpuCount: 4, memoryBytes: 2 ** 30, availableMemoryBytes: 2 ** 30 }))
+    .toMatchObject({ slotsTotal: 0, slotsUsed: 0, memoryBytes: 0 })
+})
+
 it('waits for memory pressure to clear and does not overbook a whole-machine reservation', () => {
   const first = hostCiCapacity(machine)
   expect(hostCiCapacity({ ...machine, availableMemoryBytes: 2 * 2 ** 30 }, [first]))

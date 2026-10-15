@@ -150,6 +150,24 @@ describe('host CI runner concurrent starts', () => {
       .toBe(2)
   })
 
+  it('fetches the commit once for concurrent affected parts of the same commit', async () => {
+    const { runner, request, ports } = await computer(undefined, 16, true)
+    const affected = { ...request, scope: undefined }
+    const command = ports.run
+    let fetches = 0
+    let present = false
+    ports.run = async (file, args, options) => {
+      if (file === 'git' && args.includes('cat-file')) return { code: present ? 0 : 1, stdout: '', stderr: '' }
+      if (file === 'git' && args.includes('fetch')) {
+        fetches++
+        present = true
+      }
+      return command(file, args, options)
+    }
+    await Promise.all([runner.handle(affected), runner.handle({ ...affected, runId: randomUUID() })])
+    expect(fetches).toBe(1)
+  })
+
   it('keeps database suites exclusive for commits without isolated database support', async () => {
     const { runner, request, launches } = await computer(undefined, 16)
     const unit = { ...request, suite: 'unit' }

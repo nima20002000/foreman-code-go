@@ -12,7 +12,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
+import { deepenUntilConnected, ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import type { CiMirrorInput } from './serviceTypes.js'
@@ -765,8 +765,9 @@ export class CloudCi {
     let runnerBaseCommit: string | undefined
     let head: string | undefined
     if (baseCommit) {
-      const ancestor = await this.git.git(['merge-base', '--is-ancestor', baseCommit, commit], { cwd: clone, signal })
-      if (ancestor.code === 0) {
+      const isAncestor = async () => (await this.git.git(['merge-base', '--is-ancestor', baseCommit, commit],
+        { cwd: clone, signal })).code === 0
+      if (await isAncestor() || await deepenUntilConnected(this.git, clone, [commit, baseCommit], isAncestor, signal)) {
         const checking = performance.now()
         await this.guard(clone, baseCommit, signal)
         guardMs += performance.now() - checking
@@ -778,7 +779,11 @@ export class CloudCi {
       head = await fetchRepositoryBranch(this.git, clone, repository, defaultBranch, signal)
       branchFetchMs = performance.now() - branchFetching
       fetchMs += branchFetchMs
-      const mergeBase = await this.git.git(['merge-base', commit, head], { cwd: clone, signal })
+      const findMergeBase = () => this.git.git(['merge-base', commit, head], { cwd: clone, signal })
+      let mergeBase = await findMergeBase()
+      if (mergeBase.code !== 0) {
+        await deepenUntilConnected(this.git, clone, [commit, head], async () => (mergeBase = await findMergeBase()).code === 0, signal)
+      }
       if (mergeBase.code === 0) {
         const sourceBase = mergeBase.stdout.trim()
         // Publish only checked trees; the source repository's private commit history stays private.
@@ -984,9 +989,17 @@ export class CloudCi {
       }
     }
     const detail = (error instanceof Error ? error.message : String(error)).slice(0, 500)
-    const cancellation = cancellationFailed ? 'Cancellation could not be confirmed.' : 'Cancellation requested.'
+    if (cancellationFailed) {
+      // The provider job may still run: keep this executor's ownership and retry the cancellation on the next poll.
+      const now = this.ports.now().toISOString()
+      return this.save({ ...run, message: sanitizeCiText(`${this.provider.label} execution stayed unreadable past the `
+        + `75-second window: ${detail} Cancellation could not be confirmed; retrying before another computer takes over.`),
+      reconciliation: { attempts: Math.min(MAX_DISPATCH_ATTEMPTS, (run.reconciliation?.attempts ?? 0) + 1), at: now,
+        since: run.reconciliation?.since ?? run.reconciliation?.at ?? now,
+        previousMessage: run.reconciliation ? run.reconciliation.previousMessage : run.message } })
+    }
     const message = sanitizeCiText(`${this.provider.label} execution stayed unreadable past the 75-second window: `
-      + `${detail} ${cancellation} Automatic recovery queued for another computer.`)
+      + `${detail} Cancellation requested. Automatic recovery queued for another computer.`)
     await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
     const recovered: CloudRun = { ...run, state: 'queued', providerRunId: null, finishedAt: null,
       exitCode: null, message }

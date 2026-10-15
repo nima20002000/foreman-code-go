@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { addGitWorktree, ensureClone, ensureCommit, systemGitWorktreePorts,
   type GitWorktreePorts } from './gitWorktree.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
@@ -22,13 +23,24 @@ vi.mock('node:fs/promises', async original => {
     return disk.full ? { ...value, bavail: typeof value.bavail === 'bigint' ? 0n : 0 } : value
   } }
 })
+const cacheLimits = vi.hoisted(() => ({ bytes: 16 * 2 ** 20, maximumFileBytes: 2 * 2 ** 20,
+  transferBytes: 8 * 2 ** 20, diskMarginBytes: 2 ** 20 }))
 vi.mock('@foreman-code/contracts/source-materialization', async original => ({
   ...await original<typeof import('@foreman-code/contracts/source-materialization')>(),
-  SOURCE_GIT_CACHE_LIMITS: { bytes: 16 * 2 ** 20, maximumFileBytes: 2 * 2 ** 20,
-    transferBytes: 8 * 2 ** 20, diskMarginBytes: 2 ** 20 },
+  SOURCE_GIT_CACHE_LIMITS: cacheLimits,
 }))
+const transfers = vi.hoisted(() => ({ hold: undefined as ((args: string[], cwd?: string) => Promise<void>) | undefined }))
+vi.mock('./gitProcess.js', async original => {
+  const actual = await original<typeof import('./gitProcess.js')>()
+  return { ...actual, runGitProcess: async (...call: Parameters<typeof actual.runGitProcess>) => {
+    await transfers.hold?.(call[0], call[1].cwd)
+    return actual.runGitProcess(...call)
+  } }
+})
 const roots: string[] = []
 afterEach(async () => {
+  cacheLimits.bytes = 16 * 2 ** 20
+  transfers.hold = undefined
   disk.full = false
   filesystemRace.beforeLstat = undefined
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
@@ -191,3 +203,47 @@ it('charges previously retained cache bytes before admitting another fetch', asy
   expect(git(clone, 'rev-parse', 'HEAD')).toBe(f.commit)
   expect((await f.storage()).retainedBytes).toBeGreaterThan(9 * 2 ** 20)
 })
+
+it('lets a transfer for one repository proceed while another repository is still transferring', async () => {
+  const f = await fixture()
+  cacheLimits.bytes = 64 * 2 ** 20
+  const signal = AbortSignal.timeout(30_000)
+  const other = join(f.root, 'other-origin')
+  await mkdir(other, { mode: 0o700 })
+  git(other, 'init', '--template=', '-q', '-b', 'main')
+  const commitIn = async (origin: string, text: string) => {
+    await writeFile(join(origin, 'source.txt'), text)
+    git(origin, 'add', '-A')
+    git(origin, 'commit', '-qm', text)
+    return git(origin, 'rev-parse', 'HEAD')
+  }
+  const system = systemGitWorktreePorts({ ...gitFixtureEnvironment(), HOME: join(f.root, 'home') })
+  const ports: GitWorktreePorts = { cloneDirectory: system.cloneDirectory, git: (args, options) => system.git(
+    args.map(arg => arg === 'https://github.com/fixture/project.git' ? `file://${f.origin}`
+      : arg === 'https://github.com/fixture/other.git' ? `file://${other}` : arg), options) }
+  await ensureCommit(ports, 'fixture/project', f.commit, signal)
+  await ensureCommit(ports, 'fixture/other', await commitIn(other, 'first'), signal)
+  const slowClone = ports.cloneDirectory('fixture/project')
+  const reached = deferred()
+  const release = deferred()
+  transfers.hold = async (args, cwd) => {
+    if (!args.includes('fetch') || cwd !== slowClone) return
+    reached.resolve()
+    await release.promise
+  }
+  const slowCommit = await commitIn(f.origin, 'slow successor')
+  const slow = ensureCommit(ports, 'fixture/project', slowCommit, signal)
+  await reached.promise
+  const otherCommit = await commitIn(other, 'other successor')
+  let timer: NodeJS.Timeout | undefined
+  const outcome = await Promise.race([
+    ensureCommit(ports, 'fixture/other', otherCommit, signal).then(() => 'transferred'),
+    new Promise<string>(resolve => { timer = setTimeout(() => resolve('waiting'), 5_000) }),
+  ])
+  clearTimeout(timer)
+  release.resolve()
+  await slow
+  expect(outcome).toBe('transferred')
+  expect(git(ports.cloneDirectory('fixture/other'), 'cat-file', '-t', otherCommit)).toBe('commit')
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)

@@ -46,6 +46,28 @@ it.each(['starting', 'running'] as const)('requeues permanent CircleCI lookup fa
   } finally { await f.close() }
 })
 
+it.each(['starting', 'running'] as const)('keeps an unreadable CircleCI pipeline owned until its cancellation succeeds from %s', async state => {
+  const f = await cloudCiLookupFixture(state)
+  try {
+    f.control.error = 'permission denied'
+    f.control.cancelError = 'service unavailable'
+    const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }
+    f.advance(4_001)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state,
+      message: expect.stringContaining('could not be reconciled') } })
+    f.advance(75_000)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state,
+      message: expect.stringContaining('Cancellation could not be confirmed') } })
+    f.advance(4_001)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state } })
+    f.control.cancelError = ''
+    f.advance(4_001)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
+      message: expect.stringContaining('queued for another computer') } })
+    expect(f.control.canceled.length).toBeGreaterThanOrEqual(3)
+  } finally { await f.close() }
+})
+
 it.each(['permission denied', 'authentication required', 'HTTP 401 Unauthorized', 'HTTP 403 Forbidden'])(
   'recovers a lookup after %s without dispatching another pipeline', async error => {
     const f = await cloudCiLookupFixture('running')
