@@ -61,15 +61,23 @@ export async function assertBuildComputerTarget(sql: JobSql, target: DeviceProvi
   }
 }
 
-export async function readBuildComputerPreference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
-  const row = (await sql.query<{ target: DeviceProvisioningTarget; revision: string; build_enabled: boolean; build_priority: number;
-    build_allowance_percent: number }>(
-    'select target,revision::text,build_enabled,build_priority,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
-    [buildComputerKey(target)])).rows[0]
+type BuildComputerPreferenceRow = {
+  host_key: string; target: DeviceProvisioningTarget; revision: string; build_enabled: boolean;
+  build_priority: number; build_allowance_percent: number
+}
+
+function preferenceFromRow(target: DeviceProvisioningTarget, row?: BuildComputerPreferenceRow): BuildComputerPreference {
   const matches = row && sameDeviceProvisioningTarget(DeviceProvisioningTargetSchema.parse(row.target), target)
   return BuildComputerPreferenceSchema.parse({ target, revision: Number(row?.revision ?? 0),
     buildEnabled: matches ? row.build_enabled : false, buildPriority: matches ? row.build_priority : 50,
     buildAllowancePercent: matches ? row.build_allowance_percent : 100 })
+}
+
+export async function readBuildComputerPreference(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
+  const row = (await sql.query<BuildComputerPreferenceRow>(
+    'select target,revision::text,build_enabled,build_priority,build_allowance_percent from build_computer_preferences where host_key=$1 for share',
+    [buildComputerKey(target)])).rows[0]
+  return preferenceFromRow(target, row)
 }
 
 export class BuildComputerSettings {
@@ -84,9 +92,22 @@ export class BuildComputerSettings {
     await sql.query('select pg_advisory_xact_lock_shared(hashtext($1))', [`build-order:${target.hostRef.mainId}`])
     return readBuildComputerPreference(sql, target)
   }
-  async requireEnabled(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerPreference> {
+  async preferences(sql: JobSql, targets: DeviceProvisioningTarget[]): Promise<BuildComputerPreference[]> {
+    if (!targets.length) return []
+    for (const mainId of [...new Set(targets.map(target => target.hostRef.mainId))].sort()) {
+      await sql.query('select pg_advisory_xact_lock_shared(hashtext($1))', [`build-order:${mainId}`])
+    }
+    const keys = [...new Set(targets.map(buildComputerKey))].sort()
+    const rows = (await sql.query<BuildComputerPreferenceRow>(`select host_key,target,revision::text,
+      build_enabled,build_priority,build_allowance_percent from build_computer_preferences
+      where host_key=any($1::text[]) order by host_key for share`, [keys])).rows
+    const byHost = new Map(rows.map(row => [row.host_key, row]))
+    return targets.map(target => preferenceFromRow(target, byHost.get(buildComputerKey(target))))
+  }
+  async requireEnabled(sql: JobSql, target: DeviceProvisioningTarget,
+    options: { preference?: BuildComputerPreference } = {}): Promise<BuildComputerPreference> {
     await assertBuildComputerTarget(sql, target)
-    const preference = await this.preference(sql, target)
+    const preference = options.preference ?? await this.preference(sql, target)
     if (!preference.buildEnabled) {
       throw new DomainError('BUILD_COMPUTER_DISABLED', 'Enable builds for this computer in Settings → Computers.', 409)
     }
