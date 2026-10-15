@@ -8,8 +8,46 @@ describe('MCP launcher failure guidance', () => {
       schedule(callback, [1000, 2000].includes(milliseconds) ? 1 : milliseconds, ...args);
     const timeout = AbortSignal.timeout;
     AbortSignal.timeout = milliseconds =>
-      timeout([10000, 120000].includes(milliseconds) ? 100 : milliseconds);
+      timeout([10000, 45000, 120000].includes(milliseconds) ? 100 : milliseconds);
   `
+
+  it.each(['initialize', 'tools/list'])('allows a slow authenticated discovery response during %s', async method => {
+    const f = await mcpLauncherFixture((message, response) => {
+      setTimeout(() => response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        jsonrpc: '2.0', id: message.id, result: method === 'initialize'
+          ? { protocolVersion: '2025-03-26' } : { tools: [{ name: 'context_get' }, { name: 'ci_get' }] },
+      })), 120)
+    }, { preload: `
+      const schedule = globalThis.setTimeout;
+      globalThis.setTimeout = (callback, milliseconds, ...args) =>
+        schedule(callback, [1000, 2000].includes(milliseconds) ? 1 : milliseconds, ...args);
+      const timeout = AbortSignal.timeout;
+      AbortSignal.timeout = milliseconds => timeout(milliseconds === 10000 ? 30
+        : milliseconds === 45000 ? 300 : milliseconds === 55000 ? 800 : milliseconds);
+    ` })
+    try {
+      f.send({ id: 'slow-discovery', method })
+      const result = await f.receive('slow-discovery')
+      expect(result.error).toBeUndefined()
+      expect(result.result).toEqual(method === 'initialize'
+        ? { protocolVersion: '2025-03-26' } : { tools: [{ name: 'context_get' }, { name: 'ci_get' }] })
+    } finally { await f.close() }
+  }, 10_000)
+
+  it.each([{}, { tools: [] }])('reports an invalid or empty discovery result: %j', async result => {
+    const f = await mcpLauncherFixture((message, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
+    })
+    try {
+      f.send({ id: 'empty-discovery', method: 'tools/list' })
+      expect(await f.receive('empty-discovery')).toMatchObject({ error: {
+        data: { kind: 'invalid_response' }, message: expect.stringContaining('tool discovery'),
+      } })
+      expect(f.messages.filter(message => message.id === 'empty-discovery')).toHaveLength(1)
+      expect(f.messages[0]?.result).toBeUndefined()
+    } finally { await f.close() }
+  }, 10_000)
 
   it.each(['initialize', 'tools/list'])('retries transient HTTP failures during %s', async method => {
     const requests: unknown[] = []
