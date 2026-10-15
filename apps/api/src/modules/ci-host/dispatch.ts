@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { isDeepStrictEqual } from 'node:util'
 import { CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import type { HostCiComputer } from './service.js'
 import type { SqlQuery } from '../../infrastructure/transaction.js'
@@ -10,6 +11,7 @@ export const CI_START_MAX_ATTEMPTS = 3
 
 /** A stale planning or queue snapshot may only replace the same unassigned queued record. */
 export async function saveQueuedCiRun(pool: pg.Pool, previous: CiRunRecord, next: CiRunRecord) {
+  if (isDeepStrictEqual(previous, next)) return false
   const saved = await pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
     where id=$1 and state='queued' and host_key is null and record=$5::jsonb`,
   [previous.id, next.state, null, serializeCiJson(next), JSON.stringify(previous)])
@@ -33,6 +35,7 @@ export async function claimCiDispatch(pool: SqlQuery, run: CiRunRecord, computer
 /** Uncertain host deliveries retain dispatchHostKey for same-computer retries. */
 export async function releaseCiDispatch(sql: SqlQuery, run: CiRunRecord, computer: HostCiComputer, message: string,
   options: { clearRetry?: boolean } = {}) {
+  if (run.state !== 'starting') return false
   const next = CiRunRecordSchema.parse({ ...run, state: 'queued', computer: null, step: null,
     startedAt: null, finishedAt: null,
     dispatchHostKey: options.clearRetry ? undefined : run.dispatchHostKey ?? computer.key,

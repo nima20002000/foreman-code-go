@@ -26,6 +26,7 @@ import { buildComputerGatePart, splitUnavailableGateParts } from './gateFallback
 import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
 import { saveQueuedCiRun, ciMessages, withCiTicketLock, type CiTicketSql } from './dispatch.js'
 import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
+import { CiDispatchRejections } from './dispatchRejections.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
@@ -84,6 +85,7 @@ export class HostCiService {
   private readonly observingRuns = new Map<string, Promise<void>>()
   private observationOffset = 0
   private readonly observingComputers = new Map<string, Promise<void>>()
+  private readonly dispatchRejections = new CiDispatchRejections()
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
   private readonly endpoint: HostCiEndpoint
@@ -1027,8 +1029,8 @@ export class HostCiService {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
-    const hasQueuedGate = parsed.some(run => run.gate)
-    this.refreshComputerStatuses(computers.filter(computer => computer.hostRef.kind !== 'cloud' || hasQueuedGate))
+    this.dispatchRejections.retain(parsed)
+    this.refreshComputerStatuses(computers)
     const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
       `select id,record,host_key from ci_runs where state in ('starting','running') or record->>'collection'='pending'
         or (state in ('passed','failed','canceled','lost') and record#>>'{observation,status}'='unavailable')`)).rows
@@ -1046,10 +1048,6 @@ export class HostCiService {
     const unavailable = new Map<string, string>()
     const gateShards = new Map<string, number>()
     for (const computer of computers) {
-      if (computer.hostRef.kind === 'cloud' && !hasQueuedGate) {
-        totals.set(computer.key, 1)
-        continue
-      }
       const status = this.planningEndpoint.status(computer)
       const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
       totals.set(computer.key, status?.ready ? slots : 0)
@@ -1145,7 +1143,12 @@ export class HostCiService {
           || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)
         const computer = order.shift()!
-        const reason = unavailable.get(computer.key)
+        const status = this.planningEndpoint.status(computer)
+        const rejected = this.dispatchRejections.reason(run.id, computer, status)
+        const notReady = status?.ready ? undefined
+          : status?.reasons.join('; ') || unavailable.get(computer.key) || 'CI status unavailable'
+        const reason = computer.hostRef.kind === 'cloud' && !run.ciMirror
+          ? 'This workspace has no CI mirror' : rejected ?? notReady
         if (reason) {
           reasons.push(`${computer.label}: ${reason}`)
           continue
@@ -1203,6 +1206,9 @@ export class HostCiService {
         if (outcome === 'pending') return
         run = await this.read(run.id, run.workspaceId)
         if (run.state !== 'queued') return
+        if (outcome === 'busy' || outcome === 'rejected') {
+          this.dispatchRejections.record(run.id, computer, status, run.providerMessage ?? run.message ?? outcome)
+        }
         assignments.delete(run.id)
         if (outcome === 'busy') used.set(computer.key, totals.get(computer.key) ?? 1)
         else releaseSlot(computer)
