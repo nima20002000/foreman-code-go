@@ -11,6 +11,7 @@ export async function expectCiPreparationOutsideTransaction(sql: SqlQuery, comma
     ) as owns_command
     from pg_stat_activity a where a.datname=current_database() and a.pid<>pg_backend_pid()
       and a.application_name in ('ci-admission-test','graphql-lifecycle-command')`, [commandKey])
-  expect(rows.filter(session => session.owns_command)).toHaveLength(1)
-  expect(rows.filter(session => session.xact_start !== null)).toHaveLength(0)
+  const preparation = rows.filter(session => session.owns_command)
+  expect(preparation).toHaveLength(1)
+  expect(preparation.filter(session => session.xact_start !== null)).toHaveLength(0)
 }
