@@ -1080,8 +1080,6 @@ export class HostCiService {
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, scope: 'full' as const, integrationShards: run.integrationShards!, files: run.files }
         : affectedFiles
-      const siblingComputers = new Set(run.partition ? [...assignments.values()]
-        .filter(assignment => assignment.groupId === run.groupId).map(assignment => assignment.computerKey) : [])
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
@@ -1092,12 +1090,15 @@ export class HostCiService {
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
-        .sort((left, right) => Number(siblingComputers.has(left.key)) - Number(siblingComputers.has(right.key))
+      while (order.length) {
+        const siblingComputers = new Set([...assignments.values()]
+          .filter(assignment => assignment.groupId === run.groupId).map(assignment => assignment.computerKey))
+        order.sort((left, right) => Number(siblingComputers.has(left.key)) - Number(siblingComputers.has(right.key))
           || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
           || preferred(right) - preferred(left)
           || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)
-      for (const computer of order) {
+        const computer = order.shift()!
         const reason = unavailable.get(computer.key)
         if (reason) {
           reasons.push(`${computer.label}: ${reason}`)
