@@ -68,5 +68,6 @@ describe('work handoff source validation', () => {
       .mockResolvedValueOnce(queryResult([]))
     await expect(admitWorkHandoffLocked(f.context, f.execution.id))
       .rejects.toMatchObject({ code: 'WORK_SOURCE_ACTIVATION_CONFLICT' })
+    expect(f.context.hooks.publishLocked).not.toHaveBeenCalled()
   })
 })

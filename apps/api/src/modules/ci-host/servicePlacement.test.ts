@@ -167,6 +167,7 @@ it('rechecks sibling placement before falling back after a busy start', async ()
   expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key, spare.key])
   expect(records.map(run => run.state)).toEqual(['running', 'running'])
   expect(records[0]?.computer?.hostRef).toEqual(spare.hostRef)
+  expect(records[1]?.computer?.hostRef).toEqual(secondHost.hostRef)
 })
 
 it.each(['busy', 'not-ready', 'offline'])('uses a second slot when the other computer is %s', async reason => {

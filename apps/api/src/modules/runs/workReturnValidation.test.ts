@@ -118,11 +118,13 @@ describe('received work return identity', () => {
     const input = joinedInput(f, 2)
     const ids = [`${f.requestId}-0`, `${f.requestId}-1`]
     const result = f.answer(id, 'accepted')
+    const before = structuredClone(input)
     expect(() => parseWorkResultForInput(result, input)).toThrow()
     expect(workResultRepairPrompt(result, f.contract, input))
       .toContain(`Valid open request IDs: ${JSON.stringify(ids)}`)
     expect(normalizeRepeatTerminal(f.version, f.scope, f.ref, { ...f.execution, input, result }).result)
       .toMatchObject({ outcome: 'failed', error: { code: 'WORK_RESULT_INVALID' } })
+    expect(input).toEqual(before)
   })
 
   it('accepts an explicit matching ID when several received requests are open', () => {
