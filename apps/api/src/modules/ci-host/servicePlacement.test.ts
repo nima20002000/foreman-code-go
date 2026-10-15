@@ -15,7 +15,10 @@ function deferred() {
   return { promise, resolve }
 }
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 const host: HostCiComputer = {
   key: 'main:builder', hostRef: { kind: 'main', mainId: 'main' }, label: 'Builder', priority: 0,
@@ -31,7 +34,8 @@ function queuedRuns(count: number) {
     id: `${groupId.slice(0, 24)}${String(index).padStart(12, '0')}`,
     workspaceId: 'workspace', groupId, suite: 'integration', part: null,
     scope: 'full', files: [], partition: count > 1 ? { index, count } : null,
-    repository: 'owner/repo', commit: 'a'.repeat(40), state: 'queued', computer: null, step: null,
+    repository: 'owner/repo', ciMirror: 'example/ci-mirror', commit: 'a'.repeat(40),
+    state: 'queued', computer: null, step: null,
     exitCode: null, message: null, queuedAt: '2026-10-12T00:00:00.000Z', startedAt: null, finishedAt: null,
     initiator: { principalId: 'operator', executionId: null },
   }))
@@ -124,6 +128,122 @@ const secondHost: HostCiComputer = {
   key: 'device:builder', hostRef: { kind: 'device', mainId: 'main', deviceId: 'builder' },
   label: 'Second builder', priority: -1,
 }
+
+it.each([false, true])('keeps cloud computers out of a workspace without a mirror, gate=%s', async gate => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build',
+    partition: null, ciMirror: null, gate, ...(gate ? { plannedHostKey: cloud.key } : {}) }))
+  const github: HostCiComputer = { ...cloud, key: 'cloud:github',
+    hostRef: { ...cloud.hostRef, provider: 'github' } }
+  const occupied = new Set([host.key])
+  const f = fleet(records, [cloud, github, host], new Map(), occupied)
+  try {
+    await f.service.dispatch()
+    expect(f.started).toEqual([])
+    expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+    occupied.clear()
+    await f.service.close()
+    const available = fleet(records, [cloud, github, host])
+    try {
+      await available.service.dispatch()
+      expect(available.started.map(start => start.computer.key)).toEqual([host.key])
+    } finally {
+      await available.service.close()
+    }
+  } finally {
+    await f.service.close()
+  }
+})
+
+it.each(['github', 'circleci'] as const)('checks %s login readiness before claiming an ordinary ticket', async provider => {
+  const computer: HostCiComputer = { ...cloud, key: `cloud:${provider}`,
+    hostRef: { ...cloud.hostRef, provider } }
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+  const f = fleet(records, [computer], new Map([[computer.key, 'Provider login required']]))
+  const request = vi.spyOn(f.endpoint, 'request')
+  try {
+    await f.service.dispatch()
+    expect(request.mock.calls.filter(([, input]) => input.operation === 'start')).toEqual([])
+    expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+  } finally {
+    await f.service.close()
+  }
+})
+
+it.each(['CI_HOST_BUSY', 'CI_CLOUD_UNAVAILABLE'])(
+  'excludes every unchanged provider slot after %s and retries after readiness changes', async code => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+    const peer: HostCiComputer = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
+    const unavailable = new Map<string, string>()
+    const f = fleet(records, [cloud, peer], unavailable)
+    let reject = true
+    const request = f.endpoint.request
+    const calls = vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+      if (input.operation === 'start' && reject) throw new DomainError(code, 'Executor rejected the ticket', 409)
+      return request(computer, input)
+    })
+    const starts = () => calls.mock.calls.filter(([, input]) => input.operation === 'start')
+    try {
+      for (let pass = 0; pass < 4; pass++) {
+        vi.setSystemTime(Date.now() + 6000)
+        await f.service.dispatch()
+      }
+      expect(starts()).toHaveLength(1)
+      expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+      const unchanged = structuredClone(records[0])
+      reject = false
+      await f.service.dispatch()
+      expect(starts()).toHaveLength(1)
+      expect(records[0]).toEqual(unchanged)
+
+      for (const computer of [cloud, peer]) unavailable.set(computer.key, 'Provider login required')
+      vi.setSystemTime(Date.now() + 6000)
+      await f.service.dispatch()
+      expect(starts()).toHaveLength(1)
+      unavailable.clear()
+      vi.setSystemTime(Date.now() + 6000)
+      await f.service.dispatch()
+      expect(starts()).toHaveLength(2)
+      expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: cloud.hostRef } })
+    } finally {
+      await f.service.close()
+    }
+  },
+)
+
+it('keeps a rejected build computer excluded until its capacity changes', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+  const slots = new Map([[host.key, 1]])
+  const f = fleet(records, [host], new Map(), new Set(), slots)
+  const request = f.endpoint.request
+  let reject = true
+  let attempts = 0
+  const calls = vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+    if (input.operation === 'start') {
+      attempts++
+      // Bound a broken dispatch loop so the regression can report its failed assertion.
+      if (reject && attempts <= 10) throw new DomainError('CI_HOST_BUSY', 'Preparation capacity changed', 409)
+    }
+    return request(computer, input)
+  })
+  const starts = () => calls.mock.calls.filter(([, input]) => input.operation === 'start')
+  try {
+    for (let pass = 0; pass < 4; pass++) {
+      vi.setSystemTime(Date.now() + 6000)
+      await f.service.dispatch()
+    }
+    expect(starts()).toHaveLength(1)
+    reject = false
+    slots.set(host.key, 2)
+    vi.setSystemTime(Date.now() + 6000)
+    await f.service.dispatch()
+    expect(starts()).toHaveLength(2)
+    expect(records[0]?.state).toBe('running')
+  } finally {
+    await f.service.close()
+  }
+})
 
 it('moves an expired cloud dispatch to another computer and preserves the lookup reason', async () => {
   const reason = 'CircleCI execution could not be reconciled: CircleCI run is not visible.'
