@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import { ServiceHealthSchema } from '@foreman-code/contracts/computer-maintenance'
 import { readServiceHealth, registerService, reportServiceFailure, trackService } from './serviceHealth.js'
 
 const health = (name: string, now: number) => readServiceHealth(now).find(service => service.name === name)
@@ -7,6 +8,24 @@ it('reports a registered loop that never ran as stalled once it misses its caden
   registerService('health-never-ran', { cadenceMs: 1000, deadlineMs: 5000 }, 0)
   expect(health('health-never-ran', 500)).toMatchObject({ status: 'ok', lastStartedAt: null, nextDueAt: new Date(1000).toISOString() })
   expect(health('health-never-ran', 62_000)).toMatchObject({ status: 'stalled', lastStartedAt: null })
+})
+
+it('keeps a stalled service with a long retained error valid for computer status readback', async () => {
+  const schedule = { deadlineMs: 5000 }
+  await expect(trackService('health-long-error', schedule, async () => {
+    throw new Error('x'.repeat(500))
+  }, () => 0)).rejects.toThrow()
+  let finish!: () => void
+  const pass = trackService('health-long-error', schedule,
+    () => new Promise<void>(resolve => { finish = resolve }), () => 1000)
+  try {
+    const stalled = health('health-long-error', 7000)
+    expect(stalled).toMatchObject({ status: 'stalled', lastError: expect.stringContaining('Last error:') })
+    expect(ServiceHealthSchema.safeParse(stalled).success).toBe(true)
+  } finally {
+    finish()
+    await pass
+  }
 })
 
 it('reports a pass in flight past its deadline as stalled, then ok after it finishes', async () => {

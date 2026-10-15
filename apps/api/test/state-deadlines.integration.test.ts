@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CiRunRecordSchema } from '@foreman-code/contracts'
+import { expireOverdueCiRuns } from '../src/modules/ci-host/deadlines.js'
 import { withTransaction } from '../src/infrastructure/transaction.js'
 import { sweepStateDeadlines } from '../src/modules/diagnostics/stateDeadlines.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -88,12 +89,13 @@ it('fails overdue CI tickets in the database and keeps a running executor\'s slo
   const queued = ticket('queued', { message: 'No ready computer for lint; no eligible computers' })
   const running = ticket('running', { startedAt: at(4 * 60 * 60_000), step: 'lint',
     computer: { hostRef: { kind: 'main', mainId: 'main' }, label: 'Main computer' } })
+  const sources = { ciRuns: (now: Date) => expireOverdueCiRuns(db.pool, now, async run => run) }
   try {
     for (const [run, hostKey] of [[queued, null], [running, 'main:main']] as const) {
       await db.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,host_key,record)
         values($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.groupId, run.state, hostKey, JSON.stringify(run)])
     }
-    expect(await sweepStateDeadlines(db.pool)).toMatchObject({ ci: 2 })
+    expect(await sweepStateDeadlines(db.pool, sources)).toMatchObject({ ci: 2 })
     const rows = (await db.pool.query<{ id: string; state: string; host_key: string | null; record: unknown }>(
       'select id,state,host_key,record from ci_runs where id=any($1::uuid[])', [[queued.id, running.id]])).rows
     const saved = new Map(rows.map(row => [row.id, { ...row, record: CiRunRecordSchema.parse(row.record) }]))
@@ -101,7 +103,7 @@ it('fails overdue CI tickets in the database and keeps a running executor\'s slo
       code: 'CI_QUEUE_DEADLINE_EXCEEDED', cause: 'No ready computer for lint; no eligible computers', executor: 'none' } } })
     expect(saved.get(running.id)).toMatchObject({ state: 'failed', host_key: 'main:main', record: { collection: 'failed',
       observation: { status: 'unavailable' }, deadlineExceeded: { code: 'CI_RUN_DEADLINE_EXCEEDED', executor: 'retained' } } })
-    expect(await sweepStateDeadlines(db.pool)).toMatchObject({ ci: 0 })
+    expect(await sweepStateDeadlines(db.pool, sources)).toMatchObject({ ci: 0 })
   } finally {
     await graph.app.close()
     await db.close()

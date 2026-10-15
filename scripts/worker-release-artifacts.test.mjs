@@ -13,6 +13,28 @@ import { WorkerArtifactIndexSchema } from '../packages/contracts/src/workerUpdat
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
 
+test('persists the publication deadline as soon as built artifacts become pending', async t => {
+  const f = await fixture(t)
+  const before = Date.now()
+  await buildWorkerReleaseArtifacts(f)
+  const after = Date.now()
+  const index = WorkerArtifactIndexSchema.parse(JSON.parse(await readFile(join(f.directory, 'index.json'), 'utf8')))
+  assert.equal(index.publication.state, 'pending')
+  const startedAt = Date.parse(index.publication.startedAt)
+  assert.ok(startedAt >= before && startedAt <= after)
+  assert.equal(Date.parse(index.publication.deadlineAt), startedAt + 2 * 60 * 60_000)
+  let attempted = false
+  await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory,
+    repositoryName: 'example/worker', commit: f.commit, publish: async () => {
+      attempted = true
+      const pending = JSON.parse(await readFile(join(f.directory, 'index.json'), 'utf8')).publication
+      assert.equal(pending.startedAt, index.publication.startedAt)
+      assert.equal(pending.deadlineAt, index.publication.deadlineAt)
+      throw new Error('Publication unavailable')
+    } }), /Publication unavailable/)
+  assert.equal(attempted, true)
+})
+
 test('a hung publication command persists its timeout and a retry time, then recovers', async t => {
   const f = await fixture(t)
   await buildWorkerReleaseArtifacts(f)
