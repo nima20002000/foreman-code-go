@@ -184,10 +184,10 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   return result
 }
 
-/** The oldest unfinished gate owns the full-run barrier across workspaces. */
+/** The oldest unfinished gate runs first; only another gate waits for it. Other work backfills what the gate leaves idle. */
 export function gateQueueBlock(run: CiRunRecord, gate: CiRunRecord | undefined): string | undefined {
-  if (!gate || run.groupId === gate.groupId || run.scope === 'affected' && !run.gate) return undefined
-  return `Waiting behind CI gate ${gate.groupId}; full requests resume when that gate finishes.`
+  if (!gate || run.groupId === gate.groupId || !run.gate) return undefined
+  return `Waiting behind CI gate ${gate.groupId}; this gate resumes when that gate finishes.`
 }
 
 /** Cloud slots share provider capacity; idle build computers help after their own gate part finishes. */

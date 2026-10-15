@@ -20,6 +20,13 @@ test_results="${TEST_RESULTS_OUTPUT:-}"
 unset TEST_RESULTS_OUTPUT
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
 
+# Cloud workflows cache this prefix, so the harness CLIs install once per cache key instead of once per part.
+clis_prefix=""
+if [ -n "${FOREMAN_CODE_CI_CLIS_PREFIX:-}" ]; then
+  clis_prefix="$(realpath -m "$FOREMAN_CODE_CI_CLIS_PREFIX")"
+  export PATH="$clis_prefix/bin:$PATH"
+fi
+
 if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
   pnpm() { corepack pnpm "$@"; }
 fi
@@ -34,7 +41,7 @@ fi
 if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   case "$SUITE" in unit-web|unit-web-heavy) exit 0 ;; esac
   case "$SUITE" in unit|unit-*|integration) ;; *) exit 0 ;; esac
-  clis="npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
+  clis="npm install --global ${clis_prefix:+--prefix $clis_prefix }--silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
   if [ "$1" = prepare ]; then
     mkdir -p "$state"
     prepare_one() {
@@ -61,7 +68,13 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   # scripts/test-db.mjs needs only Node, so the database starts while packages install.
   background db 'node scripts/test-db.mjs up'
   # Harness tests check the installed Codex and Claude CLIs, as on our build computers; same 48-hour package age rule.
-  case "$SUITE" in unit|unit-api|integration) background clis "$clis" ;; esac
+  case "$SUITE" in unit|unit-api|integration)
+    if [ -n "$clis_prefix" ] && [ -x "$clis_prefix/bin/codex" ] && [ -x "$clis_prefix/bin/claude" ]; then
+      background clis true
+    else
+      background clis "$clis"
+    fi ;;
+  esac
   exit 0
 fi
 

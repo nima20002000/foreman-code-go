@@ -979,3 +979,18 @@ it('lets later full requests dispatch when the oldest gate already has a failed 
   expect(records[2]).toMatchObject({ state: 'running', message: null })
   expect(records[1]!.state).toBe('running')
 })
+
+it('lets an unrelated full request use idle capacity while another workspace gate runs', async () => {
+  const [gate] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true, partition: null,
+    state: 'running', computer: { hostRef: cloud.hostRef, label: cloud.label },
+    startedAt: '2026-10-12T00:00:01.000Z' }))
+  const [later] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+    queuedAt: '2026-10-12T00:02:00.000Z' }))
+  const records = [gate!, later!]
+  const second = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
+  const f = fleet(records, [cloud, second])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([later!.id])
+  expect(records[1]).toMatchObject({ state: 'running', message: null })
+  expect(records[0]!.state).toBe('running')
+})

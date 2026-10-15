@@ -128,6 +128,8 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     + 'echo "CI shard ceiling $FOREMAN_CODE_CI_INTEGRATION_SHARDS"\n'
     + 'echo "CI budget $FOREMAN_CODE_CI_CPU_COUNT $FOREMAN_CODE_CI_MEMORY_BYTES $FOREMAN_CODE_VERIFICATION_UNIT_WORKERS"\n'
     + 'echo "CI database $FOREMAN_CODE_CI_DATABASE_CPUS $FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES"\n'
+    + 'if [ "$2" = test ] && [ -n "$FOREMAN_CODE_VITEST_CACHE" ]; then mkdir -p "$FOREMAN_CODE_VITEST_CACHE";'
+    + ' echo "vitest cache entries $(ls "$FOREMAN_CODE_VITEST_CACHE" | wc -l)"; touch "$FOREMAN_CODE_VITEST_CACHE/$RANDOM$RANDOM"; fi\n'
     + `${integration}${unitReport}`
     + (options.inspectSource ? 'if [ "$2" = typecheck ]; then node program.mjs; fi\n' : '')
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
@@ -509,6 +511,20 @@ describe('host CI runner', () => {
     // A retried start returns the same run instead of starting it again.
     expect(await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'unit' }))
       .toMatchObject({ run: { runId, state: 'passed' } })
+  })
+
+  it('keeps the Vitest transform cache for the next part that holds the same checkout slot', async () => {
+    const f = await computer()
+    const entries: number[] = []
+    for (let part = 0; part < 2; part++) {
+      const runId = randomUUID()
+      await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'unit' })
+      const done = await f.settle(runId)
+      expect(done.run.state).toBe('passed')
+      entries.push(Number(/vitest cache entries (\d+)/.exec(done.text)?.[1]))
+    }
+    expect(entries[0]).toBe(0)
+    expect(entries[1]).toBeGreaterThan(0)
   })
 
   it('reports a failing suite with its exit code and step', async () => {

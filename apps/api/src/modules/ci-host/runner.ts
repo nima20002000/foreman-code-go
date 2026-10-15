@@ -786,7 +786,7 @@ export class HostCiRunner {
         // Only test suites report per-test progress; typecheck, lint and build can stay silent for minutes.
         + (['unit', 'integration'].includes(meta.suite) ? ` node ${quote(watchdog)} --` : '') + ` bash -c ${quote(command)}`
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
+      `export TMPDIR=${quote(join(run, 'tmp'))} FOREMAN_CODE_CI_DATABASE_STATE=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
         + ` FOREMAN_CODE_CI_CONTRACTS_CACHE=${quote(join(cache, 'contracts'))}`
         + ` FOREMAN_CODE_CI_TYPECHECK_CACHE=${quote(join(source, '..', 'typecheck-cache'))}`
         + ` FOREMAN_CODE_CI_CPU_COUNT=${Math.max(1, Math.floor(resources.cpuCount))}`
@@ -796,7 +796,7 @@ export class HostCiRunner {
         // The repository's suite hook writes structured test results here; integration has its own setting.
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
           + (meta.suite === 'integration' ? '' : ` TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`)
-          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(run, 'vitest-cache'))}` : '') + integrationEnvironment,
+          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(source, '..', 'vitest-cache'))}` : '') + integrationEnvironment,
       ...(database ? [`export FOREMAN_CODE_CI_HOST_RUN_ID=${quote(meta.runId)}`
         + ` FOREMAN_CODE_CI_DATABASE_CPUS=${databaseResources.cpuCount}`
         + ` FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES=${databaseResources.memoryBytes}`] : []),

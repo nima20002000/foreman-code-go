@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { ciPostgresCacheDirectory } from './ci-postgres-cache.mjs'
+import { ciPostgresCacheDirectory, ciTemplateCacheMarker } from './ci-postgres-cache.mjs'
 
 function reusePrivateDatabase(action) {
   if (action !== 'up') throw new Error('The verification runtime owns private PostgreSQL shutdown')
@@ -209,7 +209,7 @@ export function composeDatabase(action, {
       writeFileSync(join(environment.TMPDIR, 'test-database-url'),
         `postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:${port}/postgres`, { mode: 0o600 })
       if (persistentCache) {
-        writeFileSync(join(environment.TMPDIR, 'test-database-template-cache'), persistentCache, { mode: 0o600 })
+        writeFileSync(ciTemplateCacheMarker(environment), persistentCache, { mode: 0o600 })
       }
     }
   } catch (error) {
@@ -224,7 +224,7 @@ export function composeDatabase(action, {
 function hostDatabase(action) {
   if (process.env.COMPOSE_PROJECT_NAME?.startsWith('fx-')) return composeDatabase(action)
   const cache = ciPostgresCacheDirectory()
-  const marker = process.env.TMPDIR && join(process.env.TMPDIR, 'test-database-template-cache')
+  const marker = ciTemplateCacheMarker()
   if (action !== 'up' && marker && existsSync(marker)) {
     process.stdout.write('Retaining the CI PostgreSQL server; job databases are cleaned by their owners\n')
     return

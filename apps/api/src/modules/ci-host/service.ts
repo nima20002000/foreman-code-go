@@ -1158,7 +1158,8 @@ export class HostCiService {
         .filter(computer => !run.setupRetry || !isDeepStrictEqual(computer.hostRef, run.setupRetry.failedComputer))
         .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
         .filter(computer => !run.gate || canTakeGatePart(run, computer))
-        .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
+        // Full-run backfill never takes a build computer a queued gate part is still waiting to use exclusively.
+        .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key) && (run.scope === 'affected' || !queued.some(item => item.gate && item.plannedHostKey === computer.key)))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
       while (order.length) {

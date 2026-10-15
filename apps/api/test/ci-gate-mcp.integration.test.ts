@@ -672,7 +672,7 @@ it('runs cloud checks before systemd integration overflow even when checks move 
   }
 })
 
-it('queues full requests and a second gate behind the first while affected requests keep using spare cloud slots', async () => {
+it('queues a second gate behind the first while full and affected requests keep using spare cloud slots', async () => {
   const f = await fixture({ cloudSlots: 40 })
   try {
     const gate = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
@@ -686,16 +686,15 @@ it('queues full requests and a second gate behind the first while affected reque
     const second = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
     await settle(f.ci)
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: first.ticketId })).group?.state).toBe('running')
-    for (const ticketId of [full.ticketId, second.ticketId]) {
-      expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))).toMatchObject({
-        run: { state: 'queued', message: expect.stringContaining('gate') },
-        queue: { reason: expect.stringContaining('gate') },
-      })
+    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: second.ticketId }))).toMatchObject({
+      run: { state: 'queued', message: expect.stringContaining('gate') },
+      queue: { reason: expect.stringContaining('gate') },
+    })
+    for (const ticketId of [full.ticketId, affected.ticketId]) {
+      expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId })).run.state).toBe('running')
     }
-    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: affected.ticketId })).run.state).toBe('running')
     await f.finishGate(first.ticketId)
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: second.ticketId })).group?.state).toBe('running')
-    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: full.ticketId })).run.state).toBe('queued')
   } finally { await f.close() }
 })
 
