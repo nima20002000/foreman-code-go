@@ -1,16 +1,17 @@
 import type pg from 'pg'
 import { CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import type { HostCiComputer } from './service.js'
-import { withTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
+import type { SqlQuery } from '../../infrastructure/transaction.js'
 import { ExecutionLimiter } from '../runs/limiter.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 const dispatchLimits = new WeakMap<pg.Pool, ExecutionLimiter>()
 const dispatchSignal = new AbortController().signal
 export const CI_START_ACK_TIMEOUT_MS = 120_000
 export const CI_START_MAX_ATTEMPTS = 3
 
-/** Serialize remote entry and closure across Main processes without blocking cancellation intent writes. */
+/** Keep ticket exclusion across network waits without retaining a transaction or row locks. */
 export async function withCiTicketLock<T>(pool: pg.Pool, ticketId: string, work: (client: pg.PoolClient) => Promise<T>) {
   let limit = dispatchLimits.get(pool)
   if (!limit) {
@@ -18,12 +19,37 @@ export async function withCiTicketLock<T>(pool: pg.Pool, ticketId: string, work:
     limit = new ExecutionLimiter(Math.max(1, pool.options.max - 2))
     dispatchLimits.set(pool, limit)
   }
-  return limit.run(dispatchSignal, () => withTransaction(pool, async client => {
-    const row = (await client.query<{ acquired: boolean }>(
-      'select pg_try_advisory_xact_lock(hashtextextended($1,0)) as acquired', [`ci-dispatch:${ticketId}`])).rows[0]
-    if (!row?.acquired) return undefined
-    return work(client)
-  }))
+  return limit.run(dispatchSignal, async () => {
+    const client = await pool.connect()
+    const key = `ci-dispatch:${ticketId}`
+    let acquired = false
+    let discard = false
+    try {
+      const row = (await client.query<{ acquired: boolean }>(
+        'select pg_try_advisory_lock(hashtextextended($1,0)) as acquired', [key])).rows[0]
+      acquired = row?.acquired === true
+      if (!acquired) return undefined
+      return await work(client)
+    } catch (error) {
+      if (!acquired) discard = true
+      throw error
+    } finally {
+      if (acquired) {
+        try {
+          const row = (await client.query<{ released: boolean }>(
+            'select pg_advisory_unlock(hashtextextended($1,0)) as released', [key])).rows[0]
+          if (!row?.released) {
+            discard = true
+            componentLogger('jobs').warn({ ticketId }, 'Discarding connection after CI ticket lock was lost')
+          }
+        } catch (error) {
+          discard = true
+          componentLogger('jobs').warn({ err: error, ticketId }, 'Discarding CI ticket lock connection')
+        }
+      }
+      client.release(discard)
+    }
+  })
 }
 
 /** A stale planning or queue snapshot may only replace the same unassigned queued record. */

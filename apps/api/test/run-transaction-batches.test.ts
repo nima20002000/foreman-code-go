@@ -1,7 +1,7 @@
 import { nativeStreamFixture } from './helpers/nativeStreamFixture.js'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'

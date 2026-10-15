@@ -217,7 +217,7 @@ export class PostgresInteractionRepository {
       if (input.principal) {
         const target = await client.query<{ run_id: string }>('select run_id from durable_interactions where id=$1', [input.id])
         targetRunId = target.rows[0]?.run_id
-        principal = await lockActiveWorkerPrincipal(client, input.principal, targetRunId)
+        principal = await lockActiveWorkerPrincipal(client, input.principal, targetRunId, 'update')
       }
       const found = await client.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [input.id])
       const current = found.rows[0] ? DurableInteractionSchema.parse(found.rows[0].record) : undefined
