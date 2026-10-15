@@ -151,6 +151,25 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
 }
 
 describe('installed workflow receipt transfer', () => {
+  it('reports unexpected carrier task failures during cleanup', async () => {
+    const f = fixture()
+    const root = await mkdtemp(join(tmpdir(), 'workflow-receipt-failure-'))
+    const journal = await RemoteOperationJournal.open(join(root, 'journal.json'), { initializeNewInstallation: true })
+    const failure = new Error('carrier reader failed')
+    const run = vi.spyOn(DeviceApplicationChannel.prototype, 'run').mockRejectedValueOnce(failure)
+    try {
+      const channel = carrier(f, journal)
+      await Promise.resolve()
+      await expect(channel.close()).rejects.toMatchObject({ errors: [failure] })
+      expect(channel.rawMain.closed).toBe(true)
+      expect(channel.rawWorker.closed).toBe(true)
+    } finally {
+      run.mockRestore()
+      await journal.close()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('delivers carrier frames on an I/O turn after queued microtasks', async () => {
     const sender = new Socket()
     const receiver = new Socket()
