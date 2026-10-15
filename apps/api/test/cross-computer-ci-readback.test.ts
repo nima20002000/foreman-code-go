@@ -33,11 +33,11 @@ it('rejects duplicate tickets, a missing root ticket and a blank log line', () =
   expect(AgentCiReportSchema.safeParse({ ...value, logLine: ' ' }).success).toBe(false)
 })
 
-it('requires a terminal CI lifecycle and rejects regression to queued work', () => {
+it('requires a terminal CI lifecycle and rejects regression within an attempt', () => {
   expect(() => requireCiStateOrder(['queued', 'starting', 'running', 'passed'])).not.toThrow()
   expect(() => requireCiStateOrder(['starting', 'failed'])).not.toThrow()
   expect(() => requireCiStateOrder(['queued', 'running'])).toThrow()
-  expect(() => requireCiStateOrder(['running', 'queued', 'passed'])).toThrow()
+  expect(() => requireCiStateOrder(['running', 'starting', 'passed'])).toThrow()
   expect(() => requireCiStateOrder(['unknown', 'passed'])).toThrow()
   expect(() => requireCiStateOrder(['failed', 'passed'])).toThrow()
 })
@@ -61,4 +61,21 @@ it('fails when a log reader stops advancing before the log is complete', async (
     workspaceId: 'workspace', ticketId: randomUUID(),
   })).rejects.toThrow('advance')
   expect(callTool).toHaveBeenCalledTimes(1)
+})
+
+it.each([
+  ['queued', 'starting', 'running', 'queued', 'starting', 'running', 'passed'],
+  ['running', 'queued', 'passed'],
+  ['starting', 'queued', 'running', 'passed'],
+])('accepts a recovered CI lifecycle: %j', (...states) => {
+  expect(() => requireCiStateOrder(states)).not.toThrow()
+})
+
+it.each([
+  ['passed', 'queued', 'passed'],
+  ['failed', 'queued', 'passed'],
+  ['canceled', 'running', 'passed'],
+  ['lost', 'starting', 'passed'],
+])('rejects changes after terminal CI state: %j', (...states) => {
+  expect(() => requireCiStateOrder(states)).toThrow()
 })
