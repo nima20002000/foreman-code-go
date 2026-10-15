@@ -101,7 +101,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   const worker = await faultWorkflowWorker(directory, { mcpUnavailable: options.mcpUnavailable })
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
   const intents = new Map<string, DispatchIntent>()
-  const targetPrepared = deferred()
+  const sessionReady = deferred()
+  let sessionCommitted = false
   const contexts = new Map<string, NativeManagerResolutionContext>()
   const owners = new Map<string, () => RunOwnership | undefined>()
   let placements: Awaited<ReturnType<typeof mixedComputerPlacement>>
@@ -110,6 +111,16 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   let preparationFailure: { error: unknown } | undefined
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
+    nativeCommitted: async () => {
+      if (sessionCommitted) return
+      const intent = [...intents.values()].find(value => value.nodeId === affected.id)
+      if (!intent) return
+      const execution = await base.runs.getExecution(intent.executionId)
+      if (execution?.state === 'running' && execution.nativeSessionId) {
+        sessionCommitted = true
+        sessionReady.resolve()
+      }
+    },
     validateContinuation: (executionId, signal) => validatePlacement(executionId, signal),
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
       await placements.producer.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId)
@@ -123,7 +134,6 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         const native = await readNativePlacement(base.db.pool, execution.id)
         if (!native) throw new Error('Expected prepared native source')
         nativePlacements.set(execution.id, native)
-        if (execution.workflowNodeId === affected.id) targetPrepared.resolve()
         return paths
       } catch (error) {
         preparationFailure = { error }
@@ -274,10 +284,10 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       },
       launch() {
         started = Promise.allSettled([base.engine.start(base.f.run.id)])
-        return Promise.race([targetPrepared.promise, started.then(results => {
+        return Promise.race([sessionReady.promise, started.then(results => {
           const failed = results.find(result => result.status === 'rejected')
           if (failed?.status === 'rejected') throw failed.reason
-          return targetPrepared.promise
+          return sessionReady.promise
         })])
       },
       release() { releaseAffected = true; releaseSibling = true },
