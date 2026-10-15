@@ -1,4 +1,7 @@
 export const activityHistoryIndexesMigration = { version: 2026101517, sql: `
+  -- Rewrites the whole native event history (hundreds of MB in production); the runtime statement deadline
+  -- is for request work, not this one-time migration inside the migration transaction.
+  set local statement_timeout = 0;
   create function native_activity_identity(event jsonb) returns jsonb
     language sql immutable parallel safe as $$
     with normalized as (
