@@ -46,19 +46,11 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
     },
     preparePlacementExecution: async (owner, run, execution) => {
       if (!placement) throw new Error('Placement fixture is not ready.')
-      if (failedCheck && execution.workflowNodeId !== coordinator.id) {
-        if (execution.workflowNodeId === workers[1]!.id) {
-          await readUntil(() => owner.oneShotConnection().transaction(async sql => (await sql.query(
-            'select count(*)::integer as total from harness_executions where run_id=$1', [run.id])).rows[0]?.total),
-            total => total === 4,
-            { timeoutMs: 10_000, description: 'all handed-off node reservations' })
-        } else {
-          await readUntil(() => owner.oneShotConnection().transaction(async sql => (await sql.query(
-            'select pending from run_cleanup_intents where run_id=$1', [run.id])).rows[0]?.pending),
-          pending => pending === true,
-          { timeoutMs: 10_000, description: 'cleanup after the failed profile check' })
-          return undefined
-        }
+      if (failedCheck && execution.workflowNodeId === workers[1]!.id) {
+        await readUntil(() => owner.oneShotConnection().transaction(async sql => (await sql.query(
+          'select count(*)::integer as total from harness_executions where run_id=$1', [run.id])).rows[0]?.total),
+        total => total === 4,
+        { timeoutMs: 10_000, description: 'all handed-off node reservations' })
       }
       return prepareHandoffSource(owner, run, execution, placement)
     },
