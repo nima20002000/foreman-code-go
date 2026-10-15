@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -246,4 +246,68 @@ it('lets a transfer for one repository proceed while another repository is still
   expect(outcome).toBe('transferred')
   expect(git(ports.cloneDirectory('fixture/other'), 'cat-file', '-t', otherCommit)).toBe('commit')
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)
+
+/** A second module instance has its own memory, like a second Worker process sharing the cache directory. */
+async function otherProcess() {
+  vi.resetModules()
+  return import('./gitWorktree.js')
+}
+
+async function twoRepositories() {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const other = join(f.root, 'other-origin')
+  await mkdir(other, { mode: 0o700 })
+  git(other, 'init', '--template=', '-q', '-b', 'main')
+  const commitIn = async (origin: string, text: string) => {
+    await writeFile(join(origin, 'source.txt'), text)
+    git(origin, 'add', '-A')
+    git(origin, 'commit', '-qm', text)
+    return git(origin, 'rev-parse', 'HEAD')
+  }
+  const home = join(f.root, 'home')
+  const redirect = (system: GitWorktreePorts): GitWorktreePorts => ({ cloneDirectory: system.cloneDirectory,
+    git: (args, options) => system.git(args.map(arg => arg === 'https://github.com/fixture/project.git'
+      ? `file://${f.origin}` : arg === 'https://github.com/fixture/other.git' ? `file://${other}` : arg), options) })
+  const ports = redirect(systemGitWorktreePorts({ ...gitFixtureEnvironment(), HOME: home }))
+  await ensureCommit(ports, 'fixture/project', f.commit, signal)
+  await ensureCommit(ports, 'fixture/other', await commitIn(other, 'first'), signal)
+  const slowClone = ports.cloneDirectory('fixture/project')
+  const reached = deferred()
+  const release = deferred()
+  transfers.hold = async (args, cwd) => {
+    if (!args.includes('fetch') || cwd !== slowClone) return
+    reached.resolve()
+    await release.promise
+  }
+  const slow = ensureCommit(ports, 'fixture/project', await commitIn(f.origin, 'slow successor'), signal)
+  await reached.promise
+  const otherCommit = await commitIn(other, 'other successor')
+  const second = await otherProcess()
+  const secondPorts = redirect(second.systemGitWorktreePorts({ ...gitFixtureEnvironment(), HOME: home }))
+  return { f, signal, slow, release, otherCommit,
+    fetchOther: () => second.ensureCommit(secondPorts, 'fixture/other', otherCommit, signal) }
+}
+
+it('counts a transfer reserved by another process against the shared cache budget', async () => {
+  const held = await twoRepositories()
+  await expect(held.fetchOther()).rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  held.release.resolve()
+  await held.slow
+  await expect(held.fetchOther()).resolves.toBeTruthy()
+  expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)
+
+it('reclaims the reservation of a process that is gone', async () => {
+  const held = await twoRepositories()
+  const reservation = (await readdir(held.f.cache)).find(name => name.endsWith('.reservation'))!
+  const path = join(held.f.cache, reservation)
+  const gone = spawnSync(process.execPath, ['-e', ''])
+  const owner = JSON.parse(await readFile(path, 'utf8')) as { pid: number }
+  await writeFile(path, JSON.stringify({ ...owner, pid: gone.pid }))
+  await expect(held.fetchOther()).resolves.toBeTruthy()
+  held.release.resolve()
+  await held.slow
+  expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
