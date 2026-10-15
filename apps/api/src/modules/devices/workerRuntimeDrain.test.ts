@@ -183,6 +183,7 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'])(
       await attempt
       await vi.advanceTimersByTimeAsync(1000)
       expect(stages).toEqual(visited)
+      expect(active).toEqual([])
       expect(() => drain.assertAdmission('source-operations-v1', { operation: 'sources.release' })).not.toThrow()
     } finally {
       stalled.resolve()
