@@ -26,6 +26,9 @@ it('indexes only active Main tickets after authenticated MCP writes and persiste
 it('exposes an Agent’s Host CI ticket and structured results through the Board route contracts', async () => {
   const f = await fixture({ agent: true })
   try {
+    expect((await f.agent!.listTools()).tools.map(tool => tool.name).sort()).toEqual([
+      'bug_report', 'ci_computers_list', 'ci_get', 'ci_logs_read', 'ci_run', 'context_get',
+    ])
     const started = CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', {
       suite: 'unit', commit: 'a'.repeat(40), scope: 'affected', files: ['apps/web/src/example.test.tsx'],
       commandId: randomUUID(),

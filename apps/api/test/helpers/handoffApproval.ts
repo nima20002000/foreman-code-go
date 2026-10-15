@@ -7,6 +7,7 @@ import { WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoff
 import { buildApp } from '../../src/app.js'
 import { DomainError } from '../../src/modules/errors.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { PostgresAppInteractionService } from '../../src/modules/interactions/app.js'
 import { assertOrchestratorGraphAuthority } from '../../src/modules/interactions/graphAuthority.js'
 import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
@@ -28,6 +29,11 @@ async function fixture() {
   definition.version.definition.handoffs = { contractVersion: 1 }
   definition.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: 8 }
   const entry = agentWorkflowNode(definition.version.definition.nodes[0])
+  definition.configurations = definition.configurations.map(configuration => ({
+    ...configuration,
+    graphqlTools: ['context_get', 'interaction_list', 'interaction_get',
+      ...(configuration.agentId === entry.agentId ? ['interaction_respond' as const] : [])],
+  }))
   const edge = definition.version.definition.edges[0]!
   entry.choice = { outcomes: [{ outcome: 'delegate', target: { kind: 'edge', relationshipId: edge.id } }] }
   let revision = 0
@@ -115,6 +121,9 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, origin: string, pr
     await runtime.credentials.revoke({ principalId: readOnlyPrincipalId })
     readOnlyPrincipalId = undefined
     const client = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'bug_report', 'context_get', 'interaction_list', 'interaction_get', 'interaction_respond',
+    ]))
     expect((await client.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(true)
     expect((await client.callTool({ name: 'interaction_respond', arguments: input })).isError).not.toBe(true)
     const stored = await runtime.repository.get(interaction.id)
@@ -201,9 +210,10 @@ export async function runHandoffApproval({ restart }: { restart: boolean }): Pro
       pause.mockRestore()
       await runtime.engine.start(f.f.run.id)
     }
+    const commands = new PostgresCommandCoordinator(f.db.pool)
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, runtime.repository,
-        new PostgresCommandCoordinator(f.db.pool), runtime.service) } })
+        commands, runtime.service), commands, bugReports: new BugReportService(f.db.pool, commands) } })
     const origin = await app.listen({ host: 'localhost', port: 0 })
     const firstReviewerId = await reviewThroughMcp(f, runtime, origin)
     const secondReviewerId = await reviewThroughMcp(f, runtime, origin, firstReviewerId)

@@ -34,23 +34,26 @@ it.each([
       [read.run.groupId])).rows
     expect(stored).toHaveLength(count)
     expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(read.partitions!))
-    for (let pass = 0; pass < count; pass++) {
-      await f.ci.dispatch()
-      const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
-      const active = running.partitions!.filter(run => run.state === 'running')
-      if (!active.length) break
-      for (const run of active) {
-        const computer = f.computers.find(value => value.label === run.computer?.label)!
-        const status = await f.endpoint.request(computer, { operation: 'status' })
-        expect(status.operation === 'status' && status.runs.some(value => value.runId === run.id)).toBe(true)
-        f.finish(run.id, 0, `${run.part} passed\n`)
-      }
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (computer, input) => {
+      const reply = await request(computer, input)
+      if (input.operation === 'start') f.finish(input.runId, 0, `${input.part} passed\n`)
+      return reply
     }
-    const done = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    for (const { request } of f.started) {
+      if (request.operation === 'start') f.finish(request.runId, 0, `${request.part} passed\n`)
+    }
+    const done = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10, logTail: false,
+    }))
+    expect(done.wait).toMatchObject({ status: 'settled', tickets: count, settledTickets: count })
     expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
     expect(f.started).toHaveLength(count)
     expect(f.started.every(item => item.request.operation === 'start' && item.request.part)).toBe(true)
     for (const run of done.partitions!) {
+      const computer = f.computers.find(value => value.label === run.computer?.label)!
+      const status = await f.endpoint.request(computer, { operation: 'status' })
+      expect(status.operation === 'status' && status.runs.some(value => value.runId === run.id)).toBe(true)
       const dispatched = f.started.filter(item => item.request.operation === 'start' && item.request.runId === run.id)
       expect(dispatched).toHaveLength(1)
       const request = dispatched[0]!.request
@@ -116,7 +119,10 @@ it('clamps failed unit log pages for Agents, Operators and HTTP while preserving
     await f.ci.dispatch()
     const log = 'x'.repeat(70_000) + '\nunit failed\n'
     f.finish(started.ticketId, 1, log)
-    const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10, logTail: false,
+    }))
+    expect(failed.wait).toMatchObject({ status: 'settled', tickets: 1, settledTickets: 1 })
     expect(failed.run.state).toBe('failed')
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [started.ticketId])).rows[0]!.record).toEqual(failed.run)
