@@ -22,7 +22,7 @@ const transientCodes = new Set([
   'DEVICE_TRANSPORT_ERROR', 'DEVICE_RUNTIME_CLOSING', 'DEVICE_RUNTIME_UNAVAILABLE', 'DEVICE_CONNECTION_UNAVAILABLE',
   'DEVICE_HOST_UNAVAILABLE', 'DEVICE_CHANNEL_BACKPRESSURE', 'DEVICE_TRANSFER_CONNECTION_CHANGED', 'DEVICE_TRANSFER_EXPIRED',
   // PostgreSQL statement timeout, connection and restart failures; Node socket failures.
-  '57014', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08006',
+  '40P01', '40001', '57014', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08006',
   'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
 ])
 const transientPrefixes = ['CODEX_APP_SERVER_']
@@ -35,7 +35,15 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined
   const result = (error as { result?: ExecutionResult }).result
   if (result?.outcome === 'failed' && result.error?.code) return result.error.code
-  return 'code' in error && error.code !== undefined ? String(error.code) : undefined
+  if ('code' in error && error.code !== undefined) return String(error.code)
+  const seen = new Set<unknown>([error])
+  let cause = (error as Error).cause
+  while (cause && typeof cause === 'object' && !seen.has(cause) && seen.size < 8) {
+    seen.add(cause)
+    if ('code' in cause && cause.code !== undefined) return String(cause.code)
+    cause = (cause as Error).cause
+  }
+  return undefined
 }
 
 /** Shared classification. Transient: database timeouts and connection loss,
@@ -46,6 +54,8 @@ function errorCode(error: unknown): string | undefined {
 export function isTransientExecutionError(error: unknown): boolean {
   if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
   if (error instanceof ZodError) return false
+  if (typeof error === 'object' && error !== null
+    && (error as { result?: ExecutionResult }).result?.error?.retryable === true) return true
   const code = errorCode(error)
   if (code === undefined) return error instanceof Error && !(error instanceof AggregateError)
   return isTransientExecutionCode(code)

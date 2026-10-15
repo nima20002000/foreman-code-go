@@ -36,8 +36,14 @@ export function nativePersistenceRedactor(secrets: readonly string[]) {
       text(input.result.error?.code ?? 'NATIVE_EXECUTION_FAILED'), text(input.message), input.result.error?.retryable,
     )
     // Do not forward a raw provider stack or enumerable environment/error fields.
-    if (input instanceof Error) return input.cause === undefined ? new Error(text(input.message))
-      : new Error(text(input.message), { cause: error(input.cause) })
+    if (input instanceof Error) {
+      const sanitized = input.cause === undefined ? new Error(text(input.message))
+        : new Error(text(input.message), { cause: error(input.cause) })
+      const code = (input as Error & { code?: unknown }).code
+      if (typeof code === 'string') Object.assign(sanitized, { code: text(code) })
+      else if (typeof code === 'number') Object.assign(sanitized, { code })
+      return sanitized
+    }
     return value(input)
   }
   return { value, text, error }

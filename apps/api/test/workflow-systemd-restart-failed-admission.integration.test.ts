@@ -4,7 +4,7 @@ import { installationUpdateFixture } from './helpers/harnessInstallationUpdate.j
 import { assertInstalledWorkflowRestart } from './helpers/installedWorkflowRestart.js'
 
 describe('installed Main-local workflows across systemd restart', () => {
-  it('closes interrupted processes when interval admission fails during restart', async () => {
+  it('closes the failed interval admission and preserves graph work during restart', async () => {
     const fixture = await installationUpdateFixture({ workflow: 'interval', executionHost: 'main',
       installedMainService: true, sourceAccessMode: 'read-only' })
     try {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, response, stageDelivered, checkpointCut, restart, expireAbandonedClaims, crashAfterCommitSaver } from './helpers/approvalCheckpointProduction.js'
 
-describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: recovery', () => {
+describe.skipIf(!postgresEnabled)('approval checkpoint recovery', () => {
   const fixture = productionFixtures()
 
   it('a cold restart closes the delivered native lifetime and cannot create a graph receipt', async () => {
@@ -37,7 +37,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
     expect(writes).toBe(1)
-    expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // Publication sanitizes callback errors.
+    expect(errors[0]).toMatchObject({ message: 'rollback-real-checkpoint' })
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(cut.pendingWrites)
     expect(await f.receipts()).toEqual([])
     expect((await f.db.pool.query("select state from interaction_graph_resumes where run_id=$1", [f.f.run.id])).rows)

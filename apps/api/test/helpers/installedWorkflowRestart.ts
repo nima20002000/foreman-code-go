@@ -86,25 +86,32 @@ export async function assertInstalledWorkflowRestart(phase: RestartPhase,
           (counts.get(original.id) ?? 0) > (previousEvents.get(original.id) ?? 0)),
         { timeoutMs: 30_000, description: 'native events from both adopted sessions' })
       }
-      await fixture.provider.releaseWorkflowTurns()
-      await readUntil(() => fixture.details(started.run.id),
-        details => details.executions.every(execution => execution.state === 'completed'),
-        { timeoutMs: 90_000, description: 'settled graph work and interval check' })
-      const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
-        runId: started.run.id, commandId: randomUUID() })
-      expect(stop.isError).not.toBe(true)
-    }
-    const finished = phase === 'failed admission'
-      ? await readUntil(async () => {
+    } else {
+      const interrupted = await readUntil(async () => {
         await fixture.reconcile()
         return fixture.details(started.run.id)
-      },
-        details => details.run.executionState === 'completed',
-        { timeoutMs: 90_000, description: 'interrupted run settlement' })
-      : await readUntil(() => fixture.details(started.run.id),
-        details => details.run.executionState === 'completed',
-        { timeoutMs: 90_000, description: 'stopped interval Run' })
-    expect(finished.run.outcome).toBe(phase === 'failed admission' ? 'failed' : 'canceled')
+      }, details => details.executions.some(execution => repeatTickIndex(execution.input) === 1
+        && execution.state === 'completed'),
+      { timeoutMs: 90_000, description: 'failed interval admission settlement' })
+      expect(interrupted.run.executionState).toBe('running')
+      expect(interrupted.cleanupPending).toBe(false)
+      for (const original of active.filter(execution => repeatTickIndex(execution.input) === undefined)) {
+        expect(interrupted.executions.find(execution => execution.id === original.id)).toMatchObject({
+          state: 'running', attempt: original.attempt, nativeSessionId: original.nativeSessionId,
+        })
+      }
+    }
+    await fixture.provider.releaseWorkflowTurns()
+    await readUntil(() => fixture.details(started.run.id),
+      details => details.executions.every(execution => execution.state === 'completed'),
+      { timeoutMs: 90_000, description: 'settled graph work and interval check' })
+    const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
+      runId: started.run.id, commandId: randomUUID() })
+    expect(stop.isError).not.toBe(true)
+    const finished = await readUntil(() => fixture.details(started.run.id),
+      details => details.run.executionState === 'completed',
+      { timeoutMs: 90_000, description: 'stopped interval Run' })
+    expect(finished.run.outcome).toBe('canceled')
     const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(await fixture.call('run_get', {
       detail: 'full', workspaceId: started.run.workspaceId, runId: started.run.id,
     }, reader.token)))
@@ -114,19 +121,16 @@ export async function assertInstalledWorkflowRestart(phase: RestartPhase,
       ({ id, state, attempt, nativeSessionId, result, finishedAt }) =>
         ({ id, state, attempt, nativeSessionId, result, finishedAt }))
     expect(executionResults(persisted)).toEqual(executionResults(finished))
-    if (phase === 'failed admission') {
-      expect(finished.executions.some(item => active.some(original => original.id === item.id)
-        && item.result?.error?.code === 'EXECUTION_INTERRUPTED')).toBe(true)
-    }
     for (const original of active) {
+      const failedCheck = phase === 'failed admission' && repeatTickIndex(original.input) !== undefined
       expect(finished.executions.find(item => item.id === original.id)).toMatchObject({
         state: 'completed', attempt: original.attempt, nativeSessionId: original.nativeSessionId,
-        result: { outcome: phase === 'failed admission' ? 'failed' : 'succeeded' },
+        result: { outcome: failedCheck ? 'failed' : 'succeeded' },
       })
     }
     const calls = await fixture.provider.calls()
     for (const original of active) {
-      if (phase !== 'failed admission') {
+      if (phase !== 'failed admission' || repeatTickIndex(original.input) === undefined) {
         expect(calls.filter(call => call.method === 'turn/start'
           && call.correlationId === `execution:${original.id}`)).toHaveLength(1)
       }

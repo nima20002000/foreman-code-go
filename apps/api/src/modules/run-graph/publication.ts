@@ -26,8 +26,21 @@ import { RunGraphError } from './errors.js'
 import { DomainError } from '../errors.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { workflowJobGraphSourceChangesLocked } from './workflowJobProjection.js'
+import { componentLogger } from '../diagnostics/logger.js'
+import { ZodError } from 'zod'
 
 export { graphSourceDigest } from './graphDigest.js'
+
+function throwPublicationFailure(error: unknown, runId: string): never {
+  if (error instanceof RunGraphError || error instanceof DomainError) throw error
+  componentLogger('engine').error({ err: error, runId, operation: 'publish run graph' },
+    'Run graph publication failed')
+  if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') {
+    throw new RunGraphError('GRAPH_TRANSACTION_LIMIT', { cause: error })
+  }
+  if (error instanceof ZodError) throw new RunGraphError('GRAPH_INVALID_FACT', { cause: error })
+  throw error
+}
 
 /** Digest-only receipt for the complete ordered envelope, in the EXISTING
  * source table. Per-source digests alone cannot prove source-group ordering.
@@ -255,15 +268,14 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       return { replayed: false, value }
     } catch (error) {
       poisonGraphTransaction(this.sql)
-      if (error instanceof RunGraphError) throw error
+      if (error instanceof RunGraphError || error instanceof DomainError) throw error
       if (typeof error === 'object' && error !== null && 'code' in error) {
         if (error.code === 'PGR01') throw new RunGraphError('GRAPH_STOP_CONFLICT')
         if (error.code === 'PGR02') throw new RunGraphError('GRAPH_TERMINAL_CONFLICT')
       }
       const code = RunGraphErrorCodeSchema.safeParse(error instanceof Error ? error.message : undefined)
-      if (code.success) throw new RunGraphError(code.data)
-      if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
-      throw new RunGraphError('GRAPH_INVALID_FACT')
+      if (code.success) throw new RunGraphError(code.data, { cause: error })
+      throwPublicationFailure(error, this.scope.runId)
     } finally { if (entered) this.#busy = false }
   }
   /** Verify a source already staged by this branded G1 or durably committed.
@@ -648,9 +660,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       return { replayed, semanticDigest, ...(!replayed && value !== undefined ? { value } : {}) }
     } catch (error) {
       poisonGraphTransaction(this.sql)
-      if (error instanceof RunGraphError || error instanceof DomainError) throw error
-      if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
-      throw new RunGraphError('GRAPH_INVALID_FACT')
+      throwPublicationFailure(error, this.scope.runId)
     } finally { if (entered) this.#busy = false }
   }
   private assertSame(existing: { sourceDigest: string; semanticDigest: string }, sourceDigest: string, semanticDigest: string) {
