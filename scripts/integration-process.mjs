@@ -4,7 +4,7 @@ import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
 // Log inactivity catches a hung file within five minutes without cutting off a progressing one.
 export const integrationProcessLimits = {
   idleTimeoutMs: 5 * 60_000,
-  fileTimeoutMs: 15 * 60_000,
+  fileTimeoutMs: 5 * 60_000,
   pollIntervalMs: 1000,
   graceMs: 5000,
 }

@@ -538,7 +538,7 @@ test('unavailable database settings fail discovery without exposing connection e
 test('integration deadlines allow four-minute cases plus hooks and scale with pressure', () => {
   const limits = integrationTimeouts({})
   assert.equal(limits.idleTimeoutMs, 300_000)
-  assert.equal(limits.fileTimeoutMs, 900_000)
+  assert.equal(limits.fileTimeoutMs, 300_000)
   const pressured = integrationTimeouts({}, 2)
   assert.equal(pressured.idleTimeoutMs, 2 * limits.idleTimeoutMs)
   assert.equal(pressured.fileTimeoutMs, 2 * limits.fileTimeoutMs)
