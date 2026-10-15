@@ -216,6 +216,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       const token = readProductEnvironment(lease.relay.environment.variables, 'MCP_TOKEN')!
       unregister = await registerAppRoute(token, endpoint, renewedExpiry, input.launcher)
       lease.expiresAt = renewedExpiry
+      if (renewal?.signal.aborted) renewWhileBound(lease)
       log.debug({ agentId: lease.relay.environment.agentId, launcher: input.launcher, expiresAt: renewedExpiry },
         'Worker MCP launcher route renewed')
       return renewedExpiry
@@ -239,16 +240,19 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       leases: [{ name: 'Worker MCP route', renewWithinMs: WORKER_MCP_LEASE_RENEWAL_WINDOW_MS,
         remainingMs: () => bound === lease ? Date.parse(lease.expiresAt) - Date.now() : NaN,
         renew: async () => { await refreshLease() } }],
-      onFailure: error => { void reportRenewalFailure(lease, error) },
+      onFailure: error => {
+        owner.abort()
+        void reportRenewalFailure(lease, error, owner)
+      },
     })
   }
   /** The route keeps its expiry but records why renewal stopped, so the launcher reports the real cause. */
-  const reportRenewalFailure = (lease: NonNullable<typeof bound>, error: Error) => {
+  const reportRenewalFailure = (lease: NonNullable<typeof bound>, error: Error, owner: AbortController) => {
     const cause = leaseFailureCause(error)
     log.error({ operation: 'renewal stopped', launcher: input.launcher, agentId: lease.relay.environment.agentId,
       expiresAt: lease.expiresAt, cause }, 'Worker MCP route renewal stopped')
     const task = updates.then(async () => {
-      if (closing || bound !== lease) return
+      if (closing || bound !== lease || renewal !== owner) return
       const token = readProductEnvironment(lease.relay.environment.variables, 'MCP_TOKEN')!
       unregister = await registerAppRoute(token, endpoint, lease.expiresAt, input.launcher, cause)
     }).catch(failure => logFailure('report renewal failure', failure))

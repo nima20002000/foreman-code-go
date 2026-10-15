@@ -75,7 +75,7 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
   }
   const releaseClaims = () => Promise.all([...claims.values()].map(claim => claim.release?.()))
   let transaction: GraphTransactionSql | undefined
-  const committed = await owner.oneShotConnection().transaction(async (sql) => {
+  const consumeCheckpoint = async (sql: GraphTransactionSql) => {
     // The owner takes over the claims here; a renewal must not queue behind this transaction's row locks.
     await releaseClaims()
     transaction = sql
@@ -182,7 +182,13 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
     if (!ready || checkpointIds.size !== 1) throw new DomainError('GRAPH_INTERRUPT_NOT_CURRENT', 'Resume did not consume one current checkpoint.', 409)
     return { runId: owner.runId, versionId: currentRun.workflowVersionId, checkpointId: [...checkpointIds][0]!,
       fence: await owner.readOneShotFence(sql), interactions: current }
-  }).finally(releaseClaims)
+  }
+  let committed: Awaited<ReturnType<typeof consumeCheckpoint>>
+  try {
+    committed = await owner.oneShotConnection().transaction(consumeCheckpoint)
+  } finally {
+    await releaseClaims()
+  }
   owner.assertOwned()
   if (!transaction || !didGraphTransactionCommit(transaction) || owner.oneShotConnection().unusable) {
     throw new DomainError('GRAPH_RESUME_COMMIT_UNCERTAIN', 'No confirmed checkpoint commit permits graph continuation.', 409)

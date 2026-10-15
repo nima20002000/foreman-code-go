@@ -18,7 +18,7 @@ export function createMainWorkerClaudeFiles(input: {
   allowMutation: boolean
 }) {
   const current = new AsyncLocalStorage<ClaudeCallbackIdentity>()
-  const bridges = new Map<string, ClaudeFileBridge>()
+  const bridges = new Set<ClaudeFileBridge>()
   let closed = false
   const manager = {
     nativeCallbackContext(sessionId: string, toolUseId: string): ClaudeNativeCallbackContext | undefined {
@@ -42,18 +42,19 @@ export function createMainWorkerClaudeFiles(input: {
       signal.throwIfAborted()
       if (closed) throw new DomainError('CLAUDE_FILE_CONTEXT_DENIED', 'The file observer is closed.', 403)
       return current.run(identity, async () => {
-        const key = JSON.stringify(identity)
-        let bridge = bridges.get(key)
-        if (!bridge) {
-          bridge = new ClaudeFileBridge(identity, admission, input.service())
-          bridges.set(key, bridge)
+        const bridge = new ClaudeFileBridge(identity, admission, input.service())
+        bridges.add(bridge)
+        try {
+          return await bridge.call(request.operation, request.args, signal)
+        } finally {
+          await bridge.close()
+          bridges.delete(bridge)
         }
-        return bridge.call(request.operation, request.args, signal)
       })
     },
     async close() {
       closed = true
-      await Promise.all([...bridges.values()].map(bridge => bridge.close()))
+      await Promise.all([...bridges].map(bridge => bridge.close()))
       bridges.clear()
     },
   }
