@@ -3,6 +3,7 @@ import type pg from 'pg'
 import { withTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
+import { withoutCiDatabaseDeadline } from '../../infrastructure/ciDatabasePriority.js'
 
 // A cloud recovery can make two bounded 75-second requests before it writes again.
 const CLAIM_TTL_MS = 300_000
@@ -42,7 +43,8 @@ export async function withCiTicketLock<T>(pool: pg.Pool, ticketId: string,
     return await work(ticketSql(pool, ticketId, ownerId))
   } finally {
     try {
-      await pool.query('delete from ci_dispatch_claims where ticket_id=$1 and owner_id=$2', [ticketId, ownerId])
+      await withoutCiDatabaseDeadline(() =>
+        pool.query('delete from ci_dispatch_claims where ticket_id=$1 and owner_id=$2', [ticketId, ownerId]))
     } catch (error) {
       componentLogger('jobs').warn({ err: error, ticketId }, 'CI dispatch claim cleanup failed; it will expire')
     }

@@ -2,6 +2,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
+import { waitForCiDispatch, withCiDatabasePriority, withoutCiDatabaseDeadline,
+  withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
+import { CI_DISPATCH_PASS_MS, withCiDispatchDeadline } from './dispatchDeadline.js'
 import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CiComputerRefSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
@@ -82,6 +85,7 @@ async function inBatches<T>(items: readonly T[], limit: number, work: (item: T) 
 export class HostCiService {
   private dispatching: Promise<void> | undefined
   private dispatchRequested = false
+  private superseding: Promise<void> | undefined
   private readonly observingRuns = new Map<string, Promise<void>>()
   private observationOffset = 0
   private readonly observingComputers = new Map<string, Promise<void>>()
@@ -101,16 +105,20 @@ export class HostCiService {
     this.planningEndpoint = new CiPlanningSnapshot(endpoint)
     this.endpoint = {
       computers: async () => {
-        const computers = await endpoint.computers()
+        const computers = await waitForCiDispatch(() => endpoint.computers())
         this.planningEndpoint.observeComputers(computers)
         return computers
       },
       ...(endpoint.publishMirror ? { publishMirror: endpoint.publishMirror.bind(endpoint) } : {}),
       request: async (computer, request, options) => {
-        const send = () => options ? endpoint.request(computer, request, options) : endpoint.request(computer, request)
+        const send = () => {
+          const requestHost = () => options ? endpoint.request(computer, request, options) : endpoint.request(computer, request)
+          // A persisted start can finish after its caller stops waiting for the reply.
+          return request.operation === 'start' ? withoutCiDatabaseDeadline(requestHost) : requestHost()
+        }
         if (request.operation !== 'status' || computer.hostRef.kind === 'cloud') {
           try {
-            const reply = await send()
+            const reply = await waitForCiDispatch(send)
             this.planningEndpoint.observeStatus(computer, reply)
             return reply
           } catch (error) {
@@ -123,7 +131,7 @@ export class HostCiService {
           .filter(row => row.host_key === computer.key)
         let status: CiHostStatus | null = null
         try {
-          const reply = await send()
+          const reply = await waitForCiDispatch(send)
           if (reply.operation === 'status') status = reply
           this.planningEndpoint.observeStatus(computer, reply)
           return reply
@@ -158,10 +166,16 @@ export class HostCiService {
     this.stoppingRuns += 1
     this.reads.close()
     await this.dispatching
+    await this.superseding
     await Promise.all([...this.observingRuns.values(), ...this.observingComputers.values()])
   }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
+    return withCiDatabasePriority(() => this.admit(caller, input, source))
+  }
+
+  private async admit(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined },
+    source: 'mcp' | 'http') {
     const started = performance.now()
     const timings = { dispatchWaitMs: 0, prepareMs: 0, insertMs: 0, postMs: 0 }
     let phase: CiRunPhase = 'prepareMs'
@@ -782,8 +796,8 @@ export class HostCiService {
     this.dispatching ??= (async () => {
       while (this.dispatchRequested && !this.stoppingRuns) {
         this.dispatchRequested = false
-        await trackService('ci-dispatch', { cadenceMs: 1000, deadlineMs: 10 * 60_000 },
-          () => withProviderPoll(() => this.dispatchOnce()))
+        await trackService('ci-dispatch', { cadenceMs: 1000, deadlineMs: CI_DISPATCH_PASS_MS },
+          () => withCiDispatchDeadline(() => withProviderPoll(() => this.dispatchOnce())))
       }
     })().catch(error => log.warn({ err: error }, 'CI dispatch failed'))
       .finally(() => { this.dispatching = undefined })
@@ -1008,8 +1022,9 @@ export class HostCiService {
       if (isCloud ? pendingCloud >= 48 : pendingLocal >= 8) continue
       if (isCloud) pendingCloud++
       else pendingLocal++
-      const observation = trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
-        () => refresh(row)).finally(() => { this.observingRuns.delete(row.id) })
+      const observation = withoutCiDatabasePriority(() =>
+        trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
+          () => refresh(row))).finally(() => { this.observingRuns.delete(row.id) })
       this.observingRuns.set(row.id, observation)
       this.observationOffset = (index + 1) % rows.length
     }
@@ -1018,7 +1033,8 @@ export class HostCiService {
   private refreshComputerStatuses(computers: HostCiComputer[]) {
     for (const computer of computers) {
       if (this.planningEndpoint.status(computer) || this.observingComputers.has(computer.key)) continue
-      const observation = readCiComputerStatus(this.endpoint, computer).then(status => {
+      // Readiness belongs to dispatch; collecting running tickets uses the shared pool.
+      const observation = withCiDatabasePriority(() => readCiComputerStatus(this.endpoint, computer)).then(status => {
         if (status) void this.dispatch()
       }).finally(() => { this.observingComputers.delete(computer.key) })
       this.observingComputers.set(computer.key, observation)
@@ -1026,7 +1042,9 @@ export class HostCiService {
   }
 
   private async dispatchOnce() {
-    await this.cancelSuperseded()
+    this.superseding ??= withoutCiDatabasePriority(() => this.cancelSuperseded())
+      .catch(error => log.warn({ err: error }, 'Superseded CI cleanup failed; retrying'))
+      .finally(() => { this.superseding = undefined })
     const computers = await this.endpoint.computers()
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
     this.dispatchRejections.retain(parsed)
@@ -1097,7 +1115,7 @@ export class HostCiService {
       reservedCloud, gate, freeSlots, canTake: canTakeGatePart,
       idle: computer => (used.get(computer.key) ?? 0) === 0 })
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
-    await Promise.all(queued.map(async run => {
+    await inBatches(queued, 8, async run => {
       const smokeTarget = smokeTargets.get(run.groupId)
       const blocked = gateQueueBlock(run, gate)
       if (blocked) {
@@ -1223,7 +1241,7 @@ export class HostCiService {
       }
       const message = sanitizeCiText(`${prefix}; ${reasons.join('; ') || 'no eligible computers'}`.slice(0, 2000))
       if (message !== run.message) await saveQueuedCiRun(this.pool, run, { ...run, message })
-    }))
+    })
   }
 }
 

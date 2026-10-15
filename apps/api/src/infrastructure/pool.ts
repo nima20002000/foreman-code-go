@@ -2,19 +2,38 @@ import pg from 'pg'
 import { componentLogger } from './logger.js'
 import { acquireDatabaseConnection } from './databaseReadRetry.js'
 import { ignoreError } from '../modules/diagnostics/ignoredError.js'
+import { ciDatabasePriority } from './ciDatabasePriority.js'
 
 type ConnectCallback = Parameters<pg.Pool['connect']>[0]
 
 class ApplicationPool extends pg.Pool {
+  constructor(options: pg.PoolConfig, private readonly dispatchPool?: pg.Pool) {
+    super(options)
+  }
+
   override connect(): Promise<pg.PoolClient>
   override connect(callback: ConnectCallback): void
   override connect(callback?: ConnectCallback): Promise<pg.PoolClient> | void {
-    const connection = acquireDatabaseConnection(() => super.connect())
+    const context = ciDatabasePriority()
+    const connection = acquireDatabaseConnection(async () => {
+      context?.signal?.throwIfAborted()
+      const client = await (context && this.dispatchPool ? this.dispatchPool.connect() : super.connect())
+      if (context?.signal?.aborted) {
+        client.release()
+        context.signal.throwIfAborted()
+      }
+      return client
+    })
     if (!callback) return connection
     void connection.then(
       client => callback(undefined, client, client.release.bind(client)),
       error => callback(error, undefined, () => {}),
     )
+  }
+
+  override async end(callback?: () => void): Promise<void> {
+    await Promise.all([super.end(), this.dispatchPool?.end()])
+    callback?.()
   }
 }
 
@@ -28,7 +47,7 @@ export interface DatabaseOptions {
 }
 
 /** Both application and checkpoint connections need the same failure policy. */
-export function createPool(options: DatabaseOptions, applicationName: string): pg.Pool {
+export function createPool(options: DatabaseOptions, applicationName: string, dispatchPool?: pg.Pool): pg.Pool {
   const queryTimeoutMs = options.queryTimeoutMs ?? 1000
   const pool = new ApplicationPool({
     connectionString: options.connectionString,
@@ -44,7 +63,7 @@ export function createPool(options: DatabaseOptions, applicationName: string): p
     statement_timeout: queryTimeoutMs,
     lock_timeout: options.lockTimeoutMs,
     application_name: applicationName,
-  })
+  }, dispatchPool)
   pool.on('error', options.onError ?? ((error: Error) => {
     componentLogger('db').error({ err: error, pool: applicationName }, 'idle PostgreSQL connection failed')
   }))
