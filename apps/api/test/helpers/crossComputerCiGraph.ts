@@ -73,7 +73,6 @@ function agentPrompt(suite: ScenarioSuite | null): string {
   return 'Use only Foreman Code MCP tools. Do not use shell, filesystem, network or browser tools. '
     + 'Read context_get and retain your own repository and branch. Read ci_computers_list. '
     + `Call ci_run exactly once for suite ${suite}, scope full, with a fresh commandId, `
-    + (suite === 'integration' ? 'partitions 2, ' : '')
     + 'and no commit override; this must publish your current worktree files to GitHub. '
     + 'Retain that commandId for an uncertain response and retry only that same request. '
     + 'Placement is automatic: do not supply a computer or placementOverride. '

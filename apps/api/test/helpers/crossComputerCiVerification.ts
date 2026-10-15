@@ -28,9 +28,15 @@ async function verifyTickets(client: Client, workflow: RunningCiWorkflow, execut
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ part: null, partition: null })
   } else if (report.suite === 'integration') {
-    expect(runs).toHaveLength(2)
-    expect(runs.map(run => run.partition?.index).sort()).toEqual([0, 1])
-    expect(runs.every(run => run.part === null && run.partition?.count === 2)).toBe(true)
+    // Placement sizes the parts from free slots; each tier must still be one complete partition set.
+    expect(runs.length).toBeGreaterThanOrEqual(2)
+    expect(runs.every(run => run.part === null && run.partition)).toBe(true)
+    for (const tier of new Set(runs.map(run => run.partition?.tier))) {
+      const shards = runs.filter(run => run.partition?.tier === tier)
+      expect(shards.map(run => run.partition!.index).sort((left, right) => left - right))
+        .toEqual(Array.from({ length: shards.length }, (_, index) => index))
+      expect(shards.every(run => run.partition!.count === shards.length)).toBe(true)
+    }
   } else {
     expect(runs.length).toBeGreaterThanOrEqual(2)
     expect(runs.every(run => run.part?.startsWith(`${report.suite}-`))).toBe(true)
