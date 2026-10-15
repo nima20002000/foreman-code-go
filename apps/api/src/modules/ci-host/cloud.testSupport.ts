@@ -153,7 +153,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     if (args[0] === 'api') {
       if (github.rateLimited) return { code: 1, stdout: 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\n\r\n{}',
         stderr: 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' }
-      const body = JSON.stringify({ jobs: [{ id: 1, status: github.status === 'completed' ? 'completed' : 'in_progress',
+      const body = JSON.stringify({ jobs: [{ id: 1, status: github.status === 'completed' || github.status === 'queued' ? github.status : 'in_progress',
         steps: github.steps }] })
       const etag = `"${createHash('sha1').update(body).digest('hex')}"`
       if (args.some(value => value.startsWith('If-None-Match:') && value.endsWith(etag))) {

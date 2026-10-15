@@ -55,9 +55,20 @@ test('sends test files named on the command line, relative to the repository roo
   assert.deepEqual(requestedTestFiles(args, join(root, 'apps/api')), ['apps/api/test/one.test.ts'])
 })
 
-/** A fake ci_get over fixed ticket states. */
-const reader = runs => async (name, input) => {
+const open = run => ['queued', 'starting', 'running'].includes(run.state)
+
+/** A fake ci_get over fixed ticket states: a group wait reports its group, settled once every ticket is terminal
+ * with its results collected. */
+const reader = (runs, calls = []) => async (name, input) => {
+  calls.push({ name, input })
   const run = runs[input.ticketId]
+  if (name === 'ci_get' && input.waitUntil) {
+    const group = run.group ? run.group.map(id => runs[id]) : [run]
+    const settled = group.filter(value => !open(value) && value.collection !== 'pending')
+    return { run, ...(group.length > 1 ? { partitions: group } : {}),
+      wait: { until: 'group-terminal', status: settled.length === group.length ? 'settled' : 'still-running',
+        tickets: group.length, settledTickets: settled.length } }
+  }
   if (name === 'ci_get' && !input.testStatus) return { run, ...(run.group ? { partitions: run.group.map(id => runs[id]) } : {}) }
   return name === 'ci_logs_read' ? { text: '' } : { tests: { files: [] } }
 }
@@ -84,11 +95,45 @@ test('reports diagnostic retrieval failures while preserving a failed test outco
   t.mock.method(console, 'error', value => lines.push(String(value)))
   const failed = { id: 'failed-ticket', suite: 'unit', state: 'failed' }
   const call = async (name, input) => {
-    if (name === 'ci_get' && !input.testStatus) return { run: failed }
+    if (name === 'ci_get' && input.waitUntil) return { run: failed, wait: { until: 'group-terminal', status: 'settled',
+      tickets: 1, settledTickets: 1 } }
     throw new Error('private diagnostic connection details')
   }
   assert.deepEqual(await awaitTickets(call, 'workspace', [failed.id]), [failed])
   assert.ok(lines.some(line => /ci_logs_read.*failed-ticket.*unavailable/.test(line)))
   assert.ok(lines.some(line => /test results.*failed-ticket.*unavailable/.test(line)))
   assert.ok(lines.every(line => !line.includes('private diagnostic')))
+})
+
+test('waits for the whole group with one log-free read instead of polling every ticket', async () => {
+  const runs = {
+    a: { id: 'a', suite: 'unit', state: 'passed', group: ['a', 'b', 'c'] },
+    b: { id: 'b', suite: 'unit', state: 'passed' },
+    c: { id: 'c', suite: 'unit', state: 'passed' },
+  }
+  const calls = []
+  const finished = await awaitTickets(reader(runs, calls), 'workspace', ['a', 'b', 'c'])
+  assert.deepEqual(finished.map(run => run.id), ['a', 'b', 'c'])
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].input, { workspaceId: 'workspace', ticketId: 'a', waitUntil: 'group-terminal',
+    waitSeconds: calls[0].input.waitSeconds, logTail: false })
+  assert.ok(calls[0].input.waitSeconds > 0)
+})
+
+test('reads failure diagnostics only after the group has settled its result collection', async t => {
+  t.mock.method(console, 'log', () => {})
+  t.mock.method(console, 'error', () => {})
+  const runs = { a: { id: 'a', suite: 'unit', state: 'failed', collection: 'pending', group: ['a', 'b'] },
+    b: { id: 'b', suite: 'unit', state: 'passed' } }
+  const calls = []
+  const read = reader(runs, calls)
+  const call = async (name, input) => {
+    const reply = await read(name, input)
+    if (name === 'ci_get' && input.waitUntil && calls.filter(value => value.input.waitUntil).length === 1) delete runs.a.collection
+    return reply
+  }
+  await awaitTickets(call, 'workspace', ['a', 'b'])
+  const waits = calls.map(value => value.input.waitUntil ? 'wait' : value.name)
+  assert.deepEqual(waits.slice(0, 3), ['wait', 'wait', 'ci_logs_read'])
+  assert.equal(waits.filter(name => name === 'wait').length, 2)
 })

@@ -23,6 +23,8 @@ export interface CloudRun {
   mirrorPublication?: CiHostRun['mirrorPublication']
   mirrorBranch?: string
   workflowStarted?: boolean
+  /** When the provider was first seen holding the workflow in its own queue, without starting a job. */
+  providerQueuedAt?: string
   lastProgressAt?: string
   provenance?: CiHostRun['provenance']
   collection?: { log: boolean; artifacts: boolean; unavailableAt?: string
@@ -43,7 +45,9 @@ export interface CloudStep { key: string; name: string; state: 'running' | 'pass
  * output so far. */
 export type CloudStatus = ({ done: false } | {
   done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string; message?: string
-}) & { steps?: CloudStep[]; output?: { key: string; text: string } }
+}) & { steps?: CloudStep[]; output?: { key: string; text: string }
+  /** The provider holds the workflow in its queue: no job has started. */
+  queued?: boolean }
 export interface CloudDispatchInput {
   mirror: string; branch: string; snapshotCommit?: string; runId: string; suite: CiExecutionSuite; slice: string
   expectedDurationMs?: number
@@ -161,6 +165,7 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
 }
 
 const WORKFLOW = 'ci.yml'
+const GITHUB_QUEUED = new Set(['queued', 'waiting', 'requested', 'pending'])
 
 interface GitHubJob { id: number; status: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }
 
@@ -276,7 +281,9 @@ export class GitHubActionsProvider implements CloudProvider {
       return state ? [{ key: `${job.id}:${step.number}`, name: step.name, state }] : []
     }))
     // Only a finished-looking run costs an unconditional read of its conclusion.
-    if (jobs.some(job => job.status !== 'completed')) return { done: false, steps }
+    if (jobs.some(job => job.status !== 'completed')) {
+      return { done: false, steps, ...(jobs.every(job => GITHUB_QUEUED.has(job.status)) ? { queued: true } : {}) }
+    }
     const view = JSON.parse(await this.gh(['run', 'view', run.providerRunId!, '-R', run.mirror, '--json',
       'status,conclusion,updatedAt'])) as { status: string; conclusion: string; updatedAt: string }
     if (view.status !== 'completed') return { done: false, steps }

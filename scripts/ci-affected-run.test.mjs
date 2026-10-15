@@ -72,3 +72,32 @@ test('second case', () => assert.equal(1, ${failing ? 2 : 1}))
       .map(event => event.name).sort(), ['passes', 'second case'])
   })
 }
+
+test('affected Node tests publish structured results when results are requested', t => {
+  const base = join(homedir(), '.cache', 'foreman-tmp')
+  mkdirSync(base, { recursive: true })
+  const root = mkdtempSync(join(base, 'affected-node-results-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'scripts'))
+  symlinkSync(fileURLToPath(new URL('ci-node-test-reporter.mjs', import.meta.url)), join(root, 'scripts', 'ci-node-test-reporter.mjs'))
+  symlinkSync(fileURLToPath(new URL('ci-progress-reporter.mjs', import.meta.url)), join(root, 'scripts', 'ci-progress-reporter.mjs'))
+  writeFileSync(join(root, 'corepack'), `#!${process.execPath}\nprocess.exit(0)\n`, { mode: 0o755 })
+  const file = 'scripts/value.test.mjs'
+  writeFileSync(join(root, file), `import { test } from 'node:test'
+import assert from 'node:assert/strict'
+test('passes', () => assert.equal(1, 1))
+`)
+  const selection = join(root, 'selected.json')
+  writeFileSync(selection, JSON.stringify([file]))
+  const output = join(root, 'test-results.json')
+  const environment = { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, TEST_RESULTS_OUTPUT: output }
+  delete environment.NODE_TEST_CONTEXT
+  delete environment.CI_PROGRESS_FILE
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+    'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  const results = JSON.parse(readFileSync(output, 'utf8'))
+  assert.deepEqual(results.summary, { passed: 1, failed: 0, skipped: 0 })
+  assert.equal(results.files.length, 1)
+  assert.ok(results.files[0].file.endsWith(file), results.files[0].file)
+})
