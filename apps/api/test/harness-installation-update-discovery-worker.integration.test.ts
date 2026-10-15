@@ -5,12 +5,15 @@ import { installationUpdateFixture, profileReader, profiles, startWhenReady, pin
   from './helpers/harnessInstallationUpdate.js'
 
 describe('installed harness updates', () => {
-  it('cancels Start during required Worker discovery without canceling its shared refresh or persisting a Run', async () => {
+  it('rejects failed required Worker discovery without persisting a Run and starts after discovery succeeds', async () => {
     const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'worker' })
     try {
       const reader = await profileReader(fixture)
-      await fixture.blockWorkerDiscovery()
-      await expect(fixture.start()).rejects.toThrow('RUN_START_PREPARATION_TIMEOUT')
+      const discovering = fixture.blockWorkerDiscovery()
+      const rejected = expect(fixture.start()).rejects.toThrow('HARNESS_INVENTORY_UNAVAILABLE')
+      await discovering
+      fixture.cancelWorkerDiscovery()
+      await rejected
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
       expect((await profiles(fixture, reader))[0]!.qualification).toBe('qualified')
       await fixture.releaseWorkerDiscovery()
