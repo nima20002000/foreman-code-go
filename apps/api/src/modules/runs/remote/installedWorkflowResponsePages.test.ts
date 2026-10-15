@@ -112,7 +112,10 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
     signal: parent.signal, extensions, registrations: [registration] })
   const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
     worker.run(workerSocket.messages[Symbol.asyncIterator](), 500)]
-  for (const task of tasks) void task.catch(() => {})
+  const failures: unknown[] = []
+  const observedTasks = tasks.map(task => task.catch(error => {
+    if (!parent.signal.aborted) failures.push(error)
+  }))
   const committed: RemoteOperationReceipt[] = []
   const manager = remoteNativeManager({ harness: 'codex', agentId: f.start.request.configuration.agentId,
     executionId: f.intent.executionId, configuration: f.start.request.configuration, workingDirectory: '/project' },
@@ -144,9 +147,10 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
       parent.abort()
       main.close()
       worker.close()
-      await Promise.allSettled(tasks)
+      await Promise.all(observedTasks)
       await Promise.all([main.join(), worker.join()])
       pages.clear()
+      if (failures.length) throw new AggregateError(failures, 'Carrier tasks failed')
     } }
 }
 
