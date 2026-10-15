@@ -15,7 +15,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   // A six-second Run lock must retry timed-out reporting and expose the database delay in activity.
-  it.fails('finishes while a separate transaction locks its Run during Agent reporting', async () => {
+  it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
     const locked = deferred<number>()
     let heldMs = 0
     const hold = withTransaction(fixture.base.db.pool, async sql => {

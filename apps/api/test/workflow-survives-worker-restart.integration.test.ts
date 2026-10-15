@@ -12,7 +12,7 @@ describe.runIf(postgresEnabled)('workflow Worker restart', () => {
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   // Worker restart must recover the turn or exhaust only that node's bounded retry budget.
-  it.fails('reopens the Worker journal mid-turn and leaves sibling work intact', async () => {
+  it('reopens the Worker journal mid-turn and leaves sibling work intact', async () => {
     const before = await fixture.read()
     const original = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
     const intent = fixture.intents.get(original.id)!
