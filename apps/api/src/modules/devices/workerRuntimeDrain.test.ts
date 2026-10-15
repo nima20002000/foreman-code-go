@@ -161,7 +161,7 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'])(
     vi.useFakeTimers()
     const stalled = deferred()
     const active = stage === 'dispatches' ? [stalled.promise] : []
-    void stalled.promise.then(() => { active.splice(0) })
+    void stalled.promise.then(() => { void active.splice(0) })
     const stages: string[] = []
     const step = async (name: string) => {
       stages.push(name)
