@@ -23,11 +23,12 @@ import type { SourceOperationOwner } from '@foreman-code/contracts/source-operat
 import { reclaimSourceReservation } from '../src/modules/sources/reclaimSourceReservation.js'
 import { sourceBindingHash } from '../src/modules/sources/bindingHash.js'
 import { MaterializationReservationCleanup } from '../src/modules/sources/materializationReservationCleanup.js'
+import { DeviceApplicationError } from '../src/modules/devices/deviceApplicationError.js'
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
   { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
 
-async function fixture() {
+async function fixture(host: 'main' | 'device' = 'main') {
   const database = `source_workflow_test_${randomUUID().replaceAll('-', '')}`
   const adminUrl = process.env.TEST_DATABASE_URL!
   const admin = new pg.Pool({ connectionString: adminUrl })
@@ -75,8 +76,10 @@ async function fixture() {
     const handle = await openPrivateRoot(rootPath)
     const filesystem = await identity(handle)
     await handle.close()
-    const binding = { version: 1 as const, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
-      workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1,
+    const device = host === 'device'
+      ? { deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 } : null
+    const binding = { version: 1 as const, mainId: randomUUID(), deviceId: device?.deviceId ?? null,
+      workerInstallationId: device?.workerInstallationId ?? null, workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1,
       canonicalPath: rootPath, filesystem, accessMode: 'exclusive-write' as const,
       snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
     const system = systemGitWorktreePorts(gitFixtureEnvironment())
@@ -97,9 +100,10 @@ async function fixture() {
     const root: SourceOperationOwner['root'] = { version: 1, binding,
       source: { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
         manifestDigest: manifest.manifestDigest },
-      selection: { hostRef: { kind: 'main', mainId: binding.mainId }, rootPolicyId: randomUUID(),
-        rootPolicyRevision: '1', locationRevision: '1' },
-      registration: null, ownerPrincipalId: 'operator', authorizedByPrincipalId: 'operator',
+      selection: { hostRef: device ? { kind: 'device', mainId: binding.mainId, deviceId: device.deviceId }
+        : { kind: 'main', mainId: binding.mainId }, rootPolicyId: randomUUID(), rootPolicyRevision: '1', locationRevision: '1' },
+      registration: device ? { workerInstallationId: device.workerInstallationId, keyRevision: device.keyRevision,
+        authorizationRevision: device.authorizationRevision } : null, ownerPrincipalId: 'operator', authorizedByPrincipalId: 'operator',
       attestationId: randomUUID(), attestationDigest: 'a'.repeat(64), boundAt: new Date().toISOString() }
     return { pool, dispose, ports, binding, root, manifest, materializer, sources, bytes }
   } catch (error) {
@@ -112,7 +116,8 @@ async function addOccurrence(f: Awaited<ReturnType<typeof fixture>>, state: 'run
   closed = state === 'completed') {
   const operationId = randomUUID()
   const attempt = { executionId: randomUUID(), attemptId: randomUUID(), placementHash: '',
-    keyRevision: null, authorizationRevision: null }
+    keyRevision: f.root.registration?.keyRevision ?? null,
+    authorizationRevision: f.root.registration?.authorizationRevision ?? null }
   attempt.placementHash = sourceBindingHash(f.root, attempt, operationId)
   const receipt = await f.materializer.prepare({ binding: f.binding, manifest: f.manifest, attempt,
     sharedWritableTree: true, worktree: { repository: 'fixture/project', branch: 'foreman/loop' } })
@@ -144,30 +149,35 @@ async function addOccurrence(f: Awaited<ReturnType<typeof fixture>>, state: 'run
   return { record, reservation, workingDirectory }
 }
 
+async function addReclamationTables(pool: pg.Pool) {
+  await pool.query(`
+    alter table runs add column workspace_id text, add column stop_requested_at timestamptz;
+    alter table source_execution_materializations add column operation_id text;
+    alter table source_preparation_reconciliations
+      add column owner jsonb, add column principal_id text, add column command_id text,
+      add column queue_ticket_id text, add column reconciliation_id uuid;
+    create table job_executions (operation_id text, record jsonb);
+    create table job_admission_queue (operation_id text, record jsonb);
+    create table job_preparations (operation_id text, workspace_id text);
+    create table workflow_job_preparations (run_id text, preparation jsonb);
+    create table execution_dispatch_intents (operation_id text, run_id text);
+    create table run_cleanup_intents (run_id text, pending boolean);
+    create table execution_native_recoveries
+      (execution_id text, generation bigint, execution_identity jsonb, reference jsonb);
+    create table application_installation (singleton boolean, id uuid);
+    create table device_registrations (id text, main_id text, record jsonb);
+    create table source_root_bindings (root_id uuid, binding_revision integer, record jsonb);
+    create table management_audit
+      (principal_id text, source text, action text, target_key text, outcome text, details jsonb);
+  `)
+}
+
 it('defers automatic Main source reclamation until the original native owner confirms closure', async () => {
   const f = await fixture()
   try {
     const copy = await addOccurrence(f, 'completed', false)
     const executionId = copy.record.receipt.executionId
-    await f.pool.query(`
-      alter table runs add column workspace_id text, add column stop_requested_at timestamptz;
-      alter table source_execution_materializations add column operation_id text;
-      alter table source_preparation_reconciliations
-        add column owner jsonb, add column principal_id text, add column command_id text,
-        add column queue_ticket_id text, add column reconciliation_id uuid;
-      create table job_executions (operation_id text, record jsonb);
-      create table job_admission_queue (operation_id text, record jsonb);
-      create table job_preparations (operation_id text, workspace_id text);
-      create table workflow_job_preparations (run_id text, preparation jsonb);
-      create table execution_dispatch_intents (operation_id text, run_id text);
-      create table run_cleanup_intents (run_id text, pending boolean);
-      create table execution_native_recoveries
-        (execution_id text, generation bigint, execution_identity jsonb, reference jsonb);
-      create table application_installation (singleton boolean, id uuid);
-      create table source_root_bindings (root_id uuid, binding_revision integer, record jsonb);
-      create table management_audit
-        (principal_id text, source text, action text, target_key text, outcome text, details jsonb);
-    `)
+    await addReclamationTables(f.pool)
     const binding = f.binding
     const scopeId = `${binding.mainId}:original-main:${binding.mainId}:${binding.filesystem.device}:${binding.filesystem.mountId}`
     const reservation = { ...copy.reservation, scopeId }
@@ -199,6 +209,54 @@ it('defers automatic Main source reclamation until the original native owner con
     expect((await f.pool.query('select state from source_execution_materializations where execution_id=$1',
       [executionId])).rows[0]).toEqual({ state: 'closed' })
     await expect(stat(copy.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    await f.dispose()
+  }
+}, 60_000)
+
+it('asks the Worker to reclaim a source only after Main records its native owner closure', async () => {
+  const f = await fixture('device')
+  try {
+    const copy = await addOccurrence(f, 'completed', false)
+    const executionId = copy.record.receipt.executionId
+    await addReclamationTables(f.pool)
+    const binding = f.binding
+    const registration = f.root.registration!
+    const scopeId = `${binding.mainId}:${binding.deviceId}:${binding.workerInstallationId}`
+      + `:${binding.filesystem.device}:${binding.filesystem.mountId}`
+    const reservation = { ...copy.reservation, scopeId }
+    await f.pool.query('insert into application_installation values(true,$1)', [binding.mainId])
+    await f.pool.query('insert into device_registrations values($1,$2,$3)', [binding.deviceId, binding.mainId,
+      { mainId: binding.mainId, deviceId: binding.deviceId, workerInstallationId: registration.workerInstallationId,
+        publicKeyFingerprint: 'c'.repeat(64), keyRevision: registration.keyRevision,
+        authorizationRevision: registration.authorizationRevision, status: 'paired', scopes: [] }])
+    await f.pool.query('insert into source_root_bindings values($1,$2,$3)',
+      [binding.rootId, binding.bindingRevision, f.root])
+    await f.pool.query('update source_execution_materializations set operation_id=$1 where execution_id=$2',
+      [copy.record.operationId, executionId])
+    await f.pool.query('update source_storage_reservations set scope_id=$1,record=$2 where reservation_id=$3',
+      [scopeId, reservation, reservation.reservationId])
+    // The Worker refuses cleanup while the native owner of the finished execution is still closing.
+    let workerNativeClosed = false
+    const reclaim = vi.fn(async (grant: Parameters<typeof reclaimSourceReservation>[0]) => {
+      if (!workerNativeClosed) throw new DeviceApplicationError('source-reconciliation-unconfirmed')
+      return reclaimSourceReservation(grant, {
+        authorize: async () => {}, operationClosed: async () => true, nativeClosed: async () => true, git: f.ports,
+      }, AbortSignal.timeout(60_000))
+    })
+    const cleanup = new MaterializationReservationCleanup(f.pool, reclaim)
+    const report = vi.fn()
+    expect(await cleanup.reconcile(report)).toBe(0)
+    expect(reclaim).not.toHaveBeenCalled()
+    expect(report).not.toHaveBeenCalled()
+    expect((await f.pool.query('select state,reserved_bytes from source_storage_reservations where reservation_id=$1',
+      [reservation.reservationId])).rows[0]).toEqual({ state: 'owned', reserved_bytes: String(reservation.reservedBytes) })
+
+    workerNativeClosed = true
+    await f.pool.query('update execution_native_closures set closed_at=clock_timestamp() where execution_id=$1',
+      [executionId])
+    await cleanup.reconcile(report)
+    expect(reclaim).toHaveBeenCalledOnce()
   } finally {
     await f.dispose()
   }
