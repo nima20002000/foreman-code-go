@@ -275,7 +275,8 @@ async function fixture(t) {
     const bytes = Buffer.from('export const worker = true\n')
     await writeFile(join(output, 'src/cli.mjs'), bytes)
     const buildCommit = options.env.FOREMAN_CODE_WORKER_BUILD_COMMIT
-    const manifest = { format: 1, version: '0.0.57', commit: buildCommit, lockfileSha256: 'b'.repeat(64),
+    const product = JSON.parse(git(['show', `${buildCommit}:package.json`]))
+    const manifest = { format: 1, version: product.version, commit: buildCommit, lockfileSha256: 'b'.repeat(64),
       packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target: selected,
       sourceSnapshot: { commit: buildCommit, files: ['package.json', 'pnpm-lock.yaml',
         'scripts/build-worker-artifact.mjs', 'apps/worker/src/cli.mjs', args[1]].map(path => ({ path,
@@ -300,7 +301,7 @@ function laterBuild(f) {
     productManifestPath: join(f.repository, 'later-product.json') }
 }
 
-test('reuses verified Worker payloads across unrelated API changes with fresh commit provenance', async t => {
+test('reuses verified Worker payloads across unrelated API changes with release provenance in the index', async t => {
   const f = await fixture(t)
   const first = await buildWorkerReleaseArtifacts(f)
   await writeFile(join(f.repository, 'apps/api/unrelated.ts'), 'export const api = true\n')
@@ -308,15 +309,75 @@ test('reuses verified Worker payloads across unrelated API changes with fresh co
   const next = laterBuild(f)
   const second = await buildWorkerReleaseArtifacts({ ...next, expectedCommit: commit })
   assert.equal(f.calls.length, 4, 'unchanged snapshots must not invoke the artifact builder')
+  assert.equal(second.commit, commit)
   for (const [index, artifact] of second.artifacts.entries()) {
     assert.equal(artifact.contentSha256, first.artifacts[index].contentSha256)
+    assert.equal(artifact.manifestSha256, first.artifacts[index].manifestSha256)
     const manifest = JSON.parse(await readFile(join(next.directory, artifact.manifestSha256, 'manifest.json')))
-    assert.equal(manifest.commit, commit)
-    assert.equal(manifest.sourceSnapshot.commit, commit)
+    assert.equal(manifest.commit, f.commit)
+    assert.equal(manifest.sourceSnapshot.commit, f.commit)
     assert.equal(sha256(await readFile(join(next.directory, artifact.manifestSha256, 'manifest.json'))), artifact.manifestSha256)
   }
   assert.equal(second.github, undefined)
   assert.equal(second.publication.state, 'pending')
+})
+
+test('retains verified GitHub references without publishing or downloading unchanged bundles', async t => {
+  const f = await fixture(t)
+  const github = { repository: 'example/worker', tag: `worker-${f.commit}` }
+  const first = await buildWorkerReleaseArtifacts({ ...f, publish: async () => github })
+  await writeFile(join(f.repository, 'apps/api/unrelated.ts'), 'export const api = true\n')
+  commitFixture(f.repository)
+  const next = laterBuild(f)
+  const publish = async () => assert.fail('Unchanged bundles must retain their verified GitHub publication')
+  const second = await buildWorkerReleaseArtifacts({ ...next, publish })
+  assert.equal(second.publication.state, 'published')
+  assert.deepEqual(second.github, github)
+  assert.deepEqual(second.artifacts.map(artifact => artifact.manifestSha256),
+    first.artifacts.map(artifact => artifact.manifestSha256))
+  await publishInstalledWorkerArtifacts({ directory: next.directory, repositoryName: github.repository,
+    commit: second.commit, publish })
+})
+
+test('publishes only the changed target when other targets have verified GitHub bundles', async t => {
+  const f = await fixture(t)
+  const github = { repository: 'example/worker', tag: `worker-${f.commit}` }
+  const first = await buildWorkerReleaseArtifacts({ ...f, publish: async () => github })
+  await writeFile(join(f.repository, 'apps/worker/artifacts/ubuntu-0-target.json'),
+    JSON.stringify({ ...target, node: 'v22.23.4' }))
+  const commit = commitFixture(f.repository)
+  const calls = []
+  const next = laterBuild(f)
+  const second = await buildWorkerReleaseArtifacts({ ...next, publish: async options => {
+    calls.push(options)
+    return { ...github, tag: `worker-${commit}` }
+  } })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].artifacts.length, 1)
+  assert.equal(calls[0].artifacts[0].target.node, 'v22.23.4')
+  for (let index = 1; index < second.artifacts.length; index++) {
+    assert.equal(second.artifacts[index].manifestSha256, first.artifacts[index].manifestSha256)
+    assert.deepEqual(second.artifacts[index].github, github)
+  }
+})
+
+test('reuses Worker builds across product version bumps but rebuilds for other manifest changes', async t => {
+  const f = await fixture(t)
+  const first = await buildWorkerReleaseArtifacts(f)
+  const product = { version: '0.0.58', packageManager: 'pnpm@11.27.0' }
+  await writeFile(join(f.repository, 'package.json'), JSON.stringify(product, null, 2))
+  const commit = commitFixture(f.repository)
+  const next = laterBuild(f)
+  const second = await buildWorkerReleaseArtifacts(next)
+  assert.equal(f.calls.length, 4, 'a product version bump must not rebuild Worker payloads')
+  assert.equal(second.version, '0.0.58')
+  assert.equal(second.commit, commit)
+  assert.deepEqual(second.artifacts, first.artifacts)
+  await writeFile(join(f.repository, 'package.json'), JSON.stringify({ ...product, engines: { node: '>=22' } }))
+  commitFixture(f.repository)
+  await buildWorkerReleaseArtifacts({ ...next, previousDirectory: next.directory,
+    directory: join(f.repository, 'third-artifacts'), productManifestPath: join(f.repository, 'third-product.json') })
+  assert.equal(f.calls.length, 8, 'other root manifest changes must invalidate reuse')
 })
 
 for (const input of ['apps/worker/src/cli.mjs', 'scripts/build-worker-artifact.mjs', 'pnpm-lock.yaml']) {

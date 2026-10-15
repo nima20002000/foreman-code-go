@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -108,6 +108,23 @@ test('publish CLI resumes a partial release and reuses verified assets without o
   const calls = remote.calls.length
   await f.cli()
   assert.equal((await f.remote()).calls.length, calls)
+})
+
+test('republication accepts identical bundle bytes after filesystem metadata changes', async t => {
+  const f = await fixture(t)
+  await publishWorkerArtifactsToGitHub(f.options)
+  const first = await f.remote()
+  for (const { manifestSha256 } of f.artifacts) {
+    const directory = join(f.directory, manifestSha256)
+    const file = join(directory, 'worker.txt')
+    await chmod(file, 0o400)
+    await utimes(file, 123456789, 123456789)
+    await utimes(directory, 123456789, 123456789)
+  }
+  await publishWorkerArtifactsToGitHub(f.options)
+  const second = await f.remote()
+  assert.deepEqual(second.assets, first.assets)
+  assert.equal(second.calls.filter(call => call.operation === 'upload').length, 2)
 })
 
 test('publish CLI retries connection reset by peer and records a verified publication', async t => {

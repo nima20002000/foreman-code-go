@@ -27,6 +27,7 @@ import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
+import { startWorkerPublicationSync } from './modules/computers/workerPublicationSync.js'
 import { createProductionWorkerArtifactExtension, readProductionWorkerManifestSha256s,
   readProductionWorkerContentSha256s, readProductionWorkerReleasePublication,
   workerArtifactLocation } from './modules/computers/workerArtifactsProduction.js'
@@ -2827,14 +2828,16 @@ async function initializeComputerServices(composition: ProductionComposition, ma
     const firstUpkeep = setTimeout(upkeep, 120_000)
     const upkeepTimer = setInterval(upkeep, 6 * 60 * 60_000)
     // MCP server and plugin changes on Main reach the other computers within about a minute.
-    const sourceSync = setInterval(() => { void trackService('fleet-source-sync', { cadenceMs: 60_000, deadlineMs: 30 * 60_000 },
-      () => runtimeServices.computerMaintenance!.syncChangedSources())
-      .catch(error => app.log.warn({ err: error }, 'Fleet MCP and plugin sync failed')) }, 60_000)
-    firstUpkeep.unref(); upkeepTimer.unref(); sourceSync.unref()
+    const stopSourceSync = startWorkerPublicationSync(workerArtifactLocation({ environment: process.env,
+      releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }),
+    () => trackService('fleet-source-sync', { cadenceMs: 60_000, deadlineMs: 30 * 60_000 },
+      () => runtimeServices.computerMaintenance!.syncChangedSources()),
+    error => app.log.warn({ err: error }, 'Fleet MCP and plugin sync failed'))
+    firstUpkeep.unref(); upkeepTimer.unref()
     composition.stopComputerTimers = () => {
       clearTimeout(firstUpkeep)
       clearInterval(upkeepTimer)
-      clearInterval(sourceSync)
+      stopSourceSync()
     }
     if (composition.closing) composition.stopComputerTimers()
   }
