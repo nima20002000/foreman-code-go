@@ -5,7 +5,7 @@ import { AgentCiReportSchema, readAgentCiReport, readCiLog,
 
 function report() {
   const ticketId = randomUUID()
-  return { ticketId, groupId: randomUUID(), suite: 'build', outcome: 'passed', repository: 'example/project',
+  return { ticketId, suite: 'build', outcome: 'passed', repository: 'example/project',
     logLine: 'Build passed', observedStates: ['queued', 'running', 'passed'] }
 }
 

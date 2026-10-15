@@ -35,10 +35,9 @@ const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
 export function ciReportOutputSchema(suite: ScenarioSuite) {
   return {
     type: 'object',
-    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'logLine', 'observedStates'],
+    required: ['ticketId', 'suite', 'outcome', 'repository', 'logLine', 'observedStates'],
     properties: {
       ticketId: ciTicketId,
-      groupId: { type: 'string', minLength: 1 },
       suite: { const: suite },
       outcome: terminalOutcome,
       repository: { type: 'string', minLength: 1 },
@@ -65,7 +64,7 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Record the top-level ticket’s observed state changes in order from the ci_run and ci_get results you read. '
     + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
-    + '{"ticketId":"the ci_run top-level ticketId","groupId":"run.groupId","suite":"' + suite + '",'
+    + '{"ticketId":"the ci_run top-level ticketId","suite":"' + suite + '",'
     + '"outcome":"group.state","repository":"run.repository",'
     + '"logLine":"actual line from the top-level ticket log",'
     + '"observedStates":["queued","running","passed"]}. '

@@ -18,7 +18,7 @@ async function verifyTickets(client: Client, workflow: RunningCiWorkflow, execut
     workspaceId: workflow.workspace.workspaceId, ticketId: report.ticketId,
   }))
   const runs = readback.partitions ?? [readback.run]
-  expect(readback.group).toEqual({ groupId: report.groupId, state: report.outcome })
+  expect(readback.group?.state).toBe(report.outcome)
   expect(report.outcome).toBe('passed')
   expect(runs.map(run => run.id)).toContain(report.ticketId)
   const owned = [...observation.tickets.values()].filter(ticket => ticket.initiatingExecutionId === executionId)

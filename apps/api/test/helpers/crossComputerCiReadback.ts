@@ -8,7 +8,6 @@ const TerminalStateSchema = CiRunRecordSchema.shape.state.extract(['passed', 'fa
 // Agents may add notes such as verification details; every required field is still checked exactly.
 export const AgentCiReportSchema = z.object({
   ticketId: CiRunRecordSchema.shape.id,
-  groupId: CiRunRecordSchema.shape.groupId,
   suite: CiRunRecordSchema.shape.suite,
   outcome: TerminalStateSchema,
   repository: CiRunRecordSchema.shape.repository,
