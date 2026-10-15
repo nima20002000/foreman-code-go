@@ -387,3 +387,14 @@ it('discards retry state when a source no longer appears in a completed scan', a
   expect(f.sources.confirmClosed).toHaveBeenCalledTimes(2)
   expect(f.report).toHaveBeenCalledTimes(2)
 })
+
+it('leaves a source that reservation reclamation closed after the sweep listed it', async () => {
+  const f = remoteSourceFixture()
+  const listed = (await f.pool.query('')).rows
+  let queries = 0
+  // Reclamation removes the Worker directory and settles the reservation while the sweep is walking its page.
+  const pool = { query: async () => ({ rows: ++queries === 1 ? listed : [] }) } as unknown as Pick<pg.Pool, 'query'>
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+})
