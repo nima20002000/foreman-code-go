@@ -86,6 +86,7 @@ export class DeviceApplicationChannel {
     onObservedFrame?(observedAt: string): void
     onPeerTime?(peerTime: number | null, mainTime: number): void
     mainTime?: number
+    beforeRequest?(namespace: string, payload: unknown): Promise<void>
   }) {
     if (options.mainTime !== undefined) this.mainClock.observe(options.mainTime)
     this.extensions = options.extensions.map((item) => Object.freeze({ ...item }))
@@ -182,6 +183,8 @@ export class DeviceApplicationChannel {
       while (true) {
         await this.authorized()
         if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
+        await this.options.beforeRequest?.(namespace, payload)
+        this.current()
         try {
           return await this.sendRequest(namespace, payload, extension.version, options, { stop, observation, priority })
         } catch (error) {
@@ -345,7 +348,9 @@ export class DeviceApplicationChannel {
       await this.waitAck(id, 0, upload.signal, { type: 'application-open', id, namespace, version, kind,
         jsonBytes: json.byteLength, binaryBytes: bytes?.byteLength ?? 0,
         ...(kind === 'request' && stop ? { admission: 'stop' as const } : {}),
-        ...(kind === 'request' && admission.observation ? { admission: 'observation' as const } : {}) })
+        // Maintenance probes reserve local observation capacity; older Workers accept them as ordinary requests.
+        ...(kind === 'request' && admission.observation && namespace === 'execution-v1'
+          ? { admission: 'observation' as const } : {}) })
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
       const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * DEVICE_APPLICATION_CHUNK_WINDOW
       for (let start = 0; start < packet.byteLength; start += windowBytes) {
@@ -469,7 +474,10 @@ export class DeviceApplicationChannel {
         if (assembly.abort.signal.aborted) return
         const pending = this.pending.get(id)
         if (pending) {
-          if (assembly.kind === 'error') pending.reject(new DeviceApplicationError(deviceApplicationFailure(payload).code))
+          if (assembly.kind === 'error') {
+            const failure = deviceApplicationFailure(payload)
+            pending.reject(new DeviceApplicationError(failure.code, failure.details))
+          }
           else pending.resolve({ payload, ...(bytes ? { bytes } : {}) })
         }
         return

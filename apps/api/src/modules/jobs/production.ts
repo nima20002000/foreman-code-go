@@ -355,7 +355,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       })
       return { ...discovery, candidates }
     },
-  }, workerExecution, input.availableMemory)
+  }, workerExecution, input.availableMemory, async host => {
+    if (host.kind === 'device') await input.endpoint().assertWorkerBundleReady(host.deviceId)
+  })
   const publication = new JobPublicationAuthority(dispatch, preparation)
   const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
     endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,

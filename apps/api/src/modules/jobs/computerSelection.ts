@@ -16,6 +16,7 @@ import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@foreman-code/contracts/device-
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { BuildComputerPreference } from '@foreman-code/contracts/build-computers'
 import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } from '../settings/buildComputers.js'
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
@@ -186,7 +187,8 @@ export async function readJobComputerSelection(sql: JobSql, definition: JobDefin
 
 export class JobComputerSelection {
   constructor(private readonly settings: BuildComputerSettings, private readonly inventory: JobComputerInventory,
-    private readonly workerExecution: WorkerExecutionPolicy, private readonly availableMemory?: VerificationMemoryReader) {}
+    private readonly workerExecution: WorkerExecutionPolicy, private readonly availableMemory?: VerificationMemoryReader,
+    private readonly assertBundleReady?: (host: CanonicalMachineReference) => Promise<void>) {}
 
   async reserve(sql: JobSql, principal: ManagementPrincipal, definition: JobDefinitionRecord,
     identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
@@ -207,6 +209,7 @@ export class JobComputerSelection {
     const prior = (await sql.query('select 1 from job_computer_selections where execution_id=$1', [identity.executionId])).rowCount
     if (prior) {
       const spec = await readJobComputerSelection(sql, definition, identity)
+      await this.assertBundleReady?.(spec.target.hostRef)
       return { spec, compatibleTargetCount: 1, reasons: [], diagnosticCodes: [], waitingHosts: [],
         selectedHost: buildComputerKey(buildComputerTarget(spec.target)), exceedsMaximum: false }
     }
@@ -227,6 +230,7 @@ export class JobComputerSelection {
         continue
       }
       const preference = await this.settings.requireEnabled(sql, buildComputerTarget(candidate.spec.target))
+      await this.assertBundleReady?.(candidate.spec.target.hostRef)
       const hostKey = buildComputerKey(preference.target)
       waitingHosts.push(hostKey)
       if (options.excludedHosts?.has(hostKey)) {
@@ -388,6 +392,7 @@ export class JobComputerSelection {
   async prepare(sql: JobSql, definition: JobDefinitionRecord, identity: JobPreparationIdentity): Promise<ResolvedJobDefinitionSpecRecord> {
     const spec = await readJobComputerSelection(sql, definition, identity)
     this.workerExecution.requireEnabled(spec.target.hostRef)
+    await this.assertBundleReady?.(spec.target.hostRef)
     await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
     const row = (await sql.query<{ released_at: Date | null }>(
       'select released_at from job_computer_selections where execution_id=$1', [identity.executionId])).rows[0]
@@ -403,6 +408,7 @@ export class JobComputerSelection {
   async validateFixed(sql: JobSql, spec: ResolvedJobDefinitionSpecRecord) {
     try {
       this.workerExecution.requireEnabled(spec.target.hostRef)
+      await this.assertBundleReady?.(spec.target.hostRef)
       await this.settings.requireEnabled(sql, buildComputerTarget(spec.target))
       return { valid: true, reasons: [], sideEffects: false as const }
     } catch (error) {

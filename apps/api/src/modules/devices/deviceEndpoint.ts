@@ -5,6 +5,11 @@ import { randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, DeviceSessionBindingSchema, type DevicePresence, type DeviceSessionBinding, type DeviceWelcome } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 import { workerClockReason } from './workerClock.js'
+import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceReplySchema,
+  type WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
+import type { WorkerUpdateStatus } from '@foreman-code/contracts/computer-maintenance'
+import { readWorkerBundleReadiness, requireWorkerBundleReady } from '../computers/workerBundleReadiness.js'
+import { requiresWorkerBundle } from './workerAdmission.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -33,6 +38,7 @@ export class DeviceEndpoint {
   private readonly revoked = new Map<string, number>()
   private readonly tickets = new WeakSet<AuthenticatedDevice>()
   private readonly pending = new Set<AbortController>()
+  private readonly bundleReads = new WeakMap<DeviceApplicationChannel, Promise<WorkerBundleReadiness>>()
   private readonly bindingLossFailures: unknown[] = []
   constructor(private readonly options: {
     mainId: string; appVersion: string; auth: DeviceAuthenticator
@@ -44,6 +50,7 @@ export class DeviceEndpoint {
     onBindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
     onBindingReady?(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): void | Promise<void>
     handshakeMs?: number; heartbeatMs?: number; extensions?: DeviceExtensionRegistration[]
+    workerArtifacts?: { directory: string; version: string }
   }) { extensionDescriptors(options.extensions ?? []) }
 
   private track<T>(task: Promise<T>): Promise<T> {
@@ -152,6 +159,11 @@ export class DeviceEndpoint {
       if (!current()) throw new DeviceConnectionError('transport')
       if (session?.presence) session.presence = Object.freeze({ ...session.presence, lastSeenAt: readySeenAt })
       const channel = new DeviceApplicationChannel({ side: 'main', binding, socket, signal: abort.signal, extensions,
+        beforeRequest: async (namespace, payload) => {
+          if (this.options.workerArtifacts && requiresWorkerBundle(namespace, payload)) {
+            requireWorkerBundleReady(await this.readBundleReadiness(channel))
+          }
+        },
         onPeerTime: (workerTime, mainTime) => {
           if (!current() || !session?.presence) return
           session.presence = Object.freeze({ ...session.presence,
@@ -210,6 +222,36 @@ export class DeviceEndpoint {
     return channel.request(namespace, payload, options)
   }
   capabilities(deviceId: string) { return this.channels.get(deviceId)?.capabilities() ?? [] }
+  async workerBundleReadiness(deviceId: string): Promise<WorkerBundleReadiness> {
+    const channel = this.channels.get(deviceId)
+    if (!channel) throw new DeviceConnectionError('transport')
+    return this.readBundleReadiness(channel)
+  }
+  async assertWorkerBundleReady(deviceId: string): Promise<void> {
+    requireWorkerBundleReady(await this.workerBundleReadiness(deviceId))
+  }
+  private readBundleReadiness(channel: DeviceApplicationChannel): Promise<WorkerBundleReadiness> {
+    const pending = this.bundleReads.get(channel)
+    if (pending) return pending
+    const task = this.track(this.readConnectedBundle(channel).finally(() => this.bundleReads.delete(channel)))
+    this.bundleReads.set(channel, task)
+    return task
+  }
+  private async readConnectedBundle(channel: DeviceApplicationChannel): Promise<WorkerBundleReadiness> {
+    channel.currentBinding()
+    let worker: WorkerUpdateStatus | undefined
+    if (channel.capabilities().some(value => value.namespace === COMPUTER_MAINTENANCE_NAMESPACE && value.mainCanRequest)) {
+      const result = await channel.request(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' },
+        { priority: 'foreground', timeoutMs: 10_000 })
+      const reply = MaintenanceReplySchema.parse(result.payload)
+      if (reply.operation === 'status') worker = reply.status.worker
+    }
+    const options = this.options.workerArtifacts
+    if (!options) throw new Error('Worker artifact location is not configured.')
+    const readiness = await readWorkerBundleReadiness(options, worker)
+    channel.currentBinding()
+    return readiness
+  }
   clockReason(deviceId: string): string | null {
     const presence = this.sessions.get(deviceId)?.presence
     return presence?.clockReason ?? (presence?.clockSkewMs !== undefined && presence.clockSkewMs !== null

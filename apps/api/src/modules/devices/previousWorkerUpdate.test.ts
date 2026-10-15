@@ -153,6 +153,7 @@ async function fixture() {
 it('keeps a previous protocol-1 Worker connected through heartbeat, inventory and update smoke configuration', async () => {
   const f = await fixture()
   try {
+    expect(await f.updater.status()).toMatchObject({ target, currentVersion: '1.0.0' })
     f.worker.start()
     await f.waitReady()
     await new Promise(resolve => setTimeout(resolve, 800))

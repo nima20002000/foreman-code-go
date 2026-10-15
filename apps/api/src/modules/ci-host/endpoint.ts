@@ -14,11 +14,15 @@ import { assertBuildComputerTarget } from '../settings/buildComputers.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
+import type { WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
+import { workerBundleErrorMessage } from '../computers/workerBundleReadiness.js'
 
 const log = componentLogger('jobs')
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
+  assertWorkerBundleReady?(deviceId: string): Promise<void>
+  workerBundleReadiness?(deviceId: string): Promise<WorkerBundleReadiness>
   request(deviceId: string, namespace: string, payload: unknown,
     options?: { timeoutMs?: number; priority?: DeviceRequestPriority }): Promise<{ payload: unknown }>
 }
@@ -82,6 +86,7 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
     if (request.operation === 'start' && computer.hostRef.kind === 'device') {
+      await this.devices()?.assertWorkerBundleReady?.(computer.hostRef.deviceId!)
       const status = await this.sendRequest(computer,
         { operation: 'status', buildAllowancePercent: request.buildAllowancePercent }, { priority: 'foreground' })
       if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
@@ -90,7 +95,13 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       }
       if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
     }
-    const reply = await this.sendRequest(computer, request, options)
+    let reply = await this.sendRequest(computer, request, options)
+    if (reply.operation === 'status' && computer.hostRef.kind === 'device') {
+      const readiness = await this.devices()?.workerBundleReadiness?.(computer.hostRef.deviceId!)
+      if (readiness && !readiness.ready) {
+        reply = { ...reply, ready: false, reasons: [...reply.reasons, workerBundleErrorMessage(readiness)].slice(-10) }
+      }
+    }
     if (reply.operation === 'status' && reply.cleanupSupported) {
       void this.cleanDirectories(computer).catch(error => {
         log.warn({ operation: 'clean retained CI directories', err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')

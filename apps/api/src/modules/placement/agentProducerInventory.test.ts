@@ -6,10 +6,11 @@ import { canonicalGraphJson, makeCurrentWorkflowFixture, RunStartV3InputSchema,
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { prepareRunStart, START_PREPARATION_TIMEOUT_MS } from '../runs/startPreparation.js'
 import { AgentPlacementProducer } from './agentProducer.js'
+import { DomainError } from '../errors.js'
 
 function fixture(kind: 'agent' | 'job', refresh: (
   hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
-) => Promise<void>) {
+) => Promise<void>, assertBundleReady?: (host: CanonicalMachineReference) => Promise<void>) {
   const mainId = randomUUID()
   const seed = makeCurrentWorkflowFixture('inventory-admission', 'single')
   const version: SavedWorkflowVersion = structuredClone(seed.version)
@@ -35,7 +36,8 @@ function fixture(kind: 'agent' | 'job', refresh: (
   }, on: () => {}, removeListener: () => {}, release: vi.fn() }
   const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool,
     mainId, {} as never, {} as never, {} as never, { codex: 'suite' }, undefined, undefined,
-    (hosts, signal) => { expect(transaction).toBe(false); return refresh(hosts, signal) })
+    (hosts, signal) => { expect(transaction).toBe(false); return refresh(hosts, signal) }, undefined,
+    assertBundleReady)
   const input = RunStartV3InputSchema.parse({ workspaceId: version.workspaceId, workflowId: version.workflowId,
     workflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
     commandId: 'start-inventory', executionSemanticsVersion: 3, expectedWorkflowRevision: 1,
@@ -44,6 +46,16 @@ function fixture(kind: 'agent' | 'job', refresh: (
     grants: [], expiresAt: '2099-01-01T00:00:00Z', revokedAt: null }
   return { producer, input, principal, mainId, client }
 }
+
+it('rejects an unavailable bundle before placement inventory and source preparation', async () => {
+  const refresh = vi.fn(async () => {})
+  const failure = new DomainError('WORKER_VERSION_SKEW', 'The selected computer needs an update.', 409)
+  const assertBundleReady = vi.fn(async () => { throw failure })
+  const f = fixture('agent', refresh, assertBundleReady)
+  await expect(f.producer.prepare(f.input, f.principal)).rejects.toBe(failure)
+  expect(assertBundleReady).toHaveBeenCalledWith({ kind: 'main', mainId: f.mainId })
+  expect(refresh).not.toHaveBeenCalled()
+})
 
 it('does not discover any Agent hosts for a Job-only Start', async () => {
   const refresh = vi.fn(async () => {})
