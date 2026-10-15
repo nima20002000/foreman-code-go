@@ -109,13 +109,22 @@ export async function awaitTickets(call, workspaceId, tickets,
   { waitMs = Number(environment.FOREMAN_CODE_CI_WAIT_MS || 2 * 3_600_000) } = {}) {
   const startedAt = Date.now(), states = new Map()
   for (;;) {
-    // Main holds this read until every ticket of the group is terminal with its results collected, or for about a minute.
-    const remainingSeconds = Math.ceil((waitMs - (Date.now() - startedAt)) / 1000)
-    const read = await call('ci_get', { workspaceId, ticketId: tickets[0], waitUntil: 'group-terminal',
-      waitSeconds: Math.min(1800, Math.max(1, remainingSeconds)), logTail: false })
-    if (!read.wait) throw new Error('Main answered ci_get without the requested group wait.')
-    const members = (read.partitions ?? [read.run]).filter(run => tickets.includes(run.id))
-    const runs = members.length ? members : [read.run]
+    // Main holds each read until every ticket of that group is terminal with its results collected, or for about a
+    // minute. A superseded group's replacement is another group, so every group the tickets belong to is read.
+    const runs = [], covered = new Set()
+    let groupsSettled = true
+    for (const ticketId of tickets) {
+      if (covered.has(ticketId)) continue
+      const remainingSeconds = Math.ceil((waitMs - (Date.now() - startedAt)) / 1000)
+      const read = await call('ci_get', { workspaceId, ticketId, waitUntil: 'group-terminal',
+        waitSeconds: Math.min(1800, Math.max(1, remainingSeconds)), logTail: false })
+      if (!read.wait) throw new Error('Main answered ci_get without the requested group wait.')
+      const group = read.partitions ?? [read.run]
+      for (const run of group) covered.add(run.id)
+      const members = group.filter(run => tickets.includes(run.id))
+      runs.push(...(members.length ? members : [read.run]))
+      if (read.wait.status !== 'settled') groupsSettled = false
+    }
     for (const run of runs) {
       const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
       if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
@@ -132,7 +141,7 @@ export async function awaitTickets(call, workspaceId, tickets,
       continue
     }
     const open = runs.filter(run => ['queued', 'starting', 'running'].includes(run.state))
-    const settled = read.wait?.status === 'settled' && !open.length
+    const settled = groupsSettled && !open.length
     if (!settled && Date.now() - startedAt < waitMs) continue
     if (open.length) {
       console.log(`\n[ci] Stopped waiting after ${Math.round(waitMs / 60_000)} min (FOREMAN_CODE_CI_WAIT_MS); still open, `

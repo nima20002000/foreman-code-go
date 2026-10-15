@@ -34,11 +34,12 @@ async function fakeMain(t, outcome = () => 'passed') {
       if (input.commandId) commands.set(input.commandId, reply)
       return reply
     },
-    ci_get: ({ ticketId, testStatus }) => {
+    ci_get: ({ ticketId, testStatus, waitUntil }) => {
       const run = runs.get(ticketId)
       if (!run) throw new Error('Unknown ticket.')
       const group = groups.get(run.groupId).map(id => runs.get(id))
       return { run, logTail: '', partitions: group.length > 1 ? group : undefined,
+        ...(waitUntil ? { wait: { status: 'settled' } } : {}),
         ...(testStatus ? { tests: run.state === 'failed'
           ? { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false, files: [{ file: 'apps/api/src/broken.test.ts',
             status: 'failed', durationMs: 1, tests: [{ name: 'breaks on purpose', status: 'failed', durationMs: 1 }] }] }

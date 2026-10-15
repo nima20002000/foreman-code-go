@@ -57,10 +57,15 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token,
   let ciFinished = false
   let admissionCount = 0
   const probes = async () => {
-    do {
-      await request('/health/live', { step: 'health probe' })
-      if (!ciFinished) await delay(pollMs, undefined, { signal })
-    } while (!ciFinished)
+    try {
+      do {
+        await request('/health/live', { step: 'health probe' })
+        if (!ciFinished) await delay(pollMs, undefined, { signal })
+      } while (!ciFinished)
+    } catch (error) {
+      // The deadline also aborts the CI run, whose error names the real cause; a probe's bare abort must not mask it.
+      if (!signal.aborted) throw error
+    }
   }
   const admit = async selection => {
     const body = JSON.stringify({ suite: selection.smokeComputer ? 'integration' : 'unit', scope: 'affected', commit,
