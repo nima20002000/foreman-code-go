@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -379,4 +379,17 @@ test('retries a conflicting create after a stale missing release view without up
   assert.equal(result.tag, `worker-${f.commit}`)
   assert.deepEqual(waits, [5000])
   assert.deepEqual(calls, ['view', 'create', 'view', 'download', 'upload', 'download'])
+})
+
+test('runs recovery when the service starts the script through the current release symlink', async t => {
+  const root = await mkdtemp(join(homedir(), '.cache', 'foreman-tmp', 'worker-publish-symlink-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await symlink(join(import.meta.dirname, '..'), join(root, 'current'))
+  const release = join(root, 'release')
+  await mkdir(join(release, 'worker-artifacts'), { recursive: true })
+  await writeFile(join(release, 'worker-artifacts', 'index.json'), JSON.stringify({ format: 1, version: '0.0.0',
+    github: { repository: 'owner/repo', tag: 'v0.0.0' }, publication: { state: 'published', lastError: null } }))
+  const output = execFileSync(process.execPath, [join(root, 'current', 'scripts', 'worker-release-artifacts.mjs'),
+    'recover', release], { encoding: 'utf8' })
+  assert.match(output, /Worker artifacts published and verified on GitHub/)
 })
