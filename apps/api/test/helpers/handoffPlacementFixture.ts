@@ -129,6 +129,14 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
         if (result.isError) throw new Error(JSON.stringify(result))
         return SavedRunDetailsSchema.parse(decodeMcpToolResult(result))
       },
+      async diagnostics() {
+        const executions = await base.db.pool.query(
+          'select id,record from harness_executions where run_id=$1', [runId])
+        const connections = await base.db.pool.query(`select state,wait_event_type,wait_event,query
+          from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()`)
+        return { startedNodes: base.provider.startedNodes, dispatchErrors: base.dispatchErrors,
+          executions: executions.rows, connections: connections.rows }
+      },
       async close() {
         delete base.provider.beforeClose
         await base.close()
