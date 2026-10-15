@@ -82,11 +82,12 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
   })
   let host = openHost()
   const operations = new Set<string>()
+  const interruptedExecutions = new Set<string>()
   let connected = true
   let rejectedRequests = 0
   const methods: string[] = []
   return {
-    replay, connection, manager,
+    replay, connection, manager, interruptedExecutions,
     get unavailableInspections() { return unavailableInspections },
     makeMcpReady() { mcpReady = true },
     advanceNativeTimer(delayMs: number) {
@@ -108,6 +109,7 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
       for (const operationId of operations) {
         const status = await journal.status(operationId)
         if (status.status === 'known' && status.receipt.native && !status.receipt.terminal) {
+          interruptedExecutions.add(status.receipt.intent.executionId)
           await journal.terminal(operationId, { kind: 'failed', closureEvidenceDigest: digest,
             result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED',
               message: 'The Worker restarted before the turn completed.', retryable: true } } })

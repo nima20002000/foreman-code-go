@@ -229,6 +229,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         if (completed.has(turn.correlationId)) continue
         const context = contexts.get(turn.correlationId.replace('execution:', ''))
         if (!context) continue
+        if (worker.interruptedExecutions.has(context.executionId)) continue
         const native = worker.replay.threads.get(turn.sessionId)?.turns.find(value => value.id === turn.nativeTurnId)
         if (native?.status !== 'inProgress') continue
         if (context.agentId === affected.agentId && !releaseAffected) continue

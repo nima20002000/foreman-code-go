@@ -22,7 +22,8 @@ describe.runIf(postgresEnabled)('workflow Worker restart', () => {
     await fixture.worker.restart()
     expect(fixture.worker.connection.bootId).not.toBe(bootId)
     expect(await fixture.worker.journal.status(intent.operationId)).toMatchObject({ status: 'known',
-      receipt: { intent: { executionId: original.id, attemptId: intent.attemptId } } })
+      receipt: { intent: { executionId: original.id, attemptId: intent.attemptId },
+        terminal: { kind: 'failed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: true } } } } })
     fixture.release()
     const details = await fixture.finished()
     expectBoundedNodeFault(details, fixture, /worker|restart|interrupt|uncertain/i)
