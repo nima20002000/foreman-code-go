@@ -58,7 +58,7 @@ import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contract
 import { RemoteExecutionRpcRequestSchema, type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
-import { createWorkerMcpEndpoint, WORKER_MCP_LEASE_RENEWAL_WINDOW_MS } from './workerMcpEndpoint.js'
+import { createWorkerMcpEndpoint, isLeaseRefusal, WORKER_MCP_LEASE_RENEWAL_WINDOW_MS } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
@@ -1221,17 +1221,26 @@ class InstalledWorkflowHostRuntime {
             const authority = await workerExecutionAuthorizer(this.forBinding(context.binding))(frame.intent, frame.placement,
               receipt.stopFence ? 'stop' : 'read')
             const cleanupOnly = authority?.cleanupOnly === true
+            // Main may refuse the MCP lease for good, e.g. after it abandoned this attempt and revoked its
+            // credential. Its readback of the attempt must still succeed so it can settle it.
+            let leaseRefused = false
+            const renewLease = async (renew: () => Promise<string>) => {
+              try { resident.leaseExpiresAt = await renew() } catch (error) {
+                if (!isLeaseRefusal(error)) throw error
+                leaseRefused = true
+              }
+            }
             if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence && !resident.physicalClosure
               && Date.parse(resident.leaseExpiresAt) - Date.now() <= WORKER_MCP_LEASE_RENEWAL_WINDOW_MS) {
               if (!resident.mcp) unavailable('original_main_lease_required')
-              resident.leaseExpiresAt = await resident.mcp!.refreshLease()
+              await renewLease(() => resident.mcp!.refreshLease())
             } else if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence
               && Date.parse(resident.leaseExpiresAt) <= Date.now()) {
               if (!resident.relay) unavailable('original_main_lease_required')
-              resident.leaseExpiresAt = await resident.relay!.refresh(this.signal)
+              await renewLease(() => resident.relay!.refresh(this.signal))
             }
             // Cancellation readback uses cleanup authority; it does not extend the MCP credential.
-            const observationExpiresAt = cleanupOnly || receipt.stopFence
+            const observationExpiresAt = cleanupOnly || receipt.stopFence || leaseRefused
               ? new Date(Date.now() + 60_000).toISOString() : reviewerObservationExpiresAt ?? resident.leaseExpiresAt
             const originalHistory = nativeHistoryPageSource(response) ?? value?.history
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}

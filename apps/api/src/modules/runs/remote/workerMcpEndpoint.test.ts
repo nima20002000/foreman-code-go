@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUnboundWorkerMcpEndpoint, createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import * as diagnostics from '../../diagnostics/logger.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 
 const roots: string[] = []
 async function temporaryDirectory(prefix: string) {
@@ -157,6 +158,36 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     }
     expect(f.refresh).not.toHaveBeenCalled()
     expect(JSON.parse(await readFile(f.route, 'utf8')).expiresAt).toBe(f.expiresAt)
+  })
+
+  it.each([
+    { code: 'timeout', retryable: true, kind: 'relay_unavailable', text: 'did not answer in time' },
+    { code: 'AUTH_REVOKED', retryable: false, kind: 'relay_refused', text: 'refused the call (AUTH_REVOKED)' },
+  ])('answers a tool call the relay could not complete ($code) with a JSON-RPC error, not a bare 502',
+    async ({ code, retryable, kind, text }) => {
+      const f = await setup()
+      f.request.mockRejectedValueOnce(new DeviceApplicationError(code))
+      const response = await fetch(f.endpoint.endpoint, { method: 'POST', headers: { authorization: `Bearer ${f.token}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'ci_get', arguments: {} } }) })
+      expect(response.status).toBe(200)
+      const reply = await response.json() as { id: number; error: { message: string; data: unknown } }
+      expect(reply).toMatchObject({ jsonrpc: '2.0', id: 41,
+        error: { code: -32000, data: { kind, code, retryable, delivery: 'indeterminate' } } })
+      expect(reply.error.message).toContain(text)
+    })
+
+  it('asks Main once for a lease it refused and stops renewing it', async () => {
+    const log = diagnostics.componentLogger('harness')
+    const error = vi.spyOn(log, 'error')
+    vi.spyOn(diagnostics, 'componentLogger').mockReturnValue(log)
+    const f = await setup()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.expiresAt) - 2 * 60_000)
+    f.refresh.mockRejectedValue(new DeviceApplicationError('AUTH_REVOKED'))
+    for (let index = 0; index < 3; index++) {
+      await expect(f.endpoint.refreshLease()).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+    }
+    expect(f.refresh).toHaveBeenCalledOnce()
+    expect(error.mock.calls.filter(([, message]) => message === 'Worker MCP relay failed')).toHaveLength(1)
   })
 
   it('renews once when concurrent polls enter the renewal window', async () => {

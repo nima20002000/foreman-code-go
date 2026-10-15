@@ -8,6 +8,8 @@ import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
 import { componentLogger } from '../../diagnostics/logger.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DeviceConnectionError } from '../../devices/deviceWire.js'
 
 const PublicationCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.literal('files.publish_transferred_result'),
@@ -29,6 +31,33 @@ export function observedWorkflowArtifactPublication(body: unknown, response: z.i
   }).filter(reply => reply.id === call.data.id && !reply.result.isError)
   if (replies.length !== 1) return undefined
   return { input: call.data.params.arguments, result: replies[0]!.result.structuredContent }
+}
+
+const RelayedToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
+  method: z.literal('tools/call') }).passthrough()
+
+/** A tool call the Main relay could not complete is answered as a JSON-RPC error naming the failure and whether a
+ * retry can help. A bare HTTP 502 reached the Agent as a generic "service unavailable" and hid both. */
+export function relayFailureReply(body: unknown, error: unknown) {
+  const call = RelayedToolCall.safeParse(body)
+  if (!call.success) return undefined
+  const known = error instanceof DeviceApplicationError || error instanceof DeviceConnectionError
+  const code = known ? error.code : 'relay_failed'
+  const retryable = error instanceof DeviceConnectionError || error instanceof DeviceApplicationError && error.retryable
+  const cause = code === 'timeout' ? 'Foreman Main did not answer in time'
+    : code === 'transport' ? 'the Worker lost its link to Foreman Main'
+      : code === 'backpressure' ? 'the Worker link to Foreman Main is busy'
+        : `Foreman Main refused the call (${code})`
+  const message = `The Foreman Code MCP relay failed: ${cause}. ` + (retryable
+    ? 'The call may still have run on Main: read back the result of any write, then retry this call.'
+    : 'Retrying the same call will fail the same way.')
+  return { jsonrpc: '2.0' as const, id: call.data.id, error: { code: -32000, message,
+    data: { kind: retryable ? 'relay_unavailable' : 'relay_refused', code, retryable, delivery: 'indeterminate' } } }
+}
+
+/** Main answered the lease request and refused it (revoked credential, ended attempt); asking again cannot help. */
+export function isLeaseRefusal(error: unknown): error is DeviceApplicationError {
+  return error instanceof DeviceApplicationError && !error.retryable && error.code !== 'cancelled'
 }
 
 /** The admitted worker owns this private route until its original native owner closes.
@@ -66,10 +95,11 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       code: error instanceof Error && 'code' in error ? error.code : undefined,
       errorType: error instanceof Error ? error.name : typeof error }, 'Worker MCP relay failed')
   }
-  let bound: { relay: WorkerMcpRelay; digest: Buffer; expiresAt: string } | undefined
+  let bound: { relay: WorkerMcpRelay; digest: Buffer; expiresAt: string; refused?: DeviceApplicationError } | undefined
   const active = new Set<Promise<void>>()
   let closing = false, shutdown: Promise<void> | undefined
   const server = createServer((request, response) => {
+    let body: unknown
     const task = (async () => {
       response.setHeader('cache-control', 'no-store')
       const lease = bound
@@ -91,7 +121,6 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
           if (byteSize > 1_000_000) { response.writeHead(413); response.end(); return }
           chunks.push(bytes)
         }
-        let body: unknown
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
         catch { response.writeHead(400); response.end(); return }
         const protocol = request.headers['mcp-protocol-version']
@@ -106,6 +135,12 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       } finally { request.removeListener('aborted', disconnected); response.removeListener('close', disconnected) }
     })().catch(error => {
       logFailure('request', error)
+      const reply = !response.headersSent ? relayFailureReply(body, error) : undefined
+      if (reply) {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(reply))
+        return
+      }
       if (!response.headersSent) response.writeHead(502)
       response.end()
     })
@@ -158,11 +193,19 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
   }
   /** Refresh only in the renewal window; queued callers reuse the latest expiry. */
   const refreshLease = () => {
+    let repeatedRefusal = false
     const task = updates.then(async () => {
       const lease = bound
       if (closing || !lease?.relay.refresh) throw new Error('The original worker MCP endpoint is closing.')
       if (Date.parse(lease.expiresAt) - Date.now() > WORKER_MCP_LEASE_RENEWAL_WINDOW_MS) return lease.expiresAt
-      const renewedExpiry = await lease.relay.refresh(input.signal)
+      // Main refused this lease for good (for example it ended the attempt and revoked the credential): asking
+      // again cannot succeed, so later renewals report the logged refusal without another Main request.
+      if (lease.refused) { repeatedRefusal = true; throw lease.refused }
+      let renewedExpiry: string
+      try { renewedExpiry = await lease.relay.refresh(input.signal) } catch (error) {
+        if (isLeaseRefusal(error) && bound === lease) lease.refused = error
+        throw error
+      }
       input.signal.throwIfAborted()
       if (closing || bound !== lease) throw new Error('The original worker MCP endpoint is closing.')
       if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
@@ -175,7 +218,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
         'Worker MCP launcher route renewed')
       return renewedExpiry
     }).catch(error => {
-      logFailure('renew', error)
+      if (!repeatedRefusal) logFailure('renew', error)
       throw error
     })
     updates = task.then(() => undefined, () => undefined)
@@ -196,8 +239,9 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       await refreshLease()
       scheduleRenewal(lease, Math.max(WORKER_MCP_LEASE_RENEWAL_RETRY_MS, renewalDelay(lease.expiresAt)))
     } catch {
-      // ignore: refreshLease already logged the failed renewal; retry until the lease expires.
-      scheduleRenewal(lease, WORKER_MCP_LEASE_RENEWAL_RETRY_MS)
+      // ignore: refreshLease already logged the failed renewal. A refused lease stays refused; anything else
+      // is retried until the lease expires.
+      if (!lease.refused) scheduleRenewal(lease, WORKER_MCP_LEASE_RENEWAL_RETRY_MS)
     }
   }
   return { endpoint, bindRelay, refreshLease, close }

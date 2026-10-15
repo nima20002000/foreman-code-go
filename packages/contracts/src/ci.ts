@@ -69,8 +69,11 @@ export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
+/** A wait must end before the caller's own deadline: native MCP tool calls time out after 120 s and the Worker relay
+ * after 100 s, and a loaded Main can spend tens of seconds before the wait starts. A longer wait always failed. */
+export const CI_GET_MAX_WAIT_SECONDS = 60
 export const CiGetInputSchema = CiTicketInputSchema.extend({
-  waitSeconds: z.number().min(0).max(300).optional().describe('Defaults to 0. Wait up to 300 seconds for the ticket’s '
+  waitSeconds: z.number().min(0).max(CI_GET_MAX_WAIT_SECONDS).optional().describe(`Defaults to 0. Wait up to ${CI_GET_MAX_WAIT_SECONDS} seconds for the ticket’s `
     + 'state or step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
   logTail: z.boolean().optional().describe('Defaults to true. Set false to omit the 32 KiB log tail while waiting; '
     + 'read logs once at the end with ci_logs_read.'),

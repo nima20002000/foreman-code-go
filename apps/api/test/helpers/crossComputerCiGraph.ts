@@ -41,7 +41,7 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Retain that commandId for an uncertain response and retry only that same request. '
     + 'Placement is automatic: do not supply a computer or placementOverride. '
     + 'Retain every ticketId in the ci_run partitions array, or the single ticketId when it is absent. '
-    + 'Poll ci_get with waitSeconds 300 and logTail false for EVERY ticket until ALL run.state values '
+    + 'Poll ci_get with waitSeconds 60 and logTail false for EVERY ticket until ALL run.state values '
     + 'are passed, failed, canceled or lost. '
     + 'The first ticket is only one part; group.state can fail before the other parts finish. '
     + 'Record each ticket’s distinct observed states in order. Keep polling queued, starting or running tickets. '
