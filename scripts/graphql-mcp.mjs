@@ -61,6 +61,22 @@ function bridgeError(error, deliveryStage) {
 const GROUP_WAIT_RETRYABLE = ['service_unavailable', 'transport', 'route_unavailable', 'timeout', 'indeterminate_delivery',
   'invalid_response']
 
+function isRetryableToolFailure(result) {
+  if (result?.isError !== true) return false
+  const text = result.content?.find(block => block.type === 'text')?.text
+  if (typeof text !== 'string') return false
+  let failure
+  try {
+    failure = JSON.parse(text)?.error
+  } catch (error) {
+    if (error instanceof SyntaxError) return false
+    throw error
+  }
+  if (failure?.code === 'ACCESS_DENIED'
+    || typeof failure?.code === 'string' && failure.code.startsWith('AUTH_')) return false
+  return failure?.details?.retryable === true
+}
+
 /** The budget of a ci_get group wait, which keeps one Agent tool call open across bounded chunks. */
 function groupWaitBudgetMs(message) {
   if (!Object.hasOwn(message, 'id') || message.method !== 'tools/call' || message.params?.name !== 'ci_get') return undefined
@@ -156,17 +172,22 @@ async function forwardGroupWait(message, controller, budgetMs) {
     let reply
     const error = await forwardAttempt(chunk, controller, 120_000, (value) => { reply = value })
     if (controller.signal.aborted) return
-    if (!error && (reply?.result?.structuredContent?.wait?.status !== 'still-running' || Date.now() >= deadline)) {
-      output(reply)
-      return
+    const retryable = error ? GROUP_WAIT_RETRYABLE.includes(error.data.kind) : isRetryableToolFailure(reply?.result)
+    if (error || reply?.result?.isError === true) {
+      if (!retryable || Date.now() >= deadline) {
+        const failureReply = error ? { jsonrpc: '2.0', id: message.id, error } : reply
+        output(stillRunning && retryable ? stillRunning : failureReply)
+        return
+      }
+      failures++
+    } else {
+      if (reply?.result?.structuredContent?.wait?.status !== 'still-running' || Date.now() >= deadline) {
+        output(reply)
+        return
+      }
+      stillRunning = reply
+      failures = 0
     }
-    if (error && (!GROUP_WAIT_RETRYABLE.includes(error.data.kind) || Date.now() >= deadline)) {
-      output(stillRunning && GROUP_WAIT_RETRYABLE.includes(error.data.kind) ? stillRunning
-        : { jsonrpc: '2.0', id: message.id, error })
-      return
-    }
-    if (!error) stillRunning = reply
-    failures = error ? failures + 1 : 0
     if (failures) await wait(Math.min(1_000 * 2 ** (failures - 1), 15_000, Math.max(0, deadline - Date.now())),
       undefined, { signal: controller.signal })
   }
