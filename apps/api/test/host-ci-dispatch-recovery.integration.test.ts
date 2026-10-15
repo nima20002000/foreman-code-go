@@ -50,12 +50,18 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
       .toMatchObject({ host_key: null, record: queued.run })
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(tickets)
     f.finish(tickets.ticketId, 0, 'Host slice completed.\n')
+    const host = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: tickets.ticketId, waitSeconds: 10,
+    }))
+    expect(host.run.state).toBe('passed')
     await f.ci.dispatch()
     const running = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(running.run).toMatchObject({ id: started.ticketId, state: 'running', computer: { label: 'laptop' },
       message: null, unstartedProviders: [provider] })
     f.finish(started.ticketId, 0, 'Completed on another computer.\n')
-    const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    }))
     expect(finished.run).toMatchObject({ state: 'passed', exitCode: 0, message: null })
     expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
       .toEqual(finished.run)
