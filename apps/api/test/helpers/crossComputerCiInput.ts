@@ -27,7 +27,7 @@ export const CrossComputerCiInputSchema = z.object({
   token: z.string().min(1),
   deniedToken: z.string().min(1),
   evidenceDirectory: z.string().startsWith('/').min(2),
-  /** Every Agent and CI ticket on Main only: the local scenario before the multi-computer one. */
+  /** Every Agent on Main (CI may still use every CI computer): the local scenario before the multi-computer one. */
   localOnly: z.boolean().default(false),
   workspaces: z.array(z.object({
     workspaceId: z.string().min(1),
