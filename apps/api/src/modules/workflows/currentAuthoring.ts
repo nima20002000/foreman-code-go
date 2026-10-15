@@ -29,6 +29,7 @@ import { assertMeaningfulSaveAdmitted } from '../graph-drafts/saveAdmission.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
+import { resolveAssignedSkills } from '../skills/catalog.js'
 import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
 import {
   IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion, readImmutableAgentConfiguration,
@@ -371,6 +372,10 @@ export class CurrentWorkflowAuthoring {
     const version = parsedVersion.data
     const executable = ExecutableWorkflowV3Schema.safeParse({ version, configurations })
     if (!executable.success) throw new DomainError('GRAPH_INVALID', 'Fix the workflow settings below.', 409, { issues: workflowSaveIssues(executable.error.issues) })
+    // A node's added skills must be live exact versions in this workspace, as Agent assignedSkills are.
+    for (const node of version.definition.nodes) {
+      if (node.kind !== 'job' && node.skills?.add?.length) await resolveAssignedSkills(client, input.workspaceId, node.skills.add)
+    }
     for (const config of configurations) {
       if (config.assignedSkills?.length) requireAuthorization(principal, 'skills:read', { workspaceId: input.workspaceId })
       if (config.harness.harness === 'codex' && config.harness.sandbox === 'danger-full-access') requireAuthorization(principal, 'harnesses:update', input)

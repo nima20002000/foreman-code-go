@@ -1,0 +1,106 @@
+import { ExecutionResultSchema, type ExecutionResult } from '@foreman-code/contracts'
+import {
+  OUTPUT_MISMATCH_CODE, OUTPUT_REFERENCE_KEYWORD, OUTPUT_REFERENCE_UNKNOWN_CODE, checkDeliverable, deliverableReferences,
+  type DeliverableIssue, type OutputReferenceKind, type OutputSchema,
+} from '@foreman-code/contracts/wave25'
+
+/** Where a workflow Agent's deliverable sits in its successful result: text is the plain final answer;
+ * data is a choice or artifactOutputs envelope's data; latestDeliverable is a handoff or repeat exit's data.latestDeliverable. */
+export type DeliverableSource = 'text' | 'data' | 'latestDeliverable'
+
+/** Per-execution deliverable contract. referenceExists answers from app records, scoped to this execution. */
+export interface DeliverableContract {
+  source: DeliverableSource
+  outputSchema?: OutputSchema | undefined
+  referenceExists(kind: OutputReferenceKind, value: string): Promise<boolean>
+}
+
+export interface DeliverableVerdict {
+  code: typeof OUTPUT_MISMATCH_CODE | typeof OUTPUT_REFERENCE_UNKNOWN_CODE
+  issues: DeliverableIssue[]
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function parseJson(text: string): { value: unknown } | undefined {
+  try { return { value: JSON.parse(text) } } catch { return undefined }
+}
+
+/** The value to judge, or undefined when nothing is judged here. A malformed routing envelope stays
+ * the routing validator's failure; only the deliverable inside a well-formed envelope is checked. */
+function deliverableOf(output: unknown, contract: DeliverableContract): { value: unknown } | 'not-json' | undefined {
+  // Native harnesses return { text }; any other output is structured and is judged as it stands.
+  const text = isObject(output) && Object.keys(output).length === 1 && typeof output.text === 'string' ? output.text : undefined
+  if (contract.source === 'text') {
+    if (text === undefined || !contract.outputSchema) return { value: text ?? output }
+    return parseJson(text) ?? 'not-json'
+  }
+  const envelope = text === undefined ? output : parseJson(text)?.value
+  if (!isObject(envelope)) return undefined
+  // Choice and artifact data may be null by their own contract, so only a declared schema judges it.
+  if (contract.source === 'data') return contract.outputSchema ? { value: envelope.data } : undefined
+  return isObject(envelope.data) ? { value: envelope.data.latestDeliverable } : undefined
+}
+
+/** Returns undefined when the deliverable passes; otherwise the code and every issue for the repair turn. */
+export async function deliverableVerdict(result: ExecutionResult, contract: DeliverableContract): Promise<DeliverableVerdict | undefined> {
+  if (result.outcome !== 'succeeded') return undefined
+  const deliverable = deliverableOf(result.output, contract)
+  if (deliverable === 'not-json') {
+    return { code: OUTPUT_MISMATCH_CODE,
+      issues: [{ code: OUTPUT_MISMATCH_CODE, path: '', message: 'The final answer must be one JSON value, without Markdown, that matches the output schema.' }] }
+  }
+  if (!deliverable) return undefined
+  const issues = checkDeliverable(deliverable.value, contract.outputSchema)
+  if (issues.length) return { code: OUTPUT_MISMATCH_CODE, issues }
+  for (const reference of deliverableReferences(contract.outputSchema, deliverable.value)) {
+    if (!await contract.referenceExists(reference.kind, reference.value)) {
+      issues.push({ code: OUTPUT_REFERENCE_UNKNOWN_CODE, path: reference.path,
+        message: `${reference.kind} ${reference.value} was not created by this execution.` })
+    }
+  }
+  return issues.length ? { code: OUTPUT_REFERENCE_UNKNOWN_CODE, issues } : undefined
+}
+
+/** One corrective turn in the same native session, listing every validation error exactly. */
+export function deliverableRepairPrompt(verdict: DeliverableVerdict, outputSchema: OutputSchema | undefined): string {
+  return [
+    'Your deliverable failed the workflow output contract.',
+    `Validation issues: ${JSON.stringify(verdict.issues)}`,
+    'Return the complete corrected final answer in the same format as before. Preserve the valid parts of your deliverable.',
+    'This is a corrective turn in the same execution. Do not repeat the task or perform additional work.',
+    `Output contract: ${outputSchema ? JSON.stringify(outputSchema) : 'a deliverable that is not empty'}`,
+  ].join('\n')
+}
+
+/** The non-retryable failed result that replaces the Agent's final answer once its repair turns are used. */
+export function deliverableFailure(verdict: DeliverableVerdict): ExecutionResult {
+  const detail = verdict.issues.map(issue => `${issue.path || '/'}: ${issue.message}`).join('; ').slice(0, 2000)
+  return ExecutionResultSchema.parse({ outcome: 'failed',
+    error: { code: verdict.code, message: `The Agent deliverable failed its output contract after repair. ${detail}`, retryable: false } })
+}
+
+/** Codex sends turn outputSchema in strict mode, which rejects (HTTP 400) any object schema that allows
+ * extra or optional properties. Such schemas are enforced by validation and repair only. */
+function codexStrict(node: unknown): boolean {
+  if (Array.isArray(node)) return node.every(codexStrict)
+  if (!isObject(node)) return true
+  if (node.type === 'object' || isObject(node.properties)) {
+    const required = Array.isArray(node.required) ? node.required : []
+    if (node.additionalProperties !== false || !Object.keys(isObject(node.properties) ? node.properties : {}).every(key => required.includes(key))) return false
+  }
+  return Object.values(node).every(codexStrict)
+}
+
+/** Native structured output for a plain-answer node, without Foreman reference markers. */
+export function nativeOutputSchema(contract: DeliverableContract): Record<string, unknown> | undefined {
+  const schema = contract.outputSchema
+  if (contract.source !== 'text' || !schema || schema.type !== 'object' || !codexStrict(schema)) return undefined
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip)
+    if (!isObject(node)) return node
+    return Object.fromEntries(Object.entries(node).filter(([key]) => key !== OUTPUT_REFERENCE_KEYWORD).map(([key, value]) => [key, strip(value)]))
+  }
+  return strip(schema) as Record<string, unknown>
+}

@@ -12,6 +12,7 @@ import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } 
 import { CodexRuntimeFileTurn, type CodexChatFiles } from '../codexFiles/runtime.js'
 import { CodexFilePreparationCleanupError } from '../codexFiles/turn.js'
 import { codexChatFileTools } from '../codexFiles/declarations.js'
+import type { JsonValue } from '../codexMethodTypes.js'
 import { CodexRuntimeNativeOutputTurn, type CodexNativeOutputs } from '../codexNativeOutput.js'
 import type { NativeHistory, NativeSteerInput, NativeSteerReceipt, NativeTurnInput } from '../port.js'
 import { codexRequest } from '../codexProtocol.js'
@@ -177,6 +178,7 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
         const result = await codexRequest(runtime.transport, 'turn/start', {
           threadId: session.nativeSessionId, clientUserMessageId: input.clientCorrelationId,
           input: nativeInput,
+          ...(input.outputSchema ? { outputSchema: input.outputSchema as JsonValue } : {}),
           ...(input.sessionMode ? { collaborationMode: codexCollaborationMode(input.sessionMode, runtime.configuration.model, runtime.configuration.reasoningEffort) } : {}),
           serviceTierForTurn: runtime.configuration.serviceTier === 'priority' ? 'fast' : 'default',
         }, AbortSignal.any([subscriberSignal, ...(signal ? [signal] : [])]), (value, error) => {

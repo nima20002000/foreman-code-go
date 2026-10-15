@@ -26,7 +26,7 @@ function observerFixture(completed = false) {
     }, assertResume: async () => undefined,
   }
   const context = { run: f.run, version: f.fixture.version, owner: f.owner as never, store, native,
-    admission: new RunnerAdmission(1), workflows: { getAgentConfiguration: async () => f.configuration },
+    admission: new RunnerAdmission(1), workflows: { resolveNodeSkills: async () => { throw new Error('node skills are not used by this fixture') }, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => f.configuration },
     locations: { revalidateRunAuthorization: async () => undefined, revalidateSnapshot: async () => undefined },
     directory: () => f.get().runtimeDirectory! }
   return { ...f, context, store, native, observer: () => repeatNativeObserver(context) }

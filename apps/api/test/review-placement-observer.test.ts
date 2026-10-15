@@ -58,7 +58,7 @@ async function fixture(host: Host) {
   const context: RepeatNativeObserverContext = { run, version: f.version,
     owner: { runId: run.id, assertOwned: () => undefined, client: {} } as unknown as RunOwnership,
     store, native: { observeExact, assertResume: async () => undefined }, admission: new RunnerAdmission(1),
-    workflows: { getAgentConfiguration: async () => f.configurations[0] },
+    workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => f.configurations[0] },
     locations: { revalidateRunAuthorization: vi.fn(async () => undefined), revalidateSnapshot: vi.fn(async () => undefined) },
     preparePlacement: async () => host === 'unplaced' ? undefined : { ...paths, revalidate }, directory }
   return { context, execution, runtimeDirectory, workingDirectory, events, claimLaunch, beginNativeEntry, authorizeNativeSubmission,

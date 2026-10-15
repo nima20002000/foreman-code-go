@@ -2,6 +2,9 @@ import type { AgentConfigurationVersion } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { SavedWorkflowDefinition, SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
+import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
+import { referenceCreatedByExecution } from '../runs/workflowDeliverable.js'
+import type { NodeSkillOverride, OutputReferenceKind } from '@foreman-code/contracts/wave25'
 import { readImmutableWorkflowVersion, readImmutableAgentConfiguration, readSavedWorkflowDefinition, IMMUTABLE_WORKFLOW_VERSION_COLUMNS,
   type ImmutableWorkflowVersionRow, type ImmutableAgentConfigurationRow } from './immutableRead.js'
 
@@ -62,6 +65,21 @@ export class PostgresWorkflowRepository {
       [configurationVersionId],
     )
     return result.rows[0] ? readImmutableAgentConfiguration(result.rows[0], { id: configurationVersionId }) : undefined
+  }
+
+  /** Resolves one node's skill override into an execution-start snapshot; the pinned configuration is unchanged. */
+  async resolveNodeSkills(configuration: AgentConfigurationVersion, override: NodeSkillOverride): Promise<AgentConfigurationVersion> {
+    const client = await this.pool.connect()
+    try {
+      return await configurationWithNodeSkills(client, configuration, override)
+    } finally {
+      client.release()
+    }
+  }
+
+  /** A reference is valid only for a record this same execution created. */
+  async referenceCreatedByExecution(kind: OutputReferenceKind, value: string, workspaceId: string, executionId: string): Promise<boolean> {
+    return referenceCreatedByExecution(this.pool, kind, value, workspaceId, executionId)
   }
 
   async assertCurrentConfigurations(version: SavedWorkflowVersion): Promise<void> {

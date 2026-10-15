@@ -1,7 +1,7 @@
 import type { ExecutionResult } from '@foreman-code/contracts'
 import { WorkflowArtifactOutputsV1Schema, type WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
 import {
-  AcceptedCurrentNodeResultSchema, WorkflowChoiceSchema, parseChoiceResultEnvelope,
+  AcceptedCurrentNodeResultSchema, OUTPUT_REFERENCE_KEYWORD, WorkflowChoiceSchema, parseChoiceResultEnvelope,
   type WorkflowChoice, type ChoiceResultEnvelope,
 } from '@foreman-code/contracts/wave25'
 
@@ -22,8 +22,26 @@ export function parseCurrentChoiceResult(result: ExecutionResult, choice: Workfl
 /** Request-only instructions derived from the immutable node. Never mutate the
  * saved configuration, accepted input, model settings, or routing authority. */
 export function currentInitialPrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined;
-  artifactOutputs?: WorkflowArtifactOutputsV1 | undefined }, repeatExit = false,
-  handoff = false): string | undefined {
+  artifactOutputs?: WorkflowArtifactOutputsV1 | undefined; outputSchema?: Record<string, unknown> | undefined },
+  repeatExit = false, handoff = false): string | undefined {
+  const prompt = basePrompt(node, repeatExit, handoff)
+  if (!node.outputSchema) return prompt
+  const where = handoff || repeatExit ? 'data.latestDeliverable of your result'
+    : node.choice || node.artifactOutputs ? 'data of your result' : 'your final answer, as one JSON value with no Markdown'
+  const schema = JSON.stringify(node.outputSchema)
+  const contract = [
+    'Foreman Code deliverable schema (version 1).',
+    `The deliverable, ${where}, must validate against this JSON Schema: ${schema}`,
+    ...(schema.includes(`"${OUTPUT_REFERENCE_KEYWORD}"`)
+      ? [`A property marked "${OUTPUT_REFERENCE_KEYWORD}": "ciTicket" must hold the ID of a CI run that this execution started.`] : []),
+    'Invalid deliverables are returned for correction, at most twice, before the attempt fails.',
+    'End Foreman Code deliverable schema contract.',
+  ].join('\n')
+  return prompt ? `${prompt}\n\n${contract}` : contract
+}
+
+function basePrompt(node: { initialPrompt?: string | undefined; choice?: WorkflowChoice | undefined;
+  artifactOutputs?: WorkflowArtifactOutputsV1 | undefined }, repeatExit: boolean, handoff: boolean): string | undefined {
   if (handoff) {
     const saved = node.artifactOutputs ? WorkflowArtifactOutputsV1Schema.parse(node.artifactOutputs) : undefined
     const outcomes = node.choice ? WorkflowChoiceSchema.parse(node.choice).outcomes.map(({ outcome }) => outcome) : []
