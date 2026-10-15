@@ -108,7 +108,9 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
       for (const operationId of operations) {
         const status = await journal.status(operationId)
         if (status.status === 'known' && status.receipt.native && !status.receipt.terminal) {
-          await journal.terminal(operationId, { kind: 'failed', closureEvidenceDigest: digest })
+          await journal.terminal(operationId, { kind: 'failed', closureEvidenceDigest: digest,
+            result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED',
+              message: 'The Worker restarted before the turn completed.', retryable: true } } })
         }
       }
       await journal.close()
