@@ -141,9 +141,12 @@ export class DeviceApplicationError extends Error {
   readonly code: string
   readonly class: FailureClass
   readonly retryable: boolean
-  constructor(code: string, readonly details?: WorkerBundleReadiness, options?: ErrorOptions & { class?: FailureClass }) {
+  readonly details?: WorkerBundleReadiness
+  // Plain fields, not parameter properties: Worker code loads this file through Node's type stripping.
+  constructor(code: string, details?: WorkerBundleReadiness, options?: ErrorOptions & { class?: FailureClass }) {
     super(code, options)
     this.code = code
+    this.details = details
     this.class = options?.class ?? deviceApplicationFailure({ code }).class
     this.retryable = this.class === 'transient'
   }
