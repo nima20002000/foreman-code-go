@@ -317,7 +317,7 @@ export async function remoteReviewProduction(options: {
           const frames = Array.isArray(event.stackFrames)
             ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
           const sourceMessage = event.err?.message
-          const errorDetail = code === 'ENOENT' ? JSON.stringify(parsed).slice(0, 1800) : code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
+          const errorDetail = code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
           failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,

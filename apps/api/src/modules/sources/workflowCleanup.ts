@@ -6,6 +6,7 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions/workflowClosure.js'
 import { hasRetainedRemoteReviewerSource } from '../interactions/retainedRemoteReviewer.js'
 import type { PostgresSourceService } from './service.js'
+import { withSourceOperationExclusion } from './sourceOperationExclusion.js'
 
 export async function localWorkflowSourceClosed(sql: GraphSqlClient, executionId: string): Promise<boolean> {
   const row = (await sql.query<{ record: unknown }>(
@@ -67,7 +68,8 @@ function deferSourceClosure(
   return true
 }
 
-async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: CompletedSource | undefined) {
+async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: CompletedSource | undefined,
+  only?: string) {
   return pool.query<CompletedSource>(`select m.materialization_id,m.state='closed' as already_closed,
       m.record,m.worktree_cleanup,e.record as execution,
       exists(select 1 from source_preparation_reconciliations c
@@ -98,8 +100,9 @@ async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: Complete
         )
       )) and e.record->>'state'='completed'
       and ($1::uuid is null or (m.state='closed',m.materialization_id)>($2::boolean,$1::uuid))
+      and ($4::uuid is null or m.materialization_id=$4::uuid)
     order by m.state='closed',m.materialization_id limit $3`,
-  [after?.materialization_id ?? null, after?.already_closed ?? false, cleanupPageSize])
+  [after?.materialization_id ?? null, after?.already_closed ?? false, cleanupPageSize, only ?? null])
 }
 
 export async function closeCompletedWorkflowSources(
@@ -131,7 +134,11 @@ export async function closeCompletedWorkflowSources(
         const record = SourceMaterializationRecordSchema.parse(row.record)
         if (record.receipt.binding.deviceId !== null && execution.id === record.receipt.executionId
           && await hasRetainedRemoteReviewerSource(pool, execution)) continue
-        await sources.confirmClosed(record)
+        await withSourceOperationExclusion(record.operationId, async () => {
+          // Reservation reclamation can settle this source while the sweep waits for it or walks its page.
+          const current = await completedSourcePage(pool, undefined, row.materialization_id)
+          if (current.rows.length) await sources.confirmClosed(record)
+        })
         retries.delete(row.materialization_id)
       } catch (error) {
         if (!deferSourceClosure(error, row.materialization_id, retries, report)) report(error)

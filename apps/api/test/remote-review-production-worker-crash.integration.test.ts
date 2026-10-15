@@ -8,7 +8,6 @@ const withRemoteReviewFixture = useRemoteReviewFixture()
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('settles the original native owners after an installed Worker crash without launching a replacement', async () => {
     await withRemoteReviewFixture(async fixture => {
-     try {
       const active = await reviewInProgress(fixture)
       const originalReceipts = await receipts(fixture, active.run.id)
       const ownerLaunchIds = fixture.registry.snapshot().launches.filter(owner => active.owners.some(
@@ -41,15 +40,6 @@ describe('production remote review and native recovery through authenticated MCP
       expect(detail.run.outcome).toBe('canceled')
       expect((await fixture.provider.calls()).filter(call => call.method === 'turn/start'
         && call.correlationId === active.job.correlationId)).toHaveLength(1)
-     } catch (error) {
-      const rows = (await fixture.db.pool.query(`select m.materialization_id,m.execution_id,m.state,
-        m.worktree_cleanup,s.state as reservation_state,s.record->>'referenceReclaimed' as ref_reclaimed,
-        s.record->'cleanupRetry' as retry,s.record->>'reclamation' is not null as has_reclamation,
-        e.record->>'state' as exec_state,e.record#>>'{result,outcome}' as exec_outcome,e.workflow_node_id,r.execution_state
-        from source_execution_materializations m join source_storage_reservations s on s.reservation_id=m.reservation_id
-        join harness_executions e on e.id=m.execution_id join runs r on r.id=e.run_id order by m.materialization_id`)).rows
-      throw new Error(`${(error as Error).message}\nDIAG ${JSON.stringify(rows)}`, { cause: error })
-     }
     })
   }, 240_000)
 })
