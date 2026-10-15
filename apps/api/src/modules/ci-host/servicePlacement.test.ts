@@ -33,7 +33,6 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>(),
   options: { cpuCounts?: Map<string, number>; durations?: CiDurations; reservedCloudSlots?: number } = {}) {
   const started: { computer: HostCiComputer; request: CiHostRequest; assigned: CiRunRecord }[] = []
-  let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
     if (sql.includes('ci_dispatch_claims')) return { rows: [], rowCount: 1 }
     if (sql.startsWith('select record from ci_runs where id=')) {
@@ -44,7 +43,6 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
       return { rows: [], rowCount: 1 }
     }
     if (sql.startsWith('update ci_runs')) {
-      writes++
       if (parameters?.length === 2) {
         const plans = JSON.parse(parameters[0] as string) as { id: string; patch: Partial<CiRunRecord> }[]
         const rows = plans.map(plan => {
@@ -80,7 +78,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
     }
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
     const active = records.filter(record => ['starting', 'running'].includes(record.state))
-      .map(record => ({ record, host_key: available.find(computer =>
+      .map(record => ({ id: record.id, record, host_key: available.find(computer =>
         isDeepStrictEqual(computer.hostRef, record.computer?.hostRef))?.key ?? host.key }))
     return { rows: sql.startsWith('select host_key from ci_runs')
       ? active.filter(row => row.host_key === parameters![0]) : active }
@@ -96,8 +94,16 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
           memoryBytes: (options.cpuCounts?.get(computer.key) ?? 16) * 2 * 2 ** 30, runs: [],
           slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
+      if (request.operation === 'read') {
+        const record = records.find(run => run.id === request.runId)!
+        return { operation: 'read', text: '', nextOffset: 0,
+          run: { runId: record.id, state: record.state, step: record.step,
+            startedAt: record.startedAt ?? record.queuedAt, finishedAt: record.finishedAt,
+            exitCode: record.exitCode, message: record.message, logBytes: 0 } }
+      }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
       if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
+      if (occupied.has(computer.key)) throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
       const assigned = CiRunRecordSchema.parse(records.find(record => record.id === request.runId))
       started.push({ computer, request, assigned })
       return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'integration',
@@ -106,7 +112,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   }
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits,
     endpoint, undefined, options)
-  return { service, endpoint, started, writes: () => writes }
+  return { service, endpoint, started }
 }
 
 const secondHost: HostCiComputer = {
@@ -155,8 +161,10 @@ it('rechecks sibling placement before falling back after a busy start', async ()
   const f = fleet(records, [host, secondHost, spare], new Map(), new Set(), new Map([[secondHost.key, 2]]))
   const request = f.endpoint.request
   const siblingStarted = Promise.withResolvers<void>()
+  let retriedRunId: string | undefined
   vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
     if (input.operation === 'start' && computer.key === host.key) {
+      retriedRunId = input.runId
       await siblingStarted.promise
       throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
     }
@@ -166,7 +174,7 @@ it('rechecks sibling placement before falling back after a busy start', async ()
   await f.service.dispatch()
   expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key, spare.key])
   expect(records.map(run => run.state)).toEqual(['running', 'running'])
-  expect(records[0]?.computer?.hostRef).toEqual(spare.hostRef)
+  expect(records.find(run => run.id === retriedRunId)?.computer?.hostRef).toEqual(spare.hostRef)
 })
 
 it.each(['busy', 'not-ready', 'offline'])('uses a second slot when the other computer is %s', async reason => {
@@ -311,6 +319,84 @@ it.each(gateChecks)('runs a gate $suite part on an idle build computer when clou
   expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id, ...check })
   expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: cloud.key,
     computer: { hostRef: host.hostRef } })
+})
+
+it.each(['github', 'circleci'] as const)(
+  'moves a gate check from a busy %s provider to an eligible idle provider', async provider => {
+    const planned: HostCiComputer = { ...cloud, key: `cloud:${provider}:0`,
+      hostRef: { ...cloud.hostRef, provider } }
+    const replacement: HostCiComputer = { ...cloud, key: 'cloud:replacement',
+      hostRef: { ...cloud.hostRef, provider: provider === 'github' ? 'circleci' : 'github' } }
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+      suite: 'lint', part: 'lint-api', partition: null, plannedHostKey: planned.key }))
+    const f = fleet(records, [planned, replacement, host], new Map(), new Set([planned.key, host.key]))
+    await f.service.dispatch()
+    expect(f.started.map(item => item.computer.key)).toEqual([replacement.key])
+    expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: planned.key,
+      computer: { hostRef: replacement.hostRef } })
+  },
+)
+
+it.each([false, true])('preserves systemd support when stealing across cloud providers: %s', async supported => {
+  const planned: HostCiComputer = { ...cloud, key: 'cloud:github:0',
+    hostRef: { ...cloud.hostRef, provider: 'github' } }
+  const replacement = { ...cloud, userSystemd: { supported, reason: supported ? null : 'No user manager' } }
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+    plannedHostKey: planned.key, partition: null, integrationShards: 8, requiresBuildComputer: true,
+    files: ['apps/api/test/native-service-restart.integration.test.ts'] }))
+  const f = fleet(records, [planned, replacement], new Map(), new Set([planned.key]))
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(supported ? 1 : 0)
+  expect(records[0]?.state).toBe(supported ? 'running' : 'queued')
+})
+
+it('keeps Worker unit tests off CircleCI when their planned GitHub provider is busy', async () => {
+  const planned: HostCiComputer = { ...cloud, key: 'cloud:github:0',
+    hostRef: { ...cloud.hostRef, provider: 'github' } }
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+    suite: 'unit', part: 'unit-other', partition: null, plannedHostKey: planned.key }))
+  const f = fleet(records, [planned, cloud], new Map(), new Set([planned.key]))
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records[0]?.state).toBe('queued')
+})
+
+it.each(['read', 'status'] as const)('dispatches on idle computers while another executor %s is stalled', async operation => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+    state: 'running', computer: { hostRef: host.hostRef, label: host.label } }))
+  const pending = () => CiRunRecordSchema.parse({ ...queuedRuns(1)[0], suite: 'lint', partition: null })
+  records.push(pending())
+  const f = fleet(records, [host, secondHost, cloud])
+  const stalled = Promise.withResolvers<void>()
+  const entered = Promise.withResolvers<void>()
+  const request = f.endpoint.request
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+    if (computer.key === host.key && input.operation === operation) {
+      entered.resolve()
+      await stalled.promise
+    }
+    if (input.operation === 'read') {
+      return { operation: 'read', run: { runId: input.runId, state: 'running', step: 'lint',
+        startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null },
+      text: '', nextOffset: 0 }
+    }
+    return request(computer, input)
+  })
+  const dispatch = f.service.dispatch()
+  try {
+    await entered.promise
+    await vi.waitFor(() => expect(f.started).toHaveLength(1), { timeout: 1000 })
+    records.push(pending())
+    const next = f.service.dispatch()
+    await vi.waitFor(() => expect(f.started).toHaveLength(2), { timeout: 1000 })
+    await next
+    expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key, cloud.key])
+    expect(records.slice(1).map(run => run.state)).toEqual(['running', 'running'])
+  } finally {
+    stalled.resolve()
+    await dispatch
+    await f.service.close()
+  }
 })
 
 it.each([false, true])('moves a systemd gate integration part to a free provider slot only with support: %s',
@@ -524,9 +610,9 @@ it('keeps the host slice queued when only cloud slots are available', async () =
   expect(records[0]).toMatchObject({ state: 'queued', computer: null, partition: { hostIndexes: [0] },
     message: 'Waiting for a build computer: this integration slice needs one; no eligible computers' })
   expect(records[1]?.state).toBe('running')
-  const writes = f.writes()
+  const waiting = { ...records[0]! }
   await f.service.dispatch()
-  expect(f.writes()).toBe(writes)
+  expect(records[0]).toEqual(waiting)
   const withHost = fleet(records, [cloud, host])
   await withHost.service.dispatch()
   expect(withHost.started).toHaveLength(1)

@@ -92,6 +92,62 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
 }
 
 describe('host CI runner concurrent starts', () => {
+  it('starts a warm repository while another repository fetch is stalled and retains the reserved slot', async () => {
+    const fetch = barrier()
+    const { runner, request, launches, ports } = await computer(undefined, 16, true, undefined, fetch.pause)
+    const command = ports.run
+    ports.run = async (file, args, options) => {
+      if (file === 'git' && args.includes('cat-file') && args.includes(`${'b'.repeat(40)}^{commit}`)) {
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      return command(file, args, options)
+    }
+    const first = runner.handle(request)
+    let warm: ReturnType<HostCiRunner['handle']> | undefined
+    let retry: ReturnType<HostCiRunner['handle']> | undefined
+    try {
+      await fetch.entered
+      retry = runner.handle(request)
+      const warmRequest = { ...request, runId: randomUUID(), repository: 'octo/other', commit: 'b'.repeat(40) }
+      warm = runner.handle(warmRequest)
+      await vi.waitFor(() => expect(launches).toHaveLength(1), { timeout: 1000 })
+      await expect(warm).resolves.toMatchObject({ run: { runId: warmRequest.runId } })
+      await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 2,
+        runs: expect.arrayContaining([expect.objectContaining({ runId: request.runId, state: 'starting' })]) })
+      await expect(runner.handle({ ...request, runId: randomUUID() })).rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+    } finally {
+      fetch.release()
+      await Promise.all([first, warm, retry])
+    }
+    await vi.waitFor(() => expect(launches).toHaveLength(2))
+  })
+
+  it('coordinates concurrent repository fetches after reserving distinct slots', async () => {
+    const fetch = barrier()
+    let fetches = 0
+    const { runner, request, launches } = await computer(undefined, 16, true, undefined, async () => {
+      fetches++
+      await fetch.pause()
+    })
+    const first = runner.handle(request)
+    let second: ReturnType<HostCiRunner['handle']> | undefined
+    try {
+      await fetch.entered
+      second = runner.handle({ ...request, runId: randomUUID(), commit: 'b'.repeat(40) })
+      await vi.waitFor(async () => {
+        await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 2 })
+      }, { timeout: 1000 })
+      expect(fetches).toBe(1)
+    } finally {
+      fetch.release()
+      await Promise.all([first, second])
+    }
+    await vi.waitFor(() => expect(launches).toHaveLength(2))
+    expect(fetches).toBe(2)
+    expect(new Set(launches.map(launch => launch.args.find(arg => arg.startsWith('--working-directory=')))).size)
+      .toBe(2)
+  })
+
   it('keeps database suites exclusive for commits without isolated database support', async () => {
     const { runner, request, launches } = await computer(undefined, 16)
     const unit = { ...request, suite: 'unit' }

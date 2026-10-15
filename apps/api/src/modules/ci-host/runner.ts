@@ -95,6 +95,7 @@ export function hostCiDirectory() {
  * systemd user service, so it outlives a Worker restart, and its CPU and memory stay below the host reserve. */
 export class HostCiRunner {
   private readonly preparing = new Map<string, Promise<void>>()
+  private readonly starts = new Map<string, Promise<CiHostRun>>()
   private readonly reading = new Map<string, number>()
   private startQueue = Promise.resolve()
   private startingRun: CiHostRun | null = null
@@ -124,7 +125,7 @@ export class HostCiRunner {
     if (request.operation === 'status') {
       if (!request.cleanupRunIds) return this.status(request.buildAllowancePercent)
       const removedRunIds = await sweepCiRunDirectories({ root: this.root, runIds: request.cleanupRunIds,
-        isInUse: runId => this.reading.has(runId) || this.preparing.has(runId) || this.startingRun?.runId === runId,
+        isInUse: runId => this.reading.has(runId) || this.preparing.has(runId) || this.starts.has(runId),
         withRun: async (runId, work) => {
           await this.refresh(runId)
           return withHostCiRunLock(this.runDirectory(runId), work, { nonBlocking: true })
@@ -195,13 +196,14 @@ export class HostCiRunner {
   async beginDrain(): Promise<void> {
     this.draining = true
     await this.startQueue
+    await Promise.allSettled(this.starts.values())
     await Promise.all(this.preparing.values())
     await this.cacheSweepPending
   }
 
   resumeAdmissions() { this.draining = false }
 
-  isUpdateIdle() { return this.preparing.size === 0 && this.startingRun === null }
+  isUpdateIdle() { return this.preparing.size === 0 && this.starts.size === 0 }
 
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
 
@@ -336,7 +338,18 @@ export class HostCiRunner {
     return active
   }
 
-  private async start(request: StartRequest) {
+  private start(request: StartRequest) {
+    const existing = this.starts.get(request.runId)
+    if (existing) return existing
+    const pending = this.startRun(request).catch(error => {
+      this.invalidateReadiness()
+      throw error
+    }).finally(() => { this.starts.delete(request.runId) })
+    this.starts.set(request.runId, pending)
+    return pending
+  }
+
+  private async startRun(request: StartRequest) {
     if (await this.startupSmokePending()) throw new DomainError('CI_HOST_BUSY',
       'Worker update CI smoke is pending; this computer is reserved for validation.', 409)
     if (this.draining) throw new DomainError('WORKER_RUNTIME_DRAINING',
@@ -346,31 +359,30 @@ export class HostCiRunner {
     let release!: () => void
     this.startQueue = new Promise<void>(resolve => { release = resolve })
     await previous
+    let reserved: RunMeta | CiHostRun
     try {
       this.startingRepository = request.repository
-      return await this.startRun(request)
-    } catch (error) {
-      this.invalidateReadiness()
-      throw error
+      reserved = await this.reserveRun(request)
     } finally {
       this.startingRun = null
       this.startingRepository = undefined
       release()
     }
+    return 'repository' in reserved ? this.prepareRun(request, reserved) : reserved
   }
 
-  private async startRun(request: StartRequest) {
+  private async reserveRun(request: StartRequest): Promise<RunMeta | CiHostRun> {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     if (existsSync(join(directory, 'cancel-requested'))) return this.canceledBeforeStart(request.runId)
     this.startingRun = { runId: request.runId, state: 'starting', step: 'dispatch',
       startedAt: this.ports.now().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null }
-    let active = await this.active()
+    const active = await this.active()
     if (active.some(run => run.gate) || request.gate && active.length) {
       throw new DomainError('CI_HOST_BUSY', 'A gate requires exclusive use of this build computer.', 409)
     }
     const allowance = { buildAllowancePercent: request.buildAllowancePercent ?? 100 }
-    let capacity = this.capacity(active, allowance)
+    const capacity = this.capacity(active, allowance)
     if (capacity.slotsUsed >= capacity.slotsTotal) {
       throw new DomainError('CI_HOST_BUSY',
         `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); waiting for CPU or memory capacity.`, 409)
@@ -398,14 +410,23 @@ export class HostCiRunner {
       ...(request.notice ? { notice: request.notice } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
+    this.activeRunRepositories.set(meta.runId, meta.repository)
+    return meta
+  }
+
+  private async prepareRun(request: StartRequest, meta: RunMeta) {
+    const directory = this.runDirectory(meta.runId)
+    const allowance = { buildAllowancePercent: request.buildAllowancePercent ?? 100 }
     const ready = await withHostCiRunLock(directory, async () => {
       try {
-        if (!await this.cancelPreparation(meta.runId)) await this.prepareRepository(request)
+        if (!await this.cancelPreparation(meta.runId)) {
+          await this.withRepository(request.repository, () => this.prepareRepository(request))
+        }
         if (await this.cancelPreparation(meta.runId)) return false
         const databaseSuite = ['unit', 'integration'].includes(request.suite)
         const isolatedDatabase = databaseSuite && await this.supportsDatabaseIsolation(request)
-        active = (await this.active()).filter(run => run.runId !== request.runId)
-        capacity = this.capacity(active, allowance)
+        const active = (await this.active()).filter(run => run.runId !== request.runId)
+        let capacity = this.capacity(active, allowance)
         const resources = allowedCiResources({ cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes,
           availableMemoryBytes: this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes }, allowance.buildAllowancePercent)
         if (request.gate || databaseSuite && !isolatedDatabase) {
@@ -461,21 +482,27 @@ export class HostCiRunner {
     return withHostCiRunLock(this.runDirectory(meta.runId), () => this.launchRun(meta))
   }
 
-  private async launchRun(meta: RunMeta) {
-    const previous = this.repositoryQueues.get(meta.repository) ?? Promise.resolve()
+  private async withRepository<T>(repository: string, work: () => Promise<T>) {
+    const previous = this.repositoryQueues.get(repository) ?? Promise.resolve()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
-    this.repositoryQueues.set(meta.repository, pending)
+    this.repositoryQueues.set(repository, pending)
     await previous
-    let source: string
     try {
-      const current = await this.readMeta(meta.runId)
-      if (current.state !== 'starting' || current.cancellationRequested) return
-      source = await this.checkout(meta)
+      return await work()
     } finally {
       release()
-      if (this.repositoryQueues.get(meta.repository) === pending) this.repositoryQueues.delete(meta.repository)
+      if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
     }
+  }
+
+  private async launchRun(meta: RunMeta) {
+    const source = await this.withRepository(meta.repository, async () => {
+      const current = await this.readMeta(meta.runId)
+      if (current.state !== 'starting' || current.cancellationRequested) return
+      return this.checkout(meta)
+    })
+    if (!source) return
     await this.selectFiles(meta, source)
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
@@ -903,7 +930,7 @@ export class HostCiRunner {
     const cached = this.settledRuns.get(runId)
     if (cached && cached.version === await metaVersion()) return cached.run
     // Launch can finish while the metadata read is awaiting I/O.
-    const preparing = this.preparing.has(runId) || this.startingRun?.runId === runId
+    const preparing = this.preparing.has(runId) || this.starts.has(runId)
     let meta = await this.readMeta(runId).catch(error => {
       if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN'
         && existsSync(join(this.runDirectory(runId), 'cancel-requested'))) return null
@@ -949,7 +976,7 @@ export class HostCiRunner {
     }
     const log = await stat(join(directory, 'log')).catch(fallbackOnMissing(null))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(fallbackOnMissing(''))).trim()
-      || (this.startingRun?.runId === runId ? 'dispatch' : null)
+      || (meta.state === 'starting' && this.starts.has(runId) ? 'dispatch' : null)
     if (log === null && (meta.exitCode !== null || step && step !== 'dispatch')) {
       throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
     }

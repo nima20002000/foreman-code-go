@@ -81,6 +81,8 @@ async function inBatches<T>(items: readonly T[], limit: number, work: (item: T) 
 export class HostCiService {
   private dispatching: Promise<void> | undefined
   private dispatchRequested = false
+  private readonly observingRuns = new Map<string, Promise<void>>()
+  private readonly observingComputers = new Map<string, Promise<void>>()
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
   private readonly endpoint: HostCiEndpoint
@@ -147,11 +149,13 @@ export class HostCiService {
     void this.dispatch()
   }
 
-  close() {
+  async close() {
     clearInterval(this.timer)
     this.timer = undefined
+    this.stoppingRuns += 1
     this.reads.close()
-    return this.dispatching
+    await this.dispatching
+    await Promise.all([...this.observingRuns.values(), ...this.observingComputers.values()])
   }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
@@ -957,16 +961,21 @@ export class HostCiService {
     [run.id, run.state, workspaceId, serializeCiJson(next), JSON.stringify(run)])
   }
 
-  private async refreshActiveRuns(active: { id: string; record: unknown; host_key: string | null }[],
+  private refreshActiveRuns(active: { id: string; record: unknown; host_key: string | null }[],
     computers: HostCiComputer[]) {
-    let failure: unknown
     const refresh = async (row: typeof active[number]) => {
+      const previous = CiRunRecordSchema.parse(row.record)
       try {
         await this.refreshRun(row, computers)
+        const current = await this.read(row.id, previous.workspaceId)
+        if (['starting', 'running'].includes(previous.state) && !['starting', 'running'].includes(current.state)
+          || previous.deadlineExceeded?.executor === 'retained' && current.deadlineExceeded?.executor === 'released') {
+          void this.dispatch()
+        }
       } catch (error) {
-        failure ??= error
+        reportServiceFailure('ci-observation', error)
         try {
-          await this.recordObservationFailure(row.id, CiRunRecordSchema.parse(row.record).workspaceId, error)
+          await this.recordObservationFailure(row.id, previous.workspaceId, error)
         } catch {
           log.warn({ runId: row.id }, 'CI observation failed and its status could not be persisted')
         }
@@ -980,19 +989,39 @@ export class HostCiService {
       return Date.parse(run.startedAt) + run.expectedDurationMs
     }
     cloud.sort((left, right) => expectedEnd(left) - expectedEnd(right))
-    // Provider reads cover the cloud fleet together; local host reads retain their bounded batch.
-    await trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
-      () => Promise.all([inBatches(cloud, 48, refresh), inBatches(local, 8, refresh)]))
-    if (failure) reportServiceFailure('ci-observation', failure)
+    for (const [rows, limit] of [[cloud, 48], [local, 8]] as const) {
+      let pending = rows.filter(row => this.observingRuns.has(row.id)).length
+      for (const row of rows) {
+        if (pending >= limit) break
+        if (this.observingRuns.has(row.id)) continue
+        pending++
+        const observation = trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
+          () => refresh(row)).finally(() => { this.observingRuns.delete(row.id) })
+        this.observingRuns.set(row.id, observation)
+      }
+    }
+  }
+
+  private refreshComputerStatuses(computers: HostCiComputer[]) {
+    for (const computer of computers) {
+      if (this.planningEndpoint.status(computer) || this.observingComputers.has(computer.key)) continue
+      const observation = readCiComputerStatus(this.endpoint, computer).then(status => {
+        if (status) void this.dispatch()
+      }).finally(() => { this.observingComputers.delete(computer.key) })
+      this.observingComputers.set(computer.key, observation)
+    }
   }
 
   private async dispatchOnce() {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
+    const { parsed, durations } = await readQueuedCiRuns(this.pool)
+    const hasQueuedGate = parsed.some(run => run.gate)
+    this.refreshComputerStatuses(computers.filter(computer => computer.hostRef.kind !== 'cloud' || hasQueuedGate))
     const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
       `select id,record,host_key from ci_runs where state in ('starting','running') or record->>'collection'='pending'
         or (state in ('passed','failed','canceled','lost') and record#>>'{observation,status}'='unavailable')`)).rows
-    await this.refreshActiveRuns(active, computers)
+    this.refreshActiveRuns(active, computers)
     const busyRows = (await this.pool.query<{ host_key: string; record: unknown }>(
       `select host_key,record from ci_runs where ${CI_BUSY_TICKET}`)).rows
     const used = new Map<string, number>()
@@ -1002,17 +1031,15 @@ export class HostCiService {
       return [run.id, { groupId: run.groupId, computerKey: row.host_key }]
     }))
     const { gate, reservedHosts } = await readCiGateReservation(this.pool)
-    const { parsed, durations } = await readQueuedCiRuns(this.pool)
-    const hasQueuedGate = parsed.some(run => run.gate)
     const totals = new Map<string, number>()
     const unavailable = new Map<string, string>()
     const gateShards = new Map<string, number>()
-    await inBatches(computers, 8, async computer => {
+    for (const computer of computers) {
       if (computer.hostRef.kind === 'cloud' && !hasQueuedGate) {
         totals.set(computer.key, 1)
-        return
+        continue
       }
-      const status = await readCiComputerStatus(this.endpoint, computer)
+      const status = this.planningEndpoint.status(computer)
       const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
       totals.set(computer.key, status?.ready ? slots : 0)
       if (!status?.ready) unavailable.set(computer.key, status?.reasons.join('; ') || 'Worker CI status unavailable')
@@ -1022,7 +1049,7 @@ export class HostCiService {
           gateShards.set(computer.key, buildComputerIntegrationShards(status, computer.buildAllowancePercent))
         }
       }
-    })
+    }
     const freeSlots = (computer: HostCiComputer) => Math.max(0,
       (totals.get(computer.key) ?? 1) - (used.get(computer.key) ?? 0))
     const releaseSlot = (computer: HostCiComputer) => {
@@ -1052,7 +1079,9 @@ export class HostCiService {
           && gateShards.get(computer.key)! >= run.integrationShards!
           && stealsGatePart(run, computer)
       }
-      return !run.plannedHostKey || !gateShards.has(run.plannedHostKey) || stealsGatePart(run, computer)
+      return !run.plannedHostKey
+        || !gateShards.has(run.plannedHostKey) && !this.observingComputers.has(run.plannedHostKey)
+        || stealsGatePart(run, computer)
     }
     queued = await splitUnavailableGateParts(this.pool, queued, { computers, shards: gateShards, durations,
       reservedCloud, gate, freeSlots, canTake: canTakeGatePart,
@@ -1078,6 +1107,8 @@ export class HostCiService {
         return isGitHubComputer(computer) ? 1 : 2
       }
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
+      const plannedProvider = run.gate
+        ? computers.find(computer => computer.key === run.plannedHostKey)?.hostRef.provider : undefined
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, scope: 'full' as const, integrationShards: run.integrationShards!, files: run.files }
         : affectedFiles
@@ -1096,6 +1127,8 @@ export class HostCiService {
           .filter(assignment => assignment.groupId === run.groupId).map(assignment => assignment.computerKey))
         order.sort((left, right) => Number(siblingComputers.has(left.key)) - Number(siblingComputers.has(right.key))
           || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+          || Number(plannedProvider !== undefined && right.hostRef.provider === plannedProvider)
+            - Number(plannedProvider !== undefined && left.hostRef.provider === plannedProvider)
           || preferred(right) - preferred(left)
           || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)

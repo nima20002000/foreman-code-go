@@ -39,6 +39,11 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
     this.statuses.delete(canonicalJson(computer))
   }
 
+  status(computer: HostCiComputer): CiHostStatus | undefined {
+    const snapshot = this.statuses.get(canonicalJson(computer))
+    return snapshot && Date.now() - snapshot.at < FRESHNESS_MS ? snapshot.status : undefined
+  }
+
   async computers(): Promise<HostCiComputer[]> {
     if (this.fleet && Date.now() - this.fleet.at < FRESHNESS_MS) return this.fleet.computers
     this.fleetPending ??= this.endpoint.computers().then(computers => {
