@@ -172,7 +172,7 @@ export interface RepeatNativeObserverContext {
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
   /** Shared startup capacity, scoped to the execution's accepted computer. */
   admission: RunnerAdmission
-  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'resolveNodeSkills' | 'referenceCreatedByExecution'>
+  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'resolveNodeSkills' | 'referencesCreatedByExecution'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
   executionHostKey?(execution: HarnessExecution): Promise<string>
@@ -322,7 +322,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       const workHandoffContract = context.version.definition.handoffs && repeatTickIndex(execution.input) === undefined
         ? currentInitialPrompt({ ...node, initialPrompt: undefined }, false, true) : undefined
       const deliverable = workflowDeliverableContract(context.version, execution,
-        (kind, value) => context.workflows.referenceCreatedByExecution(kind, value, run.workspaceId, execution.id))
+        (kind, values) => context.workflows.referencesCreatedByExecution(kind, values, run.workspaceId, execution.id))
       for (;;) {
         const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal, onStarted: release,
           workHandoffContract, deliverable })

@@ -2909,7 +2909,8 @@ export class ApprovalExecutionCoordinator {
           const verdict = input.deliverable && !handoffPrompt
             ? await observation.bookkeeping(() => deliverableVerdict(observed.terminalTurn!.result, input.deliverable!)) : undefined
           const repairPrompt = handoffPrompt ?? (verdict ? deliverableRepairPrompt(verdict, input.deliverable!.outputSchema) : undefined)
-          if (repairPrompt && observation.workResultRepairs < 2) {
+          if (repairPrompt && ownedSession.context.acceptedPlacement?.hostRef.kind !== 'device'
+            && observation.workResultRepairs < 2) {
             assertOriginalWorkflowTerminal(observation.execution, observation.session!, observed, observation.workflowCorrelation)
             const reserved = await observation.bookkeeping(() => this.runs.reserveWorkResultRepair(
               observation.execution.id, observed.terminalTurn!.providerId, input.owner, captured))

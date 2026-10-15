@@ -1,8 +1,10 @@
 import type pg from 'pg'
 import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
-import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { WorkflowVersionV3Schema, sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { ExecutionFactsRequestSchema, ExecutionFactsResultSchema, ExecutionAuthorityRequestSchema, ExecutionAuthorityResultSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import { readPlacement } from './binding.js'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
+import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
 import { readExecutionAuthoritySnapshot } from './executionAuthorityRead.js'
 import { readExecutionPlacement, readNativePlacement } from './persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
@@ -117,9 +119,18 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
           [input.intent.operationId])).rowCount) denied()
         const placement = await readExecutionPlacement(sql, input.intent.executionId)
         const native = await readNativePlacement(sql, input.intent.executionId)
-        if (!placement || !native || placement.payload.kind !== 'agent') denied()
-        const configuration = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and agent_id=$2',
-          [placement!.payload.kind === 'agent' ? placement!.payload.agentConfigurationVersionId : '', placement!.payload.kind === 'agent' ? placement!.payload.agentId : ''])).rows[0]?.record
+        if (!placement || !native || placement.payload.kind !== 'agent') return denied()
+        const row = (await sql.query<{ record: unknown; version: unknown }>(`select c.record,v.record as version
+          from agent_configuration_versions c join runs r on r.id=$3
+          join workflow_versions v on v.id=r.workflow_version_id where c.id=$1 and c.agent_id=$2`,
+        [placement.payload.agentConfigurationVersionId, placement.payload.agentId, input.intent.runId])).rows[0]
+        const pinned = AgentConfigurationVersionSchema.parse(row?.record)
+        const version = WorkflowVersionV3Schema.parse(row?.version)
+        const node = version.definition.nodes.find(item => item.id === input.intent.nodeId)
+        if (!node || node.kind === 'job' || node.agentId !== pinned.agentId
+          || version.agentConfigurationVersionIds[node.agentId] !== pinned.id) return denied()
+        const configuration = node.skills
+          ? configurationWithNodeSkills(pinned, node.skills, version.nodeSkillSnapshots?.[node.id]) : pinned
         const origin = (await sql.query<{ connection: unknown }>(
           'select connection from remote_dispatch_origins where operation_id=$1',
           [input.intent.operationId])).rows[0]

@@ -92,7 +92,7 @@ it('admits the next Run after native startup without waiting for the first Agent
       },
     }
     const observe = repeatNativeObserver({ run, version: f.fixture.version, owner: owner as never,
-      store, native, admission, workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => f.configuration },
+      store, native, admission, workflows: { resolveNodeSkills: async (configuration) => configuration, referencesCreatedByExecution: async () => new Set<string>(), getAgentConfiguration: async () => f.configuration },
       locations: { revalidateRunAuthorization: async () => undefined, revalidateSnapshot: async () => undefined },
       directory: () => execution.runtimeDirectory! })
     return () => observe(execution, new AbortController().signal)
@@ -188,7 +188,7 @@ it('uses the persisted computer for an Agent whose saved node inherits its place
   }
   const observe = repeatNativeObserver({ run: f.run, version: f.fixture.version, owner: f.owner as never,
     store, native, admission, executionHostKey: async () => 'device:host-other',
-    workflows: { resolveNodeSkills: async (configuration) => configuration, referenceCreatedByExecution: async () => true, getAgentConfiguration: async () => f.configuration },
+    workflows: { resolveNodeSkills: async (configuration) => configuration, referencesCreatedByExecution: async () => new Set<string>(), getAgentConfiguration: async () => f.configuration },
     locations: { revalidateRunAuthorization: async () => undefined, revalidateSnapshot: async () => undefined },
     directory: () => f.get().runtimeDirectory! })
   const task = observe(f.get(), new AbortController().signal)

@@ -312,7 +312,7 @@ export class InstalledWorkflowPhysicalReadouts {
     for(const alias of aliases)events.set(alias.key,{retained,source:alias.source})
     if(events.size)this.events.set(operationId,events)
   }
-  async read(input: PhysicalReadoutSelector & { metadata?: DeviceJsonContinuationRequest },
+  async read(input: PhysicalReadoutSelector & { metadata?: DeviceJsonContinuationRequest | undefined },
     signal?: AbortSignal): Promise<RemoteWorkflowPhysicalReadout> {
     signal?.throwIfAborted()
     const key=this.key(input.receiptSequence,input.sourceDigest)

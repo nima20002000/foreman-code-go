@@ -1,40 +1,65 @@
 import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
-import type { OutputReferenceKind, WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { canonicalGraphJson, type OutputReferenceKind, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { deliverableFailure, deliverableVerdict, type DeliverableContract } from '../interactions/deliverable.js'
+import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatTickIndex } from './repeatResolution.js'
 
-interface Queryable { query(text: string, values: unknown[]): Promise<{ rows: unknown[] }> }
+interface Queryable {
+  readonly transaction?: true
+  query(text: string, values: unknown[]): Promise<{ rows: { id: string }[] }>
+}
+
+const terminalVerdicts = new WeakMap<Queryable, Map<string, Promise<ExecutionResult | undefined>>>()
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** A reference is valid only for a record this same execution created. */
-export async function referenceCreatedByExecution(db: Queryable, kind: OutputReferenceKind, value: string,
-  workspaceId: string, executionId: string): Promise<boolean> {
-  if (kind !== 'ciTicket' || !UUID.test(value)) return false
-  const result = await db.query(`select 1 from ci_runs where id=$1 and workspace_id=$2 and record#>>'{initiator,executionId}'=$3`,
-    [value, workspaceId, executionId])
-  return result.rows.length > 0
+/** References are valid only for records this same execution created. */
+export async function referencesCreatedByExecution(db: Queryable, kind: OutputReferenceKind, values: readonly string[],
+  workspaceId: string, executionId: string): Promise<ReadonlySet<string>> {
+  if (kind !== 'ciTicket') return new Set()
+  const ids = [...new Set(values.filter(value => UUID.test(value)).map(value => value.toLowerCase()))]
+  if (!ids.length) return new Set()
+  const result = await db.query(`select id from ci_runs
+    where id=any($1::uuid[]) and workspace_id=$2 and record#>>'{initiator,executionId}'=$3`,
+  [ids, workspaceId, executionId])
+  const existing = new Set(result.rows.map(row => row.id))
+  return new Set(values.filter(value => existing.has(value.toLowerCase())))
 }
 
 /** The deliverable contract of one workflow Agent activation; none for interval checks or Job nodes. */
 export function workflowDeliverableContract(version: WorkflowVersionV3, execution: HarnessExecution,
-  referenceExists: DeliverableContract['referenceExists']): DeliverableContract | undefined {
+  referencesExist: DeliverableContract['referencesExist']): DeliverableContract | undefined {
   const node = version.definition.nodes.find(item => item.id === execution.workflowNodeId)
   if (!node || node.kind === 'job' || repeatTickIndex(execution.input) !== undefined) return undefined
   const repeatExit = version.definition.repeat?.blocks.some(block => block.exitNodeId === node.id) ?? false
   return {
     source: version.definition.handoffs || repeatExit ? 'latestDeliverable' : node.choice || node.artifactOutputs ? 'data' : 'text',
-    outputSchema: node.outputSchema, referenceExists,
+    outputSchema: node.outputSchema, referencesExist,
   }
 }
 
-/** The final failed result for a completed activation whose deliverable still fails its contract. The
- * native coordinator has already spent the repair turns; this runs where the first terminal is normalized. */
-export async function workflowDeliverableFailure(db: Queryable, version: WorkflowVersionV3,
+/** Validate a terminal deliverable once per transaction, shared by normalization and native verification. */
+export function workflowDeliverableFailure(db: Queryable, version: WorkflowVersionV3,
   execution: HarnessExecution): Promise<ExecutionResult | undefined> {
-  if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded') return undefined
-  const contract = workflowDeliverableContract(version, execution,
-    (kind, value) => referenceCreatedByExecution(db, kind, value, version.workspaceId, execution.id))
-  const verdict = contract && await deliverableVerdict(execution.result, contract)
-  return verdict ? deliverableFailure(verdict) : undefined
+  if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded') return Promise.resolve(undefined)
+  const read = async () => {
+    const contract = workflowDeliverableContract(version, execution,
+      (kind, values) => referencesCreatedByExecution(db, kind, values, version.workspaceId, execution.id))
+    const verdict = contract && await deliverableVerdict(execution.result!, contract)
+    return verdict ? deliverableFailure(verdict) : undefined
+  }
+  if (!db.transaction) return read()
+  assertGraphTransaction(db as GraphTransactionSql)
+  let verdicts = terminalVerdicts.get(db)
+  if (!verdicts) {
+    verdicts = new Map()
+    terminalVerdicts.set(db, verdicts)
+  }
+  const key = canonicalGraphJson([version.id, execution])
+  let verdict = verdicts.get(key)
+  if (!verdict) {
+    verdict = read()
+    verdicts.set(key, verdict)
+  }
+  return verdict
 }

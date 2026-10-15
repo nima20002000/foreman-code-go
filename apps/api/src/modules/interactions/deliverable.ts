@@ -10,11 +10,11 @@ import { HarnessExecutionError } from '../harnesses/errors.js'
  * data is a choice or artifactOutputs envelope's data; latestDeliverable is a handoff or repeat exit's data.latestDeliverable. */
 export type DeliverableSource = 'text' | 'data' | 'latestDeliverable'
 
-/** Per-execution deliverable contract. referenceExists answers from app records, scoped to this execution. */
+/** Per-execution deliverable contract. referencesExist answers from app records, scoped to this execution. */
 export interface DeliverableContract {
   source: DeliverableSource
   outputSchema?: OutputSchema | undefined
-  referenceExists(kind: OutputReferenceKind, value: string): Promise<boolean>
+  referencesExist(kind: OutputReferenceKind, values: readonly string[]): Promise<ReadonlySet<string>>
 }
 
 export interface DeliverableVerdict {
@@ -60,8 +60,14 @@ export async function deliverableVerdict(result: ExecutionResult, contract: Deli
       `The workflow output schema is invalid. ${issues.map(issue => issue.message).join('; ')}`, false)
   }
   if (issues.length) return { code: OUTPUT_MISMATCH_CODE, issues }
-  for (const reference of deliverableReferences(contract.outputSchema, deliverable.value)) {
-    if (!await contract.referenceExists(reference.kind, reference.value)) {
+  const references = deliverableReferences(contract.outputSchema, deliverable.value)
+  const existing = new Map<OutputReferenceKind, ReadonlySet<string>>()
+  for (const kind of new Set(references.map(reference => reference.kind))) {
+    const values = [...new Set(references.filter(reference => reference.kind === kind).map(reference => reference.value))]
+    existing.set(kind, await contract.referencesExist(kind, values))
+  }
+  for (const reference of references) {
+    if (!existing.get(reference.kind)?.has(reference.value)) {
       issues.push({ code: OUTPUT_REFERENCE_UNKNOWN_CODE, path: reference.path,
         message: `${reference.kind} ${reference.value} was not created by this execution.` })
     }
@@ -84,7 +90,7 @@ export function deliverableRepairPrompt(verdict: DeliverableVerdict, outputSchem
 export function deliverableFailure(verdict: DeliverableVerdict): ExecutionResult {
   const detail = verdict.issues.map(issue => `${issue.path || '/'}: ${issue.message}`).join('; ').slice(0, 2000)
   return ExecutionResultSchema.parse({ outcome: 'failed',
-    error: { code: verdict.code, message: `The Agent deliverable failed its output contract after repair. ${detail}`, retryable: false } })
+    error: { code: verdict.code, message: `The Agent deliverable failed its output contract. ${detail}`, retryable: false } })
 }
 
 /** Codex sends turn outputSchema in strict mode, which rejects (HTTP 400) any object schema that allows

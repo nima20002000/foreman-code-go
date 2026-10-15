@@ -26,7 +26,7 @@ export interface RepeatEngineStartContext {
   runtimeRoot: string
   factory: RepeatRepositoryFactory
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume' | 'failIntervalCheck' | 'abandonAttempt'>
-  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'resolveNodeSkills' | 'referenceCreatedByExecution'>
+  workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration' | 'resolveNodeSkills' | 'referencesCreatedByExecution'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   jobs?: (owner: RunOwnership, version: import('@foreman-code/contracts/wave25').WorkflowVersionV3) => {
     store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
