@@ -52,17 +52,41 @@ async function verifyArtifact(directory, target, version, commit) {
   return { manifestSha256: sha256(bytes), contentSha256: workerArtifactContentSha256(manifest) }
 }
 
-async function verifyGitHubAssets({ assets, staging, tag, name, run, cwd }) {
-  for (const asset of assets) {
-    const filename = asset.slice(asset.lastIndexOf('/') + 1)
-    const downloaded = join(staging, `downloaded-${filename}`)
-    await rm(downloaded, { force: true })
-    await run('gh', ['release', 'download', tag, '--repo', name, '--pattern', filename,
-      '--output', downloaded], { cwd })
-    if (sha256(await readFile(downloaded)) !== sha256(await readFile(asset))) {
-      throw new Error(`GitHub Worker asset checksum mismatch: ${filename}`)
-    }
+function githubErrorReason(error) {
+  return `${error.message ?? ''} ${error.stderr ?? ''}`
+}
+
+const missingAsset = /no assets match the file pattern|no assets to download/iu
+
+function retryableGitHubError(error) {
+  const reason = githubErrorReason(error)
+  return /HTTP (?:404|408|429|5\d\d)|release not found|release already exists|ReleaseAsset\.name already exists/iu.test(reason)
+    || /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection reset|broken pipe|socket hang up|\bEOF\b|timed out/iu.test(reason)
+    || /TLS handshake timeout|i\/o timeout|temporary failure in name resolution/iu.test(reason)
+    || missingAsset.test(reason)
+}
+
+async function verifyGitHubAsset({ asset, staging, tag, name, run, cwd }) {
+  const filename = asset.slice(asset.lastIndexOf('/') + 1)
+  const downloaded = join(staging, `downloaded-${filename}`)
+  await rm(downloaded, { force: true })
+  await run('gh', ['release', 'download', tag, '--repo', name, '--pattern', filename,
+    '--output', downloaded], { cwd })
+  if (sha256(await readFile(downloaded)) !== sha256(await readFile(asset))) {
+    throw new Error(`GitHub Worker asset checksum mismatch: ${filename}`)
   }
+}
+
+async function publishGitHubAsset(options) {
+  try {
+    await verifyGitHubAsset(options)
+    return
+  } catch (error) {
+    if (!missingAsset.test(githubErrorReason(error))) throw error
+  }
+  const { tag, asset, name, run, cwd } = options
+  await run('gh', ['release', 'upload', tag, asset, '--repo', name], { cwd })
+  await verifyGitHubAsset(options)
 }
 
 /** Uploads each artifact as <manifestSha256>.tar.gz to the GitHub release worker-<commit>, so paired Workers download
@@ -94,13 +118,13 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
             '--title', `Worker ${commit.slice(0, 12)}`,
             '--notes', `Foreman Code Worker artifacts built from ${commit}.`], { cwd: repository ?? directory })
         }
-        await run('gh', ['release', 'upload', tag, ...assets, '--repo', name, '--clobber'], { cwd: repository ?? directory })
-        await verifyGitHubAssets({ assets, staging, tag, name, run, cwd: repository ?? directory })
+        for (const asset of assets) {
+          await publishGitHubAsset({ asset, staging, tag, name, run, cwd: repository ?? directory })
+        }
         return { repository: name, tag }
       } catch (error) {
-        // GitHub can briefly hide a release after creation, including from asset uploads.
-        const reason = `${error.message ?? ''} ${error.stderr ?? ''}`
-        if (attempt === backoff.length || !/HTTP (?:404|429|5\d\d)|release not found|release already exists|ECONNRESET|ETIMEDOUT|timed out/iu.test(reason)) throw error
+        // Recheck remote assets after a lost response or a concurrent upload before writing again.
+        if (attempt === backoff.length || !retryableGitHubError(error)) throw error
         console.warn(JSON.stringify({ operation: 'publish Worker release', attempt: attempt + 1,
           nextRetryMs: backoff[attempt], lastError: 'GITHUB_RELEASE_TEMPORARILY_UNAVAILABLE' }))
         await wait(backoff[attempt])
