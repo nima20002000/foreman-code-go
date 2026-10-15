@@ -46,7 +46,9 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (frames, ...args) => {
       if (frames.length > 1 && !rejectedExecutionId) {
         rejectedExecutionId = frames[0]!.event.executionId
-        const changed = frames.map((frame, index) => index === frames.length - 1
+        // Transcript frames commit as one group, so a changed frame rolls back its whole group.
+        const changedIndex = frames.map(frame => frame.event.type).lastIndexOf('native.notification')
+        const changed = frames.map((frame, index) => index === changedIndex
           ? { ...frame, event: { ...frame.event, payload: { text: 'changed source' } } } : frame)
         return append(changed, ...args)
       }

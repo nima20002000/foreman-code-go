@@ -18,9 +18,10 @@ export async function retainsRunAcrossUnavailableInstallation(executionHost: 'ma
     const turn = await runningTurn(fixture)
     const pins = await pinnedPlacements(fixture, started.run.id)
     await fixture.provider.removePayload()
-    const unavailable = await waitForRemoteReview(() => fixture.inventory(), value => value.installations.some(installation =>
+    let last: unknown
+    const unavailable = await waitForRemoteReview(async () => (last = await fixture.inventory()) as Awaited<ReturnType<typeof fixture.inventory>>, value => value.installations.some(installation =>
       installation.driverId === 'codex' && !installation.installed && installation.installationFingerprint === null),
-    'unavailable intermediate inventory')
+    'unavailable intermediate inventory').catch(error => { throw new Error(`DIAG ${JSON.stringify(last)} ${String(error)}`) })
     expect(unavailable.installations.find(installation => installation.driverId === 'codex')).toMatchObject({
       harnessInstallationId: before.target.harnessInstallationId,
       installed: false,
