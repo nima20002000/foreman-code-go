@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
@@ -48,13 +49,59 @@ test('Worker artifacts bundle new transitive API helpers without registering mod
   await f.write('apps/api/src/modules/worker-build-fixture/helper.ts',
     "import { value } from './value.js';\nexport const importedHelper = () => value;\n");
   await appendFile(join(f.root, 'apps/worker/src/workerFactory.mjs'),
-    "\nexport { importedHelper } from '../../api/src/modules/worker-build-fixture/helper.ts';\n");
+    "\nexport { importedHelper } from '../../api/src/modules/worker-build-fixture/helper.ts';\n"
+      + "export { HostCiRunner } from '../../api/src/modules/ci-host/runner.ts';\n");
   const result = f.build();
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr);
   const worker = await import(pathToFileURL(join(f.directory, 'release/src/worker.mjs')).href);
   assert.equal(worker.importedHelper(), 'bundled from the import graph');
+  for (const suite of ['unit', 'integration']) {
+    await t.test(`${suite} commands use a runnable bundled watchdog when the source has none`, async () => {
+      await assertBundledWatchdog(f, worker, suite);
+    });
+  }
+  await t.test('runner startup rejects a missing bundled watchdog', async () => {
+    await rm(join(f.directory, 'release/artifacts/verification/ci-watchdog.mjs'), { force: true });
+    assert.throws(() => new worker.HostCiRunner(join(f.directory, 'missing-helper')),
+      /CI watchdog.*missing/i);
+  });
 });
+
+async function assertBundledWatchdog(f, worker, suite) {
+  const root = join(f.directory, suite);
+  const launched = Promise.withResolvers();
+  const ports = {
+    cpus: 8, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
+    run: async (file, args) => {
+      if (file === 'git' && args.includes('worktree') && args.includes('add')) {
+        const source = args.at(-2);
+        await mkdir(source, { recursive: true });
+        await writeFile(join(source, 'package.json'), JSON.stringify({ scripts: { [suite]: 'fixture' } }));
+      }
+      if (file === 'systemd-run') launched.resolve(args.at(-1));
+      return { code: 0, stdout: file === 'git' && args.includes('show') ? '{}' : 'active', stderr: '' };
+    },
+  };
+  const runner = new worker.HostCiRunner(root, ports, {});
+  const runId = randomUUID();
+  await runner.handle({ operation: 'start', runId, repository: 'example/project',
+    commit: 'a'.repeat(40), suite, scope: 'full' });
+  const command = await readFile(await launched.promise, 'utf8');
+  // This is the command handed to the process launcher, not repository source text.
+  const watchdog = / node '([^']+)' -- bash -c/.exec(command)?.[1];
+  assert.ok(watchdog, 'The test command must run through the watchdog');
+  const location = relative(join(f.directory, 'release'), watchdog);
+  assert.ok(!isAbsolute(location) && !location.startsWith('..'), 'The helper must belong to the Worker artifact');
+  const result = spawnSync(process.execPath, [watchdog, '--', process.execPath, '-e',
+    "console.log('watched command completed')"], {
+    encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, CI_WATCHDOG_DIRECTORY: join(root, 'watchdog') },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /watched command completed/);
+}
 
 test('Worker artifacts reject forbidden modules, sensitive files and imports outside source scope', async t => {
   const forbidden = [
