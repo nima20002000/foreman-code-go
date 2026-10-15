@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { rm } from 'node:fs/promises'
 import { expect } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { SavedRunDetailsSchema, makeCurrentWorkflowFixture, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { insertAcceptedPlacements, readDispatchIntent, readExecutionPlacement, readNativePlacement } from '../../src/modules/placement/persistence.js'
+import { readDispatchIntent, readExecutionPlacement, readNativePlacement } from '../../src/modules/placement/persistence.js'
 import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
@@ -24,7 +22,7 @@ import { readUntil } from './observableCondition.js'
 import { mixedComputerPlacement } from './mixedComputerPlacement.js'
 import { prepareHandoffSource } from './handoffSourcePreparation.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
-import { agentWorkflowNode } from './agentWorkflowFixture.js'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
 function faultWorkflowDefinition(options: { loop?: boolean }) {
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
@@ -47,9 +45,7 @@ function faultWorkflowDefinition(options: { loop?: boolean }) {
 }
 
 export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavailable?: boolean } = {}) {
-  const scratch = join(homedir(), '.cache', 'foreman-tmp')
-  await mkdir(scratch, { recursive: true })
-  const directory = await mkdtemp(join(scratch, 'workflow-fault-'))
+  const directory = await privateFixtureDirectory('workflow-fault-')
   const worker = await faultWorkflowWorker(directory)
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
   const intents = new Map<string, DispatchIntent>()
@@ -142,9 +138,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     const prepared = await placements.producer.prepare(draft.accepted.snapshot.request, base.writer.principal)
     if (!prepared) throw new Error('Expected remote placement admission')
     await withExclusiveGraphConnection(base.db.pool, connection => connection.transaction(async sql => {
-      await insertRepeatRun(sql, draft.accepted, repeatStartPublication)
-      await insertAcceptedPlacements(sql, draft.run.id, draft.version.definition.nodes.map(agentWorkflowNode),
-        draft.version.agentConfigurationVersionIds, prepared.bind(draft.run.id), prepared.fence(sql))
+      await insertRepeatRun(sql, draft.accepted, repeatStartPublication, 'manual', prepared)
     }))
     base.f.run = draft.run
     base.f.version = draft.version as typeof base.f.version
