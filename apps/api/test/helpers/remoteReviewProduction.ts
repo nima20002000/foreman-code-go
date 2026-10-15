@@ -311,8 +311,9 @@ export async function remoteReviewProduction(options: {
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
             ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
-          if (event.msg === 'Worker conversation callback differs from its admitted request') {
-            console.error('Worker callback mismatch', parsed)
+          if (event.msg === 'Worker chat needs native recovery' || event.msg === 'Device extension request failed') {
+            console.error('Remote native operation failed', { role, code,
+              message: event.err?.message, stack: event.err?.stack })
           }
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
           const frames = Array.isArray(event.stackFrames)

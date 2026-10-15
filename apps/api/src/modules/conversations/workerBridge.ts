@@ -107,16 +107,8 @@ export class MainWorkerConversationBridge {
   private async current(admission: Admission, binding: WorkerConversationBinding,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
     signal.throwIfAborted()
-    const bindingChanged = !isDeepStrictEqual(admission.request.binding, binding)
-    const connectionChanged = !isDeepStrictEqual(admission.channel.binding, connection)
-    if (admission.closed || bindingChanged || connectionChanged) {
-      componentLogger('devices').error({ code: 'WORKER_CONVERSATION_CALLBACK_DENIED',
-        admissionClosed: admission.closed, bindingChanged, connectionChanged,
-        bindingFields: Object.keys(admission.request.binding).filter(key => !isDeepStrictEqual(
-          Reflect.get(admission.request.binding, key), Reflect.get(binding, key))),
-      }, 'Worker conversation callback differs from its admitted request')
-      denied()
-    }
+    if (admission.closed || !isDeepStrictEqual(admission.request.binding, binding)
+      || !isDeepStrictEqual(admission.channel.binding, connection)) denied()
     await admission.current(signal)
     signal.throwIfAborted()
     if (admission.closed) denied()
