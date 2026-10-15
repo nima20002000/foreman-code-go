@@ -81,7 +81,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   const github = { listed: [] as { databaseId: number; displayTitle: string; headSha?: string }[], status: 'in_progress', conclusion: '',
     durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[],
     steps: [] as { number: number; name: string; status: string; conclusion: string | null }[],
-    watchdogFailure: null as unknown, log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[], artifactError: '', logError: '' }
+    watchdogFailure: null as unknown, suiteLog: '', log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[], artifactError: '', logError: '' }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown, watchdogFailure: null as unknown, log: 'Suite\nall green\n',
     artifacts: null as Record<string, unknown> | null, rawOutput: null as string | null,
@@ -180,6 +180,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       await mkdir(directory, { recursive: true })
       await writeFile(join(directory, 'durations.json'), JSON.stringify(github.durations))
       if (github.watchdogFailure) await writeFile(join(directory, 'watchdog-message.json'), JSON.stringify(github.watchdogFailure))
+      if (github.suiteLog) await writeFile(join(directory, 'suite.log'), github.suiteLog)
       if (github.testResults) await writeFile(join(directory, 'test-results.json'), JSON.stringify(github.testResults))
       return ok()
     }

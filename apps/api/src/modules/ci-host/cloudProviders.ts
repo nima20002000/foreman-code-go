@@ -25,6 +25,8 @@ export interface CloudRun {
   workflowStarted?: boolean
   /** When the provider was first seen holding the workflow in its own queue, without starting a job. */
   providerQueuedAt?: string
+  /** Cancellation of the provider-queued workflow was requested; the ticket is requeued only once that is confirmed. */
+  queueCancelRequested?: boolean
   lastProgressAt?: string
   provenance?: CiHostRun['provenance']
   collection?: { log: boolean; artifacts: boolean; unavailableAt?: string

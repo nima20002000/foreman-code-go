@@ -1,11 +1,10 @@
-import { isDeepStrictEqual } from 'node:util'
-import type pg from 'pg'
 import { CiRunRecordSchema, type CiHostReply, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { expireCiRun, expireOverdueCiRuns } from './deadlines.js'
 import { HostCiService, type CiCommits, type HostCiComputer } from './service.js'
+import { ticketStore } from './ciTicketStore.testSupport.js'
 
 const computer: HostCiComputer = { key: 'main:builder', hostRef: { kind: 'main', mainId: 'main' }, label: 'Builder', priority: 0 }
 const now = new Date()
@@ -19,61 +18,6 @@ function ticket(id: string, fields: Partial<CiRunRecord>): CiRunRecord {
     files: [], partition: null, repository: 'owner/repo', commit: 'a'.repeat(40), state: 'queued', computer: null,
     step: null, exitCode: null, message: null, queuedAt: now.toISOString(), startedAt: null, finishedAt: null,
     initiator: { principalId: 'worker', executionId: null }, ...fields })
-}
-
-/** Persisted ci_runs rows; each write replaces only the exact record it read, like the real compare-and-set. */
-function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, string> = {}) {
-  const rows = new Map(initial.map(run => [run.id, { state: run.state as string, hostKey: hostKeys[run.id] ?? null,
-    record: run as unknown }]))
-  const matches = (id: unknown, previous: unknown) => {
-    const row = rows.get(id as string)
-    return row && isDeepStrictEqual(row.record, JSON.parse(previous as string)) ? row : undefined
-  }
-  const listed = (filter: (run: CiRunRecord, row: { state: string; hostKey: string | null }) => boolean) =>
-    [...rows].filter(([, row]) => filter(CiRunRecordSchema.parse(row.record), row))
-      .map(([id, row]) => ({ id, state: row.state, host_key: row.hostKey, record: row.record, durations: null }))
-  const changed = (row: { state: string; hostKey: string | null; record: unknown } | undefined,
-    next: { state?: unknown; hostKey?: unknown; record: unknown }) => {
-    if (!row) return { rows: [], rowCount: 0 }
-    if (next.state !== undefined) row.state = next.state as string
-    if (next.hostKey !== undefined) row.hostKey = next.hostKey as string | null
-    row.record = JSON.parse(next.record as string)
-    return { rows: [], rowCount: 1 }
-  }
-  const query = async (sql: string, p: unknown[] = []) => {
-    const text = sql.replace(/\s+/gu, ' ').trim()
-    if (text.startsWith('select id,state,record')) return { rows: listed(() => true) }
-    if (text.startsWith('update ci_runs set state=$2, host_key=case')) {
-      const row = matches(p[0], p[5])
-      return changed(row?.state === p[3] ? row : undefined, { state: p[1], hostKey: p[4] ? undefined : null, record: p[2] })
-    }
-    if (text.startsWith('update ci_runs set host_key=null, record=$2::jsonb')) {
-      return changed(matches(p[0], p[2]), { hostKey: null, record: p[1] })
-    }
-    if (text.startsWith('update ci_runs set state=$2, host_key=$3, record=$4::jsonb where id=$1 and state=\'queued\'')) {
-      return changed(matches(p[0], p[4]), { state: p[1], hostKey: p[2], record: p[3] })
-    }
-    if (text.startsWith('update ci_runs set state=$2, host_key=$3, record=$4::jsonb,')) {
-      return changed(matches(p[0], p[8]), { state: p[1], hostKey: p[2], record: p[3] })
-    }
-    if (text.startsWith('update ci_runs set record=$4::jsonb where id=$1 and state=$2 and workspace_id=$3')) {
-      return changed(matches(p[0], p[4]), { record: p[3] })
-    }
-    if (text.startsWith('select record from ci_runs where id=$1')) return { rows: listed(run => run.id === p[0]) }
-    if (text.startsWith('select id,record,host_key from ci_runs')) {
-      return { rows: listed(run => ['starting', 'running'].includes(run.state) || run.collection === 'pending'
-        || run.observation?.status === 'unavailable') }
-    }
-    if (text.startsWith('select host_key,record from ci_runs')) {
-      return { rows: listed(run => ['starting', 'running'].includes(run.state) || run.deadlineExceeded?.executor === 'retained') }
-    }
-    if (text.startsWith('select record,durations from ci_runs where state=\'queued\'')) {
-      return { rows: listed(run => run.state === 'queued') }
-    }
-    return { rows: [], rowCount: 0 }
-  }
-  const pool = { options: { max: 10 }, query, connect: async () => ({ query, release: () => {} }) } as unknown as pg.Pool
-  return { pool, read: (id: string) => ({ ...rows.get(id)!, record: CiRunRecordSchema.parse(rows.get(id)!.record) }) }
 }
 
 it('fails each overdue phase from its saved entry time with the cause, and leaves fresh tickets alone', async () => {
@@ -174,7 +118,7 @@ it('reconciles a completed executor result before expiring a stale assigned tick
     expect(store.read(run.id)).toMatchObject({ state: 'passed', hostKey: null,
       record: { state: 'passed', exitCode: 0, finishedAt } })
     expect(store.read(run.id).record.deadlineExceeded).toBeUndefined()
-    expect(requests).toEqual(['read', 'status'])
+    expect([...requests].sort()).toEqual(['read', 'status'])
   } finally {
     await service.close()
   }

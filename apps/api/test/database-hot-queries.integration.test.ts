@@ -178,9 +178,11 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
       expect(result.result?.isError, JSON.stringify(result)).not.toBe(true)
       return CiGetOutputSchema.parse(graphRpcValue(result.result))
     }
+    // Observations settle in the background of a dispatch pass; wait for them before reading the stored ticket.
+    const refreshCi = async () => { await ci.dispatch(); await ci.drain() }
     const ciBefore = await readCi()
     vi.useFakeTimers({ toFake: ['Date'] })
-    await ci.dispatch()
+    await refreshCi()
     const observation = { status: 'available', lastSuccessAt: new Date().toISOString(),
       lastError: null, consecutiveFailures: 0, nextAttemptAt: null }
     const observedTicket = { ...ticket, observation }
@@ -188,16 +190,16 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     const observed = await stored()
     expect(observed).toMatchObject({ record: observedTicket, log_tail: before.log_tail,
       revision: String(BigInt(before.revision) + 1n), test_results: before.test_results })
-    await ci.dispatch()
+    await refreshCi()
     expect(await stored()).toEqual(observed)
     logTail = 'Refreshed log'
-    await ci.dispatch()
+    await refreshCi()
     expect(await stored()).toMatchObject({ record: observedTicket, log_tail: logTail,
       revision: String(BigInt(observed.revision) + 1n), test_results: before.test_results })
     const refreshed = await stored()
     const ciRefreshed = await readCi()
     expect(ciRefreshed).toMatchObject({ run: observedTicket, logTail })
-    await ci.dispatch()
+    await refreshCi()
     expect(await readCi()).toEqual(ciRefreshed)
     expect(await stored()).toEqual(refreshed)
     await db.pool.query('update ci_runs set durations=$2::jsonb where id=$1', [ticket.id, '{"unit":5}'])

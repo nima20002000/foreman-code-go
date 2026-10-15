@@ -583,7 +583,10 @@ describe('GitHub Actions CI on a public mirror', () => {
     const commands = provider === 'github' ? f.dispatched : f.circle.triggered
     expect(commands).toHaveLength(1)
     const slice = selectByIndexes(inventory, commands[0]!.find(value => value.startsWith('slice='))!.slice('slice='.length))
-    expect(slice.sort()).toEqual(ordinary.sort())
+    // Ordinary work is balanced over every slice, but the user-systemd files stay on the build computer's slice.
+    expect(slice).toEqual(expect.arrayContaining(cloud))
+    expect(slice.filter(file => systemd.includes(file))).toEqual([])
+    expect(slice.every(file => ordinary.includes(file))).toBe(true)
   })
 
   it.each(['github', 'circleci'] as const)('rejects user-systemd files without host metadata on %s', async provider => {
