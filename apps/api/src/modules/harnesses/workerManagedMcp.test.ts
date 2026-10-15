@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { WorkerManagedMcp } from './workerManagedMcp.js'
 import { deviceManagedMcpFixture } from '../../../test/helpers/deviceManagedMcp.js'
-import { appLauncherConnection } from './appMcpLauncher.js'
+import { APP_MCP_TIMEOUTS, appLauncherConnection } from './appMcpLauncher.js'
 import { nativeConnection } from './nativeMcpCommon.js'
 import { remoteMcpPreflight } from '../placement/remoteMcpPreflight.js'
 import { safeEnvironment } from './codexAppServer.js'
@@ -68,6 +68,30 @@ it('migrates a legacy token reference under the canonical server name', async ()
     await worker.ensureReady(['codex'])
     expect((await f.adapters.codex.read(AbortSignal.timeout(5000))).user['foreman-code'])
       .toMatchObject({ env_vars: ['FOREMAN_CODE_MCP_TOKEN'] })
+    expect(f.writes()).toBe(1)
+  } finally { await rm(f.directory, { recursive: true, force: true }) }
+})
+
+it.each([
+  { enabled: true, startup_timeout_sec: 60, tool_timeout_sec: 120 },
+  { enabled: false, startup_timeout_sec: 60, tool_timeout_sec: 120 },
+  { enabled: true, startup_timeout_sec: 30, tool_timeout_sec: APP_MCP_TIMEOUTS.tool_timeout_sec },
+  { enabled: true, startup_timeout_sec: undefined, tool_timeout_sec: undefined },
+])('updates outdated managed timeouts before Worker readiness: %j', async settings => {
+  const f = await deviceManagedMcpFixture()
+  const connection = { ...nativeConnection(appLauncherConnection()), ...settings,
+    disabled_tools: ['interaction_respond'] }
+  await writeFile(join(f.directory, 'codex.json'), JSON.stringify({
+    'foreman-code': connection, example: { url: 'https://example.test/mcp' },
+  }))
+  const worker = new WorkerManagedMcp({ directory: f.directory, adapters: f.adapters, installLauncher: async () => {} })
+  try {
+    await worker.ensureReady(['codex'])
+    const native = await f.adapters.codex.read(AbortSignal.timeout(5000))
+    expect(native.user['foreman-code']).toEqual({ ...connection, ...APP_MCP_TIMEOUTS })
+    expect(native.user.example).toEqual({ url: 'https://example.test/mcp' })
+    expect(f.writes()).toBe(1)
+    await worker.ensureReady(['codex'])
     expect(f.writes()).toBe(1)
   } finally { await rm(f.directory, { recursive: true, force: true }) }
 })
