@@ -9,6 +9,7 @@ import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
+import { DomainError } from '../errors.js'
 import { identity } from '../sources/privateFilesystem.js'
 import * as privateFilesystem from '../sources/privateFilesystem.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
@@ -102,7 +103,7 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
   const source: Awaited<ReturnType<RemoteJobExecutionHostPorts['source']['verify']>> = {
     privateRepositoryRoot: spec.target.destination.canonicalProjectRoot, directoryIdentityHash: spec.target.destination.directoryIdentityHash,
     privateGit: true, diskQuotaBytes: 1024, gitMounts: mounts }
-  const inputs = { prepare: vi.fn(async () => { throw new Error('Stop after source verification') }) }
+  const inputs = { prepare: vi.fn(async () => { throw new DomainError('SOURCE_IDENTITY_MISMATCH', 'Stop after source verification', 409) }) }
   const registry = { reserveLaunch: vi.fn(() => { throw new Error('No OCI entry expected') }) }
   const ports = createInstalledJobExecutionPorts({ journal, connection, incarnationId: randomUUID(), registry: registry as unknown as NativeProcessRegistry,
     configuration: null, source: { verify: vi.fn(async () => source) }, inputs, authorize: vi.fn(async () => {}),

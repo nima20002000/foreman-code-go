@@ -26,7 +26,9 @@ it.each(['2.40', undefined])('reads libc once across repeated production discove
   vi.resetModules()
   selected.packages.length = 0
   const getReport = vi.fn(() => ({ header: { glibcVersionRuntime: glibc } }))
-  vi.stubGlobal('process', { ...process, platform: 'linux', report: { getReport } })
+  // A proxy keeps process's event-emitter methods, which the logger registers at import.
+  vi.stubGlobal('process', new Proxy(process, { get: (target, key) =>
+    key === 'platform' ? 'linux' : key === 'report' ? { getReport } : Reflect.get(target, key, target) }))
   const { createClaudeProductionDiscovery } = await import('./bootstrap.js')
   const discovery = () => createClaudeProductionDiscovery({
     registry: () => { throw new Error('Passive discovery must not use the registry') },

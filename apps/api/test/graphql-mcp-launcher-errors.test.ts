@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { mcpLauncherFixture } from './support/mcpLauncher.js'
 
 describe('MCP launcher failure guidance', () => {
+  // Retry backoff only. Requests the server answers keep their real timeouts, so a slow machine never adds a retry.
+  const fastBackoff = `
+    const schedule = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, milliseconds, ...args) =>
+      schedule(callback, [1000, 2000].includes(milliseconds) ? 1 : milliseconds, ...args);
+  `
   const fastStartup = `
     const schedule = globalThis.setTimeout;
     globalThis.setTimeout = (callback, milliseconds, ...args) =>
@@ -58,7 +64,7 @@ describe('MCP launcher failure guidance', () => {
         jsonrpc: '2.0', id: message.id, result: method === 'initialize'
           ? { protocolVersion: '2025-03-26' } : { tools: [{ name: 'context_get' }] },
       }))
-    }, { preload: fastStartup })
+    }, { preload: fastBackoff })
     try {
       f.send({ id: 'startup', method })
       expect(await f.receive('startup')).toMatchObject({ id: 'startup', result: expect.any(Object) })
@@ -89,7 +95,7 @@ describe('MCP launcher failure guidance', () => {
     const f = await mcpLauncherFixture((_message, response) => {
       requests++
       response.writeHead(500).end()
-    }, { preload: fastStartup })
+    }, { preload: fastBackoff })
     try {
       f.send({ id: 'startup-failed', method: 'initialize' })
       expect(await f.receive('startup-failed')).toMatchObject({ error: {
@@ -104,7 +110,7 @@ describe('MCP launcher failure guidance', () => {
     const f = await mcpLauncherFixture((_message, response) => {
       requests++
       response.writeHead(status).end()
-    }, { preload: fastStartup })
+    }, { preload: fastBackoff })
     try {
       f.send({ id: 'startup-denied', method: 'initialize' })
       expect(await f.receive('startup-denied')).toMatchObject({ error: { data: { httpStatus: status } } })

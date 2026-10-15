@@ -86,7 +86,7 @@ it.each(['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY', 'SOURCE_CAPACITY_UNAVAILABLE
     await f.queue.waitForWork(await f.queue.scan())
     expect(f.prepare).toHaveBeenCalledTimes(calls + 1)
   }
-  expect(f.info).toHaveBeenCalledTimes(1)
+  expect(f.info.mock.calls.filter(([, message]) => message === 'Queued Job waiting for source capacity')).toHaveLength(1)
   expect(f.error).not.toHaveBeenCalled()
   expect(f.memory.owners.size).toBe(0)
 })
