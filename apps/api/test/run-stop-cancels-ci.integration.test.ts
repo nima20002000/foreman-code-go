@@ -29,9 +29,10 @@ async function fixture() {
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
   await pool.query(`update workspaces set record=record || $2::jsonb where id=$1`,
-    [f.f.run.workspaceId, JSON.stringify({ repository: {
-      provider: 'github', owner: 'example', name: 'repo', defaultBranch: 'main',
-    } })])
+    [f.f.run.workspaceId, JSON.stringify({
+      repository: { provider: 'github', owner: 'example', name: 'repo', defaultBranch: 'main' },
+      ciMirror: { provider: 'github', owner: 'example', name: 'repo-ci' },
+    })])
   await pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
     [f.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS],
       scope: { workspaceIds: [f.f.run.workspaceId] } }])])
