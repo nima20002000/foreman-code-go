@@ -94,7 +94,9 @@ function faultWorkflowDefinition(options: { loop?: boolean }) {
   return { definition, entry, affected, sibling }
 }
 
-export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavailable?: boolean } = {}) {
+export async function faultWorkflowFixture(options: {
+  loop?: boolean; mcpUnavailable?: boolean; statementTimeoutMs?: number
+} = {}) {
   const directory = await privateFixtureDirectory('workflow-fault-')
   const worker = await faultWorkflowWorker(directory, { mcpUnavailable: options.mcpUnavailable })
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
@@ -106,6 +108,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   let preparationFailure: { error: unknown } | undefined
   let entryStarted = false
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
+    statementTimeoutMs: options.statementTimeoutMs,
     approvalNodeIds: [], workerParallelism: 3,
     validateContinuation: (executionId, signal) => validatePlacement(executionId, signal),
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {

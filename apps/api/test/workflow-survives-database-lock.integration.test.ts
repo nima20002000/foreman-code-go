@@ -9,7 +9,7 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 describe.runIf(postgresEnabled)('workflow reporting under database contention', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
-    fixture = await faultWorkflowFixture()
+    fixture = await faultWorkflowFixture({ statementTimeoutMs: 1_000 })
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 

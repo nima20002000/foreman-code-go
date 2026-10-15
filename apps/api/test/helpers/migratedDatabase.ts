@@ -8,7 +8,7 @@ import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { createTestPool } from './testPool.mjs'
 
 /** Full-schema fixtures use separate databases; partial-migration fixtures retain separate schemas. */
-export async function migratedDatabase() {
+export async function migratedDatabase(options: { statementTimeoutMs?: number | undefined } = {}) {
   const started = performance.now()
   const url = new URL(ownedTestDatabaseUrl())
   const name = `graphql_fixture_${randomUUID().replaceAll('-', '')}`
@@ -23,7 +23,7 @@ export async function migratedDatabase() {
     registerTestResourceCleanup(invocation, { kind: 'fixture-database', name })
     url.pathname = `/${name}`
     pool = createTestPool({ connectionString: url.toString(), max: 10,
-      options: '-c search_path=public -c statement_timeout=10000 -c lock_timeout=5000' })
+      options: `-c search_path=public -c statement_timeout=${options.statementTimeoutMs ?? 10000} -c lock_timeout=5000` })
     // Standalone test commands may have no template; existing migration checks stay usable there.
     if (!process.env.FOREMAN_CODE_TEST_DATABASE_TEMPLATE) await applyApplicationMigrations(pool)
     recordIntegrationStartup('database-fixture-ready', { setupMs: performance.now() - started })
