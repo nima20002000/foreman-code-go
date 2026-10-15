@@ -449,6 +449,21 @@ it('bounds the global original-source byte window and frees it only through expl
   await f.sqlConnection.close()
 })
 
+it('retires readouts superseded by a newer receipt so a long-running operation is never refused retention',async()=>{
+  const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
+  const base=f.readout.receipt.sequence
+  const selector=(sequence:number)=>({intent:f.intent,placement:f.placement,receiptSequence:sequence,
+    sourceDigest:remoteWorkflowSourceDigest(f.source)})
+  // Main acknowledges only the newest receipt; each older unacknowledged readout must be released, not accumulated.
+  for(let index=1;index<=200;index++) {
+    readouts.remember({readout:{...f.readout,receipt:{...f.readout.receipt,sequence:base+index}},placement:f.placement,source:f.source,
+      leaseExpiresAt:'2099-01-01T00:00:00.000Z',assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})
+  }
+  expect((await readouts.read(selector(base+200))).receipt.sequence).toBe(base+200)
+  await expect(readouts.read(selector(base+199))).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+  expect(await readouts.ack(selector(base+200))).toMatchObject({status:'retired'})
+  await f.sqlConnection.close()
+})
 it('cannot retain an expired original application lease or use prefetched proof beyond its signed expiry in SQL',async()=>{
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
   expect(()=>readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2020-01-01T00:00:00.000Z',
