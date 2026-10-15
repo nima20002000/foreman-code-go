@@ -74,7 +74,7 @@ async function operatorApp(ci: HostCiService, commands: PostgresCommandCoordinat
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Verification workspace', repository: {
       provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
-    } })])
+    }, ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const access = new PostgresAccessService(database.pool)
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },

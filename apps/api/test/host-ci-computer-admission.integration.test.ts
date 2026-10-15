@@ -148,6 +148,7 @@ it('lists persisted active tickets on their assigned computers even when host st
     }
     await f.ci.dispatch()
     expect(f.started).toHaveLength(4)
+    for (const start of f.started) expect(start.request).toMatchObject({ ciMirror: 'octo/site-ci' })
     const read = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
     for (const computer of f.computers) {
       const assigned = f.started.filter(start => start.computer === computer.label)
