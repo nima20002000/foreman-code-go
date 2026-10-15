@@ -195,6 +195,12 @@ export class InstalledWorkflowPhysicalReadouts {
       }
     }
   }
+  private forget(operationId: string, retained: Retained) {
+    this.release(retained)
+    const events = this.events.get(operationId)
+    for (const alias of retained.aliases) if (events?.get(alias.key)?.retained === retained) events.delete(alias.key)
+    if (events && events.size === 0) this.events.delete(operationId)
+  }
   purge(operationId: string) {
     const entries = this.originals.get(operationId)
     if (entries) for (const retained of entries.values()) this.release(retained)
@@ -241,19 +247,27 @@ export class InstalledWorkflowPhysicalReadouts {
     const resultDigests = payloads.map(payload => payload.digest)
     const bytes = Buffer.byteLength(canonicalGraphJson({ ...dictionary, results: resultDigests, aliases },
       REMOTE_PHYSICAL_CONTINUATION_LIMIT))
-    let nextByteSize = this.byteSize - (previous?.bytes ?? 0) + bytes
-    const changes = new Set([...(previous?.resultDigests ?? []), ...resultDigests])
+    // Main only ever reads and acknowledges the newest receipt, so an older receipt's unacknowledged readouts are
+    // superseded. Keeping them would fill the store until every new retention is refused, and Main could never read
+    // the current reply that would free it. Same-receipt readouts stay current and are bounded below.
+    const superseded = [...entries.values()].filter(item => item.receipt.sequence < receipt.sequence)
+    const removed = previous ? [...superseded, previous] : superseded
+    const countDigest = (items: readonly Retained[], digest: string) =>
+      items.reduce((count, item) => count + item.resultDigests.filter(value => value === digest).length, 0)
+    let nextByteSize = this.byteSize - removed.reduce((total, item) => total + item.bytes, 0) + bytes
+    const changes = new Set([...removed.flatMap(item => item.resultDigests), ...resultDigests])
     for (const digest of changes) {
       const original = this.results.get(digest)
-      const references = (original?.references ?? 0) - (previous?.resultDigests.includes(digest) ? 1 : 0)
-        + (resultDigests.includes(digest) ? 1 : 0)
+      const references = (original?.references ?? 0) - countDigest(removed, digest)
+        + resultDigests.filter(value => value === digest).length
       if (original && references === 0) nextByteSize -= original.bytes
       if (!original && references > 0) nextByteSize += payloads.find(payload => payload.digest === digest)!.bytes
     }
-    if ((!previous && entries.size >= 128) || nextByteSize > physicalRetentionLimit) {
+    if ((!previous && entries.size - superseded.length >= 128) || nextByteSize > physicalRetentionLimit) {
       throw new DomainError('REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', 'Original physical source retention is full.', 503)
     }
-    if (previous) this.release(previous)
+    for (const item of removed) this.forget(receipt.intent.operationId, item)
+    for (const [supersededKey, item] of entries) if (item.receipt.sequence < receipt.sequence) entries.delete(supersededKey)
     for (const payload of payloads) {
       const original = this.results.get(payload.digest)
       if (original) original.references++

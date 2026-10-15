@@ -396,7 +396,9 @@ export class LangGraphWorkflowEngine {
 
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
-  private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number }>()
+  private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number; attempts: number }>()
+  /** A Run whose recovery keeps failing stops being retried after this many attempts; the failure is reported once, loudly. */
+  private static readonly maximumReconciliationAttempts = 10
   reconcile(onError: (error: unknown) => void = (error) => componentLogger('engine').error({ err: error }, 'run reconciliation failed')): Promise<void> {
     runtimeTimingPoint('engine', 'reconcile.request', { reused: this.reconciliation !== undefined })
     if (this.reconciliation) return this.reconciliation
@@ -429,7 +431,15 @@ export class LangGraphWorkflowEngine {
             if (error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
             const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
-            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs })
+            const attempts = (retry?.attempts ?? 0) + 1
+            if (attempts >= LangGraphWorkflowEngine.maximumReconciliationAttempts) {
+              this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Number.POSITIVE_INFINITY, attempts })
+              onError(new DomainError('RUN_RECONCILIATION_EXHAUSTED',
+                `Run ${candidate.id} recovery failed ${attempts} times and was stopped; restart the engine to retry.`, 500,
+                { runId: candidate.id, lastCode: error instanceof DomainError ? error.code : undefined }))
+              return
+            }
+            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs, attempts })
             onError(error)
           })
         }
