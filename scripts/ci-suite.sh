@@ -19,6 +19,11 @@ fi
 test_results="${TEST_RESULTS_OUTPUT:-}"
 unset TEST_RESULTS_OUTPUT
 state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
+# Private-root checks reject group-writable ancestors; cloud images create the home cache with umask 002.
+if [ "${CI_HOST_RUNNER:-0}" != 1 ]; then
+  umask 022
+  for dir in "$HOME" "$HOME/.cache"; do if [ -d "$dir" ]; then chmod go-w "$dir"; fi; done
+fi
 
 # Cloud workflows cache this prefix, so the harness CLIs install once per cache key instead of once per part.
 clis_prefix=""
