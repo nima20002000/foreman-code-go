@@ -15,14 +15,41 @@ import { ActivityProductionReplay } from './activityProductionReplay.js'
 const digest = 'a'.repeat(64)
 
 /** In-process Worker and journal, with a recorded native harness and a faultable device carrier. */
-export async function faultWorkflowWorker(directory: string) {
+export async function faultWorkflowWorker(directory: string, options: { mcpUnavailable?: boolean | undefined } = {}) {
   const replay = new ActivityProductionReplay('fault-session')
   const infrastructure = replay.infrastructure()
   if (infrastructure.mode !== 'replay') throw new Error('Expected recorded harness infrastructure')
+  let mcpReady = !options.mcpUnavailable
+  let unavailableInspections = 0
+  const timers = new Map<ReturnType<typeof setTimeout>, { delayMs: number; fire(): void }>()
+  const dependencies = { ...infrastructure.codex,
+    schedule: ((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delayMs, ...callbackArgs] = args
+      const fire = () => { timers.delete(timer); callback(...callbackArgs) }
+      const timer = setTimeout(fire, delayMs)
+      timers.set(timer, { delayMs: delayMs ?? 0, fire })
+      return timer
+    }) as typeof setTimeout,
+    cancelTimer: ((timer) => {
+      timers.delete(timer as ReturnType<typeof setTimeout>)
+      clearTimeout(timer)
+    }) as typeof clearTimeout,
+    transport: (...args: Parameters<typeof infrastructure.codex.transport>) => {
+      const transport = infrastructure.codex.transport(...args)
+      return { ...transport, request: async (...requestArgs: Parameters<typeof transport.request>) => {
+        const [method] = requestArgs
+        if (method === 'mcpServerStatus/list' && args[1] === '/worker/project' && !mcpReady) {
+          unavailableInspections += 1
+          return { data: [], nextCursor: null }
+        }
+        return transport.request(...requestArgs)
+      } }
+    },
+  }
   const adapters: CodexAppServerSessionManager[] = []
   const manager = () => {
     const adapter = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
-      undefined, 'scoped', undefined, infrastructure.codex)
+      undefined, 'scoped', undefined, dependencies)
     adapters.push(adapter)
     return adapter
   }
@@ -60,6 +87,15 @@ export async function faultWorkflowWorker(directory: string) {
   const methods: string[] = []
   return {
     replay, connection, manager,
+    get unavailableInspections() { return unavailableInspections },
+    makeMcpReady() { mcpReady = true },
+    advanceNativeTimer(delayMs: number) {
+      const entry = [...timers].find(([, timer]) => timer.delayMs === delayMs)
+      if (!entry) return false
+      clearTimeout(entry[0])
+      entry[1].fire()
+      return true
+    },
     get journal() { return journal },
     get incarnationId() { return incarnationId },
     get rejectedRequests() { return rejectedRequests },

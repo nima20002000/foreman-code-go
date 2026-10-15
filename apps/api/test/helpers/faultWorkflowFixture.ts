@@ -79,7 +79,7 @@ function faultWorkflowDefinition(options: { loop?: boolean }) {
 
 export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavailable?: boolean } = {}) {
   const directory = await privateFixtureDirectory('workflow-fault-')
-  const worker = await faultWorkflowWorker(directory)
+  const worker = await faultWorkflowWorker(directory, { mcpUnavailable: options.mcpUnavailable })
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
   const intents = new Map<string, DispatchIntent>()
   const contexts = new Map<string, NativeManagerResolutionContext>()
@@ -87,8 +87,6 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   let validatePlacement: ReturnType<typeof placedContinuationValidator>
   const nativePlacements = new Map<string, NativeExecutionPlacement>()
   let preparationFailure: { error: unknown } | undefined
-  let mcpReady = !options.mcpUnavailable
-  let unavailableInspections = 0
   let entryStarted = false
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
@@ -148,14 +146,12 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         })
       })
     },
-    mcpInspector: manager => ({ inspect: async input => {
-      const remote = manager.harness === 'codex' && input.workingDirectory === '/worker/project'
-      if (remote && !mcpReady) unavailableInspections += 1
+    mcpInspector: () => ({ inspect: async input => {
       return { harness: input.harness, providerVersion: '0.154.0', runnerId: input.runnerId,
         workingDirectory: input.workingDirectory, inspectedAt: new Date().toISOString(), entry: {
           name: input.serverName, transport: 'streamable-http', endpoint: providerAppEndpoint,
           enabled: true, credentialEnvironmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE,
-          status: remote && !mcpReady ? 'status_unavailable' : 'connected',
+          status: 'connected',
         } }
     } }),
   }).catch(async (error: unknown) => {
@@ -228,13 +224,17 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
       get startupDescription() { return startupDescription },
-      async mcpInspections() { await readStartup(); return unavailableInspections },
-      makeMcpReady() { mcpReady = true },
+      async mcpInspections() { await readStartup(); return worker.unavailableInspections },
+      async makeMcpReady(delayMs: number) {
+        worker.makeMcpReady()
+        await readUntil(async () => worker.advanceNativeTimer(delayMs), advanced => advanced,
+          { timeoutMs: 1_000, description: 'the native MCP retry timer' })
+      },
       launch() {
         started = Promise.allSettled([base.engine.start(base.f.run.id)])
         return readUntil(readStartup, details => details.executions.some(execution =>
           execution.workflowNodeId === entry.id && execution.result?.outcome === 'succeeded'),
-        { timeoutMs: 4_000, description: 'the initial graph entry completion' })
+        { timeoutMs: 4_000, minimumReadIntervalMs: 250, description: 'the initial graph entry completion' })
       },
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readUntil(readStartup, details => details.executions.some(execution =>
@@ -242,10 +242,12 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         && details.activity.some(activity => activity.payload.nativeEventType === 'turn.started'
           && details.executions.some(execution => execution.id === activity.harnessExecutionId
             && execution.workflowNodeId === affected.id)),
-      { timeoutMs: 4_000, get description() { return `remote Agent turn admission: ${startupDescription}` } }),
+      { timeoutMs: 4_000, minimumReadIntervalMs: 250,
+        get description() { return `remote Agent turn admission: ${startupDescription}` } }),
       async finished() {
         const details = await readUntil(read, value => value.run.executionState === 'completed'
-          && value.cleanupPending === false, { timeoutMs: 8_000, description: 'terminal Run readback' })
+          && value.cleanupPending === false,
+        { timeoutMs: 8_000, minimumReadIntervalMs: 250, description: 'terminal Run readback' })
         const mcp = await readerClient.callTool({ name: 'run_get', arguments: {
           workspaceId: base.f.run.workspaceId, runId: base.f.run.id, detail: 'full',
         } })

@@ -19,7 +19,12 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
     expect(before.executions.filter(execution => execution.workflowNodeId === fixture.affected.id)
       .every(execution => !fixture.worker.replay.starts.some(turn =>
         turn.correlationId === `execution:${execution.id}`))).toBe(true)
-    fixture.makeMcpReady()
+    const waiting = await readUntil(fixture.read, details => details.activity.some(activity =>
+      activity.payload.nativeEventType === 'turn.mcp_startup_retry'),
+    { timeoutMs: 4_000, description: 'the native MCP startup retry' })
+    const retry = waiting.activity.find(activity => activity.payload.nativeEventType === 'turn.mcp_startup_retry')!
+    expect(retry.payload).toMatchObject({ attempt: 2, delayMs: 10_000 })
+    await fixture.makeMcpReady(Number(retry.payload.delayMs))
     fixture.release()
     expectRecoveredFault(await fixture.finished(), fixture, /mcp|readiness|unavailable|retry/i)
   }, 18_000)
