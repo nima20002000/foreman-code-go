@@ -8,11 +8,11 @@ export interface CiIntegrationSlots { host: number; ordinary: number }
 const TARGET_TEST_MS = 240_000
 const SETUP_MS = 90_000
 
-/** Files measured at or above this run in the slow tier, after the rest of the request finishes. */
+/** Files measured at or above this run in separate slow-tier parts. */
 export const SLOW_TEST_MS = 60_000
 
-/** Keep systemd files on capable slices, then size ordinary work to four minutes per eligible slot. Slow files form a second,
- * deferred tier so they never hold up or hide the result of the rest of the request. */
+/** Keep systemd files on capable slices, then size ordinary work to four minutes per eligible slot.
+ * Slow files have separate parts that can start alongside fast parts. */
 export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots) {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
   const files = [...new Set(affected ? input.files : inventory.files)].sort()
@@ -54,8 +54,7 @@ export function planIntegrationParts(input: CiRunInput, inventory: CiIntegration
       const slice = partition ? integrationPartition(files, inventory.durations, partition) : tierFiles
       return { part: null, partition, files: affected ? files : [],
         requiresBuildComputer: slice.some(requiresUserSystemd),
-        expectedDurationMs: slice.length ? SETUP_MS + slice.reduce((sum, file) => sum + duration(file), 0) : 0,
-        ...(tier === 'slow' ? { deferred: true } : {}) }
+        expectedDurationMs: slice.length ? SETUP_MS + slice.reduce((sum, file) => sum + duration(file), 0) : 0 }
     })
   })
 }

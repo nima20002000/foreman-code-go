@@ -7,6 +7,7 @@ import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
+import { planIntegrationParts } from './integrationParts.js'
 
 function deferred() {
   let resolve!: () => void
@@ -27,7 +28,8 @@ const cloud: HostCiComputer = {
 function queuedRuns(count: number) {
   const groupId = randomUUID()
   return Array.from({ length: count }, (_, index) => CiRunRecordSchema.parse({
-    id: randomUUID(), workspaceId: 'workspace', groupId, suite: 'integration', part: null,
+    id: `${groupId.slice(0, 24)}${String(index).padStart(12, '0')}`,
+    workspaceId: 'workspace', groupId, suite: 'integration', part: null,
     scope: 'full', files: [], partition: count > 1 ? { index, count } : null,
     repository: 'owner/repo', commit: 'a'.repeat(40), state: 'queued', computer: null, step: null,
     exitCode: null, message: null, queuedAt: '2026-10-12T00:00:00.000Z', startedAt: null, finishedAt: null,
@@ -71,9 +73,6 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
     }
     if (sql.includes('where group_id=any')) {
       return { rows: records.map(record => ({ record })) }
-    }
-    if (sql.includes('as group_id')) {
-      return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
     }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued')
@@ -701,11 +700,11 @@ function tieredRuns({ gate = false }: { gate?: boolean } = {}) {
       ? { partition: null, files: [file],
         integrationShards: 8, plannedHostKey: cloud.key, requiresBuildComputer: false }
       : { partition: { index: 0, count: 1, weights: [1], tier, slowFiles: [slowFile] } }
-    return CiRunRecordSchema.parse({ ...run, ...selection, gate, ...(index === 1 ? { deferred: true } : {}) })
+    return CiRunRecordSchema.parse({ ...run, ...selection, gate })
   })
 }
 
-it('dispatches the deferred gate selection with valid host requests after a fast failure', async () => {
+it('dispatches the gate selection with valid host requests after a fast failure', async () => {
   const records = tieredRuns({ gate: true })
   records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
     finishedAt: '2026-10-12T00:05:00.000Z' })
@@ -717,60 +716,73 @@ it('dispatches the deferred gate selection with valid host requests after a fast
     operation: 'start', runId: records[1]!.id, gate: true, scope: 'full',
     files: records[1]!.files, integrationShards: 8,
   })
-  expect(records[1]).toMatchObject({ state: 'running', deferred: true })
+  expect(records[1]).toMatchObject({ state: 'running' })
   expect(records[0]).toEqual(failed)
 })
 
-it('starts the slow tier only after every other part of its request passed', async () => {
-  const records = tieredRuns()
-  const f = fleet(records, [cloud, { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }])
+function plannedTierRuns(scope: 'full' | 'affected' = 'full') {
+  const files = ['quick', 'short', 'medium', 'long'].map(name => `apps/api/test/${name}.integration.test.ts`)
+  const durations = Object.fromEntries(files.map((file, index) => [file, [10_000, 60_000, 90_000, 180_000][index]!]))
+  const parts = planIntegrationParts({ suite: 'integration', scope, files }, { files, durations },
+    { host: 0, ordinary: 4 })
+  return queuedRuns(parts.length).map((run, index) => CiRunRecordSchema.parse({ ...run, ...parts[index], scope,
+    id: `00000000-0000-4000-8000-${String(parts.length - index).padStart(12, '0')}` }))
+}
+
+it.each(['full', 'affected'] as const)('dispatches slow and fast parts together with spare capacity for %s scope', async scope => {
+  const records = plannedTierRuns(scope)
+  const computers = Array.from({ length: records.length }, (_, slot) => ({ ...cloud,
+    key: `cloud:circleci:${slot}`, hostRef: { ...cloud.hostRef, slot } }))
+  const f = fleet(records, computers)
   await f.service.dispatch()
-  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([records[0]!.id])
-  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'passed', finishedAt: '2026-10-12T00:05:00.000Z' })
-  await f.service.dispatch()
-  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null))
-    .toEqual([records[0]!.id, records[1]!.id])
+  expect(f.started).toHaveLength(records.length)
+  expect(records.every(run => run.state === 'running')).toBe(true)
 })
 
-it('skips the slow tier of an affected request when another part failed', async () => {
-  const records = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, scope: 'affected' }))
-  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', finishedAt: '2026-10-12T00:05:00.000Z' })
+it('gives waiting fast parts priority, then starts the longest slow part as soon as a slot frees', async () => {
+  const [fast, ...slow] = plannedTierRuns()
+  const longestFirst = [...slow].sort((left, right) => right.expectedDurationMs! - left.expectedDurationMs!)
+  const records = [...slow].reverse().concat(fast!)
   const f = fleet(records, [cloud])
   await f.service.dispatch()
-  expect(f.started).toHaveLength(0)
-  expect(records[1]).toMatchObject({ state: 'canceled',
-    message: expect.stringContaining('slow tests run only after every other test of this request passed') })
+  expect(f.started.map(item => item.assigned.id)).toEqual([fast!.id])
+  records[records.findIndex(run => run.id === fast!.id)]!.state = 'passed'
+  const expected = [fast!.id]
+  for (const run of longestFirst) {
+    await f.service.dispatch()
+    expected.push(run.id)
+    expect(f.started.map(item => item.assigned.id)).toEqual(expected)
+    records[records.findIndex(record => record.id === run.id)]!.state = 'passed'
+  }
 })
 
-it.each([false, true])('runs the slow tier after a fast failure in a full request with gate=%s', async gate => {
-  const records = tieredRuns({ gate })
-  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
-    finishedAt: '2026-10-12T00:05:00.000Z' })
-  const failed = { ...records[0]! }
-  const f = fleet(records, [cloud])
-  await f.service.dispatch()
-  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null))
-    .toEqual([records[1]!.id])
-  expect(records[1]).toMatchObject({ state: 'running', deferred: true })
-  expect(records[0]).toEqual(failed)
-})
-
-it.each([false, true])('waits for remaining fast parts after a full request failure with gate=%s', async gate => {
-  const [fast, slow] = tieredRuns({ gate })
+it('uses a newly freed slot for slow work while another fast part is still running', async () => {
+  const [fast, slow] = plannedTierRuns()
+  const second = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
   const running = CiRunRecordSchema.parse({ ...fast!, id: randomUUID(), state: 'running',
     computer: { hostRef: cloud.hostRef, label: cloud.label } })
-  const records = [CiRunRecordSchema.parse({ ...fast!, state: 'failed', exitCode: 1,
-    finishedAt: '2026-10-12T00:05:00.000Z' }), running, slow!]
-  const f = fleet(records, [cloud])
+  const finishing = CiRunRecordSchema.parse({ ...fast!, id: randomUUID(), state: 'running',
+    computer: { hostRef: second.hostRef, label: second.label } })
+  const records = [running, finishing, slow!]
+  const f = fleet(records, [cloud, second])
   await f.service.dispatch()
   expect(f.started).toEqual([])
-  expect(records[2]).toMatchObject({ state: 'queued', deferred: true, finishedAt: null })
-  records[1] = CiRunRecordSchema.parse({ ...running, state: 'passed', exitCode: 0,
-    finishedAt: '2026-10-12T00:06:00.000Z' })
+  records[1]!.state = 'passed'
   await f.service.dispatch()
-  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([slow!.id])
-  expect(records[2]).toMatchObject({ state: 'running', deferred: true })
-  expect(records[0]).toMatchObject({ state: 'failed', exitCode: 1 })
+  expect(f.started.map(item => item.assigned.id)).toEqual([slow!.id])
+  expect(records[0]!.state).toBe('running')
+})
+
+it.each(['full', 'affected'] as const)('continues slow work after a fast failure for %s scope', async scope => {
+  const [fast, slow] = plannedTierRuns(scope)
+  const failed = CiRunRecordSchema.parse({ ...fast!, state: 'failed', exitCode: 1,
+    finishedAt: '2026-10-12T00:05:00.000Z' })
+  const records = [failed, slow!]
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.assigned.id)).toEqual([slow!.id])
+  expect(records[0]).toEqual(failed)
+  expect(records[1]!.state).toBe('running')
 })
 
 it('lets later full requests dispatch when the oldest gate already has a failed part', async () => {

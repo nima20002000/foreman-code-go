@@ -31,7 +31,7 @@ import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
 import { readExecutorSpeeds } from './executorSpeed.js'
-import { readCiGateReservation, readQueuedCiRuns, releaseCiSlowTier } from './queuedRuns.js'
+import { readCiGateReservation, readQueuedCiRuns } from './queuedRuns.js'
 import { expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
@@ -1060,13 +1060,14 @@ export class HostCiService {
     const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
     const smokeTargets = await this.smokeTargets(parsed)
-    let queued = await releaseCiSlowTier(this.pool, parsed)
+    let queued = parsed
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
     queued = await weighCiPartitions(this.pool, this.endpoint, queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)), (id, workspaceId) => this.read(id, workspaceId))
     queued.sort((left, right) => (left.priority === right.priority
       && !left.gate && !right.gate
+      && left.partition?.tier === right.partition?.tier && left.partition?.tier !== 'slow'
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     const stealsGatePart = gatePartStealer(computers, queued)
     const reservedCloud = reservedCloudSlotKeys(computers, this.reservedCloudSlots)
