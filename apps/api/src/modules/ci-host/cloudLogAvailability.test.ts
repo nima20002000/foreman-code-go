@@ -77,6 +77,18 @@ it('reads a failed mirror publication before any provider log can exist', async 
   expect(f.dispatched).toHaveLength(0)
 })
 
+it.each(['github', 'circleci'] as const)('reads a %s ticket that failed before dispatch without a provider log', async provider => {
+  const f = await fixture({}, { provider })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'affected', files: ['apps/api/test/renamed-away.integration.test.ts'], deferMirror: true })
+  await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+    .toMatchObject({ run: { state: 'failed', logBytes: 0, message: expect.stringContaining('Selected integration files are absent from the commit.') },
+      text: '', nextOffset: 0 })
+  expect(f.dispatched).toHaveLength(0)
+})
+
 it.each(['starting', 'running', 'queued', 'canceled', 'failed', 'passed'] as const)(
   'rejects a missing collected log even when the retained state is %s', async state => {
     const f = await fixture()
