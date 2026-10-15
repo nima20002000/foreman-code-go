@@ -134,6 +134,8 @@ async function fixture() {
     } }
 }
 
+const available = { status: 'available', consecutiveFailures: 0, failedAt: null, lastError: null, lastSuccess: expect.any(String) }
+
 describe('authenticated computer target reads and maintenance', () => {
   it('bounds compact, full and HTTP history while retaining authorized task-specific reads', async () => {
     const f = await fixture()
@@ -174,9 +176,9 @@ describe('authenticated computer target reads and maintenance', () => {
       expect(status).toMatchObject({ harnesses: snapshot.harnesses, system: snapshot.system, worker: snapshot.worker })
       const full = await read({ target: f.main, detail: 'full' })
       const newest = [latest, recentFailure, tasks[4]!, tasks[3]!, latestRestart]
-      expect(full).toEqual({ computers: [{ target: f.main, status: { ...snapshot, tasks: newest }, tasksOmitted: 2 }] })
+      expect(full).toEqual({ computers: [{ target: f.main, observation: available, status: { ...snapshot, tasks: newest }, tasksOmitted: 2 }] })
       expect(await read({ target: f.main, detail: 'full', taskId: longFailure.id }))
-        .toEqual({ computers: [{ target: f.main, status: { ...snapshot, tasks: [longFailure] }, tasksOmitted: 6 }] })
+        .toEqual({ computers: [{ target: f.main, observation: available, status: { ...snapshot, tasks: [longFailure] }, tasksOmitted: 6 }] })
       expect(await read({ target: f.main, detail: 'full', taskId: randomUUID() }))
         .toMatchObject({ computers: [{ status: { tasks: [] } }] })
       expect((await client.callTool({ name: 'computers_maintenance_status',
@@ -219,8 +221,8 @@ describe('authenticated computer target reads and maintenance', () => {
       for (const { input, indices, workerIndices } of cases) {
         const expectedTasks = indices.map(index => tasks[index]!)
         const expected = { computers: [
-          { target: f.main, status: { ...snapshot, tasks: expectedTasks }, tasksOmitted: 9 - indices.length },
-          { target: f.worker, status: { ...snapshot, tasks: workerIndices.map(index => tasks[index]!) },
+          { target: f.main, observation: available, status: { ...snapshot, tasks: expectedTasks }, tasksOmitted: 9 - indices.length },
+          { target: f.worker, observation: available, status: { ...snapshot, tasks: workerIndices.map(index => tasks[index]!) },
             tasksOmitted: 3 - workerIndices.length },
         ] }
         const full = ComputerMaintenanceListSchema.parse(decodeMcpToolResult(await client.callTool({
