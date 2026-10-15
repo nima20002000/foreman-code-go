@@ -8,8 +8,8 @@ let switching = false
 let installation: { id: string; generation: number } | undefined
 
 export class SessionChangedError extends Error {
-  constructor() {
-    super('Operator access changed. Reload this view before continuing.')
+  constructor(options?: ErrorOptions) {
+    super('Operator access changed. Reload this view before continuing.', options)
     this.name = 'AbortError'
   }
 }

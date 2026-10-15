@@ -84,7 +84,7 @@ export async function withInstallLock(root, fn) {
     await syncDirectory(parent);
   }
   const lock = join(root, '.install-lock');
-  try { await mkdir(lock, { mode: 0o700 }); } catch (error) { if (error.code === 'EEXIST') throw new WorkerError('install_busy'); throw error; }
+  try { await mkdir(lock, { mode: 0o700 }); } catch (error) { if (error.code === 'EEXIST') throw new WorkerError('install_busy', undefined, { cause: error }); throw error; }
   try { return await fn(); } finally { await rm(lock, { recursive: true, force: true }); }
 }
 
@@ -111,7 +111,7 @@ export async function requireInstallationState({ root, stateDirectory }) {
     }
     binding = JSON.parse(await readFile(path, 'utf8'));
   } catch (error) {
-    if (error.code === 'ENOENT') throw new WorkerError('installation_state_unbound');
+    if (error.code === 'ENOENT') throw new WorkerError('installation_state_unbound', undefined, { cause: error });
     throw error;
   }
   if (binding.format !== 1 || binding.stateDirectory !== state) {

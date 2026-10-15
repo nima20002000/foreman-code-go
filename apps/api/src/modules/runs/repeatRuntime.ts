@@ -578,7 +578,7 @@ export async function executeRepeatRuntime(input: {
           if (executionId) {
             const recordFailure = input.lifecycle.recordExecutionFailure?.bind(input.lifecycle)
             if (!recordFailure) throw new DomainError('WORK_FAILURE_WRITER_REQUIRED',
-              'A handoff launch failure requires its persisted execution cause.', 409)
+              'A handoff launch failure requires its persisted execution cause.', 409, undefined, { cause: error })
             await bookkeeping(() => recordFailure(executionId, error.result))
           }
           return []

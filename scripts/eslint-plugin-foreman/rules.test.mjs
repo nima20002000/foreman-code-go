@@ -72,6 +72,24 @@ run('no-silent-catch', [
   'try { run() } catch (error) { /* the file may not exist yet */ }',
 ])
 
+run('no-error-rewrap-without-cause', [
+  'try { run() } catch (error) { throw error }',
+  "try { run() } catch (error) { throw new DomainError('X', 'm', 409, undefined, { cause: error }) }",
+  "try { run() } catch (error) { throw new Error('m', { cause: error }) }",
+  "try { run() } catch (error) { throw new NativeDeliveryError('turn', 'unknown', error) }",
+  "try { run() } catch (error) { throw new AggregateError([error, other], 'both failed') }",
+  "try { run() } catch (error) { throw new Outer('m', new AggregateError([error], 'x')) }",
+  "try { run() } catch { throw new DomainError('INVALID_REQUEST', 'Invalid JSON.', 400) }",
+  "try { run() } catch (error) { queue.push(() => { throw new Error('later') }) }",
+  "promise.catch(error => { throw new Error('m', { cause: error }) })",
+  "try { run() } catch (error) { throw new DomainError('X', 'm', 409 /* ignore: the cause holds a credential */) }",
+], [
+  "try { run() } catch (error) { throw new DomainError('X', error.message, 409) }",
+  "try { run() } catch (error) { if (error.code === 'EEXIST') throw new Error('exists'); throw error }",
+  "promise.catch(error => { throw new WorkerError('failed') })",
+  "promise.catch(function (error) { throw new Error('failed') })",
+])
+
 run('no-legacy-execution-semantics', [
   'if (version.executionSemanticsVersion === 3) start()',
   'const value = { executionSemanticsVersion: 3 }',

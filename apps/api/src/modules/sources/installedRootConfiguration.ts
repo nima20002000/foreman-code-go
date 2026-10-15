@@ -14,7 +14,7 @@ export async function readInstalledRootConfiguration(path: string) {
   let file
   try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK) }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new DomainError('ROOT_CONFIGURATION_MISSING', 'Install the original human-approved approved-roots.json before adopting roots.', 409)
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new DomainError('ROOT_CONFIGURATION_MISSING', 'Install the original human-approved approved-roots.json before adopting roots.', 409, undefined, { cause: error })
     throw error
   }
   try {

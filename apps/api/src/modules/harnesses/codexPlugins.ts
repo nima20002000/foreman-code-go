@@ -77,7 +77,7 @@ export class NativeCodexPlugins implements CodexPluginAdapter {
     } catch (error) {
       signal.throwIfAborted()
       if (error instanceof DomainError) throw error
-      throw new DomainError('CODEX_PLUGIN_CATALOG_INVALID', 'Codex plugin discovery or local inventory could not be fully inspected.', 502)
+      throw new DomainError('CODEX_PLUGIN_CATALOG_INVALID', 'Codex plugin discovery or local inventory could not be fully inspected.', 502, undefined, { cause: error })
     }
   }
   async change(pluginId: string, action: 'install' | 'remove', signal: AbortSignal, reviewed: CodexPluginCatalog): Promise<CodexPluginMutation> {

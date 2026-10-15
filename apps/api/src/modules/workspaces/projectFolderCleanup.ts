@@ -88,6 +88,6 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
     [principal.id, source, JSON.stringify({ commandId, workspaceIds: ids })])
       .catch(ignoreError('lifecycle', 'record failed workspace folder cleanup audit', { commandId }))
     throw new DomainError('WORKSPACE_FOLDER_CLEANUP_FAILED',
-      `The workspace was archived, but its project folder could not be removed. Retry removal. ${errorMessage(error, '')}`, 503)
+      `The workspace was archived, but its project folder could not be removed. Retry removal. ${errorMessage(error, '')}`, 503, undefined, { cause: error })
   } finally { client.release() }
 }

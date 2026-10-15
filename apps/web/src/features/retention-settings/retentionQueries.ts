@@ -92,7 +92,7 @@ export function useRetentionSaveMutation() {
           // A denied/busy replay cannot disprove the original commit. Only a
           // receipt-aware revision conflict resolves an already uncertain command.
           if (recovering && !(ApiError.is(error) && error.code === 'REVISION_CONFLICT')) {
-            throw new ApiError({ code: 'RETENTION_READBACK_UNKNOWN', message: 'Could not resolve the original save.' })
+            throw new ApiError({ code: 'RETENTION_READBACK_UNKNOWN', message: 'Could not resolve the original save.' }, undefined, { cause: error })
           }
           try { settleRetentionCommand(key, input.commandId) } catch {
             throw new ApiError({ code: 'RETENTION_READBACK_UNKNOWN', message: 'Could not resolve the save.' })
@@ -106,7 +106,7 @@ export function useRetentionSaveMutation() {
       }
       if (input.applyToExisting) {
         // Refresh file truth, not a locally computed expiry based on the preference.
-        void client.invalidateQueries({ queryKey: attachmentLifecycleQueryKey }).catch(() => undefined)
+        void client.invalidateQueries({ queryKey: attachmentLifecycleQueryKey }).catch(() => /* ignore: the next read refetches */ undefined)
       }
       try {
         const current = await readRetentionPreference(client, generation)

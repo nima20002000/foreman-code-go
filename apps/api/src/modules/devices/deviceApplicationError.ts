@@ -1,139 +1,151 @@
 import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-application'
+import { explicitFailureClass, type FailureClass } from '@foreman-code/contracts/failure'
 import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
 import { WorkerBundleReadinessSchema, type WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
 
-const retryability: Readonly<Record<string, boolean>> = {
-  'extension-rejected': false,
-  WORKER_UPDATE_SMOKE_UNAVAILABLE: true,
-  WORKER_RELEASE_ASSET_UNAVAILABLE: true,
-  WORKER_VERSION_SKEW: true,
-  WORKER_BUNDLE_UNPUBLISHED: true,
-  WORKER_UPDATING: true,
-  CI_HOST_BUSY: true,
-  MCP_INSPECTION_CONTEXT_MISMATCH: false,
-  MCP_PRESET_UNAVAILABLE: false,
-  MCP_PRESET_CUSTOMIZED: false,
-  MCP_SERVER_EXISTS: false,
-  MCP_RECONCILIATION_REQUIRED: false,
-  MCP_RECONCILIATION_MISMATCH: false,
-  MCP_PLAN_NOT_FOUND: false,
-  COMMAND_ID_CONFLICT: false,
-  REVISION_CONFLICT: false,
-  SYNC_UNAVAILABLE: true,
-  COMPUTER_GITHUB_REQUIRED: false,
-  COMPUTER_ACCOUNT_UNAVAILABLE: true,
-  GITHUB_STATUS_UNKNOWN: true,
-  CI_RUN_UNKNOWN: false,
-  GITHUB_ACCOUNT_CHANGED: false,
-  unavailable: true,
-  backpressure: true,
-  DEVICE_BUSY: true,
-  timeout: true,
-  transport: true,
-  DATABASE_READ_TIMEOUT: true,
-  cancelled: false,
-  'payload-too-large': false,
-  authentication: false,
-  permission: false,
-  unauthorized: false,
-  revoked: false,
-  expired: false,
-  conflict: false,
-  forbidden: false,
-  wrong_main: false,
-  'job-output-expired': false,
-  'transfer-expired': false,
-  'job-publication-pending': true,
-  'source-repository-timeout': true,
-  'source-repository-uncertain': false,
-  AUTH_REVOKED: false,
-  AUTH_RUN_ENDED: false,
-  REMOTE_AUTHORITY_DENIED: false,
-  REMOTE_REVIEWER_DENIED: false,
-  REVIEWER_BINDING_REBIND_REQUIRED: true,
-  REMOTE_CONTROL_UNAVAILABLE: false,
-  REMOTE_DISPATCH_UNAVAILABLE: true,
-  DEVICE_LINK_DROPPED: true,
-  REMOTE_BINDING_CONFLICT: false,
-  REMOTE_OBSERVATION_NOT_AUTHENTICATED: false,
-  REMOTE_NATIVE_PHYSICAL_UNAVAILABLE: true,
-  REMOTE_NATIVE_PHYSICAL_BACKPRESSURE: true,
-  REMOTE_NATIVE_SOURCE_NOT_CAPTURED: false,
-  REMOTE_NATIVE_SOURCE_BACKPRESSURE: true,
-  REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE: false,
-  NATIVE_ARTIFACT_AUTHORITY_DENIED: false,
-  NATIVE_ARTIFACT_CONTEXT_PENDING: true,
-  WORKER_WORKFLOW_UNAVAILABLE: false,
-  HARNESS_INVENTORY_STALE: true,
-  HARNESS_QUALIFICATION_TARGET_CHANGED: true,
-  WORKER_EXECUTION_NOT_FOUND: false,
-  WORKER_EXECUTION_IDENTITY_INVALID: false,
-  PLACEMENT_INVALID_ROOT: false,
-  PLACEMENT_BINDING_CONFLICT: false,
-  PLACEMENT_ADMISSION_CONFLICT: false,
-  PLACEMENT_PREPARATION_REQUIRED: false,
-  PLACEMENT_MAIN_MISMATCH: false,
-  PLACEMENT_CONFLICT: false,
-  EXECUTION_PLACEMENT_CONFLICT: false,
-  SOURCE_OPERATION_AUTHORITY_CONFLICT: false,
-  SOURCE_CONNECTION_CONFLICT: false,
-  SOURCE_ATTEMPT_CONFLICT: false,
-  ROOT_DIRECTORY_MISSING: false,
-  ROOT_RELATIVE_PATH_INVALID: false,
-  ROOT_ACCESS_DENIED: false,
-  ROOT_CONFIGURATION_CONFLICT: false,
-  ROOT_BASE_CHANGED: false,
-  ROOT_DIRECTORY_CHANGED: false,
-  ROOT_RUNTIME_CHANGED: false,
-  ROOT_FILESYSTEM_UNSUPPORTED: false,
-  ROOT_RUNTIME_OVERLAP: false,
-  SOURCE_ROOT_NOT_PRIVATE: false,
-  SOURCE_FILESYSTEM_UNSUPPORTED: false,
-  EACCES: false,
-  EPERM: false,
-  ELOOP: false,
-  ENOENT: false,
-  ENOTDIR: false,
-  SOURCE_CLAIM_MISSING: false,
-  SOURCE_CAPACITY: false,
-  SOURCE_DISK_CAPACITY: false,
-  SOURCE_REPOSITORY_TIMEOUT: true,
-  SOURCE_REPOSITORY_UNCERTAIN: false,
-  'source-reconciliation-unconfirmed': true,
-  SOURCE_RECLAMATION_UNCONFIRMED: false,
-  SOURCE_EXECUTION_UNCERTAIN: true,
-  SOURCE_PREPARATION_ACTIVE: true,
-  SOURCE_PREPARATION_RECONCILED: false,
-  SOURCE_QUOTA_MISSING: false,
-  SOURCE_ROOT_CHANGED: false,
-  SOURCE_CLAIM_INVALID: false,
-  SOURCE_CLAIM_CONFLICT: false,
+/** The class of each code a device peer may send; it is authoritative over what the error states about itself. */
+const classes: Readonly<Record<string, FailureClass>> = {
+  'extension-rejected': 'permanent',
+  WORKER_UPDATE_SMOKE_UNAVAILABLE: 'transient',
+  WORKER_RELEASE_ASSET_UNAVAILABLE: 'transient',
+  WORKER_VERSION_SKEW: 'transient',
+  WORKER_BUNDLE_UNPUBLISHED: 'transient',
+  WORKER_UPDATING: 'transient',
+  CI_HOST_BUSY: 'transient',
+  MCP_INSPECTION_CONTEXT_MISMATCH: 'permanent',
+  MCP_PRESET_UNAVAILABLE: 'permanent',
+  MCP_PRESET_CUSTOMIZED: 'permanent',
+  MCP_SERVER_EXISTS: 'permanent',
+  MCP_RECONCILIATION_REQUIRED: 'permanent',
+  MCP_RECONCILIATION_MISMATCH: 'permanent',
+  MCP_PLAN_NOT_FOUND: 'permanent',
+  COMMAND_ID_CONFLICT: 'permanent',
+  REVISION_CONFLICT: 'permanent',
+  SYNC_UNAVAILABLE: 'transient',
+  COMPUTER_GITHUB_REQUIRED: 'permanent',
+  COMPUTER_ACCOUNT_UNAVAILABLE: 'transient',
+  GITHUB_STATUS_UNKNOWN: 'transient',
+  CI_RUN_UNKNOWN: 'permanent',
+  GITHUB_ACCOUNT_CHANGED: 'permanent',
+  unavailable: 'transient',
+  backpressure: 'transient',
+  DEVICE_BUSY: 'transient',
+  timeout: 'transient',
+  transport: 'transient',
+  DATABASE_READ_TIMEOUT: 'transient',
+  cancelled: 'cancelled',
+  'payload-too-large': 'permanent',
+  authentication: 'permanent',
+  permission: 'permanent',
+  unauthorized: 'permanent',
+  revoked: 'permanent',
+  expired: 'permanent',
+  conflict: 'permanent',
+  forbidden: 'permanent',
+  wrong_main: 'permanent',
+  'job-output-expired': 'permanent',
+  'transfer-expired': 'permanent',
+  'job-publication-pending': 'transient',
+  'source-repository-timeout': 'transient',
+  'source-repository-uncertain': 'permanent',
+  AUTH_REVOKED: 'permanent',
+  AUTH_RUN_ENDED: 'permanent',
+  REMOTE_AUTHORITY_DENIED: 'permanent',
+  REMOTE_REVIEWER_DENIED: 'permanent',
+  REVIEWER_BINDING_REBIND_REQUIRED: 'transient',
+  REMOTE_CONTROL_UNAVAILABLE: 'permanent',
+  REMOTE_DISPATCH_UNAVAILABLE: 'transient',
+  DEVICE_LINK_DROPPED: 'transient',
+  REMOTE_BINDING_CONFLICT: 'permanent',
+  REMOTE_OBSERVATION_NOT_AUTHENTICATED: 'permanent',
+  REMOTE_NATIVE_PHYSICAL_UNAVAILABLE: 'transient',
+  REMOTE_NATIVE_PHYSICAL_BACKPRESSURE: 'transient',
+  REMOTE_NATIVE_SOURCE_NOT_CAPTURED: 'permanent',
+  REMOTE_NATIVE_SOURCE_BACKPRESSURE: 'transient',
+  REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE: 'permanent',
+  NATIVE_ARTIFACT_AUTHORITY_DENIED: 'permanent',
+  NATIVE_ARTIFACT_CONTEXT_PENDING: 'transient',
+  WORKER_WORKFLOW_UNAVAILABLE: 'permanent',
+  HARNESS_INVENTORY_STALE: 'transient',
+  HARNESS_QUALIFICATION_TARGET_CHANGED: 'transient',
+  WORKER_EXECUTION_NOT_FOUND: 'permanent',
+  WORKER_EXECUTION_IDENTITY_INVALID: 'permanent',
+  PLACEMENT_INVALID_ROOT: 'permanent',
+  PLACEMENT_BINDING_CONFLICT: 'permanent',
+  PLACEMENT_ADMISSION_CONFLICT: 'permanent',
+  PLACEMENT_PREPARATION_REQUIRED: 'permanent',
+  PLACEMENT_MAIN_MISMATCH: 'permanent',
+  PLACEMENT_CONFLICT: 'permanent',
+  EXECUTION_PLACEMENT_CONFLICT: 'permanent',
+  SOURCE_OPERATION_AUTHORITY_CONFLICT: 'permanent',
+  SOURCE_CONNECTION_CONFLICT: 'permanent',
+  SOURCE_ATTEMPT_CONFLICT: 'permanent',
+  ROOT_DIRECTORY_MISSING: 'permanent',
+  ROOT_RELATIVE_PATH_INVALID: 'permanent',
+  ROOT_ACCESS_DENIED: 'permanent',
+  ROOT_CONFIGURATION_CONFLICT: 'permanent',
+  ROOT_BASE_CHANGED: 'permanent',
+  ROOT_DIRECTORY_CHANGED: 'permanent',
+  ROOT_RUNTIME_CHANGED: 'permanent',
+  ROOT_FILESYSTEM_UNSUPPORTED: 'permanent',
+  ROOT_RUNTIME_OVERLAP: 'permanent',
+  SOURCE_ROOT_NOT_PRIVATE: 'permanent',
+  SOURCE_FILESYSTEM_UNSUPPORTED: 'permanent',
+  EACCES: 'permanent',
+  EPERM: 'permanent',
+  ELOOP: 'permanent',
+  ENOENT: 'permanent',
+  ENOTDIR: 'permanent',
+  SOURCE_CLAIM_MISSING: 'permanent',
+  SOURCE_CAPACITY: 'permanent',
+  SOURCE_DISK_CAPACITY: 'permanent',
+  SOURCE_REPOSITORY_TIMEOUT: 'transient',
+  SOURCE_REPOSITORY_UNCERTAIN: 'permanent',
+  'source-reconciliation-unconfirmed': 'transient',
+  SOURCE_RECLAMATION_UNCONFIRMED: 'permanent',
+  SOURCE_EXECUTION_UNCERTAIN: 'transient',
+  SOURCE_PREPARATION_ACTIVE: 'transient',
+  SOURCE_PREPARATION_RECONCILED: 'permanent',
+  SOURCE_QUOTA_MISSING: 'permanent',
+  SOURCE_ROOT_CHANGED: 'permanent',
+  SOURCE_CLAIM_INVALID: 'permanent',
+  SOURCE_CLAIM_CONFLICT: 'permanent',
 }
 
+const readinessCodes = new Set(['WORKER_VERSION_SKEW', 'WORKER_BUNDLE_UNPUBLISHED', 'WORKER_UPDATING'])
+const failure = (code: string, failureClass: FailureClass, details?: WorkerBundleReadiness): DeviceApplicationFailure =>
+  ({ code, class: failureClass, retryable: failureClass === 'transient', ...(details ? { details } : {}) })
+
+/** The failure a device reply carries. Only listed codes cross the channel, with their listed class; an unlisted error
+ * that states its class keeps it under a redacted code, so a transient failure stays transient. Unclassified unlisted
+ * codes are rejections. */
 export function deviceApplicationFailure(error: unknown): DeviceApplicationFailure {
   // A handler whose own deadline fired (Node's TimeoutError has a numeric code) is transient, not a rejection.
   if (error && typeof error === 'object' && (error as { name?: unknown }).name === 'TimeoutError') {
-    return { code: 'timeout', retryable: true }
+    return failure('timeout', 'transient')
   }
   const proposed = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
-  if (typeof proposed === 'string' && Object.hasOwn(retryability, proposed)) {
-    if (['WORKER_VERSION_SKEW', 'WORKER_BUNDLE_UNPUBLISHED', 'WORKER_UPDATING'].includes(proposed)) {
-      const details = WorkerBundleReadinessSchema.safeParse((error as { details?: unknown }).details)
-      if (details.success) return { code: proposed, retryable: retryability[proposed]!, details: details.data }
-    }
-    return { code: proposed, retryable: retryability[proposed]! }
+  if (typeof proposed === 'string' && Object.hasOwn(classes, proposed)) {
+    const details = readinessCodes.has(proposed)
+      ? WorkerBundleReadinessSchema.safeParse((error as { details?: unknown }).details) : undefined
+    return failure(proposed, classes[proposed]!, details?.success ? details.data : undefined)
   }
-  if (isTransientDatabaseOrSocketError(error)) return { code: 'unavailable', retryable: true }
-  return { code: 'extension-rejected', retryable: false }
+  const explicit = explicitFailureClass(error)
+  if (explicit === 'permanent') return failure('extension-rejected', 'permanent')
+  if (explicit) return failure(explicit === 'cancelled' ? 'cancelled' : 'unavailable', explicit)
+  if (isTransientDatabaseOrSocketError(error)) return failure('unavailable', 'transient')
+  return failure('extension-rejected', 'permanent')
 }
 
 export class DeviceApplicationError extends Error {
   readonly code: string
+  readonly class: FailureClass
   readonly retryable: boolean
-  constructor(code: string, readonly details?: WorkerBundleReadiness) {
-    super(code)
+  constructor(code: string, readonly details?: WorkerBundleReadiness, options?: ErrorOptions & { class?: FailureClass }) {
+    super(code, options)
     this.code = code
-    this.retryable = deviceApplicationFailure({ code }).retryable
+    this.class = options?.class ?? deviceApplicationFailure({ code }).class
+    this.retryable = this.class === 'transient'
   }
 }
 

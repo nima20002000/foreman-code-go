@@ -1,8 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
+import { failureClass, type FailureClass } from '@foreman-code/contracts/failure'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
-import { isDatabasePoolTimeout, isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
+import {
+  isDatabasePoolTimeout, isDatabaseTimeout, isTransientDatabaseOrSocketError,
+} from '../../infrastructure/transientErrors.js'
 import { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 export { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 
@@ -22,28 +25,27 @@ function errorCode(error: unknown): string | undefined {
 
 /** Shared classification. Transient: database timeouts and connection loss,
  * device/transport loss, MCP not ready, uncertain start or dispatch, interrupted
- * attempts, Worker restart and the credential failures they cause, and uncoded
- * runtime errors. Everything else (an Agent's failed result, an invalid output
- * contract, Stop, budget exhaustion, revoked access) is a real failure. */
+ * attempts, Worker restart and the credential failures they cause, and runtime
+ * errors with no code on their whole cause chain. Everything else (an Agent's failed
+ * result, an invalid output contract, Stop, budget exhaustion, revoked access) is a
+ * real failure. An explicit class on the cause chain wins over these code rules. */
+export function executionFailureClass(error: unknown): FailureClass {
+  let coded = false
+  return failureClass(error, link => {
+    if (link instanceof ZodError || link instanceof AggregateError) return 'permanent'
+    if (isDatabaseTimeout(link) || isDatabasePoolTimeout(link)) return 'transient'
+    const code = errorCode(link)
+    if (code === undefined) return undefined
+    coded = true
+    return isTransientExecutionCode(code) ? 'transient' : undefined
+  }, last => {
+    if (isTransientDatabaseOrSocketError(last)) return 'transient'
+    return !coded && last instanceof Error ? 'transient' : 'permanent'
+  })
+}
+
 export function isTransientExecutionError(error: unknown): boolean {
-  const seen = new Set<object>()
-  while (typeof error === 'object' && error !== null && !seen.has(error)) {
-    seen.add(error)
-    const wrapped = error as {
-      result?: ExecutionResult; details?: { retryable?: boolean }; retryable?: boolean; cause?: unknown
-    }
-    const retryable = wrapped.retryable ?? wrapped.result?.error?.retryable ?? wrapped.details?.retryable
-    if (typeof retryable === 'boolean') return retryable
-    if (error instanceof ZodError || error instanceof AggregateError) return false
-    if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
-    const code = errorCode(error)
-    if (code !== undefined && isTransientExecutionCode(code)) return true
-    if (typeof wrapped.cause !== 'object' || wrapped.cause === null) {
-      return code === undefined && error instanceof Error
-    }
-    error = wrapped.cause
-  }
-  return false
+  return executionFailureClass(error) === 'transient'
 }
 
 /** The recorded cause of one abandoned attempt; retryable marks it for a fresh attempt. */

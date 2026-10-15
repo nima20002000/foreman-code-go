@@ -45,7 +45,7 @@ async function publicRootFailure<T>(work: () => Promise<T>): Promise<T> {
       ? error.code : (error as NodeJS.ErrnoException | undefined)?.code
     const failure = code && Object.hasOwn(rootFailures, code) ? rootFailures[code] : undefined
     if (failure && code) {
-      throw new DomainError(code, failure.message, failure.status)
+      throw new DomainError(code, failure.message, failure.status, undefined, { cause: error })
     }
     throw error
   }

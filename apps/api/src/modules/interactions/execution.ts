@@ -1734,7 +1734,7 @@ export class ApprovalExecutionCoordinator {
           })
       } catch (error) {
         if (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY') {
-          throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer writer is still active.', 409)
+          throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer writer is still active.', 409, undefined, { cause: error })
         }
         throw error
       }

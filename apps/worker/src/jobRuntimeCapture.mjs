@@ -56,7 +56,7 @@ async function preserveConfiguration(state, name, bytes) {
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
       if (!(await readPrivateBytes(state, name, 2 * 1024 * 1024 + 65536)).equals(bytes)) {
-        throw new WorkerError('job_runtime_configuration_conflict');
+        throw new WorkerError('job_runtime_configuration_conflict', undefined, { cause: error });
       }
     }
     await state.sync();
@@ -132,7 +132,7 @@ async function publishJobRuntime(stateDirectory, inputPath, operation) {
         await rename(temporary, output);
       } else {
         try { await link(temporary, output); }
-        catch (error) { if (error.code === 'EEXIST') throw new WorkerError('job_runtime_configuration_exists'); throw error; }
+        catch (error) { if (error.code === 'EEXIST') throw new WorkerError('job_runtime_configuration_exists', undefined, { cause: error }); throw error; }
       }
       await state.sync();
     } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
@@ -141,6 +141,6 @@ async function publishJobRuntime(stateDirectory, inputPath, operation) {
       ...(previousConfigurationPath ? { refreshed: true, previousConfigurationPath } : {}) };
   } catch (error) {
     if (error instanceof WorkerError) throw error;
-    throw new WorkerError('job_runtime_capture_failed');
+    throw new WorkerError('job_runtime_capture_failed', undefined, { cause: error });
   } finally { try { await unlock?.(); } finally { await state.close(); } }
 }

@@ -54,7 +54,7 @@ async function formatEdit(mediaType: FileMediaType, data: Buffer, edit: AgentFil
     catch (error) {
       if (!(error instanceof ImageHelperError)) throw error
       throw new DomainError(`FILE_IMAGE_${error.code.toUpperCase()}`, error.message,
-        error.code === 'limit_exceeded' ? 413 : error.code === 'timeout' ? 504 : 422)
+        error.code === 'limit_exceeded' ? 413 : error.code === 'timeout' ? 504 : 422, undefined, { cause: error })
     }
   }
   if (mediaType !== 'application/zip') throw unsupported()
@@ -75,7 +75,7 @@ async function formatEdit(mediaType: FileMediaType, data: Buffer, edit: AgentFil
   } catch (error) {
     if (!(error instanceof ArchiveHelperError)) throw error
     throw new DomainError(`FILE_ARCHIVE_${error.code.toUpperCase()}`, error.message,
-      error.code === 'limit_exceeded' ? 413 : error.code === 'timeout' ? 504 : 422)
+      error.code === 'limit_exceeded' ? 413 : error.code === 'timeout' ? 504 : 422, undefined, { cause: error })
   }
 }
 

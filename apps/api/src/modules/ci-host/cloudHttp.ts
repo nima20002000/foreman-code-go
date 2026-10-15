@@ -132,7 +132,7 @@ export class CloudHttp {
     } catch (error) {
       if (error instanceof DomainError) throw error
       // Transport errors must not expose a token, signed URL, or credential-file path.
-      throw new DomainError('CI_CLOUD_FAILED', `${this.label} HTTPS request failed.`, 502)
+      throw new DomainError('CI_CLOUD_FAILED', `${this.label} HTTPS request failed.`, 502, undefined, { cause: error })
     }
   }
 
@@ -141,7 +141,7 @@ export class CloudHttp {
       return await deadlines.run(AbortSignal.timeout(timeoutMs), operation)
     } catch (error) {
       if (error instanceof DomainError) throw error
-      throw new DomainError('CI_CLOUD_FAILED', `${this.label} HTTPS request failed.`, 502)
+      throw new DomainError('CI_CLOUD_FAILED', `${this.label} HTTPS request failed.`, 502, undefined, { cause: error })
     }
   }
 
@@ -201,7 +201,7 @@ export class CloudHttp {
       return Buffer.from(await response.arrayBuffer())
     } catch (error) {
       if (error instanceof DomainError) throw error
-      throw new DomainError('CI_CLOUD_FAILED', `${this.label} artifacts could not be downloaded.`, 502)
+      throw new DomainError('CI_CLOUD_FAILED', `${this.label} artifacts could not be downloaded.`, 502, undefined, { cause: error })
     }
   }
 }

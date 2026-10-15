@@ -1,4 +1,6 @@
 /** Pure database error predicates; free of database and server imports so the Worker bundle can classify retries. */
+import { failureClass } from '@foreman-code/contracts/failure'
+
 export function isDatabaseTimeout(error: unknown): boolean {
   const seen = new Set<object>()
   while (error && typeof error === 'object' && !seen.has(error)) {
@@ -31,15 +33,13 @@ export function isTransientDatabaseOrSocketCode(code: string): boolean {
   return transientConnectionCodes.has(code) || /^08[A-Z0-9]{3}$/.test(code)
 }
 
+/** A database or socket failure in the cause chain, unless a nearer link states its own class. */
 export function isTransientDatabaseOrSocketError(error: unknown): boolean {
-  const seen = new Set<object>()
-  while (error && typeof error === 'object' && !seen.has(error)) {
-    seen.add(error)
-    if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
-    const code = 'code' in error ? error.code : undefined
-    if (typeof code === 'string' && isTransientDatabaseOrSocketCode(code)) return true
-    if (error instanceof Error && error.message === 'Connection terminated unexpectedly') return true
-    error = 'cause' in error ? error.cause : undefined
-  }
-  return false
+  return failureClass(error, link => {
+    if (isDatabaseTimeout(link) || isDatabasePoolTimeout(link)) return 'transient'
+    const code = 'code' in link ? link.code : undefined
+    if (typeof code === 'string' && isTransientDatabaseOrSocketCode(code)) return 'transient'
+    if (link instanceof Error && link.message === 'Connection terminated unexpectedly') return 'transient'
+    return undefined
+  }) === 'transient'
 }

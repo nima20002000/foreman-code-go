@@ -105,9 +105,9 @@ export class RunHandoffReadService {
       })
     } catch (error) {
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
-        'HANDOFF_READ_EVIDENCE_CONFLICT', 'Persisted handoff evidence is invalid or unavailable.', 409)
+        'HANDOFF_READ_EVIDENCE_CONFLICT', 'Persisted handoff evidence is invalid or unavailable.', 409, undefined, { cause: error })
       if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new DomainError(
-        'HANDOFF_READ_TOO_LARGE', 'The Run handoff read exceeds its response bound.', 409)
+        'HANDOFF_READ_TOO_LARGE', 'The Run handoff read exceeds its response bound.', 409, undefined, { cause: error })
       throw error
     }
   }

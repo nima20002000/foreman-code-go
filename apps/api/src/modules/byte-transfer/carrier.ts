@@ -67,7 +67,7 @@ export function createAuthenticatedTransferReceiver(input: { stagingRoot: string
       } else throw new Error('Unknown transfer operation')
     } catch (error) {
       // The sender must allocate a new transfer; resending this identity can never succeed.
-      if (error instanceof TransferExpiredError) throw new DeviceApplicationError('transfer-expired')
+      if (error instanceof TransferExpiredError) throw new DeviceApplicationError('transfer-expired', undefined, { cause: error })
       throw error
     }
     if (input.receiver) await authority.authorize(intent, context, request.method)

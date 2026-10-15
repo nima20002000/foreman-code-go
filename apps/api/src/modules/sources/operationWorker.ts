@@ -275,8 +275,8 @@ export class SourceOperationWorkerService {
         const repository = await createPrivateSourceRepository({ receipt: record.receipt, manifest, materializer, attempt: owner.attempt, signal: context.signal }).catch((error: unknown) => {
           // W07 only sends bounded lowercase domain codes, never Error messages,
           // paths or child-process handles. Main maps this exact operation code.
-          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_TIMEOUT') throw new SourceError('source-repository-timeout', 'Private source preparation timed out.')
-          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_UNCERTAIN') throw new SourceError('source-repository-uncertain', 'Original private source preparation requires reconciliation.')
+          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_TIMEOUT') throw new SourceError('source-repository-timeout', 'Private source preparation timed out.', { cause: error })
+          if ((error as { code?: string }).code === 'SOURCE_REPOSITORY_UNCERTAIN') throw new SourceError('source-repository-uncertain', 'Original private source preparation requires reconciliation.', { cause: error })
           throw error
         })
         await reauthorize(); return SourceOperationResponseSchema.parse({ version: 1, operation: request.operation, repository })

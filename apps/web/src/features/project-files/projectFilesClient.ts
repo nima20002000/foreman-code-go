@@ -66,11 +66,11 @@ async function rawRequest(path: string, operation: ReturnType<typeof boundary>, 
   } catch (error) {
     guard(operation)
     if (error instanceof Error && error.name === 'AbortError') throw error
-    throw new ApiError({ code: 'NETWORK_ERROR', message: 'The file request could not be completed.' })
+    throw new ApiError({ code: 'NETWORK_ERROR', message: 'The file request could not be completed.' }, undefined, { cause: error })
   }
   guard(operation)
   if (!response.ok) {
-    const payload: unknown = await response.json().catch(() => undefined)
+    const payload: unknown = await response.json().catch(() => /* ignore: a body that is not JSON fails the schema below */ undefined)
     guard(operation)
     const error = ApiErrorResponseSchema.safeParse(payload)
     if (error.success) reloadChangedInstallation(error.data.error.code)
@@ -120,7 +120,7 @@ export const projectFilesClient = {
     // Replaying a lost finalize acknowledgement must not allocate another logical file.
     if (allocation.file.state === 'ready') return allocation
     const response = await rawRequest(path, operation, bytes)
-    const uploaded: unknown = await response.json().catch(() => undefined)
+    const uploaded: unknown = await response.json().catch(() => /* ignore: a body that is not JSON fails the schema below */ undefined)
     guard(operation)
     const parsed = CommandResultSchema.safeParse(uploaded)
     if (!parsed.success) throw invalidResponse()

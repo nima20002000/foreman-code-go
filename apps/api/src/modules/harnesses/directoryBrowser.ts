@@ -43,9 +43,9 @@ export class HarnessDirectoryBrowser {
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
               if (!accepted.name) continue
-              throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists. Choose another name.', 409)
+              throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists. Choose another name.', 409, undefined, { cause: error })
             }
-            throw new DomainError('DIRECTORY_CREATE_FAILED', 'The folder could not be created. Check the parent folder permissions.', 422)
+            throw new DomainError('DIRECTORY_CREATE_FAILED', 'The folder could not be created. Check the parent folder permissions.', 422, undefined, { cause: error })
           }
         }
         throw new DomainError('DIRECTORY_NAME_UNAVAILABLE', 'Choose a folder name explicitly.', 409)
@@ -89,8 +89,8 @@ export class HarnessDirectoryBrowser {
         const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [current])
         if (references.rowCount || defaults.rowCount) throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
         try { await mkdir(target) } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists.', 409)
-          throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422)
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists.', 409, undefined, { cause: error })
+          throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422, undefined, { cause: error })
         }
         try { await rename(current, target) } catch {
           await rmdir(target).catch(ignoreError('harness', 'remove rename reservation', { commandId: accepted.commandId, creationCommandId: accepted.creationCommandId }))
@@ -135,9 +135,9 @@ export class HarnessDirectoryBrowser {
         if (references.rowCount || defaults.rowCount) throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
         try { await rmdir(path) } catch (error) {
           if (['ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) {
-            throw new DomainError('DIRECTORY_NOT_EMPTY', 'This folder contains files and cannot be undone.', 409)
+            throw new DomainError('DIRECTORY_NOT_EMPTY', 'This folder contains files and cannot be undone.', 409, undefined, { cause: error })
           }
-          throw new DomainError('DIRECTORY_UNDO_FAILED', 'The folder could not be removed.', 422)
+          throw new DomainError('DIRECTORY_UNDO_FAILED', 'The folder could not be removed.', 422, undefined, { cause: error })
         }
         return { path, creationCommandId: accepted.creationCommandId }
       },

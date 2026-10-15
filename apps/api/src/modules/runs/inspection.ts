@@ -174,7 +174,7 @@ export class RunInspectionService {
       }
       // Do not serialize parser fragments of private persisted input/native data.
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
-        'RUN_INSPECTION_EVIDENCE_CONFLICT', 'Persisted inspection evidence is invalid or unavailable.', 409)
+        'RUN_INSPECTION_EVIDENCE_CONFLICT', 'Persisted inspection evidence is invalid or unavailable.', 409, undefined, { cause: caughtError })
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : ''
       const readTimeout = error instanceof Error && error.message === 'Query read timeout'
       const reasons: Record<string, string> = {

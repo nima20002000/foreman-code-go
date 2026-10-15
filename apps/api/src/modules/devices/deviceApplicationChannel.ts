@@ -263,7 +263,7 @@ export class DeviceApplicationChannel {
         await waitForDeviceRetry(Math.min(backoff, remaining), waiting)
       } catch (error) {
         this.current()
-        if (signal.aborted) throw new DeviceApplicationError('cancelled')
+        if (signal.aborted) throw new DeviceApplicationError('cancelled', undefined, { cause: error })
         throw error
       }
       backoff = Math.min(1_000, backoff * 2)
@@ -476,7 +476,7 @@ export class DeviceApplicationChannel {
         if (pending) {
           if (assembly.kind === 'error') {
             const failure = deviceApplicationFailure(payload)
-            pending.reject(new DeviceApplicationError(failure.code, failure.details))
+            pending.reject(new DeviceApplicationError(failure.code, failure.details, { class: failure.class }))
           }
           else pending.resolve({ payload, ...(bytes ? { bytes } : {}) })
         }

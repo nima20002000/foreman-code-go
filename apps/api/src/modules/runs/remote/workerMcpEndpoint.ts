@@ -8,7 +8,7 @@ import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
 import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
 import { componentLogger } from '../../diagnostics/logger.js'
-import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
 import { DeviceConnectionError } from '../../devices/deviceWire.js'
 import { leaseFailureCause, renewOwnedLeases } from '../../leases/ownerLeases.js'
 
@@ -44,7 +44,7 @@ export function relayFailureReply(body: unknown, error: unknown) {
   if (!call.success) return undefined
   const known = error instanceof DeviceApplicationError || error instanceof DeviceConnectionError
   const code = known ? error.code : 'relay_failed'
-  const retryable = error instanceof DeviceConnectionError || error instanceof DeviceApplicationError && error.retryable
+  const retryable = error instanceof DeviceConnectionError || deviceApplicationFailure(error).retryable
   const cause = code === 'timeout' ? 'Foreman Main did not answer in time'
     : code === 'transport' ? 'the Worker lost its link to Foreman Main'
       : code === 'backpressure' ? 'the Worker link to Foreman Main is busy'

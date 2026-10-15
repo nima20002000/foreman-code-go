@@ -267,7 +267,7 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     } catch (rollbackError) {
       const reason = workerUpdateErrorMessage(rollbackError);
       await save('failed', plan.previousVersion, `${failure.slice(-950)}; rollback: ${reason.slice(-950)}`);
-      throw new WorkerError('worker_update_rollback_failed');
+      throw new WorkerError('worker_update_rollback_failed', undefined, { cause: rollbackError });
     }
   }
   if (record.status.state === 'current') {

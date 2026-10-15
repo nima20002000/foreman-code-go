@@ -1,3 +1,6 @@
+import type { FailureClass } from '@foreman-code/contracts/failure'
+import { deviceApplicationFailure } from './devices/deviceApplicationError.js'
+
 export class DomainError extends Error {
   // Transport handlers reuse a denial already recorded by the domain service.
   denialAudited = false
@@ -7,10 +10,19 @@ export class DomainError extends Error {
     message: string,
     readonly status: number,
     readonly details?: Record<string, unknown>,
+    options?: ErrorOptions,
   ) {
-    super(message)
+    super(message, options)
     this.name = 'DomainError'
   }
+}
+
+/** The `class` a public HTTP or MCP error reply adds, so a retryable failure is not read as final. Omitted when
+ * the error already states `details.retryable` or is permanent. */
+export function publicFailureClass(error: unknown): FailureClass | undefined {
+  if (error instanceof DomainError && typeof error.details?.retryable === 'boolean') return undefined
+  const failure = deviceApplicationFailure(error)
+  return failure.class === 'permanent' ? undefined : failure.class
 }
 
 /** Safe read retries never expose database statements or persisted payloads. */

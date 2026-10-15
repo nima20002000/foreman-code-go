@@ -264,7 +264,7 @@ export class PostgresInteractionRepository {
     } catch (error) {
       releaseError = await rollbackAfterFailure(client)
       if (committing) {
-        throw new DomainError('INTERACTION_DECISION_STATUS_UNKNOWN', 'Decision commit could not be confirmed. Read the interaction before retrying; the decision may already have committed.', 503)
+        throw new DomainError('INTERACTION_DECISION_STATUS_UNKNOWN', 'Decision commit could not be confirmed. Read the interaction before retrying; the decision may already have committed.', 503, undefined, { cause: error })
       }
       throw error
     } finally { client.release(releaseError) }

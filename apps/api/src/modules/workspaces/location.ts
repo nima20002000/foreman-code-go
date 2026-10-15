@@ -88,7 +88,7 @@ export class WorkspaceLocationService {
     } catch (error) {
       if (error instanceof DomainError) throw error
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new DomainError('WORKSPACE_FOLDER_EXISTS', 'A folder with this name already exists. Choose another name or location.', 409)
+        throw new DomainError('WORKSPACE_FOLDER_EXISTS', 'A folder with this name already exists. Choose another name or location.', 409, undefined, { cause: error })
       }
       throw locationError(error, path)
     }
@@ -333,7 +333,7 @@ export class WorkspaceLocationService {
       if (!denied) {
         throw error
       }
-      throw new DomainError('RUN_AUTHORIZATION_REVOKED', 'The authority that accepted this Run is no longer valid.', 403)
+      throw new DomainError('RUN_AUTHORIZATION_REVOKED', 'The authority that accepted this Run is no longer valid.', 403, undefined, { cause: error })
     }
   }
 

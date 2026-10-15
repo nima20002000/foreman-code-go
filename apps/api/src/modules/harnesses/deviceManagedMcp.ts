@@ -46,7 +46,7 @@ export class DeviceManagedMcp {
       payload = (await captured.request({ target, request }, { signal: bounded, timeoutMs: 120_000 })).payload
     } catch (error) {
       if (error instanceof DeviceApplicationError) {
-        throw new DomainError(error.code, error.message, error.retryable ? 503 : 409)
+        throw new DomainError(error.code, error.message, error.retryable ? 503 : 409, undefined, { cause: error })
       }
       throw error
     }

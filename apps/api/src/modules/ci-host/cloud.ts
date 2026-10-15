@@ -230,7 +230,7 @@ export class CloudCi {
         // A run that failed before dispatch never had a provider log.
         || !run.providerRunId
       if (retainedOutput || !awaitingOutput) {
-        throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
+        throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503, undefined, { cause: error })
       }
       return { text: '', nextOffset: request.afterOffset, logBytes: 0 }
     })

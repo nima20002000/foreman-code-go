@@ -57,7 +57,7 @@ export async function openRootDirectory(base: string, relativePath: string,
     if (!await matchesApprovedDirectory(directory, expectedIdentity, filesystemId)) throw new SourceError('ROOT_BASE_CHANGED', 'The explicitly approved root base was replaced.')
     for (const component of relativePath.split('/').filter(Boolean)) {
       const next = await open(anchored(directory, component), directoryFlags).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new SourceError('ROOT_DIRECTORY_MISSING', 'The selected folder does not exist on this computer.')
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') throw new SourceError('ROOT_DIRECTORY_MISSING', 'The selected folder does not exist on this computer.', { cause: error })
         throw error
       })
       try {

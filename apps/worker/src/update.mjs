@@ -298,15 +298,15 @@ export class WorkerUpdater {
       } catch (error) {
         if (error instanceof DeviceApplicationError && error.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') {
           throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',
-            'Main has not published and verified the GitHub Worker asset. Read computer maintenance for the reason.');
+            'Main has not published and verified the GitHub Worker asset. Read computer maintenance for the reason.', { cause: error });
         }
         if (error instanceof DeviceApplicationError && error.code === 'WORKER_UPDATE_SMOKE_UNAVAILABLE') {
           throw new WorkerError('worker_update_smoke_unavailable',
-            'Main cannot supply CI smoke configuration for this Worker release.');
+            'Main cannot supply CI smoke configuration for this Worker release.', { cause: error });
         }
         const channelLost = error instanceof DeviceConnectionError && error.code !== 'revoked'
           || error instanceof DeviceApplicationError && ['unavailable', 'transport', 'timeout'].includes(error.code);
-        if (channelLost) throw new WorkerError('worker_update_channel_unavailable');
+        if (channelLost) throw new WorkerError('worker_update_channel_unavailable', undefined, { cause: error });
         throw error;
       }
     };

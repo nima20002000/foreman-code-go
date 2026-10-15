@@ -103,7 +103,7 @@ async function enrollmentPost(post, url, body, pairing) {
 export async function enrollWorker({ stateDirectory, identity, enrollmentFile, appVersion, home, post = boundedPost }) {
   let file, contents;
   try { file = await lstat(enrollmentFile); }
-  catch (error) { throw new WorkerError(error.code === 'ENOENT' ? 'pairing_file_missing' : 'pairing_file_unreadable'); }
+  catch (error) { throw new WorkerError(error.code === 'ENOENT' ? 'pairing_file_missing' : 'pairing_file_unreadable', undefined, { cause: error }); }
   if (!file.isFile() || file.uid !== process.getuid() || (file.mode & 0o077) || file.size > 16_384) throw new WorkerError('private_enrollment_file_required');
   try { contents = await readFile(enrollmentFile, 'utf8'); }
   catch { throw new WorkerError('pairing_file_unreadable'); }
@@ -117,7 +117,7 @@ export async function enrollWorker({ stateDirectory, identity, enrollmentFile, a
 export async function enrollWorkerCode({stateDirectory,identity,enrollmentCode,appVersion,post,home}) {
   let code;
   try{code=verifiedWorkerEnrollmentCode(enrollmentCode,identity);}
-  catch(error){throw new WorkerError(error.message==='DEVICE_SETUP_IDENTITY_MISMATCH'?'setup_code_identity_mismatch':error.message==='DEVICE_SETUP_CODE_EXPIRED'?'setup_code_expired':'setup_code_invalid');}
+  catch(error){throw new WorkerError(error.message==='DEVICE_SETUP_IDENTITY_MISMATCH'?'setup_code_identity_mismatch':error.message==='DEVICE_SETUP_CODE_EXPIRED'?'setup_code_expired':'setup_code_invalid', undefined, { cause: error });}
   return enrollWorkerInput({stateDirectory,identity,enrollment:code.enrollment,appVersion,post:post??(code.tlsTrust?scopedEnrollmentPost(code.tlsTrust):boundedPost),tlsTrust:code.tlsTrust,home});
 }
 async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,post,tlsTrust,home}) {

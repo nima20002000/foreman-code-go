@@ -116,6 +116,45 @@ const rules = {
       }
     }),
 
+  'no-error-rewrap-without-cause': rule('A caught error that is replaced by a new error stays reachable as its cause.',
+    'Pass the caught error as `cause` (for example `new XError(message, { cause: error })`), or rethrow it.',
+    context => {
+      // Only the catch's own body counts; a nested function or catch handles its own errors.
+      const thrownNew = (node, found = []) => {
+        if (!node || typeof node !== 'object') return found
+        if (Array.isArray(node)) { node.forEach(child => thrownNew(child, found)); return found }
+        if (['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression', 'ClassBody', 'CatchClause'].includes(node.type)) return found
+        if (node.type === 'ThrowStatement' && node.argument?.type === 'NewExpression') found.push(node.argument)
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') thrownNew(child, found)
+        return found
+      }
+      const keepsCause = (created, caught) => created.arguments.some(argument =>
+        (argument.type === 'Identifier' && (argument.name === caught || argument.name === 'cause'))
+        || (argument.type === 'ArrayExpression' && argument.elements.some(element => element?.type === 'Identifier' && element.name === caught))
+        || (argument.type === 'NewExpression' && keepsCause(argument, caught))
+        || (argument.type === 'ObjectExpression' && argument.properties.some(property =>
+          property.type === 'SpreadElement' || name(property.key) === 'cause')))
+      // An unbound `catch {}` discards the error on purpose; a bound one that throws a replacement must keep it.
+      const check = (body, param) => {
+        if (param?.type !== 'Identifier') return
+        const caught = param.name
+        for (const created of thrownNew(body)) {
+          if (!keepsCause(created, caught) && !ignoreComment(context.sourceCode, created)) {
+            context.report({ node: created, messageId: 'problem' })
+          }
+        }
+      }
+      return {
+        CatchClause(node) { check(node.body, node.param) },
+        CallExpression(node) {
+          const callback = node.arguments[0]
+          if (node.callee.type === 'MemberExpression' && name(node.callee) === 'catch'
+            && (callback?.type === 'ArrowFunctionExpression' || callback?.type === 'FunctionExpression')
+            && callback.body.type === 'BlockStatement') check(callback.body.body, callback.params[0])
+        },
+      }
+    }),
+
   'no-legacy-execution-semantics': rule('Only execution semantics 3 is executable.',
     'Execution semantics 1 and 2 are retired; do not branch on them.',
     context => {
@@ -173,7 +212,7 @@ export function foremanLint(directory) {
     },
     // The shared transaction helper is the one module that sends BEGIN/COMMIT/ROLLBACK.
     { files: ['src/infrastructure/transaction.ts'], rules: { 'foreman/no-raw-transactions': 'off' } },
-    { ignores: tests, rules: { 'max-lines-per-function': ['error', { max: 200, ...size }] } },
+    { ignores: tests, rules: { 'max-lines-per-function': ['error', { max: 200, ...size }], 'foreman/no-error-rewrap-without-cause': 'error' } },
     { files: tests, rules: { 'foreman/no-source-text-tests': 'error' } },
     { files: ['src/**/*.test.*'], rules: { 'foreman/test-timeout-limit': 'error' } },
     ...exemptions,
