@@ -5,6 +5,16 @@ import { DomainError } from '../errors.js'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { fixture } from './cloud.testSupport.js'
 
+const journal = vi.hoisted(() => ({ reads: [] as { path: string; done: Promise<unknown> }[] }))
+vi.mock('./cloudJournal.js', async importOriginal => {
+  const original = await importOriginal<typeof import('./cloudJournal.js')>()
+  return { ...original, readCloudRun: (path: string) => {
+    const done = original.readCloudRun(path)
+    journal.reads.push({ path, done })
+    return done
+  } }
+})
+
 async function runningFixture(durations: number[]) {
   const f = await fixture()
   vi.spyOn(f.cloud.provider, 'find').mockImplementation(async run => run.runId)
@@ -45,11 +55,15 @@ it('polls a busy cloud fleet concurrently and puts an overdue queued run first',
   const reads = f.ids.slice(0, -1).map(f.read)
   try {
     await expect.poll(() => calls.length).toBeGreaterThanOrEqual(24)
-    const overdue = f.read(f.ids.at(-1)!)
+    const overdueId = f.ids.at(-1)!
+    const firstRead = journal.reads.length
+    const overdue = f.read(overdueId)
     reads.push(overdue)
+    // The overdue read must reach the status queue before a slot is released: once its journal read has returned,
+    // the rest of its path up to queueing for a slot runs without further I/O.
+    await expect.poll(() => journal.reads.slice(firstRead).find(read => read.path.includes(overdueId))).toBeDefined()
+    await journal.reads.slice(firstRead).find(read => read.path.includes(overdueId))!.done
     await new Promise<void>(resolve => { setImmediate(resolve) })
-    // The read must reach the status queue before a slot is released.
-    await expect.poll(() => f.read(f.ids.at(-1)!)).toMatchObject({ run: { state: 'running' } })
     const initial = calls.length
     releases.get(calls[0]!)!()
     await expect.poll(() => calls.length).toBeGreaterThan(initial)

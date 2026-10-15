@@ -114,9 +114,17 @@ it.each(['metadata', 'exit', 'step', 'empty exit'])('does not hide an unreadable
   else await mkdir(join(run, area))
   const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 4, memoryBytes: 2 ** 30,
     run: async binary => ({ code: 0, stdout: binary === 'systemctl' ? 'active\n' : '', stderr: '' }) })
-  const request = area === 'metadata' ? { operation: 'status' }
-    : { operation: 'read', runId, afterOffset: 0, maxBytes: 100 }
-  await expect(runner.handle(request)).rejects.toThrow()
+  await expect(runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 100 })).rejects.toThrow()
+})
+
+it('keeps reporting status without a run whose retained metadata file is unreadable', async () => {
+  const root = await directory()
+  const runId = randomUUID()
+  await mkdir(join(root, 'runs', runId), { recursive: true })
+  await writeFile(join(root, 'runs', runId, 'meta.json'), '{invalid')
+  const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 4, memoryBytes: 2 ** 30,
+    run: async binary => ({ code: 0, stdout: binary === 'systemctl' ? 'active\n' : '', stderr: '' }) })
+  expect(await runner.handle({ operation: 'status' })).toMatchObject({ operation: 'status', runs: [] })
 })
 
 it('fails a missing retained cloud log instead of returning empty successful output', async () => {
