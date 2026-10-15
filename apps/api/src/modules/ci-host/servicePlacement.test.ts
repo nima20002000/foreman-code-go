@@ -335,7 +335,8 @@ it('rechecks sibling placement before falling back after a busy start', async ()
 it.each([false, true])('retains preparation capacity reasons and retries placement, alternate computer: %s', async alternate => {
   const records = queuedRuns(1)
   const occupied = new Set<string>()
-  const f = fleet(records, alternate ? [host, secondHost] : [host], new Map(), occupied)
+  const slots = new Map<string, number>()
+  const f = fleet(records, alternate ? [host, secondHost] : [host], new Map(), occupied, slots)
   const request = f.endpoint.request
   const reason = 'All CI slots are in use (1/1); this commit needs exclusive database capacity.'
   let busy = true
@@ -356,6 +357,9 @@ it.each([false, true])('retains preparation capacity reasons and retries placeme
     expect(records[0]!.dispatchHostKey).toBeUndefined()
     busy = false
     occupied.clear()
+    // A fresh copy of the status the start was rejected under cannot make the executor eligible again;
+    // the executor now reports a changed state.
+    slots.set(host.key, 2)
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000)
     await f.service.dispatch()
     expect(records[0]).toMatchObject({ state: 'running', messageHistory: [reason],
@@ -577,7 +581,8 @@ it.each(['read', 'status'] as const)('dispatches on idle computers while another
     const next = f.service.dispatch()
     await vi.waitFor(() => expect(f.started).toHaveLength(2), { timeout: 1000 })
     await next
-    expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key, cloud.key])
+    // Which idle computer answers its status first decides who gets the first ticket.
+    expect(f.started.map(item => item.computer.key).sort()).toEqual([secondHost.key, cloud.key].sort())
     expect(records.slice(1).map(run => run.state)).toEqual(['running', 'running'])
   } finally {
     stalled.resolve()
@@ -1024,7 +1029,8 @@ it('keeps GitHub integration slots free when the only queued check is blocked be
     hostRef: { ...cloud.hostRef, provider: 'github', slot }, label: `GitHub ${slot + 1}` }))
   const [gate] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true, state: 'running',
     computer: { hostRef: cloud.hostRef, label: cloud.label }, startedAt: '2026-10-12T00:00:01.000Z' }))
-  const [blocked] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+  // Only another gate waits behind the running gate; other checks backfill.
+  const [blocked] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true, suite: 'lint', partition: null,
     queuedAt: '2026-10-12T00:02:00.000Z' }))
   const integrations = [1, 2].map(index => CiRunRecordSchema.parse({ ...queuedRuns(1)[0], suite: 'integration',
     partition: null, id: randomUUID(), groupId: randomUUID(), scope: 'affected',

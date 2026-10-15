@@ -68,7 +68,7 @@ it('reuses slow computer capacity reads on a second admission without shrinking 
   try {
     const first = f.run()
     await vi.advanceTimersByTimeAsync(4000)
-    expect((await first).partitions).toHaveLength(4)
+    expect((await first).partitions).toHaveLength(5)
     f.occupy(4)
     const second = f.run()
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -78,10 +78,10 @@ it('reuses slow computer capacity reads on a second admission without shrinking 
     const assertion = expect(result).resolves.toMatchObject({ ticketId: expect.any(String) })
     await vi.advanceTimersByTimeAsync(500)
     await assertion
-    expect((await second).partitions).toHaveLength(4)
+    expect((await second).partitions).toHaveLength(5)
     expect(f.endpoint.computers).toHaveBeenCalledTimes(1)
     expect(f.endpoint.request).toHaveBeenCalledTimes(1)
-    expect(f.records.filter(record => record.groupId === f.records.at(-1)!.groupId)).toHaveLength(4)
+    expect(f.records.filter(record => record.groupId === f.records.at(-1)!.groupId)).toHaveLength(5)
   } finally {
     await f.service.close()
   }
@@ -98,7 +98,7 @@ it('plans from the last readiness snapshot while an expired one refreshes in the
     await vi.advanceTimersByTimeAsync(6000)
     const second = f.run()
     await vi.advanceTimersByTimeAsync(2000)
-    expect((await second).partitions).toHaveLength(4)
+    expect((await second).partitions).toHaveLength(5)
     await vi.advanceTimersByTimeAsync(2000)
     expect(f.endpoint.request).toHaveBeenCalledTimes(2)
     const third = f.run()
@@ -125,7 +125,7 @@ it('does not let a stalled computer status read delay admission once a snapshot 
     const assertion = expect(result).resolves.toMatchObject({ ticketId: expect.any(String) })
     await vi.advanceTimersByTimeAsync(2500)
     await assertion
-    expect((await second).partitions).toHaveLength(4)
+    expect((await second).partitions).toHaveLength(5)
   } finally {
     await f.service.close()
   }
@@ -138,7 +138,7 @@ it('sizes unit shards from eligible capacity when every slot is busy', async () 
     f.occupy(5)
     const admitted = f.run()
     await vi.advanceTimersByTimeAsync(4000)
-    expect((await admitted).partitions).toHaveLength(4)
+    expect((await admitted).partitions).toHaveLength(5)
   } finally {
     await f.service.close()
   }

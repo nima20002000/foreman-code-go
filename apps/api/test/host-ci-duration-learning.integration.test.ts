@@ -98,10 +98,11 @@ it.each(['full', 'affected'] as const)('automatically sizes %s integration via M
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
-    expect(started.partitions).toHaveLength(scope === 'full' ? 10 : 3)
+    // Idle slots split the work until each part keeps one setup time of tests: one file per part.
+    expect(started.partitions).toHaveLength(scope === 'full' ? 20 : 6)
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
-    expect(read.partitions!.every(run => run.expectedDurationMs === 330_000)).toBe(true)
+    expect(read.partitions!.every(run => run.expectedDurationMs === 210_000)).toBe(true)
     expect(read.partitions!.every(run => run.state === 'running')).toBe(true)
     expect(read.partitions!.every(run => run.computer?.hostRef.kind === 'cloud')).toBe(true)
     const selected = scope === 'full' ? files : files.slice(0, 6)
