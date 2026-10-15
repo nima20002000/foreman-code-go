@@ -15,6 +15,8 @@ import { bugReportLifecycleMigration } from './bugReportLifecycleMigration.js'
 import { hostCiRunsMigration } from './hostCiRunsMigration.js'
 import { ciHostSlotsMigration } from './ciHostSlotsMigration.js'
 import { hostCiActivityMigration } from './hostCiActivityMigration.js'
+import { ciActivityRunLockMigration } from './ciActivityRunLockMigration.js'
+import { ciDispatchClaimsMigration } from './ciDispatchClaimsMigration.js'
 import { agentIntervalMigration } from './agentIntervalMigration.js'
 import { ciTestResultsMigration } from './ciTestResultsMigration.js'
 import { ciLogTailMigration } from './ciLogTailMigration.js'
@@ -942,6 +944,8 @@ export const migrations = [
   ciGrantMigration,
   deviceManagedMcpMigration,
   workflowFailedAttemptRecoveryMigration,
+  ciActivityRunLockMigration,
+  ciDispatchClaimsMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

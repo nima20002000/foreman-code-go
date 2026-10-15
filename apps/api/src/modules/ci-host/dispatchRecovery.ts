@@ -8,6 +8,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS, releaseCiDispatch, rejectedCiStart,
   requestCiStart, withCiTicketLock } from './dispatch.js'
+import type { CiTicketSql } from './dispatch.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { dispatchCloudTicket } from './cloudDispatch.js'
 import { ciExecutionRunId } from './executionAttempt.js'
@@ -18,9 +19,9 @@ export type CiDispatchState = Pick<CiRunSettlement, 'state' | 'step' | 'exitCode
 interface DispatchServices {
   pool: pg.Pool
   endpoint: HostCiEndpoint
-  read(id: string, workspaceId: string, client: pg.PoolClient): Promise<CiRunRecord>
+  read(id: string, workspaceId: string, client: SqlQuery): Promise<CiRunRecord>
   settle(run: CiRunRecord, computer: HostCiComputer, state: CiDispatchState,
-    options: { client: pg.PoolClient }): Promise<boolean>
+    options: { client: CiTicketSql }): Promise<boolean>
 }
 
 async function retainDispatch(client: SqlQuery, run: CiRunRecord, computer: HostCiComputer,
@@ -45,7 +46,7 @@ export async function sendCiDispatch(services: DispatchServices, run: CiRunRecor
 }
 
 async function sendAssignedDispatch(services: DispatchServices, run: CiRunRecord,
-  computer: HostCiComputer, client: pg.PoolClient) {
+  computer: HostCiComputer, client: CiTicketSql) {
   if (computer.hostRef.kind === 'cloud') {
     const result = await dispatchCloudTicket(client, services.endpoint, computer, run)
     if (result.outcome === 'settled') await services.settle(result.run, computer, result.observed, { client })
@@ -107,7 +108,7 @@ export async function reconcileCiHostStart(services: DispatchServices, run: CiRu
     if (!status.ready || !current.dispatchRequest) return false
     // An absent status entry does not prove an earlier request stopped; retries keep the same assignment and run ID.
     // Commit the retry counter before entry without holding a row lock that would block cancellation intent.
-    const retry = await retainDispatch(services.pool, current, computer,
+    const retry = await retainDispatch(client, current, computer,
       'The computer reports no such CI run. Retrying the assigned executor.', attempts + 1)
     if (!retry) return false
     await sendAssignedDispatch(services, retry, computer, client)
