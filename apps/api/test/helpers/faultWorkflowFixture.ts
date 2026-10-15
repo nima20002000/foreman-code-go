@@ -106,7 +106,6 @@ export async function faultWorkflowFixture(options: {
   let validatePlacement: ReturnType<typeof placedContinuationValidator>
   const nativePlacements = new Map<string, NativeExecutionPlacement>()
   let preparationFailure: { error: unknown } | undefined
-  let entryStarted = false
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     statementTimeoutMs: options.statementTimeoutMs,
     approvalNodeIds: [], workerParallelism: 3,
@@ -135,10 +134,6 @@ export async function faultWorkflowFixture(options: {
     },
     managerFactory: (context, getOwner) => {
       contexts.set(context.executionId, context)
-      if (!context.acceptedPlacement && context.agentId === entry.agentId && !entryStarted) {
-        entryStarted = true
-        return base.provider.connection()
-      }
       if (!context.acceptedPlacement) return worker.manager()
       const intent = intents.get(context.executionId)
       if (!intent) throw new Error('Remote execution requires its admitted dispatch')
@@ -238,9 +233,10 @@ export async function faultWorkflowFixture(options: {
         if (native?.status !== 'inProgress') continue
         if (context.agentId === affected.agentId && !releaseAffected) continue
         if (context.agentId === sibling.agentId && !releaseSibling) continue
-        if (context.agentId === entry.agentId) continue
+        if (context.agentId === entry.agentId && completed.has(`agent:${entry.agentId}`)) continue
         worker.replay.complete(turn.sessionId, turn.nativeTurnId, 'fixture complete')
         completed.add(turn.correlationId)
+        if (context.agentId === entry.agentId) completed.add(`agent:${entry.agentId}`)
       }
     }, 10)
     let started: Promise<PromiseSettledResult<void>[]> | undefined
