@@ -18,8 +18,9 @@ import { sourceFixture } from '../runs/remote/__tests__/installedWorkflowHost.js
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
 // Native MCP files are exercised separately; domain fixtures must not touch the host user profile.
+const managedMcp = vi.hoisted(() => ({ ensureReady: async (): Promise<void> => {} }))
 vi.mock('../harnesses/installedWorkerManagedMcp.js', () => ({
-  createInstalledWorkerManagedMcp: () => ({ worker: {}, ensureReady: async () => {} }),
+  createInstalledWorkerManagedMcp: () => ({ worker: {}, ensureReady: () => managedMcp.ensureReady() }),
 }))
 
 it('activates first-installed workflow and profile domains on authenticated discovery with persisted MCP readback', async () => {
@@ -168,6 +169,41 @@ it('fences authenticated continuation preparation until a configured worker resu
     mounted.resumeAfterUpdate()
     await expect(preparation.handle!(payload, context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
   } finally {
+    await mounted.close()
+  }
+})
+
+it('reports an unavailable selected installation although managed setup cannot run without it', async () => {
+  const f = await sourceFixture()
+  for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
+    const journal = await RemoteOperationJournal.open(join(f.root, name), { initializeNewInstallation: true })
+    await journal.close()
+  }
+  const binding = f.context.binding
+  const pairing = { formatVersion: 1 as const, mainId: binding.mainId, deviceId: binding.deviceId,
+    workerInstallationId: binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+    endpoint: 'wss://worker.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
+    credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }
+  const location = { path: join(f.root, 'workflow-runtime.json'), ownerUid: process.getuid!() }
+  const selection = { schemaVersion: 1, codexBinary: join(f.root, 'removed-codex'), expectedVersion: 'codex-cli 0.162.0',
+    payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs' }
+  const refresh = vi.fn(async () => {
+    await writeFile(location.path, JSON.stringify(selection), { mode: 0o600 })
+    return location
+  })
+  const mounted = await createInstalledWorkerDomains({ stateDirectory: f.root, pairing, bootId: binding.bootId,
+    configuration: null, refreshWorkflowConfiguration: refresh, approvedRoots: async () => f.approvedRoots,
+    connection: () => ({ currentBinding: () => binding, mainNow: () => Date.now(),
+      captureRequest: () => undefined }), codexSuiteRevision: 'fixture-suite' })
+  const discovery = mounted.extensions.find(extension => extension.namespace === 'harness-discovery-v1')!
+  managedMcp.ensureReady = async () => { throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'The Codex executable is unavailable.', 409) }
+  try {
+    const { payload } = await discovery.handle!({ operation: 'discover', refreshId: randomUUID() },
+      { binding, signal: AbortSignal.timeout(20_000) })
+    expect(HarnessRegistryReadbackSchema.parse(payload).installations).toMatchObject([
+      { driverId: 'codex', installed: false, installationFingerprint: null }])
+  } finally {
+    managedMcp.ensureReady = async () => {}
     await mounted.close()
   }
 })
