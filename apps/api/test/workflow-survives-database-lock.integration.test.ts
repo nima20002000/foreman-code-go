@@ -17,7 +17,8 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   // A six-second Run lock must retry reporting and expose the database delay in operational diagnostics.
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
     const t0 = performance.now()
-    const mark = (label: string) => console.info(`[diag] ${label} ${Math.round(performance.now() - t0)} ms`)
+    const marks: string[] = []
+    const mark = (label: string) => marks.push(`${label} ${Math.round(performance.now() - t0)} ms`)
     await fixture.launch()
     mark('launched')
     await fixture.active()
@@ -59,6 +60,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
       const retries = readOperationalFailures().find(value => value.operation === 'retry database operation')
       expect(retries).toMatchObject({ component: 'engine', status: 'degraded' })
       expect(retries!.failureCount).toBeGreaterThan(retriesBefore)
+      throw new Error(`DIAG ${marks.join('; ')}`)
     } finally { await settledLock }
   }, 18_000)
 })
