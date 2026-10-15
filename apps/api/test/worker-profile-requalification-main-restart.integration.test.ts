@@ -1,23 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, refreshedEvidence, startWhenReady, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { latestEvidence, startWhenReady, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
-  it('checks previously qualified Worker profiles after Main restarts before admitting a new Run', async () => {
+  it('retains qualified Worker profiles across a Main restart in the same Worker boot', async () => {
     const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true,
       parallelSetup: true })
     try {
       const before = await latestEvidence(fixture)
       const workerPid = fixture.workerPid()
-      const connectionBefore = (await fixture.inventory()).hostMetadata!.connection!.binding
+      const inventoryBefore = await fixture.inventory()
+      const connectionBefore = inventoryBefore.hostMetadata!.connection!.binding
       expect(fixture.profiles).toHaveLength(2)
       expect(new Set(fixture.profiles.map(profile => profile.instanceId)).size).toBe(2)
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.restartMain()
-      const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
-      await assertMcpReadback(fixture, evidence)
-      const connectionAfter = (await fixture.inventory()).hostMetadata!.connection!
+      const inventoryAfter = await waitForReplacementReviewInventory(fixture, inventoryBefore)
+      await assertMcpReadback(fixture, before)
+      expect(await latestEvidence(fixture)).toEqual(before)
+      const connectionAfter = inventoryAfter.hostMetadata!.connection!
       expect(fixture.workerPid()).toBe(workerPid)
       expect(connectionAfter.phase).toBe('ready')
       expect(connectionAfter.binding.bootId).toBe(connectionBefore.bootId)
