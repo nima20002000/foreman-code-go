@@ -10,6 +10,7 @@ import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceReplySchema,
 import type { WorkerUpdateStatus } from '@foreman-code/contracts/computer-maintenance'
 import { readWorkerBundleReadiness, requireWorkerBundleReady } from '../computers/workerBundleReadiness.js'
 import { requiresWorkerBundle } from './workerAdmission.js'
+import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -25,6 +26,7 @@ const authorizationFailure = (error: unknown) => {
   if (code === 'forbidden') return new DeviceConnectionError('permission')
   if (code === 'revoked') return new DeviceConnectionError('revoked')
   if (code === 'unauthorized' || code === 'expired') return new DeviceConnectionError('authentication')
+  if (isTransientDatabaseOrSocketError(error)) return error
   return error instanceof DeviceConnectionError ? error : new DeviceConnectionError('transport')
 }
 /** Mount on a separately approved device-only listener, never the browser/MCP server. */
