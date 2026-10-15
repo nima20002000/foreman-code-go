@@ -15,12 +15,16 @@ export async function readQueuedCiRuns(pool: pg.Pool) {
 
 export async function readCiGateReservation(pool: pg.Pool) {
   const rows = (await pool.query<{ record: unknown }>(`select record from ci_runs
-    where state in ('queued','starting','running','failed','lost') and record->>'gate'='true'
+    where state in ('queued','starting','running') and record->>'gate'='true'
     order by record->>'queuedAt',group_id,id`)).rows
   const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
-  // A gate with a failed or lost part cannot pass, so it no longer holds the barrier or host reservations.
-  const doomed = new Set(runs.filter(run => run.state === 'failed' || run.state === 'lost').map(run => run.groupId))
-  const live = runs.filter(run => !doomed.has(run.groupId) && ['queued', 'starting', 'running'].includes(run.state))
+  if (!runs.length) return { gate: undefined, reservedHosts: new Set<string | undefined>() }
+  const groups = [...new Set(runs.map(run => run.groupId))]
+  const failed = (await pool.query<{ group_id: string }>(`select distinct group_id from ci_runs
+    where group_id=any($1::uuid[]) and state in ('failed','lost') and record->>'gate'='true'`, [groups])).rows
+  // A failed or lost sibling releases the group's barrier and host reservations.
+  const doomed = new Set(failed.map(row => row.group_id))
+  const live = runs.filter(run => !doomed.has(run.groupId))
   const gate = live[0]
   const reservedHosts = new Set(live.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
     .map(run => run.plannedHostKey))
