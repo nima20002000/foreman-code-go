@@ -8,12 +8,17 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
+  let before: Awaited<ReturnType<typeof fixture.active>>
   beforeAll(async () => { fixture = await faultWorkflowFixture({ loop: true }) }, 10_000)
+  // The first check is due one 10 second interval after the entry node finishes, so launching the Run
+  // in setup keeps that unavoidable wait from sharing the case's budget with startup.
+  beforeAll(async () => {
+    await fixture.launch()
+    before = await fixture.active()
+  }, 12_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   it('records a failed check while sibling work completes and the loop remains active', async () => {
-    await fixture.launch()
-    const before = await fixture.active()
     const remote = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
     const checking = await readUntil(fixture.readExecutions, executions => executions.some(execution =>
       execution.workflowNodeId === fixture.entry.id && execution.state === 'running'
