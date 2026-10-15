@@ -39,10 +39,6 @@ function httpClient(origin, signal, requestTimeoutMs, token, log = console.log) 
 function smokeTargets(computers) {
   const providers = new Set()
   return computers.filter(computer => {
-    if (!computer.ready && computer.hostRef.kind !== 'cloud') {
-      throw new Error(`CI smoke enabled computer ${JSON.stringify(computer.hostRef)} is not ready: `
-        + computer.reasons.join('; '))
-    }
     if (!computer.ready) return false
     if (computer.hostRef.kind !== 'cloud') return true
     if (providers.has(computer.hostRef.provider)) return false
@@ -51,7 +47,7 @@ function smokeTargets(computers) {
   })
 }
 
-export async function runInstallCiSmoke({ origin, workspaceId, commit, token, probeDurationMs = 30_000,
+export async function runInstallCiSmoke({ origin, workspaceId, commit, token,
   timeoutMs = 240_000, requestTimeoutMs = 5000, admissionTimeoutMs = 60_000, pollMs = 1000, log = console.log }) {
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
@@ -61,11 +57,10 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
   let ciFinished = false
   let admissionCount = 0
   const probes = async () => {
-    const until = Date.now() + probeDurationMs
     do {
       await request('/health/live', { step: 'health probe' })
-      await delay(pollMs, undefined, { signal })
-    } while (Date.now() < until || !ciFinished)
+      if (!ciFinished) await delay(pollMs, undefined, { signal })
+    } while (!ciFinished)
   }
   const admit = async selection => {
     const body = JSON.stringify({ suite: selection.smokeComputer ? 'integration' : 'unit', scope: 'affected', commit,
@@ -127,7 +122,23 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
     const second = await admit({ files: [] })
     await wait(first)
     await wait(second)
-    const targets = smokeTargets((await read(`${root}/computers`, 'computer discovery')).computers)
+    let targets
+    while (true) {
+      const { computers } = await read(`${root}/computers`, 'computer discovery')
+      const unready = computers.find(computer => !computer.ready && computer.hostRef.kind !== 'cloud')
+      if (!unready) {
+        targets = smokeTargets(computers)
+        break
+      }
+      const message = `CI smoke enabled computer ${JSON.stringify(unready.hostRef)} is not ready: `
+        + unready.reasons.join('; ')
+      log(message)
+      try {
+        await delay(pollMs, undefined, { signal })
+      } catch (cause) {
+        throw new Error(message, { cause })
+      }
+    }
     if (!targets.length) throw new Error('CI smoke has no ready executor. Configure CI or explicitly opt out.')
     const jobs = []
     for (const computer of targets) {

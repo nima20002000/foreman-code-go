@@ -248,3 +248,46 @@ if (destination === '-') {
     else process.env.PATH = previousPath;
   }
 });
+
+for (const { failure, script } of [
+  { failure: 'missing executable', script: null },
+  { failure: 'missing authentication', script: 'echo "Run gh auth login to authenticate" >&2\nexit 4\n' },
+  { failure: 'denied access', script: 'echo "HTTP 403: Resource not accessible by integration" >&2\nexit 1\n' },
+  { failure: 'invalid credentials', script: 'echo "HTTP 401: Bad credentials" >&2\nexit 1\n' },
+]) {
+  test(`GitHub download fails permanently for ${failure} without a retry wait`, async t => {
+    const f = await fixture(t);
+    const binaries = join(f.base, 'bin');
+    await mkdir(binaries);
+    if (script) await writeFile(join(binaries, 'gh'), `#!/bin/sh\n${script}`, { mode: 0o700 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = binaries;
+    t.after(() => {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    });
+    const retries = [];
+    await assert.rejects(downloadWorkerArtifact({ release: f.release, directory: f.directory, facts,
+      timeoutMs: 150, log: (_message, fields) => { if (fields.retryMs) retries.push(fields.retryMs); },
+    }), { code: 'worker_update_github_configuration' });
+    assert.deepEqual(retries, []);
+    await assert.rejects(lstat(f.directory), { code: 'ENOENT' });
+  });
+}
+
+test('GitHub rate limiting remains a transient download failure', async t => {
+  const f = await fixture(t);
+  const binaries = join(f.base, 'bin');
+  await mkdir(binaries);
+  await writeFile(join(binaries, 'gh'),
+    '#!/bin/sh\necho "HTTP 403: API rate limit exceeded" >&2\nexit 1\n', { mode: 0o700 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = binaries;
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  });
+  await assert.rejects(fetchGitHubAsset({ github: f.release.github, asset: 'bundle.tar.gz',
+    destination: join(f.base, 'download.tar.gz'), maxBytes: 1024,
+  }), { code: 'worker_update_github_unavailable' });
+});

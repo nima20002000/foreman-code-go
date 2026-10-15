@@ -243,7 +243,8 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     await restartWorker();
     waitingForReady = true;
     await ready({ stateDirectory: plan.stateDirectory, version: record.status.targetVersion,
-      workerInstallationId: plan.workerInstallationId, timeoutMs: WORKER_UPDATE_STARTUP_TIMEOUT_MS });
+      workerInstallationId: plan.workerInstallationId,
+      timeoutMs: plan.ciSmoke ? 60_000 : WORKER_UPDATE_STARTUP_TIMEOUT_MS });
     waitingForReady = false;
     await smoke(plan);
     await save('current', record.status.targetVersion, null);

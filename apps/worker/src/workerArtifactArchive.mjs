@@ -68,8 +68,12 @@ async function downloadGitHubAssetAttempt({ github, asset, destination, signal, 
   let stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-1200); });
   const closed = new Promise(resolve => child.once('close', resolve));
+  let launchError;
   const exited = new Promise((resolve, reject) => {
-    child.once('error', error => reject(new WorkerError('worker_update_github_unavailable', error.message)));
+    child.once('error', error => {
+      launchError = error;
+      reject(new WorkerError('worker_update_github_unavailable', error.message));
+    });
     child.once('close', code => code === 0 ? resolve() : reject(new WorkerError('worker_update_github_unavailable')));
   });
   const copied = pipeline(child.stdout, new ByteLimit(maxBytes, 'artifact_archive_size_mismatch'),
@@ -85,8 +89,13 @@ async function downloadGitHubAssetAttempt({ github, asset, destination, signal, 
     if (error instanceof WorkerError && error.code !== 'worker_update_github_unavailable') throw error;
     const reason = stalled ? 'GitHub download stalled: no bytes received for 60000 ms.' : error.message;
     const detail = stalled && stderr.trim() ? `${reason} ${stderr.trim()}` : stderr.trim() || reason;
-    throw new WorkerError('worker_update_github_unavailable',
-      `worker_update_github_unavailable: ${detail}`, { cause: error });
+    const rateLimited = /rate limit|abuse detection/i.test(detail);
+    const denied = /HTTP (?:401|403)\b|gh auth login|bad credentials|authentication (?:required|failed)|permission denied/i
+      .test(detail);
+    const permanent = ['ENOENT', 'EACCES'].includes(launchError?.code) || child.exitCode === 4
+      || denied && !rateLimited;
+    const code = permanent ? 'worker_update_github_configuration' : 'worker_update_github_unavailable';
+    throw new WorkerError(code, `${code}: ${detail}`, { cause: error });
   } finally {
     clearTimeout(stallTimer);
     child.stdout.removeListener('data', receivedBytes);

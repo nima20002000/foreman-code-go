@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -51,7 +51,12 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
         slowDiscoveries--
         await delay(200)
       }
-      response.end(JSON.stringify({ computers }))
+      const observed = computers.map(computer => ({ ...computer }))
+      if (updatingDiscoveries > 0) {
+        updatingDiscoveries--
+        observed[1] = { ...observed[1], ready: false, reasons: ['Worker bundle update is in progress'] }
+      }
+      response.end(JSON.stringify({ computers: observed }))
     }
     else if (request.method === 'POST') {
       let body = ''
@@ -102,7 +107,7 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
     probes: () => probes }
 }
 
-const options = { workspaceId: 'workspace', commit: 'a'.repeat(40), probeDurationMs: 80,
+const options = { workspaceId: 'workspace', commit: 'a'.repeat(40),
   timeoutMs: 1000, requestTimeoutMs: 60, admissionTimeoutMs: 60, pollMs: 10 }
 
 test('production smoke allows the first commit admission to take longer than five seconds', async t => {
@@ -111,7 +116,7 @@ test('production smoke allows the first commit admission to take longer than fiv
   const f = await fixture(t, undefined, token, { firstAdmissionDelayMs: 5200 })
   const messages = []
   await runProductionCiSmoke({ origin: f.origin, release: await releaseFixture(t), token,
-    probeDurationMs: 80, timeoutMs: 15_000, pollMs: 25, log: message => messages.push(message) })
+    timeoutMs: 15_000, pollMs: 25, log: message => messages.push(message) })
   assert.equal(f.admissions.length, 6)
   assert.ok(f.probes() > 3, 'Health probes continue while commit resolution is in progress')
   assert.ok(messages.some(message => /admission 1.*POST.*\/ci.*\d+ ms/.test(message)))
@@ -136,7 +141,7 @@ test('a stuck admission has its own bounded timeout and identifies the slow step
 
 test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
-  const f = await fixture(t)
+  const f = await fixture(t, undefined, undefined, { firstAdmissionDelayMs: 50 })
   await runInstallCiSmoke({ ...options, origin: f.origin })
   assert.deepEqual(f.admissions.slice(0, 2).map(input => input.files), [[], []])
   assert.notEqual(f.admissions[0].commandId, f.admissions[1].commandId)
@@ -248,4 +253,21 @@ test('smoke failure diagnostics redact the application token echoed by an execut
     assert.ok(!error.message.includes(token))
     return true
   })
+})
+
+
+test('deploy smoke waits for updating Workers before admitting every local computer', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { updatingDiscoveries: 3 })
+  await runInstallCiSmoke({ ...options, origin: f.origin })
+  assert.deepEqual(f.admissions.filter(input => input.smokeComputer).map(input => input.smokeComputer),
+    [f.computers[0], f.computers[1], f.computers[2], f.computers[4]].map(computer => computer.hostRef))
+})
+
+test('deploy smoke completes once CI and health checks pass without a minimum soak', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t)
+  await runInstallCiSmoke({ ...options, origin: f.origin, timeoutMs: 500 })
+  assert.equal(f.admissions.length, 6)
+  assert.ok(f.probes() > 0)
 })
