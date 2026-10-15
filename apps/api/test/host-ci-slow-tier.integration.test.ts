@@ -23,7 +23,7 @@ it.each(['full', 'affected'] as const)(
       const slowRun = initial.partitions!.find(run => run.partition?.tier === 'slow')!
       expect(fastRun.state).toBe('running')
       expect(slowRun.state).toBe('running')
-      expect(slowRun.deferred).toBeUndefined()
+      expect(slowRun).not.toHaveProperty('deferred')
       f.finish(fastRun.id, 1, 'Fast file failed.\n')
       const afterFast = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
         ticketId: fastRun.id, waitSeconds: 5,
