@@ -1,4 +1,4 @@
-import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS } from '../access/credentialLifetime.js'
 import { DomainError } from '../errors.js'
 import { deviceApplicationFailure } from '../devices/deviceApplicationError.js'
