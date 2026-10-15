@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, type ReadStream } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { Readable } from 'node:stream'
 import { afterEach, describe, it, vi } from 'vitest'
 import pg from 'pg'
@@ -47,13 +48,14 @@ function fixture(scope: FileScope) {
     withAllocation: async (_owner, _request, operation, mutation) => {
       // Model the real repository's guard before allocation/read and again before durable writes.
       await mutation?.authorize({ query: async () => { throw new Error('No SQL expected') } })
-      return operation({ read: async () => row, create: async value => {
+      events.push('lease-open')
+      try { return await operation({ read: async () => row, create: async value => {
         await mutation?.authorize({ query: async () => { throw new Error('No SQL expected') } }); events.push('create'); row = value
       }, setState: async state => {
         await mutation?.authorize({ query: async () => { throw new Error('No SQL expected') } }); assert.ok(row)
         events.push(state); row = { ...row, state, stored: { ...row.stored, value: FileWithRevisionSchema.parse({ ...row.stored.value,
           file: { ...row.stored.value.file, state: state === 'finalized' ? 'ready' : row.stored.value.file.state } }) } }; return row
-      } })
+      } }) } finally { events.push('lease-close') }
     },
   }
   let afterReceive = () => {}
@@ -61,11 +63,35 @@ function fixture(scope: FileScope) {
   const service = new FileStorageService(repository, bytes, { resolve: async (_principal, _target, _access, query) => {
     events.push(query ? 'scope-commit' : 'scope'); return scope
   } }, async () => { throw new Error('Job retention must come from acceptance') }, () => time)
-  return { service, guard, events, get row() { return row }, revoke: () => { allowed = false },
+  return { service, bytes, guard, events, get row() { return row }, revoke: () => { allowed = false },
     duringReceive: (callback: () => void) => { afterReceive = callback }, setTime: (value: Date) => { time = value } }
 }
 
 describe('current canonical file publication ports', () => {
+  it('releases allocation ownership during finalization and finalized-byte verification', async () => {
+    const f = fixture(job)
+    await f.service.allocateJobOutput(owner, job, metadata, 'accepted-output', 7200, f.guard)
+    await f.service.upload(owner, job, metadata.requestId, Readable.from([]), { commitAuthorization: f.guard })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      f.events.length = 0
+      await f.service.finalize(owner, job, metadata.requestId, 'mcp', f.guard)
+      let leased = false
+      for (const event of f.events) {
+        if (event === 'lease-open') leased = true
+        if (event === 'lease-close') leased = false
+        if (event === 'publish' || event === 'download') assert.equal(leased, false)
+      }
+    }
+  })
+  it('revalidates metadata and authority after filesystem publication', async () => {
+    const f = fixture(job)
+    await f.service.allocateJobOutput(owner, job, metadata, 'accepted-output', 7200, f.guard)
+    vi.spyOn(f.bytes, 'finalize').mockImplementation(async () => { f.revoke() })
+    await assert.rejects(f.service.finalize(owner, job, metadata.requestId, 'mcp', f.guard),
+      { code: 'PUBLICATION_REVOKED' })
+    assert.equal(f.row?.state, 'allocated')
+  })
+
   it('allocates exact CI metadata and accepted retention, and replays original pins', async () => {
     const f = fixture(job)
     const first = await f.service.allocateJobOutput(owner, job, metadata, 'accepted-output', 7200, f.guard)
@@ -137,7 +163,9 @@ describe('document and CI byte capability separation', () => {
   const roots: string[] = []
   afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
   async function storage(ci: boolean) {
-    const root = await mkdtemp(join(process.cwd(), '.publication-bytes-test-')); roots.push(root)
+    const parent = join(homedir(), '.cache', 'foreman-tmp')
+    await mkdir(parent, { recursive: true, mode: 0o700 })
+    const root = await mkdtemp(join(parent, 'publication-bytes-')); roots.push(root)
     return ci ? new CiOutputByteStorage(root, 1024) : new FileByteStorage(root, 1024)
   }
   const binary = Buffer.from([0, 255, 1])

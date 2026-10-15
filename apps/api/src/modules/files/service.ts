@@ -176,17 +176,31 @@ export class FileStorageService<Target> {
 
   async finalize(principal: ManagementPrincipal, target: Target, requestId: string, source: FileMutationSource = 'http', commitAuthorization?: FileMutationContext) {
     const scope = await this.authorization.resolve(principal, target, 'write')
-    return this.repository.withAllocation(principal.id, requestId, async (session) => {
-      const allocation = await this.allocation(session, scope); this.live(allocation)
-      if (allocation.state === 'finalized') {
-        const stream = await this.bytes.download(allocation.stored.storageKey, allocation.stored.value.revision)
-        stream.destroy()
-        return this.result(allocation, true)
+    const mutation = this.mutation(principal, target, scope, source, commitAuthorization)
+    const initial = await this.repository.withAllocation(principal.id, requestId, async session => {
+      const allocation = await this.allocation(session, scope)
+      this.live(allocation)
+      return allocation
+    }, mutation)
+    if (initial.state === 'finalized') {
+      const stream = await this.bytes.download(initial.stored.storageKey, initial.stored.value.revision)
+      stream.destroy()
+    } else {
+      // Immutable bytes can be verified without occupying a database connection.
+      await this.bytes.finalize(initial.stored.storageKey, initial.stored.value.revision)
+    }
+    const currentScope = await this.authorization.resolve(principal, target, 'write')
+    this.matches(initial.stored, currentScope)
+    return this.repository.withAllocation(principal.id, requestId, async session => {
+      const allocation = await this.allocation(session, currentScope)
+      this.live(allocation)
+      if (allocation.allocationId !== initial.allocationId || allocation.inputHash !== initial.inputHash
+        || allocation.stored.storageKey !== initial.stored.storageKey) {
+        throw new DomainError('FILE_REQUEST_CONFLICT', 'The upload allocation changed during publication.', 409)
       }
-      // 'allocated' is also recoverable: a prior process may have published staging before its SQL acknowledgement.
-      await this.bytes.finalize(allocation.stored.storageKey, allocation.stored.value.revision)
+      if (allocation.state === 'finalized') return this.result(allocation, true)
       return this.result(await session.setState('finalized'), false)
-    }, this.mutation(principal, target, scope, source, commitAuthorization))
+    }, this.mutation(principal, target, currentScope, source, commitAuthorization))
   }
 
   async list(principal: ManagementPrincipal, target: Target, query: unknown) {
