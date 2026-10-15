@@ -1,11 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
-import { failureClass, type FailureClass } from '@foreman-code/contracts/failure'
+import {
+  failureClass, isDatabasePoolTimeout, isDatabaseTimeout, isTransientDatabaseOrSocketError, type FailureClass,
+} from '@foreman-code/contracts/failure'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
-import {
-  isDatabasePoolTimeout, isDatabaseTimeout, isTransientDatabaseOrSocketError,
-} from '../../infrastructure/transientErrors.js'
 import { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 export { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 

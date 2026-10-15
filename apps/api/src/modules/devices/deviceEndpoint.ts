@@ -10,7 +10,7 @@ import { COMPUTER_MAINTENANCE_NAMESPACE, MaintenanceReplySchema,
 import type { WorkerUpdateStatus } from '@foreman-code/contracts/computer-maintenance'
 import { readWorkerBundleReadiness, requireWorkerBundleReady } from '../computers/workerBundleReadiness.js'
 import { requiresWorkerBundle } from './workerAdmission.js'
-import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
+import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
 
 export type AuthenticatedDevice = DevicePrincipal
 

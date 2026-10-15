@@ -1,6 +1,7 @@
 import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-application'
-import { explicitFailureClass, type FailureClass } from '@foreman-code/contracts/failure'
-import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
+import {
+  explicitFailureClass, isTransientDatabaseOrSocketError, type FailureClass,
+} from '@foreman-code/contracts/failure'
 import { WorkerBundleReadinessSchema, type WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
 
 /** The class of each code a device peer may send; it is authoritative over what the error states about itself. */
