@@ -23,14 +23,14 @@ describe('explicit execution retry classification', () => {
   })
 
   it.each(['CODEX_APP_SERVER_AUTH_UNQUALIFIED', 'CODEX_APP_SERVER_VERSION_UNQUALIFIED',
-    'CODEX_APP_SERVER_REQUEST_CANCELED', 'CODEX_APP_SERVER_RESPONSE_INVALID', 'CODEX_APP_SERVER_UNKNOWN'])
-  ('does not infer retryability from the Codex prefix: %s', code => {
+    'CODEX_APP_SERVER_REQUEST_CANCELED', 'CODEX_APP_SERVER_RESPONSE_INVALID', 'CODEX_APP_SERVER_UNKNOWN'])(
+    'does not infer retryability from the Codex prefix: %s', code => {
     expect(isTransientExecutionCode(code)).toBe(false)
     expect(isTransientExecutionError({ code })).toBe(false)
   })
 
-  it.each(['CODEX_APP_SERVER_DISCONNECTED', 'CODEX_APP_SERVER_TIMEOUT', 'CODEX_APP_SERVER_REQUEST_UNCERTAIN'])
-  ('retries a known transient code without an explicit classification: %s', code => {
+  it.each(['CODEX_APP_SERVER_DISCONNECTED', 'CODEX_APP_SERVER_TIMEOUT', 'CODEX_APP_SERVER_REQUEST_UNCERTAIN'])(
+    'retries a known transient code without an explicit classification: %s', code => {
     expect(isTransientExecutionCode(code)).toBe(true)
     expect(isTransientExecutionError({ code })).toBe(true)
   })
