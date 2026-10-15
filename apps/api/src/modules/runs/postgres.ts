@@ -171,6 +171,8 @@ export class PostgresRunRepository {
     const original = HarnessNativeEventSchema.parse(structuredClone(event)), evidence = captureRepeatNativeEvidence(suppliedEvidence)
     owner.assertOwned()
     await owner.oneShotConnection().transaction(async (sql) => {
+      if (approval === undefined && continuation === undefined && await this.nativeProof.tryAppendTranscriptsLocked(sql,
+        [{ event: original, evidence }], owner, lease)) return
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
       await this.nativeProof.appendEventLocked(sql, snapshot.run, original, evidence, owner, lease, approval, continuation)
     })
@@ -186,6 +188,7 @@ export class PostgresRunRepository {
     }))
     owner.assertOwned()
     await owner.oneShotConnection().transaction(async (sql) => {
+      if (await this.nativeProof.tryAppendTranscriptsLocked(sql, frames, owner, lease)) return
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
       await this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease)
     })

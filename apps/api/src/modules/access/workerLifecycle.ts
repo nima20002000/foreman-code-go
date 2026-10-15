@@ -25,6 +25,7 @@ export async function lockWorkerExecution(
   client: pg.PoolClient,
   executionId: string,
   otherRunId?: string,
+  lock: 'update' | 'share' = 'update',
 ): Promise<WorkerExecutionIdentity> {
   const found = await client.query<{ run_id: string }>(
     'select run_id from harness_executions where id=$1', [executionId],
@@ -32,10 +33,10 @@ export async function lockWorkerExecution(
   const runId = found.rows[0]?.run_id
   if (!runId) throw new DomainError('WORKER_EXECUTION_NOT_FOUND', 'The accepted execution identity was not found.', 409)
   await client.query(
-    'select id from runs where id=any($1::text[]) order by id for update',
+    `select id from runs where id=any($1::text[]) order by id for ${lock}`,
     [[...new Set([runId, ...(otherRunId ? [otherRunId] : [])])].sort()],
   )
-  await client.query('select id from harness_executions where id=$1 for update', [executionId])
+  await client.query(`select id from harness_executions where id=$1 for ${lock}`, [executionId])
   // Read after acquiring the locks: a SELECT that waited can otherwise retain an
   // older joined-row snapshot under READ COMMITTED.
   const result = await client.query<WorkerExecutionIdentity>(
@@ -85,11 +86,12 @@ export async function requireActiveWorkerBinding(client: pg.ClientBase | pg.Pool
   await assertWave25WorkerBinding(client, principalId)
 }
 
-/** Hold the same parent locks as Stop until the decision and its audit commit. */
+/** Shared parents fence Stop/closure while concurrent worker validations can proceed. */
 export async function lockActiveWorkerPrincipal(
   client: pg.PoolClient,
   snapshot: ManagementPrincipal,
   targetRunId?: string,
+  lock: 'share' | 'update' = 'share',
 ): Promise<ManagementPrincipal> {
   const binding = await client.query<{ execution_id: string; purpose: 'workflow' | 'reviewer' }>(
     'select execution_id,purpose from worker_credential_bindings where principal_id=$1', [snapshot.id],
@@ -97,7 +99,7 @@ export async function lockActiveWorkerPrincipal(
   const acceptedBinding = binding.rows[0]
   const executionId = acceptedBinding?.execution_id
   if (!executionId) throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
-  const identity = await lockWorkerExecution(client, executionId, targetRunId)
+  const identity = await lockWorkerExecution(client, executionId, targetRunId, lock)
   if (acceptedBinding.purpose === 'workflow') {
     try { requireActiveWorkerExecution(identity) } catch {
       throw new DomainError('AUTH_REVOKED', 'The credential is no longer active.', 401)
