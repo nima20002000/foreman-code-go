@@ -33,6 +33,14 @@ async function settle(service: HostCiService) {
   await service.drain()
 }
 
+/** The host accepts the start but the reply is lost, and its status stays unreachable so no observation can discover the run. */
+function loseStartReply(f: { control: { onStart: (...args: never[]) => Promise<void>; onStatus: (...args: never[]) => Promise<void> } }, message: string) {
+  f.control.onStart = async () => {
+    f.control.onStatus = async () => { throw new Error('Status unavailable') }
+    throw new Error(message)
+  }
+}
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(done => { resolve = done })
@@ -44,7 +52,8 @@ async function fixture(executor?: HostCiEndpoint) {
   const workspaceId = randomUUID()
   const repository = { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' }
   await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
-    [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI workspace', repository })])
+    [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI workspace', repository,
+      ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const computers: HostCiComputer[] = [0, 1].map(index => ({
     key: `executor:${index}`, hostRef: { kind: 'device', mainId: 'test-main', deviceId: `executor-${index}` },
     label: `Executor ${index}`, priority: 10 - index,
@@ -354,13 +363,14 @@ it('retains one executor after an accepted start loses its reply and reconciles 
   let restarted: HostCiService | undefined
   try {
     const ticket = await f.enqueue()
-    f.control.onStart = async () => { throw new Error('Start reply lost') }
+    loseStartReply(f, 'Start reply lost')
     f.control.available = true
     await settle(f.ci)
     expect(f.starts).toHaveLength(1)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', computer: {
       hostRef: f.starts[0]!.computer.hostRef } })
     f.control.onStart = async () => {}
+    f.control.onStatus = async () => {}
     restarted = f.createService()
     await settle(restarted)
     expect(f.starts).toHaveLength(1)
@@ -384,10 +394,11 @@ it('discovers an accepted run when its start acknowledgement was lost', async ()
   const f = await fixture()
   try {
     const ticket = await f.enqueue()
-    f.control.onStart = async () => { throw new Error('Start reply lost') }
+    loseStartReply(f, 'Start reply lost')
     f.control.available = true
     await settle(f.ci)
     expect((await f.read(ticket.ticketId)).state).toBe('starting')
+    f.control.onStatus = async () => {}
     const computers = await f.value('ci_computers_list', {})
     expect(computers).toMatchObject({ computers: expect.arrayContaining([
       expect.objectContaining({ hostRef: f.starts[0]!.computer.hostRef, running: [ticket.ticketId] }),
@@ -710,10 +721,9 @@ it('retains an overdue unknown start, denies read-only cancellation and cleans t
   try {
     const ticket = await f.enqueue()
     f.control.available = true
-    f.control.onStart = async () => { throw new Error('Accepted start reply lost') }
+    loseStartReply(f, 'Accepted start reply lost')
     await settle(f.ci)
     const accepted = f.starts[0]!
-    f.control.onStatus = async () => { throw new Error('Status unavailable') }
     now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
     restarted = f.createService()
     for (let attempt = 0; attempt < 4; attempt++) await settle(restarted)

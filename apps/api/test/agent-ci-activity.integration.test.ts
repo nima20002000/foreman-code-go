@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
   type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
@@ -16,6 +16,7 @@ import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
@@ -107,7 +108,9 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
   const credentials = new Wave25WorkerCredentialService(database.pool, graph.access)
   const worker = await credentials.issueForExecution(executionId)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: graph.access, interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands) },
+    appMcp: { access: graph.access, commands: graph.commands,
+      interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands),
+      bugReports: new BugReportService(database.pool, graph.commands) },
     operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci } as never } })
   const reader = await graph.credential([{ actions: ['runs:read'], scope: { runIds: [graph.run.id] } }])
   const denied = await graph.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
@@ -187,6 +190,8 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
 const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })
 
 describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
+  afterEach(() => { vi.useRealTimers() })
+
   it('lets another node read and cancel workspace CI tickets while a node without ci_get is denied', async () => {
     const f = await fixture({ form: 'parallel', deniedCiReader: true })
     try {
@@ -447,6 +452,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(await stored(ticket.ticketId)).toBeNull()
       expect((await f.board()).activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
       await f.database.pool.query('alter table ci_runs drop constraint ci_results_blocked')
+      // The failed collection backs off before the next attempt.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(Date.parse(pending.run.observation!.nextAttemptAt!) + 1)
       expect((await f.get(ticket.ticketId)).run).toMatchObject({
         state: 'passed', exitCode: 0, finishedAt: pending.run.finishedAt, collection: 'complete',
       })

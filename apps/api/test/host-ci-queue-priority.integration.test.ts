@@ -38,9 +38,13 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
     expect(fallbackRead.partitions!.filter(run => run.id !== hostSlice.id).every(run => run.state === 'running'
       && run.computer?.hostRef.provider === 'github')).toBe(true)
     f.finish(read.partitions!.find(run => run.computer?.hostRef.kind === 'device')!.id, 0, 'Host slice completed.\n')
-    await settle(f.ci)
+    // Observations rotate through running tickets, so the finished slice is noticed within a few passes.
+    await expect.poll(async () => {
+      await settle(f.ci)
+      const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
+      return read.partitions!.every(run => run.state === 'running')
+    }, { timeout: 10_000 }).toBe(true)
     const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
-    expect(running.partitions!.every(run => run.state === 'running')).toBe(true)
     expect(running.partitions!.find(run => run.id === hostSlice.id))
       .toMatchObject({ computer: { hostRef: { kind: 'device' } }, message: null })
   } finally { await f.close() }
@@ -69,12 +73,13 @@ it.each(['typecheck', 'lint', 'build', 'unit'] as const)(
         'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
         [integration.ticketId])).rows
         .map(row => CiRunRecordSchema.parse(row.record))
-      expect(dispatched.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(16)
       const integrationRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
         ticketId: integration.ticketId,
       }))
       const checksRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: checks.ticketId }))
+      // Four slots stay reserved while checks wait; once every check part runs, integration may use the rest.
       const integrationLimit = checksRead.partitions!.some(run => run.state === 'queued') ? 16 : 18
+      expect(dispatched.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(integrationLimit)
       expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'github'))
         .toHaveLength(integrationLimit)
       expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')).toHaveLength(2)
@@ -106,6 +111,8 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
     }))
     await settle(f.ci)
     f.computers.push(...available)
+    await settle(f.ci)
+    // The started tickets are observed by the next pass.
     await settle(f.ci)
     const stored = (await f.pool.query<{ record: unknown }>(
       'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',

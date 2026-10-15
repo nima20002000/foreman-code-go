@@ -161,7 +161,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Gate workspace', repository: {
       provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
-    } })])
+    }, ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, ...{ buildAllowancePercent: options.allowance ?? 100 }, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50, ...{ buildAllowancePercent: options.allowance ?? 100 },

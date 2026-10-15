@@ -8,7 +8,7 @@ it('dispatches integration prerequisites beyond fifty ineligible tickets', async
   f.computers.splice(0, 2)
   try {
     const base = { workspaceId: f.workspaceId, suite: 'integration', scope: 'full', files: [], part: null,
-      repository: 'octo/site', commit: 'a'.repeat(40), state: 'queued', computer: null, step: null,
+      repository: 'octo/site', ciMirror: 'octo/site-ci', commit: 'a'.repeat(40), state: 'queued', computer: null, step: null,
       exitCode: null, message: null, startedAt: null, finishedAt: null,
       initiator: { principalId: 'operator', executionId: null } }
     const records = Array.from({ length: 56 }, (_, index) => CiRunRecordSchema.parse({ ...base,
