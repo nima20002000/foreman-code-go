@@ -46,6 +46,17 @@ it('checks a publication that completes before the watcher starts', async () => 
   await vi.waitFor(() => expect(f.sync).toHaveBeenCalledOnce())
 })
 
+it('keeps startup available when no Worker artifact directory has been installed', async () => {
+  const f = await fixture()
+  f.stop()
+  await rm(f.directory, { recursive: true })
+  const stop = startWorkerPublicationSync({ directory: f.directory, version: '1.0.0' }, f.sync, f.reportError)
+  cleanup.push(stop)
+  expect(f.reportError).toHaveBeenCalledWith(expect.objectContaining({ code: 'ENOENT' }))
+  expect(f.sync).not.toHaveBeenCalled()
+  stop()
+})
+
 it('retains periodic recovery checks and stops them on shutdown', async () => {
   vi.useFakeTimers()
   try {
