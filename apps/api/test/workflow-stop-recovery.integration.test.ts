@@ -3,6 +3,7 @@ import pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
+import { DomainError } from '../src/modules/errors.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
@@ -49,7 +50,7 @@ it('stops an orphan through authenticated MCP while preserving other Runs of the
   vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (...args) => {
     if (args[1].runId === f.f.run.id && fail) {
       fail = false
-      throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+      throw new DomainError('NATIVE_OBSERVATION_LOST', 'Native event observation was interrupted.', 503)
     }
     return append(...args)
   })
