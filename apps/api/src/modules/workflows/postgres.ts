@@ -74,7 +74,7 @@ export class PostgresWorkflowRepository {
   }
 
   /** References are valid only for records this same execution created. */
-  async referencesCreatedByExecution(kind: OutputReferenceKind, values: readonly string[],
+  async referencesCreatedByExecution(kind: OutputReferenceKind, values: readonly string[] | undefined,
     workspaceId: string, executionId: string): Promise<ReadonlySet<string>> {
     return referencesCreatedByExecution(this.pool, kind, values, workspaceId, executionId)
   }
