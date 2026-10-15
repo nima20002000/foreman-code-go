@@ -105,6 +105,13 @@ export async function faultWorkflowWorker(directory: string, options: { mcpUnava
     reconnect() { connected = true },
     async restart() {
       connected = false
+      for (const operationId of operations) {
+        const status = await journal.status(operationId)
+        if (status.status === 'known' && status.receipt.native && !status.receipt.terminal) {
+          interruptedExecutions.add(status.receipt.intent.executionId)
+          replay.disconnect(status.receipt.native.sessionId)
+        }
+      }
       await host.shutdown()
       for (const operationId of operations) {
         const status = await journal.status(operationId)
