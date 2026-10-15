@@ -32,6 +32,7 @@ it.each([0, 1])('persists a finished integration report through MCP for exit cod
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
       ticketId: started.ticketId, testStatus: ['passed', 'failed', 'skipped'],
+      waitUntil: 'group-terminal', waitSeconds: 10,
     }))
     expect(read.tests).toEqual({ summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false })
     expect(read.run).toMatchObject({ state: exitCode === 0 ? 'passed' : 'failed', collection: 'complete' })
