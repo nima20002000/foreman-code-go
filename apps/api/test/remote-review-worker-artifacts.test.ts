@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { createWorkerArtifactExtension } from '../src/modules/computers/workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerBundleIdentity } from '../src/modules/computers/workerArtifacts.js'
+import { workerArtifactContentSha256 } from '@foreman-code/contracts/worker-artifact-content-node'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { remoteReviewWorkerArtifacts } from './helpers/remoteReviewWorkerArtifacts.js'
 
-it('retains cached Worker manifests through symlinked cache ancestors without advertising unpublished bundles', async () => {
+it('serves the installed fixture bundle through symlinked cache ancestors after its source is removed', async () => {
   const root = await privateFixtureDirectory('remote-review-artifacts-')
   try {
     const fixture = join(root, 'fixture')
@@ -46,8 +47,12 @@ it('retains cached Worker manifests through symlinked cache ancestors without ad
       signal: new AbortController().signal,
     }
     const manifestSha256 = createHash('sha256').update(bytes).digest('hex')
-    await expect(extension.handle!({ operation: 'release', target }, context))
-      .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
+    expect(await readWorkerBundleIdentity({ directory, version: manifest.version }, target)).toEqual({
+      version: manifest.version, target, manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
+    })
+    expect(await extension.handle!({ operation: 'release', target }, context)).toMatchObject({
+      payload: { operation: 'release', release: { version: manifest.version, manifestSha256, manifest } },
+    })
     await expect(extension.handle!({ operation: 'chunk', manifestSha256, path: 'src/cli.mjs', offset: 0 }, context))
       .rejects.toThrow()
     expect(await readFile(join(directory, manifestSha256, 'manifest.json'))).toEqual(bytes)
