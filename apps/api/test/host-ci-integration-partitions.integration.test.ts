@@ -62,6 +62,9 @@ it('splits integration over two build computers, reports progress and logs, and 
     for (const [index, partition] of started.partitions!.entries()) {
       f.finish(partition.ticketId, index, index ? 'FAIL apps/api/test/b.integration.test.ts\n' : 'all passed\n')
     }
+    // A finished integration ticket settles first; its log and results are collected by the pass that follows.
+    await f.ci.dispatch()
+    await f.ci.drain()
     const passed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.partitions![0]!.ticketId }))
     expect(passed.run).toMatchObject({ state: 'passed', exitCode: 0 })
     expect(passed.logTail).toBe('all passed\n')
