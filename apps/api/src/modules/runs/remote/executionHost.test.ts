@@ -2,6 +2,8 @@ import { pendingSessionControls } from '../../harnesses/sessionControlDefaults.j
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
+import { deferred } from '../../../../test/helpers/deferred.js'
+import { HarnessExecutionError } from '../../harnesses/errors.js'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { createHash, randomUUID } from 'node:crypto'
@@ -1020,4 +1022,36 @@ it('keeps the admitted mode in worker turn replay identity after journal restart
     sessionMode: 'regular',
   })).rejects.toThrow('Turn input binding conflict')
   expect(f.state.turns).toBe(1)
+})
+
+it('reports original startup events before the native turn is acknowledged', async () => {
+  const f = await setup()
+  const entered = deferred()
+  const ready = deferred()
+  const startup = { sequence: 0, type: 'turn.mcp_startup_retry', occurredAt: new Date().toISOString(),
+    payload: { serverName: 'graphql', attempt: 2, delayMs: 10_000 } }
+  f.manager.startTurn = async function* (_session, turn) {
+    yield startup
+    entered.resolve()
+    await ready.promise
+    await turn.onSubmitted?.('native-turn')
+  }
+  const history = vi.spyOn(f.manager, 'history').mockResolvedValue({ events: [startup], pendingInteractions: [] })
+  const reconcile = vi.spyOn(f.manager, 'reconcile').mockRejectedValue(new HarnessExecutionError(
+    'CODEX_RECONCILIATION_UNCERTAIN', 'The native turn has not been submitted.'))
+  try {
+    await f.host.prepare({ intent: f.intent, placement: f.placement, request: f.request })
+    await f.host.startTurn(f.intent.operationId, 'prompt', 'execution:execution')
+    await entered.promise
+    const response = await f.host.handle({ method: 'history', intent: f.intent, placement: f.placement,
+      correlationId: 'execution:execution', afterSequence: -1 })
+    expect(response).toMatchObject({ history: { events: [startup], pendingInteractions: [] },
+      status: { status: 'known', receipt: { phase: 'start_acknowledged' } },
+      page: { hasMore: false, nextAfterSequence: 0 } })
+    expect(history).toHaveBeenCalledWith(f.session)
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { native: { sessionId: f.session.nativeSessionId } },
+    })
+  } finally { ready.resolve() }
 })
