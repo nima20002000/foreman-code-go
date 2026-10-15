@@ -40,8 +40,9 @@ it('answers a status request without waiting for a slow directory retention swee
   const release = deferred()
   const completed = deferred()
   const cleanupRequests: CiHostRequest[] = []
+  const runId = '00000000-0000-4000-8000-000000000001'
   const pool = { query: async () => {
-    return { rows: [{ run_id: 'old-run', state: 'passed', finished_at: '2026-01-01T00:00:00Z',
+    return { rows: [{ run_id: runId, state: 'passed', finished_at: '2026-01-01T00:00:00Z',
       collection: null, rank: '500' }] }
   } } as unknown as pg.Pool
   const endpoint = new ProductionHostCiEndpoint(pool, 'fixture-main', () => undefined, {
@@ -66,7 +67,8 @@ it('answers a status request without waiting for a slow directory retention swee
     expect(result).toMatchObject({ operation: 'status', ready: true })
     const second = await endpoint.request(computer, { operation: 'status' })
     expect(second).toMatchObject({ operation: 'status', ready: true })
-    expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: ['old-run'], buildAllowancePercent: 100 }])
+    expect(cleanupRequests).toHaveLength(1)
+    expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: [runId], buildAllowancePercent: 100 }])
   } finally {
     clearTimeout(timeout)
     release.resolve()

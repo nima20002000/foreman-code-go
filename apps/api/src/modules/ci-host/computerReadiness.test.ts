@@ -99,6 +99,22 @@ it.each(['transport', 'permission', 'backpressure'])(
   },
 )
 
+it.each([true, false])('retries yielded reads without renewing readiness=%s freshness', async ready => {
+  const f = fixture()
+  f.status.ready = ready
+  try {
+    const first = await f.list()
+    f.expire()
+    f.request.mockRejectedValue(new DeviceApplicationAdmissionError('background_yield'))
+    expect(await f.list()).toEqual(first)
+    f.request.mockResolvedValue({ ...f.status, ready: !ready, reasons: ['Refreshed status'] })
+    expect((await f.list()).computers[0]).toMatchObject({ ready: !ready, reasons: ['Refreshed status'] })
+    expect(f.request).toHaveBeenCalledTimes(3)
+  } finally {
+    await f.close()
+  }
+})
+
 it('does not invent readiness without a successful status read', async () => {
   const f = fixture()
   try {
