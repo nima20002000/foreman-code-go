@@ -520,8 +520,9 @@ async function runDependencyCommand(run, args) {
   try {
     return await run('corepack', ['pnpm', ...args], { timeout, killSignal: 'SIGKILL' })
   } catch (cause) {
-    throw new Error(`Production dependency command "corepack pnpm ${args.join(' ')}" failed `
-      + `(${timeout} ms timeout): ${cause.message}`, { cause })
+    // pnpm reports failures such as release-age violations on stdout, so keep the command output on the error.
+    throw Object.assign(new Error(`Production dependency command "corepack pnpm ${args.join(' ')}" failed `
+      + `(${timeout} ms timeout): ${cause.message}`, { cause }), { stdout: cause.stdout, stderr: cause.stderr })
   }
 }
 
