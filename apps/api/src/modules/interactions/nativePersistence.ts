@@ -38,6 +38,7 @@ export function nativePersistenceRedactor(secrets: readonly string[]) {
     }
     if (input instanceof HarnessExecutionError) return new HarnessExecutionError(
       text(input.result.error?.code ?? 'NATIVE_EXECUTION_FAILED'), text(input.message), input.result.error?.retryable,
+      input.cause === undefined ? undefined : { cause: error(input.cause) },
     )
     // Do not forward a raw provider stack or enumerable environment/error fields.
     if (input instanceof Error) {

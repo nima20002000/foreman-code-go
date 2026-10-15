@@ -3,6 +3,8 @@ import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
 import { isDatabasePoolTimeout, isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
+import { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
+export { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 
 /** Agent failure attempts per work activation, including the first. At-least-once: an Agent
  * turn may run again after an infrastructure failure; only results are deduped. */
@@ -10,27 +12,6 @@ export const EXECUTION_MAX_ATTEMPTS = 3
 export const EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS = 10 * 60_000
 /** Wait before attempt 2, 3, ... (the last value repeats). */
 export const EXECUTION_RETRY_BACKOFF_MS: readonly number[] = [10_000, 30_000, 60_000]
-
-/** Infrastructure failures: the work itself did not fail, the way to run it did. */
-const transientCodes = new Set([
-  'EXECUTION_INTERRUPTED', 'EXECUTION_START_INTERRUPTED', 'NATIVE_SESSION_START_UNCERTAIN',
-  'NATIVE_EXECUTION_FAILED', 'NATIVE_HISTORY_GAP', 'CODEX_OBSERVER_UNAVAILABLE', 'CODEX_APP_MCP_NOT_READY',
-  'APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT', 'DATABASE_READ_TIMEOUT',
-  'REMOTE_DISPATCH_UNAVAILABLE', 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'WORKER_WORKFLOW_UNAVAILABLE', 'WORKER_MCP_UNAVAILABLE', 'WORKER_MCP_LEASE_UNAVAILABLE',
-  'WORKER_CREDENTIAL_EXPIRING', 'WORKER_CREDENTIAL_LOST', 'WORKER_CREDENTIAL_RENEWAL_BUSY',
-  'CLAUDE_SESSION_UNAVAILABLE', 'CLAUDE_MCP_CONTROL_UNAVAILABLE', 'CLAUDE_OWNER_UNAVAILABLE',
-  'DEVICE_TRANSPORT_ERROR', 'DEVICE_RUNTIME_CLOSING', 'DEVICE_RUNTIME_UNAVAILABLE', 'DEVICE_CONNECTION_UNAVAILABLE',
-  'DEVICE_HOST_UNAVAILABLE', 'DEVICE_CHANNEL_BACKPRESSURE', 'DEVICE_TRANSFER_CONNECTION_CHANGED', 'DEVICE_TRANSFER_EXPIRED',
-  // PostgreSQL statement timeout, connection and restart failures; Node socket failures.
-  '57014', '55P03', '40001', '40P01', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08006',
-  'DATABASE_RETRY_DEADLINE_EXCEEDED',
-  'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
-])
-const transientPrefixes = ['CODEX_APP_SERVER_']
-
-export function isTransientExecutionCode(code: string): boolean {
-  return transientCodes.has(code) || transientPrefixes.some((prefix) => code.startsWith(prefix))
-}
 
 function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined
@@ -48,13 +29,13 @@ export function isTransientExecutionError(error: unknown): boolean {
   const seen = new Set<object>()
   while (typeof error === 'object' && error !== null && !seen.has(error)) {
     seen.add(error)
-    if (error instanceof ZodError || error instanceof AggregateError) return false
-    if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
     const wrapped = error as {
       result?: ExecutionResult; details?: { retryable?: boolean }; retryable?: boolean; cause?: unknown
     }
-    if (wrapped.retryable === true || wrapped.result?.error?.retryable === true
-      || wrapped.details?.retryable === true) return true
+    const retryable = wrapped.retryable ?? wrapped.result?.error?.retryable ?? wrapped.details?.retryable
+    if (typeof retryable === 'boolean') return retryable
+    if (error instanceof ZodError || error instanceof AggregateError) return false
+    if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
     const code = errorCode(error)
     if (code !== undefined && isTransientExecutionCode(code)) return true
     if (typeof wrapped.cause !== 'object' || wrapped.cause === null) {

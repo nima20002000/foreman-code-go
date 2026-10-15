@@ -1164,8 +1164,10 @@ export class ApprovalExecutionCoordinator {
       if (isLeaseLost(error) || parentSignal.aborted || owned.controller.signal.aborted) throw error
       // Return the captured owner handle even on failed preflight, so dispatch
       // can persist the failure and cancel/revoke without guessing an owner.
-      failed.abort(new DomainError('REVIEWER_CREDENTIAL_LOST',
-        'The reviewer authority could not be confirmed before credential maintenance.', 409))
+      const failure = new DomainError('REVIEWER_CREDENTIAL_LOST',
+        'The reviewer authority could not be confirmed before credential maintenance.', 409)
+      failure.cause = error
+      failed.abort(failure)
     } finally {
       clearTimeout(preflightDeadline)
       if (abortPreflight) signal.removeEventListener('abort', abortPreflight)
@@ -1187,9 +1189,15 @@ export class ApprovalExecutionCoordinator {
       },
       onFailure: (error) => {
         // Lease loss must remain distinguishable: it cannot cancel a successor's native turn.
-        failed.abort(isLeaseLost(error) ? error : new DomainError('REVIEWER_CREDENTIAL_LOST',
-          'Review stopped because its App MCP credential or authority could not be maintained. No native work was restarted.', 409))
-        if (!isLeaseLost(error)) void invalidate().catch(() => {
+        if (isLeaseLost(error)) {
+          failed.abort(error)
+          return
+        }
+        const failure = new DomainError('REVIEWER_CREDENTIAL_LOST',
+          'Review stopped because its App MCP credential or authority could not be maintained. No native work was restarted.', 409)
+        failure.cause = error
+        failed.abort(failure)
+        void invalidate().catch(() => {
           // ignore: invalidation already reports its failure through the retained cleanup state.
         })
       },

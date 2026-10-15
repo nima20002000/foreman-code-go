@@ -5,6 +5,7 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./worker-update": { "types": "./dist/workerUpdate.d.ts", "import": "./dist/workerUpdate.js" },
     "./worker-artifact-content-node": { "types": "./dist/workerArtifactContentNode.d.mts", "import": "./dist/workerArtifactContentNode.mjs" },
     "./managed-mcp-channel": { "types": "./dist/managedMcpChannel.d.ts", "import": "./dist/managedMcpChannel.js" },
     "./runtime-build-identity-node": { "types": "./dist/runtimeBuildIdentityNode.d.mts", "import": "./dist/runtimeBuildIdentityNode.mjs" },

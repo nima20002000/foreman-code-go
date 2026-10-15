@@ -3,6 +3,7 @@ import { nativePersistenceRedactor } from './nativePersistence.js'
 import { isTransientExecutionError } from '../runs/executionRetryPolicy.js'
 import { DomainError } from '../errors.js'
 import { serializeError } from '../diagnostics/logger.js'
+import { HarnessExecutionError } from '../harnesses/errors.js'
 
 it.each(['40P01', 'ECONNRESET'])('retains the retry classification of a redacted %s failure', code => {
   const secret = `opm_${'x'.repeat(43)}`
@@ -13,6 +14,22 @@ it.each(['40P01', 'ECONNRESET'])('retains the retry classification of a redacted
   expect(isTransientExecutionError(redacted)).toBe(true)
   expect(redacted).not.toBe(failure)
   expect(JSON.stringify(redacted)).not.toContain(secret)
+})
+
+it('preserves a sanitized harness cause and its explicit permanent classification', () => {
+  const secret = 'harness-test-token'
+  const cause = Object.assign(new Error(`Socket failed with ${secret}`), { code: 'ECONNRESET', token: secret })
+  const failure = new HarnessExecutionError('CODEX_APP_SERVER_AUTH_UNQUALIFIED', `Sign in with ${secret}`, false, { cause })
+  const redacted = nativePersistenceRedactor([secret]).error(failure)
+  expect(redacted).toBeInstanceOf(HarnessExecutionError)
+  expect(serializeError(redacted)).toMatchObject({
+    message: 'Sign in with [REDACTED]', cause: { code: 'ECONNRESET', message: 'Socket failed with [REDACTED]' },
+  })
+  expect((redacted as Error).cause).not.toBe(cause)
+  expect((redacted as Error).cause).not.toHaveProperty('token')
+  expect(JSON.stringify(serializeError(redacted))).not.toContain(secret)
+  expect(isTransientExecutionError(redacted)).toBe(false)
+  expect(failure.cause).toBe(cause)
 })
 
 it('retains and redacts the original credential failure through domain error logging', () => {
