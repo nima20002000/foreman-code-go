@@ -1,6 +1,5 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect } from 'vitest'
 import { z } from 'zod'
@@ -13,6 +12,7 @@ import { CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema, SavedMana
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { buildCrossComputerCiGraph, ciHarness, projectSuites, type ScenarioAgent } from './crossComputerCiGraph.js'
 import type { ScenarioComputer, ScenarioWorkspace } from './crossComputerCiInput.js'
+import { waitForCi } from './crossComputerCiWait.js'
 
 type SavedCiWorkflow = z.infer<typeof CurrentWorkflowReadResultSchema>
 
@@ -52,41 +52,16 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
 }
 
 export async function callCiToolResult(client: Pick<Client, 'callTool'>, name: string, args: Record<string, unknown>) {
-  const pendingDeadline = Date.now() + 5 * 60_000
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const result = await client.callTool({ name, arguments: args }, { timeout: 180_000 })
+  return waitForCi(`MCP ${name}`, () => client.callTool({ name, arguments: args }, { timeout: 180_000 }), result => {
     const code = result.isError ? toolErrorCode(result) : null
-    if (code === 'ACTIVITY_SNAPSHOT_CONFLICT' && ['run_get', 'run_activities_get_v1'].includes(name) && attempt < 4) {
-      await delay(10)
-      continue
-    }
-    // A loaded Main may time out a read; the error is marked retryable and reads are side-effect free.
-    // A busy device answers with a retryable DEVICE_BUSY; the same request is safe to send again.
-    if (code === 'DEVICE_BUSY' && Date.now() < pendingDeadline) {
-      await delay(2_000)
-      attempt--
-      continue
-    }
-    if (code === 'DATABASE_READ_TIMEOUT' && /_(get|list|read)(_v\d+)?$/.test(name) && Date.now() < pendingDeadline) {
-      await delay(1_000)
-      attempt--
-      continue
-    }
-    // Command deadlines are retryable by contract with the original input.
-    if ((code === 'COMMAND_DATABASE_TIMEOUT' || code === 'COMMAND_LOCK_TIMEOUT') && Date.now() < pendingDeadline) {
-      await delay(1_000)
-      attempt--
-      continue
-    }
-    // A reconnected Worker rechecks its Agent profiles first; Start retries the same command meanwhile.
-    if (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start' && Date.now() < pendingDeadline) {
-      await delay(100)
-      attempt--
-      continue
-    }
-    return result
-  }
-  throw new Error('The activity read retry budget was exhausted.')
+    const read = /_(get|list|read)(_v\d+)?$/.test(name)
+    const retry = code === 'DEVICE_BUSY'
+      || (code === 'ACTIVITY_SNAPSHOT_CONFLICT' && ['run_get', 'run_activities_get_v1'].includes(name))
+      || (code === 'DATABASE_READ_TIMEOUT' && read)
+      || code === 'COMMAND_DATABASE_TIMEOUT' || code === 'COMMAND_LOCK_TIMEOUT'
+      || (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start')
+    return !retry
+  }, { deadline: Date.now() + 5 * 60_000 })
 }
 
 export async function expectCiDenied(client: Client, name: string, args: Record<string, unknown>) {
@@ -96,21 +71,22 @@ export async function expectCiDenied(client: Client, name: string, args: Record<
 }
 
 export async function qualifyCiProfile(client: Client, computer: ScenarioComputer): Promise<HarnessProfileSelection> {
-  const inventory = HarnessRegistryReadbackSchema.parse(await callCiTool(client, 'harness_registry_get', computer.hostRef))
-  const metadata = inventory.hostMetadata
-  if (!metadata) throw new Error(`${computer.name} has no harness inventory.`)
+  const inventory = await waitForCi(`${computer.name} harness readiness`, async () =>
+    HarnessRegistryReadbackSchema.parse(await callCiTool(client, 'harness_registry_get', { hostRef: computer.hostRef })),
+  value => Boolean(value.hostMetadata && value.installations.some(item => item.driverId === 'codex'
+    && item.installed && item.installationFingerprint))
+    && (!computer.registration || value.hostMetadata?.connection?.phase === 'ready'),
+  { deadline: Date.now() + 5 * 60_000 })
+  const metadata = inventory.hostMetadata!
   expect(metadata.hostRef).toEqual(computer.hostRef)
-  if (computer.registration) {
-    expect(metadata.connection?.phase).toBe('ready')
-    expect(metadata.connection?.binding).toMatchObject(computer.registration)
-  }
-  const installation = inventory.installations.find(value => value.driverId === 'codex' && value.installed)
-  if (!installation?.installationFingerprint) throw new Error(`${computer.name} needs an installed Codex harness.`)
+  if (computer.registration) expect(metadata.connection?.binding).toMatchObject(computer.registration)
+  const installation = inventory.installations.find(value => value.driverId === 'codex' && value.installed
+    && value.installationFingerprint)!
   const target = {
     hostRef: computer.hostRef,
     applicationInstallationId: metadata.applicationInstallationId,
     harnessInstallationId: installation.harnessInstallationId,
-    installationFingerprint: installation.installationFingerprint,
+    installationFingerprint: installation.installationFingerprint!,
   }
   const profile = HostHarnessOverrideSaveResultSchema.parse(await callCiTool(client, 'harness_instance_save', {
     commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0,
@@ -177,8 +153,9 @@ export type PreparedCiWorkflow = {
 
 export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorkspace,
   profiles: Map<string, HarnessProfileSelection>, round: number, index: number): Promise<PreparedCiWorkflow> {
-  const managed = ManagedWorkspaceSchema.parse(await callCiTool(client, 'workspace_get', { workspaceId: workspace.workspaceId }))
-  expect(managed.locationValidation.status).toBe('ready')
+  const managed = await waitForCi('workspace readiness', async () => ManagedWorkspaceSchema.parse(
+    await callCiTool(client, 'workspace_get', { workspaceId: workspace.workspaceId })),
+  value => value.locationValidation.status === 'ready', { deadline: Date.now() + 5 * 60_000 })
   const repository = managed.workspace.repository
   if (!repository) throw new Error(`${workspace.project} workspace needs its GitHub repository configured.`)
   const created = SavedManagedWorkflowCommandResultSchema.parse(await callCiTool(client, 'workflow_create', {
@@ -199,20 +176,16 @@ export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorks
     configurations: {},
   })
   for (const assignment of assignments) {
-    const choices = NodePlacementChoicesResultSchema.parse(await callCiTool(client, 'workflow_node_placement_choices', {
-      workspaceId: workspace.workspaceId, workflowId: built.graph.id, nodeId: assignment.nodeId,
-      agentConfigurationVersionId: first.version.agentConfigurationVersionIds[assignment.agentId],
-    }))
-    const selected = choices.choices.find(choice => choice.availability === 'ready'
-      && JSON.stringify(choice.placement.hostRef) === JSON.stringify(assignment.profile.target.hostRef)
-      && choice.placement.instanceId === assignment.profile.instanceId)
-    if (!selected) {
-      throw new Error(`No approved ready source/root placement for ${assignment.name}: wanted `
-        + `${JSON.stringify({ hostRef: assignment.profile.target.hostRef, instanceId: assignment.profile.instanceId })}; `
-        + `choices ${JSON.stringify(choices.choices.map(choice => ({ availability: choice.availability, reason: choice.reason,
-          hostRef: choice.placement.hostRef, instanceId: choice.placement.instanceId })))}`)
-    }
-    assignment.placement = selected.placement
+    const selected = await waitForCi(`placement readiness for ${assignment.name}`, async () => {
+      const choices = NodePlacementChoicesResultSchema.parse(await callCiTool(client, 'workflow_node_placement_choices', {
+        workspaceId: workspace.workspaceId, workflowId: built.graph.id, nodeId: assignment.nodeId,
+        agentConfigurationVersionId: first.version.agentConfigurationVersionIds[assignment.agentId],
+      }))
+      return choices.choices.find(choice => choice.availability === 'ready'
+        && JSON.stringify(choice.placement.hostRef) === JSON.stringify(assignment.profile.target.hostRef)
+        && choice.placement.instanceId === assignment.profile.instanceId)
+    }, Boolean, { deadline: Date.now() + 5 * 60_000 })
+    assignment.placement = selected!.placement
   }
   // The placement edit builds on the definition the first save published, with its version stamp.
   const { graph } = buildCrossComputerCiGraph(first.version.definition, assignments)

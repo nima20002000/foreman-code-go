@@ -11,6 +11,7 @@
     "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- node ../../scripts/test-command.mjs -- vitest run --exclude '**/*.integration.test.ts' --exclude '**/*.acceptance.test.ts'",
     "test:integration": "node ../../scripts/heavy-job.mjs --timeout-ms 9000000 -- node ../../scripts/test-integration.mjs",
     "test:acceptance": "node ../../scripts/heavy-job.mjs -- node ../../scripts/test-command.mjs -- sh -c \"RUN_ENG03_C_NATIVE_TESTS=1 RUN_REAL_HARNESS_TESTS=1 vitest run test/eng03-c-native.acceptance.test.ts test/local-human-native.acceptance.test.ts\"",
+    "test:ci-scenario:replay": "vitest run --config vitest.cross-computer-ci-replay.config.mjs",
     "credential": "node --import tsx src/cli/operatorCredentials.ts",
     "harness:check": "node --import tsx src/cli/harnessCompatibility.ts",
     "qualify:harness": "node ../../scripts/test-command.mjs -- node ../../scripts/qualify-harness.mjs",

@@ -106,14 +106,10 @@ are 32 scenario Agent executions across both rounds, plus the host profile check
    The denied `run_start` and `ci_run` calls must return `ACCESS_DENIED`, not an expired-token authentication failure.
    No Agent receives the Operator token: Start supplies normal Run-scoped Agent credentials and grants.
 
-10. Resolve the Host CI Run activity gate before declaring a pass. In the source inspected for this change,
-    `HostCiService` persists `ci_runs`, but `RunActivitiesService`/activity snapshots still join the retired
-    `job_admission_queue`. No Host CI lifecycle publication was present. The acceptance keeps its assertions:
-    each Host CI ticket must appear as `job_work` with `refs.jobExecutionId` equal to its ticket/run ID,
-    `refs.executionId` equal to its initiating Agent execution, the correct actor and queued → running → completed
-    history. Terminal activity must agree with the ticket's persisted terminal state. Fix this through production
-    contracts/services; do not manufacture activity in the test. Ticket discovery uses public Run events/activity,
-    physical computer inventory and final Agent reports, so missing activity cannot be concealed by a passing report.
+10. Host CI activity must use `job_work`, `refs.ciTicketId` and the initiating `refs.executionId`, with the
+    correct Agent owner and Run scope. Each ticket needs queued activity followed by its terminal activity.
+    Starting/running observations are optional: fast tickets can finish between reads. Ticket discovery uses
+    Operator `ci_list` and activity references, and checks `ci_get` initiators; Agent reports contain judgments only.
 
 ## Private runtime input
 
@@ -215,14 +211,23 @@ corepack pnpm --filter @foreman-code/api exec vitest run test/cross-computer-ci-
 Each round writes `cross-computer-ci-<invocation UUID>-round-<1 or 2>.json` with mode 0600, checkpointed every 30 seconds
 and at completion/failure. It records workflow/version/Run IDs, placements, worktrees, Agent states and JSON reports,
 every ticket's sampled state/computer timeline, complete terminal logs, group readbacks and paged Run activities.
-It also records a scheduling snapshot with queued and active tickets, and a snapshot where every requested CI group
-is still pending concurrently. These use observed states rather than comparisons between different host clocks.
-Sampled timelines do not invent missed states; the persisted activity history is independently required. A passing
-invocation requires two `status: passed` files and a successful Vitest exit. On failure the test records the reason,
-stops its Runs, cancels every discovered nonterminal Host CI ticket, records cleanup errors and closes its MCP clients.
-Review undiscoverable tickets if production activity is missing; the current public API has no Host CI ticket-list
-tool. Keep the created workflow/profile records and evidence for review, and remove the finished implementation
-worktree only after integration and after no orchestrator/agent/process still needs it.
+Execution pages, accepted placements, CI lists, group log readbacks and workspace-isolation responses are included
+in the same file. Collection waits for readiness and published activity/worktrees/logs with bounded deadlines.
+The verifier requires successful workflows, one success per Agent, separate Agent branches and worktrees, CI on
+at least two computers, correct ticket owners, quoted log lines and activity confined to its own Run. It collects
+all verification failures before throwing. Concurrent queue and starting/running samples are not pass criteria.
+
+Replay a saved round without credentials, a database, or a running application:
+
+```sh
+FOREMAN_CODE_CROSS_COMPUTER_CI_REPLAY="$SAVED_ROUND_FILE" \
+  corepack pnpm --filter @foreman-code/api test:ci-scenario:replay
+```
+
+The dedicated replay config runs only the pure `verifyScenario(recorded)` checks, usually in seconds. With no
+replay path it checks the small synthetic fixture. A passing live invocation requires two `status: passed` files
+and a successful Vitest exit. On failure the scenario retains collected readbacks, stops its Runs, cancels
+nonterminal tickets, records cleanup errors and closes its clients. Keep runtime JSON outside Git.
 
 ## CI PostgreSQL reuse
 

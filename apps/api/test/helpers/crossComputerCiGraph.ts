@@ -28,16 +28,15 @@ export type ScenarioAgent = {
   placement?: SavedNodePlacement
 }
 
-const ciTicketId = { type: 'string', minLength: 1, 'x-foreman-reference': 'ciTicket' }
 const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
 
-/** The app enforces this report shape and checks that the ticket id was created by this Agent. */
+/** The app enforces the judgments; identifiers come from product readback. */
 export function ciReportOutputSchema(suite: ScenarioSuite) {
   return {
     type: 'object',
-    required: ['ticketId', 'suite', 'outcome', 'repository', 'logLine', 'observedStates'],
+    required: ['suite', 'outcome', 'repository', 'logLine', 'observedStates'],
+    additionalProperties: false,
     properties: {
-      ticketId: ciTicketId,
       suite: { const: suite },
       outcome: terminalOutcome,
       repository: { type: 'string', minLength: 1 },
@@ -64,10 +63,12 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Record the top-level ticket’s observed state changes in order from the ci_run and ci_get results you read. '
     + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
-    + '{"ticketId":"the ci_run top-level ticketId","suite":"' + suite + '",'
+    + '{"suite":"' + suite + '",'
     + '"outcome":"group.state","repository":"run.repository",'
     + '"logLine":"actual line from the top-level ticket log",'
-    + '"observedStates":["queued","running","passed"]}. '
+    + '"observedStates":["queued","passed"]}. '
+    + 'Include only states you observed; starting and running may be missed. '
+    + 'Do not copy ticket IDs, group IDs or branch names into your report. '
     + 'Repository is the owner/repository string from run.repository. '
     + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
 }
