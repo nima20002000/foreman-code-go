@@ -17,7 +17,7 @@ import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.j
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
-import { DeviceApplicationAdmissionError, DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
 import { DeviceConnectionError } from '../../devices/deviceWire.js'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { anchored,identity,openChildDirectory,openPrivateRoot } from '../../sources/privateFilesystem.js'
@@ -154,8 +154,8 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
 }
 /** Admission, backpressure, timeout and link failures say nothing about the original reply, so it must stay retained for the retry. */
 function transientAuthorizationFailure(error: unknown): boolean {
-  return error instanceof DeviceApplicationAdmissionError || error instanceof DeviceConnectionError
-    || error instanceof DeviceApplicationError && ['timeout', 'cancelled', 'transport', 'DATABASE_READ_TIMEOUT'].includes(error.code)
+  return deviceApplicationFailure(error).retryable || error instanceof DeviceConnectionError
+    || error instanceof DeviceApplicationError && error.code === 'cancelled'
 }
 interface Retained {
   receipt: RemoteOperationReceipt
