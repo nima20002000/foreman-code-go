@@ -47,9 +47,44 @@ it('dispatches a queued MCP ticket while an observation holds every shared datab
         && start.request.runId === queued.ticketId && start.computer === idle.label)).toBe(true)
     }, { timeout: 3500 })
     release.resolve()
-    const saved = await f.waitFor(reader, queued.ticketId, output => output.run.state === 'running')
+    const saved = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: queued.ticketId }))
     expect(saved.run).toMatchObject({ id: queued.ticketId, state: 'running', computer: { hostRef: idle.hostRef } })
     expect(saved.run.id).not.toBe(first.ticketId)
+  } finally {
+    release.resolve()
+    await f.close()
+  }
+})
+
+it('dispatches another ticket while an earlier executor start acknowledgement is blocked', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let firstStart = true
+  const request = f.endpoint.request.bind(f.endpoint)
+  f.endpoint.request = async (computer, input, options) => {
+    if (input.operation === 'start' && firstStart) {
+      firstStart = false
+      entered.resolve()
+      await release.promise
+    }
+    return request(computer, input, options)
+  }
+  try {
+    const input = { suite: 'integration', scope: 'affected', files: ['apps/api/test/site.integration.test.ts'] }
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { ...input, commit: 'a'.repeat(40) }))
+    await entered.promise
+    const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { ...input, commit: 'b'.repeat(40) }))
+    await vi.waitFor(() => {
+      expect(f.started.some(start => start.request.operation === 'start'
+        && start.request.runId === next.ticketId)).toBe(true)
+    }, { timeout: 4500 })
+    release.resolve()
+    const saved = await f.waitFor(f.operator, next.ticketId, output => output.run.state === 'running')
+    expect(saved.run).toMatchObject({ id: next.ticketId, state: 'running' })
+    await f.waitFor(f.operator, first.ticketId, output => output.run.state === 'running')
+    expect(f.started.filter(start => start.request.operation === 'start'
+      && start.request.runId === first.ticketId)).toHaveLength(1)
   } finally {
     release.resolve()
     await f.close()

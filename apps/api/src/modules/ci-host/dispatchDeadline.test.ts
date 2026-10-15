@@ -27,7 +27,10 @@ it('retries dispatch within a few seconds while an earlier fleet read remains bl
     expect(finished).toBe(true)
     await ci.dispatch()
     expect(computers).toHaveBeenCalledTimes(2)
+    const reads = vi.mocked(pool.query).mock.calls.length
     release.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pool.query).toHaveBeenCalledTimes(reads)
     await first
   } finally {
     release.resolve()
