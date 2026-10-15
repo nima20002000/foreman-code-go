@@ -115,6 +115,9 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, origin: string, pr
     await runtime.credentials.revoke({ principalId: readOnlyPrincipalId })
     readOnlyPrincipalId = undefined
     const client = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+    expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'bug_report', 'context_get', 'interaction_list', 'interaction_get', 'interaction_respond',
+    ]))
     expect((await client.listTools()).tools.some((tool) => tool.name === 'interaction_respond')).toBe(true)
     expect((await client.callTool({ name: 'interaction_respond', arguments: input })).isError).not.toBe(true)
     const stored = await runtime.repository.get(interaction.id)

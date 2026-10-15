@@ -58,6 +58,7 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       const worker = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
       const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
       const tools = (await worker.listTools()).tools.map(tool => tool.name)
+      expect(tools).toEqual(expect.arrayContaining(['bug_report', 'context_get']))
       for (const output of outputs) expect(tools).not.toContain(output)
       const denied = await worker.callTool({ name: WORKER_NATIVE_OUTPUT_TOOL_NAMES.create,
         arguments: { commandId: randomUUID(), filename: 'report.md', mediaType: 'text/markdown' } })
