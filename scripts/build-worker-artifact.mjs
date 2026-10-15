@@ -6,6 +6,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire, isBuiltin } from 'node:module';
+import {
+  assertWorkerSnapshotSource, rsyncWriterEntrypoint, schemaWorkerEntrypoint,
+  verificationScripts, workerContractAliases, workerEntryPoints,
+} from './worker-snapshot-policy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(join(root, 'apps/worker/package.json'));
@@ -24,13 +28,8 @@ if (requestedCommit && !/^[a-f0-9]{40}$/.test(requestedCommit)) throw new Error(
 const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedCommit}^{commit}` : 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const snapshot = new Map();
-const verificationScripts = ['scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs'];
-const forbiddenApiModule = path => /^apps\/api\/src\/(?:server|app|production)\.ts$/.test(path) || /^apps\/api\/src\/(?:infrastructure\/(?:db|database)|(?:db|migrations|bootstrap)\/)/.test(path);
 function snapshotSource(path) {
-  if (forbiddenApiModule(path) || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..') || /\.(?:test|spec)\.[cm]?[jt]s$/.test(path) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(?:^|\/)(?:credentials|secrets)\.json$/.test(path)
-    || !(path.startsWith('apps/api/src/') || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
-      || verificationScripts.includes(path)
-      || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/quota-helper-abi.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
+  assertWorkerSnapshotSource(path);
   if (!snapshot.has(path)) {
     const bytes = execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     const gitBlobSha1 = execFileSync('git', ['rev-parse', `${commit}:${path}`], { cwd: root, encoding: 'utf8' }).trim();
@@ -43,6 +42,7 @@ async function requirePinnedSource(path) {
 }
 for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
 await requirePinnedSource('scripts/quota-helper-abi.mjs');
+await requirePinnedSource('scripts/worker-snapshot-policy.mjs');
 function reviewedInput(input) {
   const path = committedWorkerInputPath(root, input);
   let bytes;
@@ -66,10 +66,7 @@ if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.pl
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
 const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'],
-  alias: Object.fromEntries(Object.entries(JSON.parse(snapshotSource('packages/contracts/package.json')).exports).map(([key, value]) => [
-    key === '.' ? '@foreman-code/contracts' : `@foreman-code/contracts/${key.slice(2)}`,
-    `./packages/contracts/${(typeof value === 'string' ? value : value.import).replace('./dist/', './src/').replace(/\.js$/, '.ts')}`,
-  ])),
+  alias: workerContractAliases(JSON.parse(snapshotSource('packages/contracts/package.json')).exports),
   plugins: [{ name: 'committed-source-snapshot', setup(builder) {
     builder.onResolve({ filter: /.*/ }, input => { assertWorkerDependency(input.path); });
     builder.onLoad({ filter: /\.(?:[cm]?[jt]s|json)$/ }, (input) => {
@@ -80,12 +77,11 @@ const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExte
   } }],
   define: { 'process.env.WS_NO_BUFFER_UTIL': '"1"', 'process.env.WS_NO_UTF_8_VALIDATE': '"1"' },
   banner: { js: "import { createRequire as workerCreateRequire } from 'node:module'; const require = workerCreateRequire(import.meta.url);" } };
-const writerEntrypoint = 'apps/api/src/modules/byte-transfer/rsyncWriterCli.ts';
-const built = await build({ ...buildOptions, entryPoints: { cli: 'apps/worker/src/cli.mjs', worker: 'apps/worker/src/workerFactory.mjs' } });
-if (writerEntrypoint in built.metafile.inputs) throw new Error('Standalone rsync writer imported by normal worker graph');
-const writer = await build({ ...buildOptions, entryPoints: { 'rsync-writer': writerEntrypoint } });
+const built = await build({ ...buildOptions, entryPoints: workerEntryPoints });
+if (rsyncWriterEntrypoint in built.metafile.inputs) throw new Error('Standalone rsync writer imported by normal worker graph');
+const writer = await build({ ...buildOptions, entryPoints: { 'rsync-writer': rsyncWriterEntrypoint } });
 const schemaWorker = await build({ ...buildOptions,
-  entryPoints: { schemaWorker: 'apps/api/src/modules/harnesses/compatibility/schemaWorker.ts' } });
+  entryPoints: { schemaWorker: schemaWorkerEntrypoint } });
 for (const source of new Set([...Object.keys(built.metafile.inputs), ...Object.keys(writer.metafile.inputs), ...Object.keys(schemaWorker.metafile.inputs)])) {
   if (!source.startsWith('node_modules/') && !source.includes('/node_modules/')) snapshotSource(source);
 }
