@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
@@ -38,9 +38,12 @@ test('does not publish the target until GitHub assets can be downloaded and veri
 test('rejects a GitHub asset with different bytes after a successful upload', async t => {
   const f = await fixture(t)
   await buildWorkerReleaseArtifacts(f)
+  let uploaded = false
   const run = async (command, args) => {
     if (command === 'tar') execFileSync(command, args)
+    if (command === 'gh' && args[1] === 'upload') uploaded = true
     if (command === 'gh' && args[1] === 'download') {
+      if (!uploaded) throw new Error('no assets match the file pattern')
       await writeFile(args[args.indexOf('--output') + 1], 'corrupted archive')
     }
   }
@@ -57,12 +60,13 @@ test('retries asset upload when an existing empty release is not yet visible', a
   const calls = []
   const waits = []
   let uploads = 0
+  const simulate = assetSimulator()
   const run = async (command, args) => {
     calls.push({ command, args })
-    await simulateAssetDownload(command, args)
     if (command === 'gh' && args[1] === 'upload' && ++uploads === 1) {
       throw new Error('release not found')
     }
+    await simulate(command, args)
     return { stdout: '', stderr: '' }
   }
   const result = await publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256 }], run,
@@ -73,7 +77,7 @@ test('retries asset upload when an existing empty release is not yet visible', a
   assert.equal(calls.filter(call => call.command === 'tar').length, 1)
   assert.equal(calls.filter(call => call.command === 'gh' && call.args[1] === 'create').length, 0)
   const upload = calls.find(call => call.command === 'gh' && call.args[1] === 'upload')
-  assert.ok(upload.args.includes('--clobber'))
+  assert.equal(upload.args.includes('--clobber'), false)
   await assert.rejects(stat(upload.args[3]), { code: 'ENOENT' })
 })
 
@@ -86,9 +90,9 @@ for (const failure of ['view', 'create', 'upload']) {
     const waits = []
     let exists = failure === 'view'
     let failed = false
+    const simulate = assetSimulator()
     const run = async (command, args) => {
-      await simulateAssetDownload(command, args)
-      if (command !== 'gh') return
+      if (command !== 'gh') return simulate(command, args)
       const operation = args[1]
       calls.push(operation)
       if (operation === failure && !failed) {
@@ -102,13 +106,15 @@ for (const failure of ['view', 'create', 'upload']) {
         exists = true
         assert.equal(args.some(arg => arg.endsWith('.tar.gz')), false)
       }
+      await simulate(command, args)
     }
     const result = await publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
       sleep: async milliseconds => { waits.push(milliseconds) } })
     assert.equal(result.tag, `worker-${f.commit}`)
     assert.deepEqual(waits, [5000])
     assert.deepEqual(calls, failure === 'view' || failure === 'create'
-      ? ['view', 'create', 'view', 'upload', 'download'] : ['view', 'create', 'upload', 'view', 'upload', 'download'])
+      ? ['view', 'create', 'view', 'download', 'upload', 'download']
+      : ['view', 'create', 'download', 'upload', 'view', 'download', 'upload', 'download'])
   })
 }
 
@@ -120,13 +126,14 @@ test('stops retrying after one minute of backoff and cleans up staged assets', a
   const waits = []
   let uploads = 0
   let asset
+  const simulate = assetSimulator()
   const run = async (command, args) => {
-    await simulateAssetDownload(command, args)
     if (command === 'gh' && args[1] === 'upload') {
       uploads++
       asset = args[3]
       throw error
     }
+    await simulate(command, args)
   }
   await assert.rejects(publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
     sleep: async milliseconds => { waits.push(milliseconds) } }), thrown => thrown === error)
@@ -135,17 +142,28 @@ test('stops retrying after one minute of backoff and cleans up staged assets', a
   await assert.rejects(stat(asset), { code: 'ENOENT' })
 })
 
-async function simulateAssetDownload(command, args) {
-  if (command === 'tar') await writeFile(args[1], 'archive')
-  if (command === 'gh' && args[1] === 'download') {
-    const output = args[args.indexOf('--output') + 1]
-    const pattern = args[args.indexOf('--pattern') + 1]
-    await copyFile(join(dirname(output), pattern), output)
+function assetSimulator() {
+  const assets = new Map()
+  return async (command, args) => {
+    if (command === 'tar') await writeFile(args[1], 'archive')
+    if (command === 'gh' && args[1] === 'upload') {
+      for (const path of args.slice(3, args.indexOf('--repo'))) {
+        assets.set(path.slice(path.lastIndexOf('/') + 1), await readFile(path))
+      }
+    }
+    if (command === 'gh' && args[1] === 'download') {
+      const output = args[args.indexOf('--output') + 1]
+      const pattern = args[args.indexOf('--pattern') + 1]
+      if (!assets.has(pattern)) throw new Error('no assets match the file pattern')
+      await writeFile(output, assets.get(pattern))
+    }
   }
 }
 
 async function fixture(t) {
-  const repository = await mkdtemp(join(tmpdir(), 'worker-release-artifacts-'))
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const repository = await mkdtemp(join(cache, 'worker-release-artifacts-'))
   t.after(() => rm(repository, { recursive: true, force: true }))
   const git = args => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] })
   await mkdir(join(repository, 'apps/worker/artifacts'), { recursive: true })
@@ -347,17 +365,18 @@ test('retries a conflicting create after a stale missing release view without up
   const calls = []
   const waits = []
   let views = 0
+  const simulate = assetSimulator()
   const run = async (command, args) => {
-    await simulateAssetDownload(command, args)
-    if (command !== 'gh') return
+    if (command !== 'gh') return simulate(command, args)
     calls.push(args[1])
     if (args[1] === 'view' && views++ === 0) throw new Error('HTTP 404: release not found')
     if (args[1] === 'create') throw new Error('release already exists')
+    await simulate(command, args)
   }
   const result = await publishWorkerArtifactsToGitHub({ ...f, name: 'example/worker',
     artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
     sleep: async delay => { waits.push(delay) } })
   assert.equal(result.tag, `worker-${f.commit}`)
   assert.deepEqual(waits, [5000])
-  assert.deepEqual(calls, ['view', 'create', 'view', 'upload', 'download'])
+  assert.deepEqual(calls, ['view', 'create', 'view', 'download', 'upload', 'download'])
 })
