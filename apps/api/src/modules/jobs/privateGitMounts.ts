@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join } from 'node:path'
+import { DomainError } from '../errors.js'
 import { JOB_PRIVATE_GIT_LAYOUT, verifyPrivateJobRepositoryMounts, type PrivateJobRepositoryMounts } from '../sources/repository.js'
 import type { JobAcceptedSpecRecord, JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 export { JOB_PRIVATE_GIT_LAYOUT }
@@ -23,7 +24,7 @@ export function requireJobGitMounts(execution:JobGitSubject,source:{gitMounts?:V
     ||spec.target.destination.canonicalProjectRoot!==join(parent,'tree')||mounts.git.directory!==join(parent,'repository')
     ||mounts.scheduler.directory!==join(parent,'job-heavy-jobs')||mounts.git.filesystem.device!==mounts.scheduler.filesystem.device
     ||mounts.git.filesystem.mountId!==mounts.scheduler.filesystem.mountId)
-    throw new Error('Original qualified Job Git/scheduler mounts required.')
+    throw new DomainError('JOB_GIT_MOUNTS_INVALID', 'Original qualified Job Git/scheduler mounts required.', 409)
   return mounts
 }
 export async function verifyJobGitMounts(execution:JobExecutionRecord,source:{gitMounts?:VerifiedJobGitMounts}):Promise<void> {

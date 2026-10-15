@@ -61,8 +61,14 @@ it('journals the complete authenticated Worker connection used by the installed 
       jobConfiguration: { path: join(directory, 'unconfigured-job-runtime.json'), ownerUid: process.getuid!() }, approvedRoots: async () => approved,
       connection: () => ({ currentBinding: () => connection, mainNow: Date.now,
         captureRequest: namespace => ({ binding: connection, request: async raw => {
-        const frame = raw as { method: string; action: string }
-        expect(namespace).toBe('execution-v1'); expect(frame).toMatchObject({ method: 'job-authorize', action: 'read' })
+        const frame = raw as { method: string; action?: string; receipt?: { sequence: number; connection: unknown } }
+        expect(namespace).toBe('execution-v1')
+        // Reading the retained operation closes its abandoned preparation and reports that receipt to Main.
+        if (frame.method === 'job-report') {
+          expect(frame.receipt?.connection).toEqual(connection)
+          return { payload: { persistedSequence: frame.receipt!.sequence } }
+        }
+        expect(frame).toMatchObject({ method: 'job-authorize', action: 'read' })
         return { payload: { authorized: true, operationId: intent.operationId, attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner } }
       } }) }), codexSuiteRevision: 'connection-regression' })
     try {

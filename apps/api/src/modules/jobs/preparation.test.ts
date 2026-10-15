@@ -29,8 +29,15 @@ async function fixture(publication: 'complete' | 'failed' | 'expired' | 'collect
   const query = async (text: string, values?: unknown[]) => {
     let rows: unknown[] = []
     let rowCount = 0
-    if (text.includes('e.record as execution')) {
-      if (ticket.state === 'accepted') rows = [{ record: structuredClone(ticket), execution }]
+    if (text.startsWith('with completed as')) {
+      const closed = execution.process.phase === 'terminal' && execution.process.processStopped
+        && !['pending', 'collecting'].includes(execution.publication) && execution.finishedAt
+      if (ticket.state === 'accepted' && closed) {
+        ticket = JobQueueTicketSchema.parse({ ...ticket, state: 'terminal', terminalReason: 'completed',
+          finishedAt: execution.finishedAt, waitingReasons: [], queuePosition: null, estimatedStartAt: null,
+          revision: ticket.revision + 1 })
+        rowCount = 1
+      }
     } else if (text.startsWith('select e.record')) {
       if (publication === 'collecting' || !stopped) rows = [{ record: execution }]
     } else if (text.startsWith('select record from job_admission_queue where workspace_id')) {

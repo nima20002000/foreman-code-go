@@ -9,6 +9,7 @@ import { JOB_PRIVATE_GIT_LAYOUT } from '../../jobs/privateGitMounts.js'
 import type { QualifiedJobProfile } from '../../jobs/executor.js'
 import { privateFixtureDirectory } from '../../../../test/helpers/privateFixtureDirectory.js'
 import { jobExecution } from '../../../../test/helpers/jobFixture.js'
+import { DomainError } from '../../errors.js'
 import { JobRepository } from '../../jobs/repository.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteJobExecutionHost } from './jobExecutionHost.js'
@@ -37,7 +38,7 @@ async function fixture() {
     subject: { kind: 'manual-job', workspaceId: execution.workspaceId,
       jobExecutionId: execution.id, definitionId: execution.acceptedSpec.definitionId } })
   const authorize = vi.fn(async () => {})
-  const source = { verify: vi.fn(async () => { throw new Error('Preparation interrupted') }) }
+  const source = { verify: vi.fn(async () => { throw new DomainError('SOURCE_IDENTITY_MISMATCH', 'Pinned source changed', 409) }) }
   const policy = execution.acceptedSpec.policy
   const qualifiedProfile: QualifiedJobProfile = { workspaceLayout: JOB_PRIVATE_GIT_LAYOUT,
     policyId: policy.isolationPolicyId, policyRevision: policy.isolationPolicyRevision,
@@ -136,9 +137,12 @@ it.each(['startup', 'status'] as const)('settles accepted pre-entry preparation 
   const f = await fixture()
   await f.journal.jobAccept(f.intent, f.execution, f.connection, randomUUID())
   if (read === 'startup') await f.host.recover()
+  // A status read re-delivers a received Job whose preparation never started, so it prepares and fails once.
+  await f.host.handle({ method: 'job-status', intent: f.intent })
+  await f.host.drain()
   expect(await f.host.handle({ method: 'job-status', intent: f.intent })).toMatchObject({ status: 'known',
     receipt: { entryAttempted: false, terminal: { outcome: 'preparation_failed', processStopped: true },
       publication: 'complete' } })
   expect((await f.journal.jobReserveEntry(f.intent.operationId)).reserved).toBe(false)
-  expect(f.source.verify).not.toHaveBeenCalled()
+  expect(f.source.verify).toHaveBeenCalledTimes(read === 'status' ? 1 : 0)
 })

@@ -244,7 +244,8 @@ it('waits for the orphaned source writer lease to expire before attaching the or
     .finally(() => { settled = true })
   await vi.advanceTimersByTimeAsync(499)
   expect(settled).toBe(false)
-  expect(f.state.resolutions).toBe(0)
+  // Only the read-only liveness probe of the original process resolved a manager; no attachment yet.
+  expect(f.state.resolutions).toBe(1)
   expect(f.state.attaches).toBe(0)
   await vi.advanceTimersByTimeAsync(1)
   expect(await result).toEqual({ value: 'original source' })
@@ -268,7 +269,7 @@ it.each(['writer', 'owner'] as const)('refuses cold source attachment when the %
     ? expect(observing).rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
     : expect(observing).rejects.toThrow('RUN_OWNERSHIP_LOST')
   await vi.advanceTimersByTimeAsync(0)
-  expect(f.state.resolutions).toBe(0)
+  expect(f.state.resolutions).toBe(1)
   if (changed === 'writer') {
     await f.coordination.renewLane(f.lane.id, f.lane.leaseToken!, 1_000)
   } else {
