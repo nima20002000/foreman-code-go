@@ -29,6 +29,7 @@ import { mixedComputerPlacement } from './mixedComputerPlacement.js'
 import { prepareHandoffSource } from './handoffSourcePreparation.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+import { deferred } from './deferred.js'
 
 vi.hoisted(() => { process.env.LOG_LEVEL = 'warn' })
 
@@ -221,6 +222,7 @@ export async function faultWorkflowFixture(options: {
       return details
     }
     const completed = new Set<string>()
+    const entryFinished = deferred()
     let releaseAffected = false
     let releaseSibling = !options.loop
     const pump = setInterval(() => {
@@ -236,7 +238,10 @@ export async function faultWorkflowFixture(options: {
         if (context.agentId === entry.agentId && completed.has(`agent:${entry.agentId}`)) continue
         worker.replay.complete(turn.sessionId, turn.nativeTurnId, 'fixture complete')
         completed.add(turn.correlationId)
-        if (context.agentId === entry.agentId) completed.add(`agent:${entry.agentId}`)
+        if (context.agentId === entry.agentId) {
+          completed.add(`agent:${entry.agentId}`)
+          entryFinished.resolve()
+        }
       }
     }, 10)
     let started: Promise<PromiseSettledResult<void>[]> | undefined
@@ -262,16 +267,17 @@ export async function faultWorkflowFixture(options: {
       },
       launch() {
         started = Promise.allSettled([base.engine.start(base.f.run.id)])
-        return readUntil(async () => {
-          const intent = [...intents.values()].find(value => value.nodeId === entry.id)
-          return intent ? base.runs.getExecution(intent.executionId) : undefined
-        }, execution => execution?.result?.outcome === 'succeeded',
-        { timeoutMs: 4_000, minimumReadIntervalMs: 250, description: 'the initial graph entry completion' })
+        return Promise.race([entryFinished.promise, started.then(results => {
+          const failed = results.find(result => result.status === 'rejected')
+          if (failed?.status === 'rejected') throw failed.reason
+          return entryFinished.promise
+        })])
       },
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readActiveRemoteRun(base, placements, affected.id, readStartup),
       async finished() {
-        await readUntil(() => base.runs.get(base.f.run.id), value => value?.executionState === 'completed',
+        await readUntil(() => base.runs.getRepeatSnapshot(base.f.run.id), value =>
+          value.run.executionState === 'completed' && !value.cleanupPending,
         { timeoutMs: 8_000, minimumReadIntervalMs: 250, description: 'terminal Run readback' })
         const details = await read()
         expect(details.cleanupPending).toBe(false)
