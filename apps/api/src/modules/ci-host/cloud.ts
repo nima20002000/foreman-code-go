@@ -779,13 +779,14 @@ export class CloudCi {
       }
     } else if (defaultBranch) {
       const branchFetching = performance.now()
-      head = await fetchRepositoryBranch(this.git, clone, repository, defaultBranch, signal)
+      const branchHead = await fetchRepositoryBranch(this.git, clone, repository, defaultBranch, signal)
+      head = branchHead
       branchFetchMs = performance.now() - branchFetching
       fetchMs += branchFetchMs
-      const findMergeBase = () => this.git.git(['merge-base', commit, head], { cwd: clone, signal })
+      const findMergeBase = () => this.git.git(['merge-base', commit, branchHead], { cwd: clone, signal })
       let mergeBase = await findMergeBase()
       if (mergeBase.code !== 0) {
-        await deepenUntilConnected(this.git, clone, [commit, head], async () => (mergeBase = await findMergeBase()).code === 0, signal)
+        await deepenUntilConnected(this.git, clone, [commit, branchHead], async () => (mergeBase = await findMergeBase()).code === 0, signal)
       }
       if (mergeBase.code === 0) {
         const sourceBase = mergeBase.stdout.trim()
