@@ -6,13 +6,13 @@ import { HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSche
 import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
   ManualRunStartResultSchema, type WorkflowDefinitionV3, type WorkflowVersionV3 }
   from '@foreman-code/contracts/wave25'
-import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, pinnedPlacements, profileReader, profiles }
+import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { installationUpdateFixture, latestEvidence, pinnedPlacements, profileReader, profiles }
   from './helpers/harnessInstallationUpdate.js'
 
-describe('profile-scoped Start after Worker reconnect', () => {
+describe('profile-scoped Start after a Worker harness installation update', () => {
   it('prioritizes active placements and starts a checked profile while other profiles remain pending', async () => {
-    const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true })
+    const fixture = await installationUpdateFixture({ workflow: 'single' })
     let modelsBlocked = false
     let turnsBlocked = false
     const scope = { workspaceId: fixture.version.workspaceId, workflowId: fixture.version.workflowId }
@@ -63,7 +63,7 @@ describe('profile-scoped Start after Worker reconnect', () => {
       const callsBefore = (await fixture.provider.calls()).length
       await fixture.provider.blockModels()
       modelsBlocked = true
-      await fixture.restartWorker()
+      await fixture.restartWorker(undefined, { newBoot: true })
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
         new Set(calls.slice(callsBefore).filter(call => call.method === 'model/list')
           .map(call => call.workingDirectory)).size === 2, 'two parallel profile checks')
@@ -80,7 +80,8 @@ describe('profile-scoped Start after Worker reconnect', () => {
       const ready = mixed.find(profile => profile.instanceId === configured.instanceId)!
       const pending = mixed.find(profile => profile.qualification === 'qualifying')!
       const evidence = await latestEvidence(fixture)
-      const refreshed = evidence.filter(proof => proof.connectionGeneration !== before[0]!.connectionGeneration)
+      const refreshed = evidence.filter(proof =>
+        proof.target.installationFingerprint !== before[0]!.target.installationFingerprint)
       expect(refreshed).toHaveLength(2)
       expect(refreshed.every(proof => proof.qualified && proof.authenticated && proof.compatible)).toBe(true)
 
@@ -96,7 +97,7 @@ describe('profile-scoped Start after Worker reconnect', () => {
       const stopped = await waitForRemoteReview(async () => {
         await fixture.reconcile()
         return fixture.details(active.run.id)
-      }, details => details.run.executionState === 'completed', 'closure of the active placement after Worker restart')
+      }, details => details.run.executionState === 'completed', 'closure of the active placement after the installation update')
       expect(stopped.run.outcome).toBe('canceled')
       const pendingGraph = structuredClone(fixture.version.definition)
       const node = pendingGraph.nodes[0]!

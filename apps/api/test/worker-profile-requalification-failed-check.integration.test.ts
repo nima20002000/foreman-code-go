@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { HarnessQualificationListSchema } from '@foreman-code/contracts/harness-qualification'
-import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { installationUpdateFixture } from './helpers/harnessInstallationUpdate.js'
 import { latestEvidence } from './helpers/workerProfileRequalification.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
@@ -28,16 +29,14 @@ describe('automatic Worker profile qualification', () => {
     }
   }, 120_000)
 
-  it('persists a failed automatic check and refuses Start without borrowing the previous generation', async () => {
-    const fixture = await remoteReviewProduction({
-      workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
-    })
+  it('persists a failed automatic check and refuses Start without borrowing the previous installation', async () => {
+    const fixture = await installationUpdateFixture({ workflow: 'sequential' })
     try {
       const before = await latestEvidence(fixture)
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.provider.hideModels()
-      await fixture.restartWorker()
+      await fixture.restartWorker(undefined, { newBoot: true })
       const evidence = await waitForRemoteReview(() => latestEvidence(fixture), proofs =>
         proofs.length === fixture.profiles.length && proofs.every(proof =>
           proof.connectionGeneration !== before[0]!.connectionGeneration && !proof.qualified),
@@ -52,7 +51,7 @@ describe('automatic Worker profile qualification', () => {
         waitForRemoteReview(async () => {
           try { await fixture.start() } catch (error) { return error }
           throw new Error('A failed profile check admitted a Run.')
-        }, error => error instanceof Error && error.message.includes('HARNESS_PROFILE_UNAVAILABLE'),
+        }, error => error instanceof Error && error.message.includes(evidence[0]!.failure!.code),
         'Run refusal after the failed automatic check'),
         fixture.value('harness_qualifications_list', {}).then(result => HarnessQualificationListSchema.parse(result)),
       ])

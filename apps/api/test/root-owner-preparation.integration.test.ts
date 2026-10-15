@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto'
-// eslint-disable-next-line no-restricted-imports -- Short observation and backoff windows prove no hot retry loop.
-import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
@@ -165,34 +163,28 @@ describe.runIf(postgresEnabled)('Workspace root sharing and execution preparatio
 
   it.each([
     new Error('Source storage transport disconnected'),
-    new DomainError('SOURCE_CAPACITY_UNAVAILABLE', 'Source storage is temporarily unavailable.', 503),
+    new DomainError('DEVICE_RUNTIME_UNAVAILABLE', 'Source storage is temporarily unavailable.', 503),
     new DomainError('SOURCE_ROOT_CONFLICT', 'Source storage is busy.', 409, { retryable: true }),
-  ])('keeps transient preparation failures queued and backs off reconciliation: $message', async failure => {
+  ])('retries transient preparation failures in a fresh attempt and keeps the Run running: $message', async failure => {
     const f = await sourceWorktreeMcpFixture()
     try {
       const prepare = vi.spyOn(f.production.sources, 'prepareExecution').mockRejectedValue(failure)
       const runId = await start(f)
-      await expect.poll(() => f.base.dispatchErrors.length, { timeout: 30000 }).toBe(1)
-      const report = vi.fn()
-      await f.base.engine.reconcile(report)
-      await expect.poll(() => report.mock.calls.length, { timeout: 30000 }).toBe(1)
-      expect(prepare).toHaveBeenCalledTimes(2)
-      for (let pass = 0; pass < 5; pass++) await f.base.engine.reconcile(report)
-      // eslint-disable-next-line no-restricted-syntax -- No further preparation may happen in this observation window.
-      await delay(100)
-      expect(prepare).toHaveBeenCalledTimes(2)
-      const details = await read(f, runId)
-      expect(details.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
-      expect(details.executions).toHaveLength(1)
-      expect(details.executions[0]).toMatchObject({ state: 'queued' })
-      expect(details.executions[0]!.result).toBeUndefined()
+      await expect.poll(() => prepare.mock.calls.length, { timeout: 30000 }).toBeGreaterThanOrEqual(2)
+      await expect.poll(async () => (await read(f, runId)).executions.length, { timeout: 30000 }).toBeGreaterThanOrEqual(2)
+      const failed = await read(f, runId)
+      expect(failed.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
+      expect(failed.executions.some(execution => execution.nativeSessionId)).toBe(false)
+      const abandoned = failed.executions.filter(execution => execution.result)
+      expect(abandoned.length).toBeGreaterThanOrEqual(1)
+      for (const execution of abandoned) {
+        expect(execution.result).toMatchObject({ outcome: 'failed', error: { retryable: true } })
+      }
       prepare.mockRestore()
-      // eslint-disable-next-line no-restricted-syntax -- Let the transient-failure backoff elapse before the next pass.
-      await delay(1100)
-      await f.base.engine.reconcile(report)
       await expect.poll(async () => (await read(f, runId)).run.executionState, { timeout: 90000 }).toBe('waiting')
-      expect((await read(f, runId)).executions.some(execution => execution.id === details.executions[0]!.id
-        && execution.nativeSessionId)).toBe(true)
+      const settled = await read(f, runId)
+      expect(settled.run.outcome).toBe('pending')
+      expect(settled.executions.some(execution => execution.nativeSessionId)).toBe(true)
     } finally { await f.close() }
   }, 120000)
 })

@@ -70,7 +70,8 @@ it('leaves a live computer selection and its reservation untouched', async () =>
   expect(await f.cleanup.reconcile()).toBe(0)
   expect(f.reclaim).not.toHaveBeenCalled()
   expect((await f.pool.query('select state,record from source_storage_reservations where reservation_id=$1',
-    [orphan.reservation.reservationId])).rows[0]).toEqual({ state: 'owned', record: orphan.reservation })
+    [orphan.reservation.reservationId])).rows[0]).toEqual({ state: 'owned',
+    record: { ...orphan.reservation, cleanupRetry: { failures: 0, nextAttemptAt: expect.any(String) } } })
   expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
 }, 60_000)
 
