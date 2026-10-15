@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
-import { expect } from 'vitest'
+import { expect, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { SavedRunDetailsSchema, makeCurrentWorkflowFixture, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -24,6 +24,8 @@ import { mixedComputerPlacement } from './mixedComputerPlacement.js'
 import { prepareHandoffSource } from './handoffSourcePreparation.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
+
+vi.hoisted(() => { process.env.LOG_LEVEL = 'warn' })
 
 function faultWorkflowDefinition(options: { loop?: boolean }) {
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
