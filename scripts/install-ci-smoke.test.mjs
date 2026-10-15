@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0, answeredDiscoveries = Infinity } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -47,6 +47,8 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
       response.end(JSON.stringify({ tests: { summary: { passed: 1, failed: 0, skipped: 0 },
         files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
     } else if (request.url.endsWith('/computers')) {
+      // Later discoveries never answer, so the smoke deadline lands while one is in flight.
+      if (answeredDiscoveries-- <= 0) return
       if (slowDiscoveries > 0) {
         slowDiscoveries--
         await delay(200)
@@ -189,6 +191,13 @@ test('CI smoke fails for an enabled build computer that became unready', async t
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
   const f = await fixture(t, 'unready')
   await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin }), /CI setup: git unavailable/)
+  assert.equal(f.admissions.filter(input => input.smokeComputer).length, 0)
+})
+
+test('CI smoke names the unready build computer when the deadline lands during a later discovery', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, 'unready', undefined, { answeredDiscoveries: 1 })
+  await assert.rejects(runInstallCiSmoke({ ...options, timeoutMs: 300, origin: f.origin }), /CI setup: git unavailable/)
   assert.equal(f.admissions.filter(input => input.smokeComputer).length, 0)
 })
 
