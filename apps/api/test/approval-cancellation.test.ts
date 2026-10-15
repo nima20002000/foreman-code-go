@@ -584,7 +584,10 @@ it('rechecks durable native closure after a failed graph drain rather than trust
 it('does not claim native closure when a failed create never returned a session identity', async () => {
   const item = execution('one', 'starting')
   const f = await fixture([item])
-  f.managers.get('one')!.createImpl = async () => { throw new Error('native creation failed after process start') }
+  // An uncoded runtime error is transient and abandons only the attempt; a rejected creation keeps the Run's closure pending.
+  f.managers.get('one')!.createImpl = async () => {
+    throw new DomainError('NATIVE_SESSION_CREATE_REJECTED', 'native creation failed after process start', 409)
+  }
   await assert.rejects(f.observe(item), /native creation failed/)
   await assert.rejects(f.stop(item.runId), AggregateError)
   assert.ok(!f.calls.includes('release:one'))

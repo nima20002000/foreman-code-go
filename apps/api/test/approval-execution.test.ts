@@ -834,7 +834,7 @@ it('does not return an old delivered interaction when cold attachment fails', as
   f.delivered('request-a')
   f.resolver.release({ harness: f.manager.harness, executionId: f.candidate.id, agentId: f.candidate.agentId,
     workingDirectory: f.candidate.workingDirectory!, configuration: f.configuration })
-  f.manager.attachError = new Error('native session unavailable')
+  f.manager.attachError = new HarnessExecutionError('NATIVE_SESSION_UNAVAILABLE', 'native session unavailable')
   await assert.rejects(f.coordinator.observeExact(f.input), (error: unknown) => {
     assert.ok(error instanceof AggregateError)
     assert.equal((error.cause as Error).message, 'native session unavailable')
@@ -846,6 +846,22 @@ it('does not return an old delivered interaction when cold attachment fails', as
   assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
   assert.equal(f.manager.creates.length, 1)
   assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.negativeSettlements.length, 0)
+  assert.equal([...f.records.values()].find(row => row.nativeRequestId === 'request-a')?.status, 'delivered')
+})
+
+it('recovers a waiting attempt after a transient cold attachment failure without fencing the Run', async () => {
+  const f = fixture()
+  f.snapshot('request-a')
+  await f.coordinator.observeExact(f.input)
+  f.delivered('request-a')
+  f.resolver.release({ harness: f.manager.harness, executionId: f.candidate.id, agentId: f.candidate.agentId,
+    workingDirectory: f.candidate.workingDirectory!, configuration: f.configuration })
+  f.manager.attachError = new Error('native session unavailable')
+  await assert.rejects(f.coordinator.observeExact(f.input), (error: unknown) =>
+    error instanceof Error && !(error instanceof AggregateError) && error.message === 'native session unavailable')
+  assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
+  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
   assert.equal(f.negativeSettlements.length, 0)
   assert.equal([...f.records.values()].find(row => row.nativeRequestId === 'request-a')?.status, 'delivered')
 })
@@ -1052,6 +1068,20 @@ it('keeps cleanup retryable when stopping the budget keeps failing', async () =>
 it('does not stop the shared budget or revoke replacement credentials after ownership is lost', async () => {
   const f = fixture()
   f.snapshot('request-a')
+  f.manager.onHistory = () => {
+    f.owner.assertOwned = () => { throw new Error('execution owner disconnected') }
+  }
+  await assert.rejects(f.coordinator.observeExact(f.input), /owner disconnected/)
+  assert.equal(f.stops.length, 0)
+  assert.equal(f.revoked.length, 0)
+  assert.equal(f.manager.canceled.length, 0)
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.coordinator.residentRunIds(), [])
+})
+
+it('keeps a waiting attempt resident for its successor owner when ownership is lost', async () => {
+  const f = fixture()
+  f.snapshot('request-a')
   await f.coordinator.observeExact(f.input)
   f.delivered('request-a')
   f.snapshot()
@@ -1062,8 +1092,8 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.stops.length, 0)
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
-  assert.deepEqual(f.manager.closed, [f.manager.session])
-  assert.deepEqual(f.coordinator.residentRunIds(), [])
+  assert.deepEqual(f.manager.closed, [])
+  assert.deepEqual(f.coordinator.residentRunIds(), [f.candidate.runId])
 })
 
 it.each([undefined, 3_600_000])('initializes an execution budget from the workflow or server default (%s)', async (override) => {

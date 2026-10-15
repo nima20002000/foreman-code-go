@@ -185,8 +185,9 @@ describe('native launch, outcome and credential lifecycle', () => {
       assert.equal(f.counters().starts, 0)
       assert.equal(f.counters().disposals, 1)
       // The attempt is closed for its own retryable cause; its node starts a fresh attempt.
+      // A failure before the native session is published is an interrupted start.
       assert.deepEqual(f.failures.get(f.rows.keys().next().value!), { outcome: 'failed', error: {
-        code: 'NATIVE_EXECUTION_FAILED', message: 'session publication failed', retryable: true } })
+        code: 'EXECUTION_START_INTERRUPTED', message: 'session publication failed', retryable: true } })
       assert.deepEqual(f.negativeSettlements, [f.rows.keys().next().value])
     } finally {
       await f.close()
