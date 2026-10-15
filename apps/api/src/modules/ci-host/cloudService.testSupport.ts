@@ -48,6 +48,9 @@ export function cloudService(cloud: CloudCi, run: CiHostRun, commit: string,
   const authority: CiAuthority = { resolve: async () => ({ principal, workspaceId: 'workspace' }) }
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, authority, {} as CiCommits,
     { computers: async () => [computer], request: async (_computer, request) => cloud.handle(request) })
+  // A dispatch pass observes tickets in the background; wait for those observations to settle before the test reads.
+  const dispatch = service.dispatch.bind(service)
+  service.dispatch = async () => { await dispatch(); await service.drain() }
   return { service, read: (testStatus?: CiTestStatus[]) => service.get(principal,
     { workspaceId: 'workspace', ticketId: record.id, ...(testStatus ? { testStatus } : {}) }) }
 }

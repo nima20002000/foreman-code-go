@@ -59,3 +59,15 @@ it('answers while a slow provider log downloads and keeps the collected results'
   })
   expect(f.logs).toHaveBeenCalledTimes(1)
 })
+
+it('settles a GitHub result from the uploaded suite log when the provider log cannot be read', async () => {
+  const f = await fixture()
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
+  f.github.listed = [{ databaseId: 91, displayTitle: `ci ${runId}` }]
+  Object.assign(f.github, { status: 'completed', conclusion: 'failure', durations: {},
+    suiteLog: 'Suite output\n', logError: 'logs are expired' })
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1000 }))
+    .toMatchObject({ run: { state: 'failed', collection: 'complete' }, text: 'Suite output\n' })
+})

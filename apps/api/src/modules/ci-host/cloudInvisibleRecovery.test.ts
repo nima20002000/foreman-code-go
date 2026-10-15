@@ -47,7 +47,7 @@ it('measures an unstarted CircleCI visibility window from a delayed first lookup
 })
 
 it.each(['run.not_found', 'permission denied', 'rate limit reached'])(
-  'requeues despite best-effort CircleCI cancellation failing with %s', async cancelError => {
+  'keeps the CircleCI execution until its cancellation is confirmed, failing with %s', async cancelError => {
     const f = await cloudCiLookupFixture('running')
     try {
       f.control.operation = 'run'
@@ -56,10 +56,13 @@ it.each(['run.not_found', 'permission denied', 'rate limit reached'])(
       const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 65_536 }
       await f.cloud.handle(request)
       f.advance(75_000)
-      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'running',
         message: expect.stringContaining('Cancellation could not be confirmed') } })
-      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued' } })
-      expect(f.control.canceled).toEqual(['pipeline-1'])
+      f.control.cancelError = ''
+      f.advance(4_001)
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
+        message: expect.stringContaining('queued for another computer') } })
+      expect(new Set(f.control.canceled)).toEqual(new Set(['pipeline-1']))
     } finally { await f.close() }
   },
 )
