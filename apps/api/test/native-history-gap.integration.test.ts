@@ -13,6 +13,7 @@ import { RemoteOperationJournal } from '../src/modules/runs/remote/operationJour
 import { RemoteNativeSessionManager } from '../src/modules/runs/remote/nativeManagerProxy.js'
 import { ActivityProductionReplay } from './helpers/activityProductionReplay.js'
 import { input } from './fixtures/codex-test-helpers.js'
+import { readUntil } from './helpers/observableCondition.js'
 
 async function workerFixture() {
   const scratch = join(homedir(), '.cache', 'foreman-tmp')
@@ -109,7 +110,9 @@ describe('native event retention recovery', () => {
       const session = await f.proxy.createSession(f.start)
       await f.host.startTurn(f.intent.operationId, 'busy turn', f.correlationId)
       // Completion occurs before Main observes the turn, after the Worker has drained its live stream.
-      while (!f.replay.starts.length) await new Promise<void>(resolve => setImmediate(resolve))
+      await readUntil(() => f.manager.history(session),
+        history => history.events.some(event => event.type === 'turn.started'),
+        { timeoutMs: 5_000, description: 'the Worker turn acknowledgement' })
       const turn = f.replay.starts[0]!
       for (let index = 0; index < 1500; index++) f.replay.append(session.nativeSessionId, turn.nativeTurnId, `event-${index}`)
       f.replay.complete(session.nativeSessionId, turn.nativeTurnId, 'saved Worker result')

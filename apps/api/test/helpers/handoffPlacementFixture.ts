@@ -15,6 +15,7 @@ import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './mixedComputerPlacement.js'
 import { readUntil } from './observableCondition.js'
 import { prepareHandoffSource } from './handoffSourcePreparation.js'
+import { handoffOutput } from './workHandoffSiblings.js'
 
 /** Real placement, graph, lifecycle and MCP services; only the native provider
  * and physical source preparation are synthetic. No device or CI job is contacted. */
@@ -37,8 +38,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   let runId: string | undefined
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
-    outputFor: () => ({ routing: { kind: 'finish' },
-      data: { latestDeliverable: { ready: true }, remainingFindings: [] } }),
+    outputFor: handoffOutput,
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, digest) => {
       if (!placement) throw new Error('Placement fixture is not ready.')
       await placement.producer.admitExecution(sql, owner, execution, ref, digest, run.authorizationPrincipalId)

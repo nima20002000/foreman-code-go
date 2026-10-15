@@ -7,6 +7,7 @@ import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { componentLogger } from '../diagnostics/logger.js'
 import { isDatabaseTimeout, retryDatabaseTimeout, retryDatabaseOperation } from '../../infrastructure/databaseTimeout.js'
+import { isTransactionConflict } from '../../infrastructure/transaction.js'
 import { isRetryableLaneRenewal } from './laneRenewal.js'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
@@ -509,8 +510,11 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   private async recordSkippedEvents(lease: SessionWriteLease, input: NativeTurnInput, gap: DeviceHistoryGap) {
     await lease.guard.check()
-    await retryDatabaseTimeout(() => this.coordination.recordSkippedEvents(lease.fence, input.clientCorrelationId, gap),
-      { signal: lease.guard.signal })
+    await retryDatabaseOperation(
+      () => this.coordination.recordSkippedEvents(lease.fence, input.clientCorrelationId, gap),
+      error => isDatabaseTimeout(error) || isTransactionConflict(error),
+      { signal: lease.guard.signal },
+    )
     await input.onEventsSkipped?.(gap)
     await lease.guard.check()
   }

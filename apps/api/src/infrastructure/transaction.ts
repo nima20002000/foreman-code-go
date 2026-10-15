@@ -123,7 +123,7 @@ async function timedPerform<T>(client: pg.ClientBase, timing: TransactionTiming,
   try { return await perform() } finally { restore() }
 }
 
-function isTransactionConflict(error: unknown): boolean {
+export function isTransactionConflict(error: unknown): boolean {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
   return code === '40001' || code === '40P01'
 }

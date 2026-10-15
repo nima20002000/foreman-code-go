@@ -60,6 +60,8 @@ export function testRootInUse(directory) {
       if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) continue
       const identity = processIdentity(Number(entry))
       if (!identity || ['Z', 'X'].includes(identity.state)) continue
+      // Protected processes can retain a user-owned /proc directory with a root-owned environment.
+      if (lstatSync(`/proc/${entry}/environ`).uid !== process.getuid()) continue
       if (processUsesRoot(Number(entry), directory)) return true
     } catch (error) {
       if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error
