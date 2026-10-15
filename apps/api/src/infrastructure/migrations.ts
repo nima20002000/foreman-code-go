@@ -1,5 +1,6 @@
 import { activityHistoryIndexesMigration } from './activityHistoryIndexesMigration.js'
 import { artifactTransferLookupMigration } from './artifactTransferLookupMigration.js'
+import { jobInputTransferLookupMigration } from './jobInputTransferLookupMigration.js'
 import { deviceManagedMcpMigration } from './deviceManagedMcpMigration.js'
 import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
 import { ciGrantMigration } from './ciGrantMigration.js'
@@ -954,6 +955,7 @@ export const migrations = [
   ciGroupWaitMigration,
   ciRecoveryIndexesMigration,
   activityHistoryIndexesMigration,
+  jobInputTransferLookupMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
