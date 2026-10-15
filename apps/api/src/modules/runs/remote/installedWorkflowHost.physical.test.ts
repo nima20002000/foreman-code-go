@@ -30,6 +30,7 @@ import {
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 import { DeviceApplicationAdmissionError } from '../../devices/deviceApplicationError.js'
 import { physicalFixture } from './__tests__/installedWorkflowHost.js'
+import type { NativeHistory } from '../../harnesses/port.js'
 import { deferred } from '../../../../test/helpers/deferred.js'
 
 describe('original physical source selectors and Main SQL consumer',()=>{
@@ -446,13 +447,13 @@ it('bounds the global original-source byte window and frees it only through expl
 })
 
 describe('physical readout retention never wedges an operation',()=>{
-  const observation=(f:Awaited<ReturnType<typeof physicalFixture>>,history:typeof f.source.history,
+  const observation=<History extends object>(f:Awaited<ReturnType<typeof physicalFixture>>,history:History,
     overrides:{sequence?:number;assertOwnerCurrent?:()=>Promise<void>}={})=>({
     readout:{...f.readout,history,receipt:{...f.readout.receipt,sequence:overrides.sequence??f.readout.receipt.sequence}},
     placement:f.placement,source:{type:'history' as const,history},leaseExpiresAt:'2099-01-01T00:00:00.000Z',
     assertOwnerCurrent:overrides.assertOwnerCurrent??(async()=>{}),assertCurrent:async()=>{},
     observe:()=>f.captured.launch,closure:()=>null})
-  const selector=(f:Awaited<ReturnType<typeof physicalFixture>>,history:typeof f.source.history,
+  const selector=(f:Awaited<ReturnType<typeof physicalFixture>>,history:NativeHistory,
     sequence=f.readout.receipt.sequence)=>({intent:f.intent,placement:f.placement,receiptSequence:sequence,
     sourceDigest:remoteWorkflowSourceDigest({type:'history',history})})
 
