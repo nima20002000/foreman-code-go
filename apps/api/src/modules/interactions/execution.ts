@@ -3104,8 +3104,12 @@ export class ApprovalExecutionCoordinator {
         // Infrastructure failure: close this attempt alone; its node starts a fresh one.
         observation.resolved?.markFailed?.()
         // The stored attempt, not the in-memory copy, which may hold an unpublished session.
-        await persist(async () => this.abandonAttempt(input.owner, (await repeat.readExecution(observation.execution.id)).execution,
-          transientExecutionFailure(error, 'NATIVE_EXECUTION_FAILED')))
+        await persist(async () => {
+          const execution = (await repeat.readExecution(observation.execution.id)).execution
+          const startInterrupted = !execution.nativeSessionId && ['queued', 'starting'].includes(execution.state)
+          const fallbackCode = startInterrupted ? 'EXECUTION_START_INTERRUPTED' : 'NATIVE_EXECUTION_FAILED'
+          await this.abandonAttempt(input.owner, execution, transientExecutionFailure(error, fallbackCode))
+        })
         throw error
       }
       await persist(() => this.runs.requestCleanup(observation.execution.runId, input.owner, failure,
