@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
+import { DomainError } from '../errors.js'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -105,7 +106,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   }
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits,
     endpoint, undefined, options)
-  return { service, started, writes: () => writes }
+  return { service, endpoint, started, writes: () => writes }
 }
 
 const secondHost: HostCiComputer = {
@@ -133,6 +134,39 @@ it('spreads a queued partition away from a sibling dispatched in an earlier pass
   const f = fleet(records, [host, secondHost], new Map(), new Set(), new Map([[host.key, 2]]))
   await f.service.dispatch()
   expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key])
+})
+
+it.each(['typecheck', 'lint', 'build'] as const)('spreads unpartitioned %s parts across free computers', async suite => {
+  const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run,
+    suite, part: `${suite}-${index === 0 ? 'api' : 'other'}`, partition: null,
+  }))
+  const f = fleet(records, [host, secondHost], new Map(), new Set(), new Map([[host.key, 2]]))
+  await f.service.dispatch()
+  expect(f.started.map(item => item.computer.key)).toEqual([host.key, secondHost.key])
+  expect(records.map(run => run.state)).toEqual(['running', 'running'])
+})
+
+it('rechecks sibling placement before falling back after a busy start', async () => {
+  const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
+    partition: { ...run.partition, weights: [1, 1], tier: 'fast' }, plannedHostKey: host.key,
+  }))
+  const spare: HostCiComputer = { key: 'device:spare', label: 'Spare builder', priority: -2,
+    hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
+  const f = fleet(records, [host, secondHost, spare], new Map(), new Set(), new Map([[secondHost.key, 2]]))
+  const request = f.endpoint.request
+  const siblingStarted = Promise.withResolvers<void>()
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+    if (input.operation === 'start' && computer.key === host.key) {
+      await siblingStarted.promise
+      throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
+    }
+    if (input.operation === 'start' && computer.key === secondHost.key) siblingStarted.resolve()
+    return request(computer, input)
+  })
+  await f.service.dispatch()
+  expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key, spare.key])
+  expect(records.map(run => run.state)).toEqual(['running', 'running'])
+  expect(records[0]?.computer?.hostRef).toEqual(spare.hostRef)
 })
 
 it.each(['busy', 'not-ready', 'offline'])('uses a second slot when the other computer is %s', async reason => {
