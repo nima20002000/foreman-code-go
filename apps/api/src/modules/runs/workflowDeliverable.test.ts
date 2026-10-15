@@ -45,7 +45,7 @@ describe('workflow deliverable reference lookups', () => {
     expect(failure).toMatchObject({ outcome: 'failed', error: { code: 'OUTPUT_REFERENCE_UNKNOWN', retryable: false } })
     expect(failure?.error?.message).toContain('/1:')
     expect(failure?.error?.message).toContain('/3:')
-    expect(f.lookup).toHaveBeenCalledTimes(1)
+    expect(f.lookup).toHaveBeenCalledTimes(2)
     expect(f.lookup.mock.calls[0]![1]).toEqual([[known, foreign], f.version.workspaceId, f.execution.id])
   })
 
@@ -58,10 +58,10 @@ describe('workflow deliverable reference lookups', () => {
         const first = await workflowDeliverableFailure(sql, f.version, f.execution)
         const second = await workflowDeliverableFailure(sql, f.version, structuredClone(f.execution))
         expect(second).toEqual(first)
-        expect(f.lookup).toHaveBeenCalledTimes(1)
+        expect(f.lookup).toHaveBeenCalledTimes(2)
       })
       await connection.transaction(sql => workflowDeliverableFailure(sql, f.version, f.execution))
-      expect(f.lookup).toHaveBeenCalledTimes(2)
+      expect(f.lookup).toHaveBeenCalledTimes(4)
     } finally {
       await connection.close()
     }
@@ -77,7 +77,7 @@ describe('workflow deliverable reference lookups', () => {
         const corrected = { ...f.execution, result: { outcome: 'succeeded' as const,
           output: { text: JSON.stringify([known]) } } }
         expect(await workflowDeliverableFailure(sql, f.version, corrected)).toBeUndefined()
-        expect(f.lookup).toHaveBeenCalledTimes(2)
+        expect(f.lookup).toHaveBeenCalledTimes(3)
       })
     } finally {
       await connection.close()

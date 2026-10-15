@@ -10,16 +10,17 @@ import { HarnessExecutionError } from '../harnesses/errors.js'
  * data is a choice or artifactOutputs envelope's data; latestDeliverable is a handoff or repeat exit's data.latestDeliverable. */
 export type DeliverableSource = 'text' | 'data' | 'latestDeliverable'
 
-/** Per-execution deliverable contract. referencesExist answers from app records, scoped to this execution. */
+/** Per-execution deliverable contract. Omitting values lists all references this execution created. */
 export interface DeliverableContract {
   source: DeliverableSource
   outputSchema?: OutputSchema | undefined
-  referencesExist(kind: OutputReferenceKind, values: readonly string[]): Promise<ReadonlySet<string>>
+  referencesExist(kind: OutputReferenceKind, values?: readonly string[]): Promise<ReadonlySet<string>>
 }
 
 export interface DeliverableVerdict {
   code: typeof OUTPUT_MISMATCH_CODE | typeof OUTPUT_REFERENCE_UNKNOWN_CODE
   issues: DeliverableIssue[]
+  referenceHints?: string[]
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -45,6 +46,29 @@ function deliverableOf(output: unknown, contract: DeliverableContract): { value:
   return isObject(envelope.data) ? { value: envelope.data.latestDeliverable } : undefined
 }
 
+function editDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+  for (let row = 1; row <= left.length; row++) {
+    const current = [row]
+    for (let column = 1; column <= right.length; column++) {
+      const substitution = previous[column - 1]! + (left[row - 1] === right[column - 1] ? 0 : 1)
+      current[column] = Math.min(previous[column]! + 1, current[column - 1]! + 1, substitution)
+    }
+    previous = current
+  }
+  return previous[right.length]!
+}
+
+function referenceHint(kind: OutputReferenceKind, value: string, available: ReadonlySet<string>): string {
+  const limit = 50
+  const closest = [...available].map(id => ({ id, distance: editDistance(value, id) }))
+    .sort((left, right) => left.distance - right.distance || left.id.localeCompare(right.id))
+    .slice(0, limit).map(reference => reference.id)
+  const omitted = available.size - closest.length
+  const suffix = omitted > 0 ? ` (${omitted} more omitted)` : ''
+  return `Valid ${kind} IDs (closest match first): ${JSON.stringify(closest)}${suffix}`
+}
+
 /** Returns undefined when the deliverable passes; otherwise the code and every issue for the repair turn. */
 export async function deliverableVerdict(result: ExecutionResult, contract: DeliverableContract): Promise<DeliverableVerdict | undefined> {
   if (result.outcome !== 'succeeded') return undefined
@@ -62,6 +86,8 @@ export async function deliverableVerdict(result: ExecutionResult, contract: Deli
   if (issues.length) return { code: OUTPUT_MISMATCH_CODE, issues }
   const references = deliverableReferences(contract.outputSchema, deliverable.value)
   const existing = new Map<OutputReferenceKind, ReadonlySet<string>>()
+  const available = new Map<OutputReferenceKind, ReadonlySet<string>>()
+  const referenceHints: string[] = []
   for (const kind of new Set(references.map(reference => reference.kind))) {
     const values = [...new Set(references.filter(reference => reference.kind === kind).map(reference => reference.value))]
     existing.set(kind, await contract.referencesExist(kind, values))
@@ -70,9 +96,15 @@ export async function deliverableVerdict(result: ExecutionResult, contract: Deli
     if (!existing.get(reference.kind)?.has(reference.value)) {
       issues.push({ code: OUTPUT_REFERENCE_UNKNOWN_CODE, path: reference.path,
         message: `${reference.kind} ${reference.value} was not created by this execution.` })
+      let candidates = available.get(reference.kind)
+      if (!candidates) {
+        candidates = await contract.referencesExist(reference.kind)
+        available.set(reference.kind, candidates)
+      }
+      referenceHints.push(`${reference.path || '/'}: ${referenceHint(reference.kind, reference.value, candidates)}`)
     }
   }
-  return issues.length ? { code: OUTPUT_REFERENCE_UNKNOWN_CODE, issues } : undefined
+  return issues.length ? { code: OUTPUT_REFERENCE_UNKNOWN_CODE, issues, referenceHints } : undefined
 }
 
 /** One corrective turn in the same native session, listing every validation error exactly. */
@@ -80,6 +112,7 @@ export function deliverableRepairPrompt(verdict: DeliverableVerdict, outputSchem
   return [
     'Your deliverable failed the workflow output contract.',
     `Validation issues: ${JSON.stringify(verdict.issues)}`,
+    ...(verdict.referenceHints ?? []),
     'Return the complete corrected final answer in the same format as before. Preserve the valid parts of your deliverable.',
     'This is a corrective turn in the same execution. Do not repeat the task or perform additional work.',
     `Output contract: ${outputSchema ? JSON.stringify(outputSchema) : 'a deliverable that is not empty'}`,

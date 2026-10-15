@@ -4,7 +4,8 @@ import { deliverableFailure, deliverableRepairPrompt, deliverableVerdict, native
 
 const known = new Set(['ticket-created-here'])
 const contract = (over: Partial<DeliverableContract> = {}): DeliverableContract => ({
-  source: 'text', referencesExist: async (_kind, values) => new Set(values.filter(value => known.has(value))), ...over,
+  source: 'text', referencesExist: async (_kind, values) =>
+    values === undefined ? known : new Set(values.filter(value => known.has(value))), ...over,
 })
 const finalText = (text: string): ExecutionResult => ({ outcome: 'succeeded', output: { text } })
 const schema = {

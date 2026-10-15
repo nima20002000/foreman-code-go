@@ -14,15 +14,18 @@ const terminalVerdicts = new WeakMap<Queryable, Map<string, Promise<ExecutionRes
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** References are valid only for records this same execution created. */
-export async function referencesCreatedByExecution(db: Queryable, kind: OutputReferenceKind, values: readonly string[],
+export async function referencesCreatedByExecution(db: Queryable, kind: OutputReferenceKind, values: readonly string[] | undefined,
   workspaceId: string, executionId: string): Promise<ReadonlySet<string>> {
   if (kind !== 'ciTicket') return new Set()
-  const ids = [...new Set(values.filter(value => UUID.test(value)).map(value => value.toLowerCase()))]
-  if (!ids.length) return new Set()
+  const ids = values === undefined ? null
+    : [...new Set(values.filter(value => UUID.test(value)).map(value => value.toLowerCase()))]
+  if (ids?.length === 0) return new Set()
   const result = await db.query(`select id from ci_runs
-    where id=any($1::uuid[]) and workspace_id=$2 and record#>>'{initiator,executionId}'=$3`,
+    where ($1::uuid[] is null or id=any($1::uuid[]))
+      and workspace_id=$2 and record#>>'{initiator,executionId}'=$3`,
   [ids, workspaceId, executionId])
   const existing = new Set(result.rows.map(row => row.id))
+  if (values === undefined) return existing
   return new Set(values.filter(value => existing.has(value.toLowerCase())))
 }
 
