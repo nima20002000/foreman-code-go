@@ -980,9 +980,17 @@ export class CloudCi {
       }
     }
     const detail = (error instanceof Error ? error.message : String(error)).slice(0, 500)
-    const cancellation = cancellationFailed ? 'Cancellation could not be confirmed.' : 'Cancellation requested.'
+    if (cancellationFailed) {
+      // The provider job may still run: keep this executor's ownership and retry the cancellation on the next poll.
+      const now = this.ports.now().toISOString()
+      return this.save({ ...run, message: sanitizeCiText(`${this.provider.label} execution stayed unreadable past the `
+        + `75-second window: ${detail} Cancellation could not be confirmed; retrying before another computer takes over.`),
+      reconciliation: { attempts: Math.min(MAX_DISPATCH_ATTEMPTS, (run.reconciliation?.attempts ?? 0) + 1), at: now,
+        since: run.reconciliation?.since ?? run.reconciliation?.at ?? now,
+        previousMessage: run.reconciliation ? run.reconciliation.previousMessage : run.message } })
+    }
     const message = sanitizeCiText(`${this.provider.label} execution stayed unreadable past the 75-second window: `
-      + `${detail} ${cancellation} Automatic recovery queued for another computer.`)
+      + `${detail} Cancellation requested. Automatic recovery queued for another computer.`)
     await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
     const recovered: CloudRun = { ...run, state: 'queued', providerRunId: null, finishedAt: null,
       exitCode: null, message }
