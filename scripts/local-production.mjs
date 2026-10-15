@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { runProductionCiSmoke } from './install-ci-smoke.mjs'
-import { readMigrationSchema } from './production-schema.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
@@ -19,7 +18,7 @@ import {
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
   needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot, buildProductionSource,
-  backupDatabase, restoreDatabase, readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
+  readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
   measureProductionStep,
 } from './local-production-runtime.mjs'
 
@@ -89,7 +88,7 @@ async function stageRelease({ source: buildSource, commit }, runBuild, previousR
     await cp(join(buildSource, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
-      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs', 'production-schema.mjs']) {
+      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs']) {
       await copyFile(join(buildSource, 'scripts', name), join(release, 'scripts', name))
     }
     await copyVerificationRuntime(buildSource, release)
@@ -222,21 +221,10 @@ async function activateRelease(release) {
   }
 }
 
-function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = () => {} } = {}) {
-  const databaseCommand = async (command, args, options) => {
-    if (!environment) throw new Error('Restore production.env before recovering this deployment.')
-    await run('/usr/bin/docker', ['compose', '--project-name', 'graphql-local-production',
-      '--file', join(app, 'compose.production.yaml'), 'exec', '-T', '-e', 'PGPASSWORD', '-e', 'PGUSER',
-      'postgres', command, ...args], {
-      ...options, env: { ...process.env, ...environment,
-        PGUSER: 'graphql_production', PGPASSWORD: readProductEnvironment(environment, 'PRODUCTION_DB_PASSWORD') },
-    })
-  }
+function cutoverSteps(environment, { firstInstall = false } = {}) {
   return {
     pendingMigrations: release => readPendingMigrations(release, environment.DATABASE_URL),
     stop: () => run('/usr/bin/systemctl', ['--user', 'stop', units.api]),
-    backup: archive => backupDatabase({ archive, database: 'graphql_production', run: databaseCommand }),
-    schema: release => readMigrationSchema(release, environment.DATABASE_URL),
     migrate: release => run(join(release, 'node'), ['dist/cli/migrate.js'], {
       cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
     }),
@@ -251,11 +239,6 @@ function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = 
     ready: release => waitForReady({ selectedRelease: release }),
     checkReady: (release, { start, rollback }) => waitForReady({ selectedRelease: release,
       start, smoke: () => runAuthenticatedCiSmoke(release, environment), rollback }),
-    restore: async archive => {
-      // The API is stopped; close the maintenance connection before recreating its database.
-      await releaseMaintenance()
-      await restoreDatabase({ archive, database: 'graphql_production', run: databaseCommand })
-    },
   }
 }
 
@@ -295,15 +278,15 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
     await installDesktop(firstInstall, snapshot.source)
     await run('/usr/bin/systemctl', ['--user', 'daemon-reload'])
     await run('/usr/bin/systemctl', ['--user', 'start', units.database])
-    const cutover = async (releaseMaintenance = () => {}) => {
+    const cutover = async () => {
       cutoverBegan = true
       await runReleaseCutover({ release, previousRelease, stateFile: deploymentFile,
-        backupFile: join(release, 'database.dump'), steps: cutoverSteps(environment, { firstInstall, releaseMaintenance }) })
+        steps: cutoverSteps(environment, { firstInstall }) })
     }
     if (previousRelease) {
-      await readActiveRuns(release, environment.DATABASE_URL, async (query, releaseMaintenance) => {
+      await readActiveRuns(release, environment.DATABASE_URL, async query => {
         await waitForIdleRuns({ query, timeoutMs, interrupt: process.env.FOREMAN_INSTALL_INTERRUPT_RUNS === '1' })
-        await cutover(releaseMaintenance)
+        await cutover()
       })
     } else await cutover()
     await recordStartupConfiguration(startupFile)
