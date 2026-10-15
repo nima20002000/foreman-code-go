@@ -1,8 +1,10 @@
 import { ExecutionResultSchema, type ExecutionResult } from '@foreman-code/contracts'
 import {
-  OUTPUT_MISMATCH_CODE, OUTPUT_REFERENCE_KEYWORD, OUTPUT_REFERENCE_UNKNOWN_CODE, checkDeliverable, deliverableReferences,
+  OUTPUT_MISMATCH_CODE, OUTPUT_REFERENCE_KEYWORD, OUTPUT_REFERENCE_UNKNOWN_CODE, OUTPUT_SCHEMA_INVALID_CODE,
+  checkDeliverable, deliverableReferences,
   type DeliverableIssue, type OutputReferenceKind, type OutputSchema,
 } from '@foreman-code/contracts/wave25'
+import { HarnessExecutionError } from '../harnesses/errors.js'
 
 /** Where a workflow Agent's deliverable sits in its successful result: text is the plain final answer;
  * data is a choice or artifactOutputs envelope's data; latestDeliverable is a handoff or repeat exit's data.latestDeliverable. */
@@ -53,6 +55,10 @@ export async function deliverableVerdict(result: ExecutionResult, contract: Deli
   }
   if (!deliverable) return undefined
   const issues = checkDeliverable(deliverable.value, contract.outputSchema)
+  if (issues.some(issue => issue.code === OUTPUT_SCHEMA_INVALID_CODE)) {
+    throw new HarnessExecutionError(OUTPUT_SCHEMA_INVALID_CODE,
+      `The workflow output schema is invalid. ${issues.map(issue => issue.message).join('; ')}`, false)
+  }
   if (issues.length) return { code: OUTPUT_MISMATCH_CODE, issues }
   for (const reference of deliverableReferences(contract.outputSchema, deliverable.value)) {
     if (!await contract.referenceExists(reference.kind, reference.value)) {

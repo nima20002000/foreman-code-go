@@ -1,4 +1,4 @@
-import type { AgentConfigurationVersion } from '@foreman-code/contracts'
+import type { AgentConfigurationVersion, ResolvedSkill } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { SavedWorkflowDefinition, SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -67,14 +67,10 @@ export class PostgresWorkflowRepository {
     return result.rows[0] ? readImmutableAgentConfiguration(result.rows[0], { id: configurationVersionId }) : undefined
   }
 
-  /** Resolves one node's skill override into an execution-start snapshot; the pinned configuration is unchanged. */
-  async resolveNodeSkills(configuration: AgentConfigurationVersion, override: NodeSkillOverride): Promise<AgentConfigurationVersion> {
-    const client = await this.pool.connect()
-    try {
-      return await configurationWithNodeSkills(client, configuration, override)
-    } finally {
-      client.release()
-    }
+  /** Composes one node's saved skill snapshots without consulting the mutable catalog. */
+  async resolveNodeSkills(configuration: AgentConfigurationVersion, override: NodeSkillOverride,
+    additions: readonly ResolvedSkill[] = []): Promise<AgentConfigurationVersion> {
+    return configurationWithNodeSkills(configuration, override, additions)
   }
 
   /** A reference is valid only for a record this same execution created. */

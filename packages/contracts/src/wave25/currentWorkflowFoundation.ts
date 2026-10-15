@@ -24,6 +24,8 @@ export const CurrentWorkflowVersionBaseSchema = z.object({
   version: z.number().int().positive(), executionSemanticsVersion: CurrentExecutionSemanticsSchema,
   entryNodeId: GraphIdSchema, definition: CurrentWorkflowDefinitionBaseSchema.extend({ handoffs: WorkHandoffPolicyV1Schema.optional() }),
   agentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
+  /** Server-resolved node additions retained with this immutable workflow version. */
+  nodeSkillSnapshots: z.record(GraphIdSchema, AgentConfigurationVersionSchema.shape.resolvedSkills.unwrap()).optional(),
   approval: AcceptedWorkflowApprovalConfigurationSchema,
   contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/), createdAt: TimestampSchema,
 }).strict()
