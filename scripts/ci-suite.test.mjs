@@ -483,3 +483,41 @@ test('cloud Node bootstrap uses the cached toolchain without invoking nvm', t =>
   assert.ok(calls.includes('node --version'))
   assert.match(shellEnvironment, /\.nvm\/versions\/node\/v22\.23\.2\/bin/)
 })
+
+test('cloud startup installs the harness CLIs once into a cacheable prefix and reuses them', async t => {
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  mkdirSync(cache, { recursive: true })
+  const directory = mkdtempSync(join(cache, 'ci-clis-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const callsFile = join(directory, 'calls.jsonl')
+  const prefix = join(directory, 'clis')
+  mkdirSync(join(directory, 'bin'))
+  writeFileSync(join(directory, 'bin', 'npm'), `#!${process.execPath}
+const { appendFileSync, mkdirSync, writeFileSync } = require('node:fs')
+const { join } = require('node:path')
+const args = process.argv.slice(2)
+appendFileSync(process.env.CALLS_FILE, JSON.stringify(args) + '\\n')
+const bin = join(args[args.indexOf('--prefix') + 1], 'bin')
+mkdirSync(bin, { recursive: true })
+for (const name of ['codex', 'claude']) writeFileSync(join(bin, name), '#!/bin/bash\\n', { mode: 0o755 })
+`, { mode: 0o755 })
+  writeFileSync(join(directory, 'bin', 'node'), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+  const start = async index => {
+    const state = join(directory, `state-${index}`)
+    const result = spawnSync('bash', [script, 'start'], { encoding: 'utf8', cwd: directory, env: {
+      ...process.env, SUITE: 'integration', CI_STATE: state, CALLS_FILE: callsFile, CI_HOST_RUNNER: '0',
+      FOREMAN_CODE_CI_CLIS_PREFIX: prefix, PATH: `${join(directory, 'bin')}${delimiter}${process.env.PATH}` } })
+    assert.equal(result.status, 0, result.stderr)
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { readFileSync(join(state, 'clis.exit')); break } catch { await new Promise(resolve => setTimeout(resolve, 50)) }
+    }
+    assert.equal(readFileSync(join(state, 'clis.exit'), 'utf8').trim(), '0')
+  }
+  writeFileSync(callsFile, '')
+  await start(1)
+  await start(2)
+  const calls = readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].some(argument => /^--before=\d{4}-\d{2}-\d{2}T/.test(argument)))
+  assert.ok(readFileSync(join(prefix, 'bin', 'codex'), 'utf8'))
+})

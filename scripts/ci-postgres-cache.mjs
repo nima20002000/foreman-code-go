@@ -7,8 +7,14 @@ export function ciPostgresCacheDirectory(environment = process.env) {
   return environment.FOREMAN_CODE_CI_POSTGRES_CACHE ?? join(homedir(), '.cache', 'foreman-ci-postgres')
 }
 
+// The heavy-job wrapper replaces TMPDIR, so the host run's directory travels in its own variable.
+export function ciTemplateCacheMarker(environment = process.env) {
+  const directory = environment.FOREMAN_CODE_CI_DATABASE_STATE ?? environment.TMPDIR
+  return directory ? join(directory, 'test-database-template-cache') : undefined
+}
+
 export function ciTemplateCacheDirectory(environment = process.env) {
-  if (!ciPostgresCacheDirectory(environment) || !environment.TMPDIR) return undefined
-  const marker = join(environment.TMPDIR, 'test-database-template-cache')
+  const marker = ciTemplateCacheMarker(environment)
+  if (!ciPostgresCacheDirectory(environment) || !marker) return undefined
   return existsSync(marker) ? readFileSync(marker, 'utf8') : undefined
 }
