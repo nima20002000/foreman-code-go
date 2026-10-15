@@ -72,7 +72,7 @@ export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3
 /** Longest ci_get wait budget; the managed launcher's native tool deadline is derived from it. */
 export const CI_WAIT_MAX_SECONDS = 1800
 export const CiGetInputSchema = CiTicketInputSchema.extend({
-  waitSeconds: z.number().min(0).max(60).optional().describe('Defaults to 0. With waitUntil, the whole '
+  waitSeconds: z.number().min(0).max(CI_WAIT_MAX_SECONDS).optional().describe('Defaults to 0. With waitUntil, the whole '
     + 'group wait budget (up to 1800 seconds). Without it, waits at most 60 seconds per call for this ticket’s state or '
     + 'step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
   waitUntil: z.literal('group-terminal').optional().describe('Wait until every ticket of this ticket’s group is terminal '
