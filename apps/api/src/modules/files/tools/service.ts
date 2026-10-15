@@ -26,7 +26,7 @@ const samePins = (value: FileWithRevision, ref: MessageAttachmentRef) => value.f
 export class AgentFileToolService {
   constructor(private readonly files: TemporaryFileService, readonly sessions: FileToolSessions,
     readonly artifacts: FileToolArtifacts, private readonly repository: FileToolRepository,
-    private readonly references?: FileReferenceResolver, private readonly clock: () => Date = () => new Date()) {}
+    private readonly references?: FileReferenceResolver, readonly clock: () => Date = () => new Date()) {}
 
   private scope(caller: AuthorizedFileCaller, scope: FileScope): void {
     if (scope.kind === 'job_execution') throw new Unavailable('forbidden')

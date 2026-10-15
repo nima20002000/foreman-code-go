@@ -42,7 +42,7 @@ export class ClaudeFileBridge {
     this.issue ??= this.service.sessions.issueForAcceptedSession(accepted.context, accepted.expiresAt).then(async (token) => {
       this.token = token
       if (this.closed) { await this.service.sessions.revoke(token); throw new HarnessExecutionError('CLAUDE_FILE_CONTEXT_DENIED', 'The file bridge closed during issuance.') }
-      this.renewSession(token, Math.min(accepted.expiresAt.getTime(), Date.now() + FILE_SESSION_LEASE_MS))
+      this.renewSession(token, Math.min(accepted.expiresAt.getTime(), this.service.clock().getTime() + FILE_SESSION_LEASE_MS))
       return token
     })
     const token = await this.issue
@@ -65,7 +65,7 @@ export class ClaudeFileBridge {
     let expiresAt = initialExpiry
     void renewOwnedLeases({ signal: this.sessionOwner.signal,
       leases: [{ name: 'file-tool session', renewWithinMs: FILE_SESSION_RENEWAL_WINDOW_MS,
-        remainingMs: () => expiresAt - Date.now(),
+        remainingMs: () => expiresAt - this.service.clock().getTime(),
         renew: async () => { expiresAt = Date.parse(await this.service.sessions.renew(token)) } }],
       onFailure: error => { this.renewalFailure = error },
     })
