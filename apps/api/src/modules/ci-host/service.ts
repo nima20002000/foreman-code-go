@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
-import { inTransaction, withClientTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
+import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CiComputerRefSchema, CiRunRecordSchema, CiRunOutputSchema,
@@ -23,7 +23,7 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { buildComputerGatePart, splitUnavailableGateParts } from './gateFallback.js'
 import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
-import { saveQueuedCiRun, ciMessages, withCiTicketLock } from './dispatch.js'
+import { saveQueuedCiRun, ciMessages, withCiTicketLock, type CiTicketSql } from './dispatch.js'
 import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
@@ -600,10 +600,10 @@ export class HostCiService {
     return { run: current }
   }
 
-  private async cancelAssignedTicket(run: CiRunRecord, client: pg.PoolClient, audit?: CiCancellation) {
+  private async cancelAssignedTicket(run: CiRunRecord, sql: CiTicketSql, audit?: CiCancellation) {
     const computer = await this.computer(run.computer!.hostRef)
     const state = await cancelAssignedCiTicket(this.endpoint, computer, run)
-    await withClientTransaction(client, () => this.settle(run, computer, state, { client, audit }))
+    await sql.transaction(client => this.settle(run, computer, state, { client, audit }))
   }
 
   private async cancelSuperseded() {
@@ -779,10 +779,10 @@ export class HostCiService {
 
   private dispatchServices() {
     return { pool: this.pool, endpoint: this.endpoint,
-      read: (id: string, workspaceId: string, client: pg.PoolClient) => this.read(id, workspaceId, client),
+      read: (id: string, workspaceId: string, sql: SqlQuery) => this.read(id, workspaceId, sql),
       settle: (run: CiRunRecord, computer: HostCiComputer, state: CiDispatchState,
-        options: { client: pg.PoolClient }) => withClientTransaction(options.client,
-        () => this.settle(run, computer, state, options)),
+        options: { client: CiTicketSql }) => options.client.transaction(
+        client => this.settle(run, computer, state, { client })),
     }
   }
 
