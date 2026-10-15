@@ -13,6 +13,15 @@ import { FleetMaintenanceService } from './fleet.js'
 import { fakeComputer, fakeFleet } from '../../../test/helpers/fleetSync.js'
 
 it.each(['workerManifestSha256s', 'workerContentSha256s'] as const)(
+  'rejects empty configured %s inventory instead of skipping convergence', async method => {
+    const fixture = fakeFleet(fakeComputer())
+    fixture.sources[method] = async () => []
+    await expect(fixture.fleet.syncChangedSources()).rejects.toMatchObject({ code: 'WORKER_BUNDLE_UNPUBLISHED' })
+    expect(fixture.requested).toEqual([])
+    await fixture.fleet.drain()
+  })
+
+it.each(['workerManifestSha256s', 'workerContentSha256s'] as const)(
   'rejects failed configured %s inventory instead of claiming there are no updates', async method => {
     const fixture = fakeFleet(fakeComputer())
     fixture.sources[method] = async () => { throw new Error('Artifact inventory unavailable.') }

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
@@ -20,7 +20,9 @@ afterEach(async () => {
 })
 
 async function fixture({ published = true } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-artifacts-'))
+  const parent = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true })
+  const directory = await mkdtemp(join(parent, 'worker-artifacts-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   await chmod(directory, 0o700)
   const content = Buffer.alloc(WORKER_UPDATE_MAX_BINARY_BYTES + 11, 7)
@@ -93,8 +95,8 @@ describe('Worker release metadata', () => {
   it('does not announce or target an unpublished Worker artifact', async () => {
     const f = await fixture({ published: false })
     const options = { directory: f.directory, version: f.manifest.version }
-    expect(await readWorkerManifestSha256s(options)).toEqual([])
-    expect(await readWorkerContentSha256s(options)).toEqual([])
+    await expect(readWorkerManifestSha256s(options)).rejects.toMatchObject({ code: 'WORKER_BUNDLE_UNPUBLISHED' })
+    await expect(readWorkerContentSha256s(options)).rejects.toMatchObject({ code: 'WORKER_BUNDLE_UNPUBLISHED' })
     await expect(f.request({ operation: 'release', target }))
       .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
   })
@@ -166,6 +168,8 @@ describe('Worker release metadata', () => {
     await writeFile(join(f.directory, 'index.json'), JSON.stringify({ format: 1, version: f.manifest.version,
       artifacts: [{ target, manifestSha256: f.manifestSha256 }], publication }))
     expect(await readWorkerReleasePublication(options)).toEqual({ version: f.manifest.version, ...publication })
-    expect(await readWorkerManifestSha256s(options)).toEqual([])
+    await expect(readWorkerManifestSha256s(options)).rejects.toMatchObject({
+      code: 'WORKER_BUNDLE_UNPUBLISHED', details: { publicationError: publication.lastError },
+    })
   })
 })
