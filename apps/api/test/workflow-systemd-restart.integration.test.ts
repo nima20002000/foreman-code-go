@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { readUntil } from './helpers/observableCondition.js'
@@ -9,10 +9,13 @@ import { SourceError } from '../src/modules/sources/manifest.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
 describe('queued workflow preparation across engine restart', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
   it.each([
     new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'Source preparation was interrupted before activation.'),
     new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The saved native qualification is unavailable.', 409),
   ])('settles $code and exposes the persisted failure through authenticated MCP', async failure => {
+    // The fresh attempt waits out a long backoff, so the restart finds it queued and waiting.
+    vi.stubEnv('FOREMAN_EXECUTION_RETRY_BACKOFF_MS', '300000')
     let preparationError: Error = new DomainError('DEVICE_HOST_UNAVAILABLE', 'Source host disconnected', 503)
     const fixture = await currentOperatorIntegration({ preparePlacementExecution: async () => {
       throw preparationError
