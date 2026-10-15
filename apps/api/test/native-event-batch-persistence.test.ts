@@ -31,7 +31,7 @@ function fixture() {
   const stored = { execution, ref: { nodeId: 'node', occurrence: null },
     inputDigest: repeatDigest(execution.input) } as executions.StoredRepeatExecution
   const run = { id: 'run', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version' } as AcceptedWorkflowRunV3
-  vi.spyOn(snapshots, 'readAcceptedRepeatRunLocked').mockResolvedValue({ run } as
+  const readSnapshot = vi.spyOn(snapshots, 'readAcceptedRepeatRunLocked').mockResolvedValue({ run } as
     Awaited<ReturnType<typeof snapshots.readAcceptedRepeatRunLocked>>)
   vi.spyOn(executions, 'readRepeatExecutionLocked').mockResolvedValue(stored)
   const reservation = workflowNativeReservation(scope, stored.ref, execution, stored.inputDigest)
@@ -91,7 +91,8 @@ function fixture() {
     } else if (text.startsWith('with proposed as materialized')) {
       state.next = (JSON.parse(String(values[0])) as { next_sequence: string }[])[0]!.next_sequence
       state.events.push(...JSON.parse(String(values[1])) as typeof state.events)
-    } else if (!text.includes('run_node_placements') && !text.startsWith('select run_id from run_graph_heads')
+    } else if (!text.includes('run_node_placements') && !text.startsWith('with locked_head')
+      && !text.startsWith('select run_id from run_graph_heads')
       && !text.startsWith('select id from harness_executions')) throw new Error(`Unexpected adapter query: ${text}`)
     return { rows: structuredClone(rows), rowCount: rows.length }
   } } as unknown as pg.ClientBase
@@ -125,11 +126,20 @@ function fixture() {
   })
   const append = async (batch = frames) => {
     statements = 0
+    readSnapshot.mockClear()
     await repository.appendNativeEvents(batch, owner, { ...lease.fence, live: true, providerId: 'turn' })
     return statements
   }
-  return { append, frames, state, expireAtCommit() { revokeAtCommit = () => { live[15] = false } } }
+  return { append, frames, state, readSnapshot, expireAtCommit() { revokeAtCommit = () => { live[15] = false } } }
 }
+
+it.each([1, 8, 16])('appends %s captured frames within a fixed transaction statement budget', async count => {
+  const f = fixture()
+  const statements = await f.append(f.frames.slice(0, count))
+  expect(f.state.events.map(row => row.record)).toEqual(f.frames.slice(0, count).map(frame => frame.event))
+  expect(statements).toBeLessThanOrEqual(20)
+  expect(f.readSnapshot).toHaveBeenCalledTimes(1)
+})
 
 it('persists a full event batch and its immutable sources with bounded reads and unchanged replay', async () => {
   const single = fixture()
