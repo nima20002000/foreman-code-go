@@ -806,7 +806,7 @@ export async function remoteReviewProduction(options: {
         await startMain(options.workingDirectory)
         await waitForRemoteReview(async () => ready, value => value, 'Worker reconnect after Main restart')
       },
-      async restartWorker(afterCrash?: () => void) {
+      async restartWorker(afterCrash?: () => void, options: { newBoot?: boolean } = {}) {
         const previous = HarnessRegistryReadbackSchema.parse(await value('harness_registry_get', hostRef))
           .hostMetadata!.connection!.binding.connectionEpoch
         await stopWorker('SIGKILL')
@@ -815,6 +815,7 @@ export async function remoteReviewProduction(options: {
           await value('harness_registry_get', hostRef)),
         inventory => inventory.hostMetadata?.connection?.phase === 'offline'
           || inventory.hostMetadata?.connection === null, 'Main observing the stopped Worker connection')
+        if (options.newBoot) workerEnvironment.REMOTE_REVIEW_WORKER_BOOT_ID = randomUUID()
         await startWorker()
         await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
           await value('harness_registry_get', hostRef)), inventory => {

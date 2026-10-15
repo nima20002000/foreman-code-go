@@ -64,7 +64,7 @@ describe('profile-scoped Start after Worker reconnect', () => {
       const callsBefore = (await fixture.provider.calls()).length
       await fixture.provider.blockModels()
       modelsBlocked = true
-      await fixture.restartWorker()
+      await fixture.restartWorker(undefined, { newBoot: true })
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
         new Set(calls.slice(callsBefore).filter(call => call.method === 'model/list')
           .map(call => call.workingDirectory)).size === 2, 'two parallel profile checks')
