@@ -14,17 +14,8 @@ export const AgentCiReportSchema = z.object({
   repository: CiRunRecordSchema.shape.repository,
   branch: z.string().min(1).max(255),
   logLine: z.string().trim().min(1).max(2000),
-  // Part, computer, commit and exit code come from ci_get; Agents only report what they observed.
-  tickets: z.array(z.object({
-    ticketId: CiRunRecordSchema.shape.id,
-    outcome: TerminalStateSchema,
-    observedStates: z.array(CiRunRecordSchema.shape.state).min(1).max(7),
-  })).min(1).max(200),
-}).superRefine((report, context) => {
-  const ids = report.tickets.map(ticket => ticket.ticketId)
-  if (new Set(ids).size !== ids.length || !ids.includes(report.ticketId)) {
-    context.addIssue({ code: 'custom', message: 'Report every returned ticket exactly once, including the first.' })
-  }
+  // Per-ticket facts come from ci_get; copying dozens of IDs only measured the Agent's transcription.
+  observedStates: z.array(CiRunRecordSchema.shape.state).min(1).max(7),
 })
 export type AgentCiReport = z.infer<typeof AgentCiReportSchema>
 export type CiReadback = z.infer<typeof CiGetOutputSchema>
@@ -35,12 +26,7 @@ export function readAgentCiReport(output: unknown): AgentCiReport {
   const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw
   // Workflow Agents return their deliverable inside the routed workflow output.
   const routed = z.object({ data: z.object({ latestDeliverable: z.unknown() }) }).safeParse(value)
-  const deliverable = routed.success ? routed.data.data.latestDeliverable : value
-  // The top-level ticketId only names the group handle; Agents sometimes omit it while reporting every ticket.
-  const first = z.object({ tickets: z.array(z.object({ ticketId: z.string() })).min(1) }).safeParse(deliverable)
-  const omitted = first.success && typeof deliverable === 'object' && deliverable !== null && !('ticketId' in deliverable)
-  return AgentCiReportSchema.parse(omitted
-    ? { ...deliverable, ticketId: first.data.tickets[0]!.ticketId } : deliverable)
+  return AgentCiReportSchema.parse(routed.success ? routed.data.data.latestDeliverable : value)
 }
 
 export function ciTerminal(state: string): boolean {

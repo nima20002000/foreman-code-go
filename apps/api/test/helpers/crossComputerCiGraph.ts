@@ -31,11 +31,11 @@ export type ScenarioAgent = {
 const ciTicketId = { type: 'string', minLength: 1, 'x-foreman-reference': 'ciTicket' }
 const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
 
-/** The app enforces this report shape and checks that every ticket id was created by this Agent. */
+/** The app enforces this report shape and checks that the ticket id was created by this Agent. */
 export function ciReportOutputSchema(suite: ScenarioSuite) {
   return {
     type: 'object',
-    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'branch', 'logLine', 'tickets'],
+    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'branch', 'logLine', 'observedStates'],
     properties: {
       ticketId: ciTicketId,
       groupId: { type: 'string', minLength: 1 },
@@ -44,18 +44,7 @@ export function ciReportOutputSchema(suite: ScenarioSuite) {
       repository: { type: 'string', minLength: 1 },
       branch: { type: 'string', minLength: 1 },
       logLine: { type: 'string', minLength: 1 },
-      tickets: {
-        type: 'array', minItems: 1,
-        items: {
-          type: 'object',
-          required: ['ticketId', 'outcome', 'observedStates'],
-          properties: {
-            ticketId: ciTicketId,
-            outcome: terminalOutcome,
-            observedStates: { type: 'array', minItems: 1, items: { type: 'string' } },
-          },
-        },
-      },
+      observedStates: { type: 'array', minItems: 1, items: { type: 'string' } },
     },
   }
 }
@@ -71,18 +60,16 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'and no commit override; this must publish your current worktree files to GitHub. '
     + 'Retain that commandId for an uncertain response and retry only that same request. '
     + 'Placement is automatic: do not supply a computer or placementOverride. '
-    + 'Retain every ticketId in the ci_run partitions array, or the single ticketId when it is absent. '
     + 'Wait with ONE ci_get call on any ticket: waitUntil "group-terminal", waitSeconds 1800 and logTail false. '
     + 'Repeat that same call only while its wait.status is still-running; do not poll tickets one by one. '
     + 'When wait.status is settled, its partitions (or run, for a single ticket) hold every ticket’s final state. '
-    + 'Record each ticket’s observed state changes in order from the ci_run and ci_get results you read. '
+    + 'Record the top-level ticket’s observed state changes in order from the ci_run and ci_get results you read. '
     + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
     + '{"ticketId":"the ci_run top-level ticketId","groupId":"run.groupId","suite":"' + suite + '",'
     + '"outcome":"group.state","repository":"run.repository","branch":"your context_get worktree branch",'
     + '"logLine":"actual line from the top-level ticket log",'
-    + '"tickets":[{"ticketId":"run.id","outcome":"run.state","observedStates":["queued","running","passed"]}]}. '
-    + 'Include every part/partition ticket exactly once. '
+    + '"observedStates":["queued","running","passed"]}. '
     + 'Repository is the owner/repository string from run.repository, and branch is your own worktree branch. '
     + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
 }

@@ -6,30 +6,21 @@ import { AgentCiReportSchema, readAgentCiReport, readCiLog,
 function report() {
   const ticketId = randomUUID()
   return { ticketId, groupId: randomUUID(), suite: 'build', outcome: 'passed', repository: 'example/project',
-    branch: 'foreman/ci-agent', logLine: 'Build passed',
-    tickets: [{ ticketId, outcome: 'passed', observedStates: ['queued', 'running', 'passed'] }] }
+    branch: 'foreman/ci-agent', logLine: 'Build passed', observedStates: ['queued', 'running', 'passed'] }
 }
-
-it('takes the first reported ticket as the group handle when an Agent omits the redundant top-level ticketId', () => {
-  const value = report()
-  value.tickets.push({ ...value.tickets[0]!, ticketId: randomUUID() })
-  const { ticketId, ...withoutTop } = value
-  expect(readAgentCiReport({ text: JSON.stringify(withoutTop) })).toEqual({ ...withoutTop, ticketId })
-})
 
 it('reads a complete Agent report from a native text envelope', () => {
   const value = report()
-  value.tickets.push({ ...value.tickets[0]!, ticketId: randomUUID() })
   expect(readAgentCiReport({ text: JSON.stringify(value) })).toEqual(value)
   expect(readAgentCiReport(value)).toEqual(value)
   expect(readAgentCiReport({ text: JSON.stringify({ routing: { kind: 'finish' }, data: { latestDeliverable: value } }) }))
     .toEqual(value)
 })
 
-it('rejects duplicate tickets, a missing root ticket and a blank log line', () => {
+it('rejects a missing top-level ticket, empty observed states and a blank log line', () => {
   const value = report()
-  expect(AgentCiReportSchema.safeParse({ ...value, tickets: [value.tickets[0], value.tickets[0]] }).success).toBe(false)
-  expect(AgentCiReportSchema.safeParse({ ...value, ticketId: randomUUID() }).success).toBe(false)
+  expect(AgentCiReportSchema.safeParse({ ...value, ticketId: undefined }).success).toBe(false)
+  expect(AgentCiReportSchema.safeParse({ ...value, observedStates: [] }).success).toBe(false)
   expect(AgentCiReportSchema.safeParse({ ...value, logLine: ' ' }).success).toBe(false)
 })
 
