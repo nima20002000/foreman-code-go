@@ -1,4 +1,4 @@
-import { watch } from 'node:fs'
+import { watch, type FSWatcher } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { WorkerArtifactIndexSchema } from '@foreman-code/contracts/computer-maintenance'
@@ -20,17 +20,23 @@ export function startWorkerPublicationSync(
       published = true
     }).catch(reportError)
   }
-  const watcher = watch(location.directory, { persistent: false }, (_event, filename) => {
-    // The publisher replaces index.json atomically, so watch its directory rather than its inode.
-    if (filename === null || filename === 'index.json') check()
-  })
-  watcher.on('error', reportError)
-  check()
+  let watcher: FSWatcher | undefined
+  try {
+    watcher = watch(location.directory, { persistent: false }, (_event, filename) => {
+      // The publisher replaces index.json atomically, so watch its directory rather than its inode.
+      if (filename === null || filename === 'index.json') check()
+    })
+  } catch (error) {
+    // Source checkouts can start without release artifacts; periodic synchronization still runs.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  watcher?.on('error', reportError)
+  if (watcher) check()
   const timer = setInterval(() => { void sync().catch(reportError) }, 60_000)
   timer.unref()
   return () => {
     stopped = true
-    watcher.close()
+    watcher?.close()
     clearInterval(timer)
   }
 }
