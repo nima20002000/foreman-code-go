@@ -66,7 +66,7 @@ export function workflowExecutionRequest(input: {
     `Use routing.kind "return" only to answer ${nameOf(workInput.work.request.requesterNodeId)} about the work it sent you: an accepted return closes that request and ends this branch; needs_changes sends it back for another revision.`,
     'If you choose routing.kind "return", copy this routing object and add outcome "accepted" or "needs_changes":',
     JSON.stringify({ kind: 'return', requestId: workInput.work.request.requestId }),
-    'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',
+    'requestId may be omitted when replying to the single open request you received. If supplied, copy it verbatim.',
   ].join('\n') : undefined
   const prompts = [initialPrompt, noticePrompt, returnPrompt].filter(Boolean)
   return HarnessExecutionRequestSchema.parse({

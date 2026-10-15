@@ -38,6 +38,7 @@ import { finalizeRetainedRemoteReviewerLocked } from '../interactions/retainedRe
 import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
 import { compileExecutionTopology } from './topology.js'
 import { assertWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
+import { parseWorkResultForInput } from './workHandoffResult.js'
 import { nextIntervalCheckAt, readIntervalCheckFacts } from './intervalChecks.js'
 import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissionLocked, requireRepeatNativeHooks,
   type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
@@ -1306,7 +1307,7 @@ export class RepeatRunRepository {
           || acceptedActivations.has(row.activation_id)
           || row.result_digest !== repeatDigest(result, 64 * 1024)) return repeatConflict('WORK_RESULT_RECEIPT_MISSING')
         acceptedActivations.add(row.activation_id)
-        const workResult = parseWorkHandoffResult(result), routing = workResult.routing
+        const workResult = parseWorkResultForInput(result, execution.input), routing = workResult.routing
         if (routing.kind === 'return') {
           const returned = WorkReturnSchema.parse(row.returned)
           if (!sameRepeatValue(returned.scope, context.scope) || returned.sourceExecutionId !== row.execution_id

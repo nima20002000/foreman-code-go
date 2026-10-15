@@ -43,6 +43,7 @@ import { workUnresolvedRoutesMigration } from './workUnresolvedRoutesMigration.j
 import { workJoinDispatchMigration } from './workJoinDispatchMigration.js'
 import { workJoinDispositionMigration } from './workJoinDispositionMigration.js'
 import { workParentRequestMigration } from './workParentRequestMigration.js'
+import { workReturnRequestMigration } from './workReturnRequestMigration.js'
 import { compactCommandActivityMigration } from './compactCommandActivityMigration.js'
 import { workflowPresentationMigration } from './workflowPresentationMigration.js'
 import { operatorTerminalMigration } from './operatorTerminalMigration.js'
@@ -958,6 +959,7 @@ export const migrations = [
   activityHistoryIndexesMigration,
   jobInputTransferLookupMigration,
   stateDeadlinesMigration,
+  workReturnRequestMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

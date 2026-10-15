@@ -188,7 +188,9 @@ export type WorkActivationInput = z.infer<typeof WorkActivationInputSchema>
 export const WorkHandoffResultSchema = z.object({
   routing: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('request'), outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/) }).strict(),
-    z.object({ kind: z.literal('return'), requestId: GraphIdSchema, outcome: z.enum(['accepted', 'needs_changes']) }).strict(),
+    z.object({ kind: z.literal('return'),
+      requestId: GraphIdSchema.optional().describe('May be omitted for a single open received request; required when several are open. A supplied ID must match an open received request.'),
+      outcome: z.enum(['accepted', 'needs_changes']) }).strict(),
     z.object({ kind: z.literal('finish'), outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).optional() }).strict(),
   ]),
   data: z.object({ latestDeliverable: z.json(), remainingFindings: z.array(z.json()).max(1000) }).strict(),

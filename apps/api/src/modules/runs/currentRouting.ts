@@ -55,6 +55,7 @@ function basePrompt(node: { initialPrompt?: string | undefined; choice?: Workflo
       'If executionContext.parentRequest is null, this activation has no outstanding caller.',
       'For a work_request activation, use work.request.requestId.',
       'For correlated feedback, use {"kind":"return","requestId":<the exact request ID in your received work>,"outcome":"accepted" or "needs_changes"}.',
+      'requestId may be omitted when replying to the single open request you received. The app resolves that request; when several are open, requestId is required. A supplied requestId must match an open received request.',
       'An accepted return approves the deliverable. Any remaining findings are preserved for direction and do not automatically reactivate the requester. Use needs_changes to request another revision.',
       'To finish this activation, use {"kind":"finish"}; without saved choices and with empty remainingFindings this hands latestDeliverable to every saved downstream Agent. On a choice node this ends the branch without selecting a downstream route. Include a declared outcome to select a final downstream branch. Include unresolved findings honestly.',
       'data has exactly latestDeliverable (a non-null JSON value) and remainingFindings (an array of JSON values).',
