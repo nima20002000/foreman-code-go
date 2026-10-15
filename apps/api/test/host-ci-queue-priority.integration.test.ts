@@ -112,8 +112,12 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
     await settle(f.ci)
     f.computers.push(...available)
     await settle(f.ci)
-    // The started tickets are observed by the next pass.
-    await settle(f.ci)
+    // Observations rotate through running tickets; wait until the typecheck parts have been observed.
+    await expect.poll(async () => {
+      await settle(f.ci)
+      const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: checks.ticketId }))
+      return read.partitions!.every(run => run.observation?.status === 'available')
+    }, { timeout: 10_000 }).toBe(true)
     const stored = (await f.pool.query<{ record: unknown }>(
       'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
       [checks.ticketId])).rows.map(row => CiRunRecordSchema.parse(row.record))

@@ -221,8 +221,18 @@ it.each(['github', 'circleci'] as const)(
       hostRef: { kind: 'cloud', mainId: 'test-main', provider, slot: 0 } }
     f.computers.splice(0, 2, computer)
     let calls = 0
+    // The provider is unreachable after accepting the start, so no observation can discover the run.
+    let providerReachable = true
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (target, input) => {
+      if (!providerReachable && input.operation === 'read') {
+        throw new DomainError('CI_CLOUD_FAILED', 'The provider is unreachable.', 502)
+      }
+      return request(target, input)
+    }
     f.control.onStart = async () => {
       calls++
+      providerReachable = false
       throw new DomainError('CI_CLOUD_FAILED', 'The start reply was lost.', 502)
     }
     try {
@@ -230,6 +240,7 @@ it.each(['github', 'circleci'] as const)(
       f.control.available = true
       await settle(f.ci)
       expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', startedAt: null })
+      providerReachable = true
       await f.value('ci_cancel', { ticketId: ticket.ticketId })
       expect(calls).toBe(1)
       expect((await f.read(ticket.ticketId)).state).toBe('canceled')
@@ -282,6 +293,7 @@ it.each(['github', 'circleci'] as const)(
   'cancels an unstarted %s ticket through MCP without resolving its selected files again', async provider => {
     const f = await fixture()
     const cloud = failingCloud(f, provider)
+    const failingRequest = f.endpoint.request.bind(f.endpoint)
     try {
       const ticket = await f.enqueue()
       f.control.available = true
@@ -299,7 +311,8 @@ it.each(['github', 'circleci'] as const)(
         .toEqual([{ state: 'canceled', host_key: null }])
       expect((await f.pool.query("select details from management_audit where action='ci.cancel' and target_key=$1",
         [`ci:${ticket.ticketId}`])).rows).toHaveLength(1)
-      f.endpoint.request = async (_target, input) => {
+      f.endpoint.request = async (target, input) => {
+        if (input.operation === 'status') return failingRequest(target, input)
         if (input.operation !== 'start') throw new Error('Expected a replacement start')
         return { operation: 'start', run: { runId: input.runId, state: 'running', step: input.suite,
           startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null } }

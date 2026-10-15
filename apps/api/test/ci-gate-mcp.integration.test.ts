@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { buildApp } from '../src/app.js'
 import { createPool } from '../src/infrastructure/pool.js'
+import { createTestPool } from './helpers/testPool.mjs'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -156,7 +157,10 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   cloudProvider?: 'github' | 'circleci';
   readCloud?: (computer: HostCiComputer, request: Extract<CiHostRequest, { operation: 'read' }>)
     => Promise<CiHostReply | undefined> } = {}) {
-  const pool = options.pool ?? database.pool
+  // Observation concurrency is half the pool, so a fleet of this size needs a pool that observes it in one pass.
+  const ownedPool = options.pool ? undefined : createTestPool({ connectionString: database.databaseUrl, max: 64,
+    options: '-c search_path=public -c statement_timeout=10000 -c lock_timeout=5000' })
+  const pool = options.pool ?? ownedPool!
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Gate workspace', repository: {
@@ -254,6 +258,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
+    await ownedPool?.end()
   } }
 }
 
@@ -419,8 +424,10 @@ it('fails the gate on a second setup failure and does not retry a failure after 
       && value.request.suite === part.suite && value.request.part === part.part)!.request
     if (request.operation !== 'start') throw new Error('Expected a retry start')
     expect(request.runId).not.toBe(part.id)
+    // No test started, so the executor has no results to report.
     const failed = { ...f.runs.get(request.runId)!, state: 'failed' as const, exitCode: 2,
-      finishedAt: new Date().toISOString(), message: 'Second setup failure', testsStarted: false }
+      finishedAt: new Date().toISOString(), message: 'Second setup failure', testsStarted: false,
+      collection: 'unsupported' as const }
     f.runs.set(request.runId, failed)
     const attempts = f.started.length
     await settle(f.ci)
@@ -447,7 +454,7 @@ it('keeps a draining build gate off cloud until the grace expires, then persists
     const hostShards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 16 * 2 ** 30 })
     const root = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
       suite: 'integration', part: null, partition: null, scope: 'full', files,
-      repository: 'octo/site', commit: 'a'.repeat(40), gate: true, noSupersede: true,
+      repository: 'octo/site', ciMirror: 'octo/site-ci', commit: 'a'.repeat(40), gate: true, noSupersede: true,
       plannedHostKey: 'builder-main', integrationShards: hostShards, expectedDurationMs: 300_000,
       priority: 'high', priorityReason: 'gate', state: 'queued', computer: null, step: null,
       exitCode: null, message: null, queuedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null,
@@ -617,6 +624,7 @@ it('runs cloud checks before systemd integration overflow even when checks move 
   const unavailableKeys = new Set<string>()
   const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles], occupiedKeys, unavailableKeys })
   const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
+  vi.spyOn(f.ci, 'start').mockImplementation(() => {})
   const clock = vi.spyOn(Date, 'now')
   try {
     const input = {
@@ -626,7 +634,6 @@ it('runs cloud checks before systemd integration overflow even when checks move 
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
-    await f.ci.close()
     // Overflow is created after build computers drain and their dispatch grace expires.
     unavailableKeys.add('builder-main')
     unavailableKeys.add('builder-paired')
@@ -720,6 +727,8 @@ it('rechecks the build allowance when dispatching an already planned gate throug
   const files = ['apps/api/test/dev-startup.integration.test.ts', 'apps/api/test/ci-postgres-setup.integration.test.ts']
   const f = await fixture({ occupiedKeys, cloudSlots: 2, files })
   const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
+  vi.spyOn(f.ci, 'start').mockImplementation(() => {})
+  vi.useFakeTimers({ toFake: ['Date'] })
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
@@ -727,6 +736,8 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     occupiedKeys.add('builder-main')
     occupiedKeys.add('builder-paired')
     dispatch.mockRestore()
+    // Planning reuses a computer's readiness for a few seconds; let the admission snapshot expire.
+    vi.setSystemTime(Date.now() + 10_000)
     await settle(f.ci)
     const queued = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const resources = { cpuCount: 16, memoryBytes: 16 * 2 ** 30 }
@@ -742,6 +753,7 @@ it('rechecks the build allowance when dispatching an already planned gate throug
       Object.assign(computer, { buildAllowancePercent: 50 })
     }
     occupiedKeys.clear()
+    vi.setSystemTime(Date.now() + 10_000)
     await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
@@ -754,6 +766,7 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     }
   } finally {
     dispatch.mockRestore()
+    vi.useRealTimers()
     await f.close()
   }
 })
