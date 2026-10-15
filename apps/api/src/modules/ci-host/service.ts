@@ -418,7 +418,8 @@ export class HostCiService {
       parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.planningEndpoint,
         speeds, this.reservedCloudSlots, slots.ordinary, slots.usedByComputer)
     } else if (integration) {
-      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await readCiSlots(this.pool, this.planningEndpoint))
+      const slots = await readCiSlots(this.pool, this.planningEndpoint)
+      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, slots.eligible)
     }
     if (!input.gate && input.suite === 'unit' && split) {
       parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.planningEndpoint)).ordinary)

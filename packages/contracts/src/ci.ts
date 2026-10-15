@@ -28,7 +28,7 @@ const CiRunInputObjectSchema = z.object({
     + 'on the same branch or Agent execution. Main tickets are always kept.'),
   /** Split integration when the repository supplies its CI hook and file selector. */
   partitions: z.number().int().min(2).max(64).describe('Optional integration partition limit (2–64); otherwise sized automatically '
-    + 'from measured durations and free slots. '
+    + 'from measured durations and eligible fleet capacity. '
     + 'Requires scripts/ci-suite.sh and scripts/ci-files.mjs. User-systemd files use separate systemd-capable slices; '
     + 'mixed explicit selections split even when this is omitted. Other repositories run integration as one job.').optional(),
   scope: CiScopeSchema.optional().describe('Defaults to affected; full runs the complete suite. '
