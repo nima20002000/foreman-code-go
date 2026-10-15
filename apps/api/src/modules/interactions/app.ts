@@ -144,27 +144,27 @@ export class PostgresAppInteractionService implements AppInteractionService {
          c.record->'harness' as harness,b.purpose,
          ((p.run_id is null and r.record#>>'{executionLocation,runnerId}'='runner-local')
            or p.record#>>'{hostRef,kind}'='main') as local_outputs,
-         (select n->'graphqlTools' from jsonb_array_elements(v.record->'definition'->'nodes') n
-          where n->>'id'=e.workflow_node_id limit 1) as override,
-         (select n->'artifactOutputs' from jsonb_array_elements(v.record->'definition'->'nodes') n
-          where n->>'id'=e.workflow_node_id limit 1) as artifact_outputs,
-         (select n->'interval' from jsonb_array_elements(v.record->'definition'->'nodes') n
-          where n->>'id'=e.workflow_node_id limit 1) as interval
+         n->'graphqlTools' as override,n->'artifactOutputs' as artifact_outputs,n->'interval' as interval
        from worker_credential_bindings b
        join runs r on r.id=b.run_id
        join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>b.agent_id)
          and c.workspace_id=r.workspace_id and c.agent_id=b.agent_id
-       left join harness_executions e on e.id=b.execution_id and e.run_id=b.run_id and e.agent_id=b.agent_id
-       left join workflow_versions v on v.id=r.workflow_version_id and v.workspace_id=r.workspace_id
+       join harness_executions e on e.id=b.execution_id and e.run_id=b.run_id and e.agent_id=b.agent_id
+       join workflow_versions v on v.id=r.workflow_version_id and v.workspace_id=r.workspace_id
+         and v.workflow_id=r.workflow_id
+       join lateral jsonb_array_elements(v.record->'definition'->'nodes') n
+         on n->>'id'=e.workflow_node_id and n->>'agentId'=b.agent_id
        left join run_node_placements p on p.run_id=r.id and p.node_id=e.workflow_node_id
        where b.principal_id=$1 and b.agent_id=$2 and b.revoked_at is null`,
       [principal.id, principal.agentId],
     )
     const row = result.rows[0]
-    const role = row?.role === 'orchestrator' ? 'orchestrator' : 'coder'
-    const defaults = row?.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
-    const override = row?.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
-    const tools = effectiveGraphqlTools(role, defaults, override, row?.interval != null).filter(tool => {
+    if (!row) throw new DomainError('MCP_TOOL_DISCOVERY_FAILED',
+      'The pinned Agent configuration and workflow node could not be loaded. Retry the activation.', 503)
+    const role = row.role === 'orchestrator' ? 'orchestrator' : 'coder'
+    const defaults = row.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
+    const override = row.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
+    const tools = effectiveGraphqlTools(role, defaults, override, row.interval != null).filter(tool => {
       const operation = WorkerNativeOutputOperationSchema.options.find(operation =>
         WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation] === tool)
       if (!operation) return true

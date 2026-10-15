@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { maintainCredential } from './credentialHeartbeat.js'
 
 const stops: Array<() => Promise<void>> = []
@@ -122,9 +123,90 @@ it.each([
   const f = fixture()
   f.refresh.mockRejectedValueOnce(error)
   await vi.advanceTimersByTimeAsync(0)
-  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(error)
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(error, 'refresh')
   await vi.advanceTimersByTimeAsync(60_000)
   expect(f.refresh).toHaveBeenCalledTimes(1)
+})
+
+const unavailable = new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'Execution connection unavailable', 503)
+const transientContinuationFailures = [
+  unavailable,
+  new DomainError('WORKER_CREDENTIAL_RENEWAL_BUSY', 'Another operation is finishing', 503, { retryable: true }),
+  new DomainError('DATABASE_READ_TIMEOUT', 'Read timed out', 503, { retryable: true }),
+  new DeviceApplicationError('backpressure'),
+  new DeviceApplicationError('transport'),
+  new DeviceApplicationError('timeout'),
+]
+
+it.each(transientContinuationFailures)(
+  'keeps live executions through a transient continuation check at minute six: %s', async error => {
+    const first = fixture(15 * 60_000)
+    const second = fixture(15 * 60_000)
+    await vi.advanceTimersByTimeAsync(390_000)
+    for (const f of [first, second]) f.check.mockRejectedValue(error)
+    await vi.advanceTimersByTimeAsync(40_000)
+    for (const f of [first, second]) {
+      expect(f.onFailure).not.toHaveBeenCalled()
+      expect(f.refresh).not.toHaveBeenCalled()
+      f.check.mockResolvedValue(undefined)
+    }
+    await vi.advanceTimersByTimeAsync(15 * 60_000 - 430_000)
+    for (const f of [first, second]) {
+      expect(f.onFailure).not.toHaveBeenCalled()
+      expect(f.refresh).toHaveBeenCalledTimes(1)
+    }
+  },
+)
+
+it('retries an unavailable continuation until the confirmed safety deadline and retains its cause', async () => {
+  const f = fixture(15 * 60_000)
+  await vi.advanceTimersByTimeAsync(390_000)
+  f.check.mockRejectedValue(unavailable)
+  await vi.advanceTimersByTimeAsync(15 * 60_000 - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS - 390_000 - 1)
+  expect(f.onFailure).not.toHaveBeenCalled()
+  expect(f.refresh).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: unavailable }), 'check')
+  const attempts = f.check.mock.calls.length
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(f.check).toHaveBeenCalledTimes(attempts)
+})
+
+it.each(transientContinuationFailures)('retries transient credential renewal contention: %s', async error => {
+  const f = fixture()
+  f.refresh.mockRejectedValueOnce(error)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(f.onFailure).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1_000)
+  expect(f.refresh).toHaveBeenCalledTimes(2)
+  expect(f.onFailure).not.toHaveBeenCalled()
+})
+
+it('retains the last renewal error if a subsequent renewal hangs until the safety deadline', async () => {
+  const f = fixture()
+  const error = new Error('Query read timeout')
+  let finish!: () => void
+  f.refresh.mockRejectedValueOnce(error).mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+  await vi.advanceTimersByTimeAsync(WORKER_CREDENTIAL_RENEWAL_WINDOW_MS - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS)
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: error }), 'refresh')
+  finish()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(f.refresh).toHaveBeenCalledTimes(2)
+  expect(f.onFailure).toHaveBeenCalledTimes(1)
+})
+
+it.each([
+  new DomainError('REMOTE_CONNECTION_CONFLICT', 'Authenticated identity changed', 409),
+  new DomainError('REMOTE_NATIVE_OWNER_CLOSED', 'Original native owner closed', 409),
+  new DeviceApplicationError('revoked'),
+  new DeviceApplicationError('permission'),
+])('stops immediately for confirmed remote ownership or access loss: %s', async error => {
+  error.cause = new Error('Query read timeout')
+  const f = fixture(15 * 60_000)
+  f.check.mockRejectedValueOnce(error)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(error, 'check')
+  expect(f.refresh).not.toHaveBeenCalled()
 })
 
 it('keeps the expiry deadline active while refresh is hanging and never overlaps refreshes', async () => {

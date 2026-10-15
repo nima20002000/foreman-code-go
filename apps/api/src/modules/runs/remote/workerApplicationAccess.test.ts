@@ -126,4 +126,20 @@ describe('worker selected-main application lease with authenticated carrier doub
     expect(prepared.expiresAt).toBe(expiresAt)
     expect(prepared.environment.variables.GRAPHQL_MCP_TOKEN).toBe(value.applicationAccess.token)
   })
+  it('answers a relayed tool call stalled behind device admission with a retryable timeout before the native tool deadline', async () => {
+    vi.useFakeTimers()
+    const value = fixture()
+    const request = vi.fn<Parameters<typeof prepareWorkerApplicationAccess>[0]['request']>(async () => ({ payload: value.lease }))
+    try {
+      const prepared = await prepareWorkerApplicationAccess({ request }, value.intent, value.placement, value.applicationAccess)
+      request.mockImplementation((_namespace, _payload, options) => new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DeviceApplicationError('cancelled')), { once: true })
+      }))
+      let settled: unknown
+      const called = prepared.request({ method: 'tools/call', params: { name: 'write' } }).catch(error => { settled = error })
+      await vi.advanceTimersByTimeAsync(110_000)
+      expect(settled).toMatchObject({ code: 'timeout', retryable: true })
+      await called
+    } finally { vi.useRealTimers() }
+  })
 })

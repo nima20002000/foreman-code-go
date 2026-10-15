@@ -2513,10 +2513,16 @@ export class ApprovalExecutionCoordinator {
         }
         input.owner.assertOwned()
       },
-      onFailure: () => observation.credentialFailure.abort(new DomainError(
-        'WORKER_CREDENTIAL_EXPIRING',
-        'Execution stopped before its App credential expired. Active native work was not restarted.', 409,
-      )),
+      onFailure: (error, phase) => {
+        const failure = new DomainError('WORKER_CREDENTIAL_EXPIRING',
+          'Execution stopped before its App credential expired. Active native work was not restarted.', 409)
+        failure.cause = error
+        componentLogger('harness').warn({ operation: 'maintain workflow credential',
+          executionId: observation.execution.id, runId: observation.execution.runId, phase,
+          remainingMs: remainingCredentialLifetime(this.managerCredentials.get(observation.manager!)),
+          err: observation.safeError(failure) }, 'Worker credential maintenance failed')
+        observation.credentialFailure.abort(failure)
+      },
     })
   }
 

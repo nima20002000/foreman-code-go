@@ -4,9 +4,10 @@ import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
 import { isDatabasePoolTimeout, isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
 
-/** Attempts per work activation, including the first. At-least-once: an Agent
+/** Agent failure attempts per work activation, including the first. At-least-once: an Agent
  * turn may run again after an infrastructure failure; only results are deduped. */
 export const EXECUTION_MAX_ATTEMPTS = 3
+export const EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS = 10 * 60_000
 /** Wait before attempt 2, 3, ... (the last value repeats). */
 export const EXECUTION_RETRY_BACKOFF_MS: readonly number[] = [10_000, 30_000, 60_000]
 
@@ -15,7 +16,7 @@ const transientCodes = new Set([
   'EXECUTION_INTERRUPTED', 'EXECUTION_START_INTERRUPTED', 'NATIVE_SESSION_START_UNCERTAIN',
   'NATIVE_EXECUTION_FAILED', 'NATIVE_HISTORY_GAP', 'CODEX_OBSERVER_UNAVAILABLE', 'CODEX_APP_MCP_NOT_READY',
   'APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT', 'DATABASE_READ_TIMEOUT',
-  'REMOTE_DISPATCH_UNAVAILABLE', 'WORKER_WORKFLOW_UNAVAILABLE', 'WORKER_MCP_UNAVAILABLE', 'WORKER_MCP_LEASE_UNAVAILABLE',
+  'REMOTE_DISPATCH_UNAVAILABLE', 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'WORKER_WORKFLOW_UNAVAILABLE', 'WORKER_MCP_UNAVAILABLE', 'WORKER_MCP_LEASE_UNAVAILABLE',
   'WORKER_CREDENTIAL_EXPIRING', 'WORKER_CREDENTIAL_LOST', 'WORKER_CREDENTIAL_RENEWAL_BUSY',
   'CLAUDE_SESSION_UNAVAILABLE', 'CLAUDE_MCP_CONTROL_UNAVAILABLE', 'CLAUDE_OWNER_UNAVAILABLE',
   'DEVICE_TRANSPORT_ERROR', 'DEVICE_RUNTIME_CLOSING', 'DEVICE_RUNTIME_UNAVAILABLE', 'DEVICE_CONNECTION_UNAVAILABLE',
@@ -79,6 +80,20 @@ export function executionRetryDelayMs(failedAttempt: number): number {
     .filter((value) => Number.isFinite(value) && value >= 0)
   const backoff = configured?.length ? configured : EXECUTION_RETRY_BACKOFF_MS
   return backoff[Math.min(Math.max(failedAttempt, 1), backoff.length) - 1]!
+}
+
+/** Recorded infrastructure abandonment is separate from an Agent's retryable failed result. */
+export function hasExecutionRetryBudget(failed: HarnessExecution, attempts: readonly {
+  execution: HarnessExecution; infrastructureFailure: boolean
+}[], now = Date.now()): boolean {
+  const infrastructure = attempts.filter(attempt => attempt.infrastructureFailure)
+  if (!infrastructure.some(attempt => attempt.execution.id === failed.id)) {
+    return attempts.length - infrastructure.length < EXECUTION_MAX_ATTEMPTS
+  }
+  const firstFailureAt = infrastructure.reduce((earliest, attempt) =>
+    Math.min(earliest, Date.parse(attempt.execution.finishedAt ?? '')), Infinity)
+  const nextStartAt = now + executionRetryDelayMs(failed.attempt)
+  return nextStartAt < firstFailureAt + EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS
 }
 
 /** Back off before a queued retry starts. A replayed retry that already started does not wait again. */

@@ -17,6 +17,8 @@ import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.j
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
+import { DeviceApplicationAdmissionError, DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { DeviceConnectionError } from '../../devices/deviceWire.js'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { anchored,identity,openChildDirectory,openPrivateRoot } from '../../sources/privateFilesystem.js'
 import { sourcePath } from '../../sources/manifest.js'
@@ -148,6 +150,11 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
     await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime()
     await authorize()}
   catch(error){if(error instanceof DomainError)throw error;input.signal.throwIfAborted();return unavailable()}
+}
+/** Admission, backpressure, timeout and link failures say nothing about the original reply, so it must stay retained for the retry. */
+function transientAuthorizationFailure(error: unknown): boolean {
+  return error instanceof DeviceApplicationAdmissionError || error instanceof DeviceConnectionError
+    || error instanceof DeviceApplicationError && ['timeout', 'cancelled', 'transport', 'DATABASE_READ_TIMEOUT'].includes(error.code)
 }
 interface Retained {
   receipt: RemoteOperationReceipt
@@ -288,7 +295,10 @@ export class InstalledWorkflowPhysicalReadouts {
       || !isDeepStrictEqual(retained.placement, input.placement)) throw new DomainError(
       'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply selector changed.', 409,
       { reason: 'selector_changed', operationId: input.intent.operationId, receiptSequence: input.receiptSequence })
-    try { await retained.assertCurrent() } catch (error) { this.purge(input.intent.operationId); throw error }
+    try { await retained.assertCurrent() } catch (error) {
+      if (!transientAuthorizationFailure(error)) this.purge(input.intent.operationId)
+      throw error
+    }
     let observation = retained.observe()
     let closure = retained.closure()
     if (!closure && observation.lifecycle !== 'active' && retained.waitForSettlement) {
@@ -317,7 +327,7 @@ export class InstalledWorkflowPhysicalReadouts {
     if(retained) {
       if(!isDeepStrictEqual(retained.receipt.intent,input.intent)||!isDeepStrictEqual(retained.placement,input.placement))return unavailable()
       // ACK only retires in-memory observations; physical checks still gate reads.
-      try {await retained.assertOwnerCurrent()}catch(error){this.purge(input.intent.operationId);throw error}
+      try {await retained.assertOwnerCurrent()}catch(error){if(!transientAuthorizationFailure(error))this.purge(input.intent.operationId);throw error}
       if(direct) {
         entries!.delete(key);this.release(retained)
         for(const alias of retained.aliases)if(this.events.get(input.intent.operationId)?.get(alias.key)?.retained===retained)this.events.get(input.intent.operationId)?.delete(alias.key)

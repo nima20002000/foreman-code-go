@@ -1,6 +1,8 @@
 import { expect, it } from 'vitest'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import { isTransientExecutionError } from '../runs/executionRetryPolicy.js'
+import { DomainError } from '../errors.js'
+import { serializeError } from '../diagnostics/logger.js'
 
 it.each(['40P01', 'ECONNRESET'])('retains the retry classification of a redacted %s failure', code => {
   const secret = `opm_${'x'.repeat(43)}`
@@ -11,4 +13,22 @@ it.each(['40P01', 'ECONNRESET'])('retains the retry classification of a redacted
   expect(isTransientExecutionError(redacted)).toBe(true)
   expect(redacted).not.toBe(failure)
   expect(JSON.stringify(redacted)).not.toContain(secret)
+})
+
+it('retains and redacts the original credential failure through domain error logging', () => {
+  const secret = 'test-scoped-token'
+  const databaseError = Object.assign(new Error(`Read failed with ${secret}`), { code: '55P03' })
+  const original = new DomainError('DATABASE_READ_TIMEOUT', `Timed out with ${secret}`, 503, { retryable: true })
+  original.cause = databaseError
+  const failure = new DomainError('WORKER_CREDENTIAL_EXPIRING', 'Credential maintenance stopped', 409)
+  failure.cause = original
+  const redacted = nativePersistenceRedactor([secret]).error(failure)
+  expect(redacted).toBeInstanceOf(DomainError)
+  expect(serializeError(redacted)).toMatchObject({
+    code: 'WORKER_CREDENTIAL_EXPIRING',
+    cause: { code: 'DATABASE_READ_TIMEOUT', message: 'Timed out with [REDACTED]',
+      cause: { code: '55P03', message: 'Read failed with [REDACTED]' } },
+  })
+  expect(JSON.stringify(serializeError(redacted))).not.toContain(secret)
+  expect(original.cause).toBe(databaseError)
 })

@@ -58,19 +58,19 @@ describeRetryBudget('retry by default after infrastructure failures', () => {
     } finally { await f.close() }
   }, 90000)
 
-  it('fails the node after its last attempt, each attempt keeping its own cause', async () => {
+  it('recovers after three infrastructure failures, each attempt keeping its own cause', async () => {
     const f = await recoveryFixture('sequential', (submission) =>
-      submission.request.workflowNodeId === f.base.f.version.entryNodeId ? 'transport_failure' : 'success')
+      submission.request.workflowNodeId === f.base.f.version.entryNodeId && submission.attempt <= 3
+        ? 'transport_failure' : 'success')
     try {
       f.launch(); await f.settled()
       const view = await readback(f)
-      expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
+      expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       const entry = await nodeRows(f, 0)
-      expect(attempts(entry)).toEqual([1, 2, 3]); sameSlot(entry)
-      for (const row of entry) expect(row.execution.result).toMatchObject(dropped)
-      expect(await nodeRows(f, 1)).toEqual([])
-      expect(f.provider.submissions.map((item) => item.request.workflowNodeId))
-        .toEqual(Array(3).fill(f.base.f.version.entryNodeId))
+      expect(attempts(entry)).toEqual([1, 2, 3, 4]); sameSlot(entry)
+      for (const row of entry.slice(0, 3)) expect(row.execution.result).toMatchObject(dropped)
+      expect(entry[3]!.execution.result).toMatchObject({ outcome: 'succeeded' })
+      expect(await nodeRows(f, 1)).toHaveLength(1)
     } finally { await f.close() }
   }, 90000)
 

@@ -70,6 +70,24 @@ function agentCatalog(): Array<{ name: string; description: string }> {
   return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
 }
 
+function requireWorkerToolCatalog(context: GraphqlMcpContext, tools: readonly ToolDefinition[]): void {
+  const registered = new Set(tools.map(tool => tool.name))
+  const missing = context.tools?.filter(name => {
+    if (!toolRoles(name).includes(context.role)) return false
+    if (name === 'bug_report' && !hasWorkerAction(context.principal, 'bug_reports:report')) return false
+    if (['interaction_list', 'interaction_get'].includes(name)
+      && !hasWorkerAction(context.principal, 'interactions:read')) return false
+    // Response discovery also depends on the immutable approval route checked by canRespond.
+    if (name === 'interaction_respond') return false
+    return !registered.has(name)
+  }) ?? []
+  if (!registered.size || missing.length) {
+    throw new DomainError('MCP_TOOL_DISCOVERY_FAILED',
+      'The enabled Foreman Code MCP tools could not all be loaded. Retry the activation.', 503,
+      { missingTools: missing })
+  }
+}
+
 interface OperatorRequestTools {
   tools: ToolDefinition[]
   catalog?: OperatorCatalog
@@ -161,19 +179,17 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext, request
       }
     }
   } else if (context.interactions) {
-    const tools = context.tools
-    // Registers only the tools enabled for this Agent; the rest are never listed.
-    const enabled = tools ? new Proxy(server, { get(target, key) {
-      if (key === 'registerTool') return (name: string, ...rest: unknown[]) => name === 'bug_report' || tools.includes(name)
-        ? (target.registerTool as (...args: unknown[]) => unknown).call(target, name, ...rest) : undefined
-      const value: unknown = Reflect.get(target, key, target)
-      return typeof value === 'function' ? value.bind(target) : value
-    } }) : server
-    await registerAppTools(enabled, { principal: context.principal, interactions: context.interactions,
-      ...(context.bugReports ? { bugReports: context.bugReports } : {}),
-      ...(context.signal ? { signal: context.signal } : {}) })
-    if (context.operator) registerCiTools(enabled, { principal: context.principal, services: context.operator,
-      ...(context.signal ? { signal: context.signal } : {}) })
+    const definitions = await collectTools(async collector => {
+      await registerAppTools(collector, { principal: context.principal, interactions: context.interactions!,
+        ...(context.bugReports ? { bugReports: context.bugReports } : {}),
+        ...(context.signal ? { signal: context.signal } : {}) })
+      if (context.operator) registerCiTools(collector, { principal: context.principal, services: context.operator,
+        ...(context.signal ? { signal: context.signal } : {}) })
+    })
+    const enabled = definitions.filter(tool => tool.name === 'bug_report'
+      || !context.tools || context.tools.includes(tool.name))
+    if (!call.success) requireWorkerToolCatalog(context, enabled)
+    for (const tool of enabled) tool.register(server)
   }
   return server
 }
