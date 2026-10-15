@@ -11,7 +11,7 @@ const SETUP_MS = 90_000
 /** Files measured at or above this run in the slow tier, after the rest of the request finishes. */
 export const SLOW_TEST_MS = 60_000
 
-/** Keep the same host-only slices, then size ordinary work to four minutes per free slot. Slow files form a second,
+/** Keep systemd files on capable slices, then size ordinary work to four minutes per free slot. Slow files form a second,
  * deferred tier so they never hold up or hide the result of the rest of the request. */
 export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots) {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined

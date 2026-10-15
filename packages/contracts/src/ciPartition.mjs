@@ -5,7 +5,7 @@ export function requiresUserSystemd(file) {
   return userSystemdIntegrationFiles.has(file)
 }
 
-/** Spread capability-dependent and host-exclusive files before balancing the remaining durations by computer speed.
+/** Place user-systemd files first, then balance remaining durations by computer speed.
  * Files without a recorded duration count as the median.
  * @param {readonly string[]} files
  * @param {Readonly<Record<string, number>>} durations
@@ -29,15 +29,16 @@ export function integrationPartition(files, durations, partition) {
     : new Set([...requirements.keys(), ...exclusiveIntegrationFiles])
   const heavyCounts = Array(partition.count).fill(0)
   const indexes = Array.from({ length: partition.count }, (_, index) => index)
-  const ordinaryIndexes = indexes.filter(index => !partition.hostIndexes?.includes(index))
-  const ordered = [...files].sort((left, right) => Number(heavy.has(right)) - Number(heavy.has(left))
+  const hostFiles = new Set(partition.hostIndexes ? files.filter(requiresUserSystemd) : [])
+  const ordered = [...files].sort((left, right) => Number(hostFiles.has(right)) - Number(hostFiles.has(left))
+    || Number(heavy.has(right)) - Number(heavy.has(left))
     || weight(right) - weight(left) || (left < right ? -1 : 1))
   for (const file of ordered) {
     // Heavy files use each partition once per round before host speed breaks ties.
     const isHeavy = heavy.has(file)
     let eligible = indexes
-    if (partition.hostIndexes) {
-      eligible = requiresUserSystemd(file) ? partition.hostIndexes : ordinaryIndexes
+    if (partition.hostIndexes && hostFiles.has(file)) {
+      eligible = partition.hostIndexes
     }
     if (partition.targetDurationMs && !isHeavy && !requiresUserSystemd(file)) {
       const withoutHeavy = eligible.filter(index => heavyCounts[index] === 0)

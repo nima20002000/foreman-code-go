@@ -50,7 +50,7 @@ export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(
   /** Keep files at or above this measured duration alone when capacity permits. */
   targetDurationMs: z.number().positive().finite().optional(),
   weights: z.array(z.number().positive().finite()).optional(),
-  /** Only user-systemd files run in these slices on capable cloud executors or build computers; ordinary files use the others. */
+  /** User-systemd files require these capable slices; ordinary files can fill remaining capacity in any slice. */
   hostIndexes: z.array(z.number().int().nonnegative()).min(1).max(64).optional() }).strict()
   .refine(value => value.index < value.count, 'The partition index must be below its count.')
   .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
