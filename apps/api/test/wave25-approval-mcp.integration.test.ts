@@ -4,14 +4,18 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 async function setup() {
   const f = await approvalDatabase(); closes.push(f.close)
+  const { bugReports, ci } = workerToolServices(f.pool, f.commands)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service) } })
+    appMcp: { access: f.access, commands: f.commands, bugReports,
+      interactions: new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service) },
+    operator: { access: f.access, services: { commands: f.commands, ci, bugReports } as never } })
   const origin = await app.listen({ host: '127.0.0.1', port: 0 }); closes.push(() => app.close())
   async function connect(path: string, token: string) {
     const client = new Client({ name: 'a4-authenticated-regression', version: '1.0.0' })

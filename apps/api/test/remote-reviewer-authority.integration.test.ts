@@ -4,6 +4,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { assertRemoteReviewAssignment } from '../src/modules/placement/remoteReviewerAuthority.js'
 import { buildApp } from '../src/app.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
@@ -50,9 +51,10 @@ describe.skipIf(!postgresEnabled)('reviewer assignment and authenticated decisio
   it('denies read-only and requester MCP decisions without changing the pending interaction', async () => {
     const f = await routedApprovalFixture()
     const commands = new PostgresCommandCoordinator(f.db.pool)
+    const { bugReports, ci } = workerToolServices(f.db.pool, commands)
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service) },
-      operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service) } as never } })
+      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service), commands, bugReports },
+      operator: { access: f.access, services: { commands, ci, bugReports, interactions: new OperatorInteractionService(f.service) } as never } })
     const clients: Client[] = []
     try {
       const origin = await app.listen({ host: '127.0.0.1', port: 0 })

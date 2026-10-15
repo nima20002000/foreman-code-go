@@ -3,6 +3,7 @@ import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
@@ -42,9 +43,10 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
   it('delivers an authenticated designated reviewer MCP decision only after exact native review settlement', async () => {
     const f = await routedApprovalFixture()
     const commands = new PostgresCommandCoordinator(f.db.pool)
+    const { bugReports, ci } = workerToolServices(f.db.pool, commands)
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service) },
-      operator: { access: f.access, services: { commands, interactions: new OperatorInteractionService(f.service) } as never } })
+      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service), commands, bugReports },
+      operator: { access: f.access, services: { commands, ci, bugReports, interactions: new OperatorInteractionService(f.service) } as never } })
     const clients: Client[] = []
     const appendHistory = f.coordination.appendReviewNativeHistory.bind(f.coordination)
     const cuts = approvalReviewCuts(f)
