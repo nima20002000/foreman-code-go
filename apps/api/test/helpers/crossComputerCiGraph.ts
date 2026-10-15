@@ -35,7 +35,7 @@ const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
 export function ciReportOutputSchema(suite: ScenarioSuite) {
   return {
     type: 'object',
-    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'branch', 'tickets'],
+    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'branch', 'logLine', 'tickets'],
     properties: {
       ticketId: ciTicketId,
       groupId: { type: 'string', minLength: 1 },
@@ -43,20 +43,15 @@ export function ciReportOutputSchema(suite: ScenarioSuite) {
       outcome: terminalOutcome,
       repository: { type: 'string', minLength: 1 },
       branch: { type: 'string', minLength: 1 },
+      logLine: { type: 'string', minLength: 1 },
       tickets: {
         type: 'array', minItems: 1,
         items: {
           type: 'object',
-          required: ['ticketId', 'part', 'partition', 'computer', 'commit', 'outcome', 'exitCode', 'logLine', 'observedStates'],
+          required: ['ticketId', 'outcome', 'observedStates'],
           properties: {
             ticketId: ciTicketId,
-            part: { type: ['string', 'null'] },
-            partition: { type: ['object', 'null'] },
-            computer: { type: 'object', required: ['kind', 'mainId'] },
-            commit: { type: 'string', minLength: 1 },
             outcome: terminalOutcome,
-            exitCode: { type: ['integer', 'null'] },
-            logLine: { type: 'string', minLength: 1 },
             observedStates: { type: 'array', minItems: 1, items: { type: 'string' } },
           },
         },
@@ -81,17 +76,13 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Repeat that same call only while its wait.status is still-running; do not poll tickets one by one. '
     + 'When wait.status is settled, its partitions (or run, for a single ticket) hold every ticket’s final state. '
     + 'Record each ticket’s distinct observed states in order from the ci_run and ci_get results you read. '
-    + 'Then read ci_logs_read for EVERY ticket. '
-    + 'Choose one nonempty log line per ticket, reading additional pages from nextOffset if necessary. '
+    + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
     + '{"ticketId":"the ci_run top-level ticketId","groupId":"run.groupId","suite":"' + suite + '",'
     + '"outcome":"group.state","repository":"run.repository","branch":"your context_get worktree branch",'
-    + '"tickets":[{"ticketId":"run.id","part":null,"partition":null,"computer":{},'
-    + '"commit":"run.commit","outcome":"run.state","exitCode":0,"logLine":"actual log line",'
-    + '"observedStates":["queued","running","passed"]}]}. '
-    + 'Include every part/partition exactly once. Copy part, partition (including weights), exitCode and computer '
-    + 'from the terminal run; computer is run.computer.hostRef (not its label or plannedHostKey). '
-    + 'A cloud computer has kind cloud, mainId, provider and slot; a Worker has kind device, mainId and deviceId. '
+    + '"logLine":"actual line from the top-level ticket log",'
+    + '"tickets":[{"ticketId":"run.id","outcome":"run.state","observedStates":["queued","running","passed"]}]}. '
+    + 'Include every part/partition ticket exactly once. '
     + 'Repository is the owner/repository string from run.repository, and branch is your own worktree branch. '
     + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
 }

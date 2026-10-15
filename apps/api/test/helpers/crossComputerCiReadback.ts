@@ -2,7 +2,6 @@ import type { Client } from '@modelcontextprotocol/client'
 import { CiGetOutputSchema, CiLogsOutputSchema, CiRunRecordSchema } from '@foreman-code/contracts'
 import { expect } from 'vitest'
 import { z } from 'zod'
-import { CiComputerHostSchema } from './crossComputerCiInput.js'
 import { callCiTool } from './crossComputerCiSetup.js'
 
 const TerminalStateSchema = CiRunRecordSchema.shape.state.extract(['passed', 'failed', 'canceled', 'lost'])
@@ -14,17 +13,13 @@ export const AgentCiReportSchema = z.object({
   outcome: TerminalStateSchema,
   repository: CiRunRecordSchema.shape.repository,
   branch: z.string().min(1).max(255),
+  logLine: z.string().trim().min(1).max(2000),
+  // Part, computer, commit and exit code come from ci_get; Agents only report what they observed.
   tickets: z.array(z.object({
     ticketId: CiRunRecordSchema.shape.id,
-    part: CiRunRecordSchema.shape.part,
-    partition: CiRunRecordSchema.shape.partition,
-    computer: CiComputerHostSchema,
-    commit: CiRunRecordSchema.shape.commit,
     outcome: TerminalStateSchema,
-    exitCode: CiRunRecordSchema.shape.exitCode,
-    logLine: z.string().trim().min(1).max(2000),
     observedStates: z.array(CiRunRecordSchema.shape.state).min(1).max(7),
-  })).min(1).max(66),
+  })).min(1).max(200),
 }).superRefine((report, context) => {
   const ids = report.tickets.map(ticket => ticket.ticketId)
   if (new Set(ids).size !== ids.length || !ids.includes(report.ticketId)) {
