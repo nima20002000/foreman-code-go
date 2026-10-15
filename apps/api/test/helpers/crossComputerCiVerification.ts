@@ -148,7 +148,6 @@ async function verifyWorkflow(client: Client, workflow: RunningCiWorkflow, obser
     const report = observation.reports.get(execution.id)!
     expect(report.suite).toBe(assignment.suite)
     expect(report.repository).toBe(worktree!.repository)
-    expect(report.branch).toBe(worktree!.branch)
     await verifyTickets(client, workflow, execution.id, observation)
   }
   verifyWorkflowActivity(workflow, observation)

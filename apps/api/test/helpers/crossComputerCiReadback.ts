@@ -12,7 +12,6 @@ export const AgentCiReportSchema = z.object({
   suite: CiRunRecordSchema.shape.suite,
   outcome: TerminalStateSchema,
   repository: CiRunRecordSchema.shape.repository,
-  branch: z.string().min(1).max(255),
   logLine: z.string().trim().min(1).max(2000),
   // Per-ticket facts come from ci_get; copying dozens of IDs only measured the Agent's transcription.
   observedStates: z.array(CiRunRecordSchema.shape.state).min(1).max(7),

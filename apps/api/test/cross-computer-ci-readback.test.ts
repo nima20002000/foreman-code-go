@@ -6,7 +6,7 @@ import { AgentCiReportSchema, readAgentCiReport, readCiLog,
 function report() {
   const ticketId = randomUUID()
   return { ticketId, groupId: randomUUID(), suite: 'build', outcome: 'passed', repository: 'example/project',
-    branch: 'foreman/ci-agent', logLine: 'Build passed', observedStates: ['queued', 'running', 'passed'] }
+    logLine: 'Build passed', observedStates: ['queued', 'running', 'passed'] }
 }
 
 it('reads a complete Agent report from a native text envelope', () => {
