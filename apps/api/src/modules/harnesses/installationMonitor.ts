@@ -27,7 +27,7 @@ export class HarnessInstallationMonitor {
   private readonly stopping = new AbortController()
   private readonly generations = new Map<string, Map<string, string>>()
   private readonly workerSignals = new Map<string, AbortSignal>()
-  private readonly hostRefreshes = new Map<string, Promise<void>>()
+  private readonly hostRefreshes = new Map<string, Promise<boolean>>()
   private readonly backoffs = new Map<string, {
     failures: number; retryAt: number; operation: 'discovery' | 'qualification'
   }>()
@@ -135,7 +135,12 @@ export class HarnessInstallationMonitor {
         hosts.push({ kind: 'device', mainId: this.mainHost.mainId, deviceId })
       }
     }
-    await this.refreshHosts(hosts)
+    try {
+      await this.refreshHosts(hosts)
+    } catch (error) {
+      // Periodic discovery is best-effort; required-host callers receive the failure.
+      if (!(error instanceof DomainError) || error.code !== 'HARNESS_INVENTORY_UNAVAILABLE') throw error
+    }
   }
   async refreshHosts(hosts: readonly CanonicalMachineReference[], signal?: AbortSignal): Promise<void> {
     this.stopping.signal.throwIfAborted()
@@ -150,7 +155,10 @@ export class HarnessInstallationMonitor {
       void task.then(cleanup, cleanup)
       return task
     })
-    const completed = Promise.all(tasks).then(() => {})
+    const completed = Promise.all(tasks).then(refreshed => {
+      if (refreshed.includes(false)) throw new DomainError('HARNESS_INVENTORY_UNAVAILABLE',
+        'Harness installation inventory could not be refreshed on a required computer.', 503)
+    })
     if (!signal) return completed
     return new Promise<void>((resolve, reject) => {
       const listener = addAbortListener(signal, () => reject(signal.reason))
@@ -158,11 +166,14 @@ export class HarnessInstallationMonitor {
         error => { listener[Symbol.dispose](); reject(error) })
     })
   }
-  private async collectHost(host: CanonicalMachineReference): Promise<void> {
-    if (host.kind === 'main') return this.registry.refreshMain(this.stopping.signal)
-    if (this.backingOff(host)) return
+  private async collectHost(host: CanonicalMachineReference): Promise<boolean> {
+    if (host.kind === 'main') {
+      await this.registry.refreshMain(this.stopping.signal)
+      return true
+    }
+    if (this.backingOff(host)) return false
     const captured = this.endpoint().captureRequest(host.deviceId, 'harness-discovery-v1')
-    if (!captured || captured.busy) return
+    if (!captured || captured.busy) return false
     const signal = AbortSignal.any([this.stopping.signal, AbortSignal.timeout(30_000),
       ...(this.workerSignals.has(host.deviceId) ? [this.workerSignals.get(host.deviceId)!] : [])])
     try {
@@ -171,10 +182,12 @@ export class HarnessInstallationMonitor {
       signal.throwIfAborted()
       await this.collectWorker(captured.binding, result.payload)
       this.succeeded(host, 'discovery')
+      return true
     } catch (error) {
       this.stopping.signal.throwIfAborted()
       if (deviceBackpressured(error)) this.backoff(host, 'discovery')
       this.report(error)
+      return false
     }
   }
   private backingOff(host: CanonicalMachineReference): boolean {

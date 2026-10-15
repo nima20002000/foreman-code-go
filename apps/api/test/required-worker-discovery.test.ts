@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { DeviceApplicationAdmissionError, DeviceApplicationError } from '../src/modules/devices/deviceApplicationError.js'
 import { HarnessInstallationMonitor } from '../src/modules/harnesses/installationMonitor.js'
 import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
+import { SOURCE_LIMITS } from '../src/modules/sources/manifest.js'
 import { startSqlFixture } from './eng04-start-fixtures.js'
 
 afterEach(() => vi.useRealTimers())
@@ -87,6 +88,59 @@ it('refuses required discovery during backoff after a background request was rej
     expect(collectWorker).toHaveBeenCalledOnce()
     expect(request).toHaveBeenCalledTimes(2)
   } finally {
+    await monitor.close()
+  }
+})
+
+it('times out Start without canceling shared discovery or admitting a late Run', async () => {
+  vi.useFakeTimers()
+  const host = { kind: 'device' as const, mainId: 'fixture-main', deviceId: 'fixture-worker' }
+  let release!: () => void
+  const discovery = new Promise<void>(resolve => { release = resolve })
+  let discoverySignal: AbortSignal | undefined
+  const request = vi.fn(async (_payload: unknown, options: { signal: AbortSignal }) => {
+    discoverySignal = options.signal
+    await discovery
+    return { payload: {} }
+  })
+  const collectWorker = vi.fn(async () => {})
+  const monitor = new HarnessInstallationMonitor({
+    installations: { list: () => [{ hostRef: host }] },
+    observeInstallations: () => {},
+  } as never, {} as never, () => ({ captureRequest: () => ({ binding: {}, request }) }) as never,
+  collectWorker, async () => {}, vi.fn())
+  const background = monitor.refresh()
+  const f = startSqlFixture()
+  let entered!: () => void
+  const preparing = new Promise<void>(resolve => { entered = resolve })
+  const start = admitRepeatRun(f.pool, f.locations, f.principal, 'mcp', f.request, {
+    ...f.publication, placementAdmission: {
+      prepare: async (_input, _principal, signal, options) => {
+        options!.sourcePreparationStarted!()
+        const refreshing = monitor.refreshHosts([host], signal)
+        entered()
+        await refreshing
+        return undefined
+      },
+    },
+  })
+  const rejected = expect(start).rejects.toMatchObject({ code: 'RUN_START_PREPARATION_TIMEOUT' })
+  try {
+    await preparing
+    await vi.advanceTimersByTimeAsync(SOURCE_LIMITS.preparationMs)
+    await rejected
+    expect(discoverySignal!.aborted).toBe(false)
+    expect(collectWorker).not.toHaveBeenCalled()
+    expect(request).toHaveBeenCalledOnce()
+    release()
+    await background
+    expect(collectWorker).toHaveBeenCalledOnce()
+    expect(f.database().run).toBeUndefined()
+    expect(f.state.publications).toBe(0)
+    expect(f.state.filesystemCalls).toBe(0)
+  } finally {
+    release()
+    await background
     await monitor.close()
   }
 })

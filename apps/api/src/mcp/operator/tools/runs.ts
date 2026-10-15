@@ -102,6 +102,8 @@ export const runTools = [
       + 'COMMAND_DATABASE_TIMEOUT are retryable; retain the original commandId and input. This requires '
       + 'workspace-scoped sources:approve, sources:read, source_roots:bind and source_roots:read; it does not '
       + 'grant those permissions. Start refreshes only the Agent execution hosts required by this version. '
+      + 'Failed, unavailable or busy required-host discovery returns HARNESS_INVENTORY_UNAVAILABLE before a Run '
+      + 'is created; cached qualification does not replace a successful inventory refresh. '
       + 'Start automatically checks enabled profiles with missing or stale results. '
       + 'Checks can return HARNESS_PROFILE_CHECK_PENDING; retry the same command after the profiles '
       + 'selected by this Run finish checking. Other profiles on the same computer do not block Start. '

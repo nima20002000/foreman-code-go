@@ -13,7 +13,7 @@ export async function createRemoteReviewTransport(input: {
   certificateFile: string
   privateKeyFile: string
   beforeAuthorization(request: ReturnType<typeof ExecutionAuthorityRequestSchema.parse>): Promise<void>
-  beforeDiscovery?(): Promise<void>
+  beforeDiscovery?(): Promise<void | 'cancel'>
 }) {
   const [cert, key] = await Promise.all([readFile(input.certificateFile), readFile(input.privateKeyFile)])
   const server = createServer({ cert, key })
@@ -74,8 +74,12 @@ export async function createRemoteReviewTransport(input: {
         && frame.namespace === 'harness-discovery-v1') {
         const waiting = [{ data, binary }]
         discoveryFrames.set(frame.id, waiting)
-        void input.beforeDiscovery().then(() => {
+        void input.beforeDiscovery().then(outcome => {
           discoveryFrames.delete(frame.id)
+          if (outcome === 'cancel') {
+            main.send(JSON.stringify({ type: 'application-cancel', id: frame.id }))
+            return
+          }
           for (const message of waiting) worker.send(message.data, { binary: message.binary })
         }).catch(fail)
         return
