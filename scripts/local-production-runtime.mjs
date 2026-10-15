@@ -127,7 +127,12 @@ export async function backupDatabase({ archive, database, run }) {
   }
 }
 
-export async function restoreDatabase({ archive, run }) {
+export async function restoreDatabase({ archive, database, run }) {
+  // A client-side migration timeout leaves its statement running on the server, and any open session makes the
+  // DROP DATABASE inside pg_restore fail, leaving production down. The API is stopped, so end the remaining sessions.
+  if (!/^[a-z_][a-z0-9_]*$/.test(database)) throw new Error('Database name must be a plain identifier.')
+  await run('psql', ['--dbname', 'postgres', '--set', 'ON_ERROR_STOP=1', '--command',
+    `select pg_terminate_backend(pid) from pg_stat_activity where datname = '${database}' and pid <> pg_backend_pid()`])
   const file = await open(archive, 'r')
   try {
     // Recreate the database so objects introduced by a failed migration are removed too.

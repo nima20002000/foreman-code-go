@@ -253,7 +253,7 @@ function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = 
     restore: async archive => {
       // The API is stopped; close the maintenance connection before recreating its database.
       await releaseMaintenance()
-      await restoreDatabase({ archive, run: databaseCommand })
+      await restoreDatabase({ archive, database: 'graphql_production', run: databaseCommand })
     },
   }
 }

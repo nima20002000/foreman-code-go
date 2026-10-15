@@ -654,14 +654,14 @@ for (const change of ['unchanged', 'nullable column', 'defaulted column', 'new t
         catch (error) { await rollback(error); throw error }
       },
       restore: async archive => {
-        await production.restoreDatabase({ archive, run: async command => { commands.push(command) } })
+        await production.restoreDatabase({ archive, database: 'graphql_production', run: async command => { commands.push(command) } })
         schema = before
       },
     }
     await assert.rejects(production.runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }),
       /post-deploy smoke failed/)
     const compatible = ['unchanged', 'nullable column', 'defaulted column', 'new table'].includes(change)
-    assert.deepEqual(commands, compatible ? [] : ['pg_restore'])
+    assert.deepEqual(commands, compatible ? [] : ['psql', 'pg_restore'])
     assert.deepEqual(schema, compatible ? after : before)
     assert.equal(await production.readReleaseSelection(current), previousRelease)
     assert.equal(service, 'running')
