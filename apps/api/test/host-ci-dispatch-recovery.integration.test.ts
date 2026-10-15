@@ -12,6 +12,8 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
   f.computers.splice(1, 1)
   const pending = new Map<string, CiHostRun>()
   const dispatches: string[] = []
+  let releaseRead!: () => void
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve })
   let exhausted = false
   const request = f.endpoint.request.bind(f.endpoint)
   f.endpoint.request = async (computer, input) => {
@@ -28,6 +30,7 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     }
     const run = pending.get(input.runId)!
     if (input.operation === 'cancel') return { operation: 'cancel', run: { ...run, state: 'canceled' } }
+    await readGate
     return { operation: 'read', run: exhausted ? { ...run, state: 'queued', step: null,
       message: 'Dispatch retries exhausted; queued for another computer.' } : run, text: '', nextOffset: 0 }
   }
@@ -45,6 +48,7 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     const automaticDispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
     try {
       exhausted = true
+      releaseRead()
       await dispatch()
       const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
         ticketId: started.ticketId, waitSeconds: 1,
@@ -77,7 +81,10 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     expect(dispatches).toEqual([started.ticketId])
     expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === started.ticketId))
       .toHaveLength(1)
-  } finally { await f.close() }
+  } finally {
+    releaseRead()
+    await f.close()
+  }
 })
 
 it('preserves MCP cancellation when an in-flight refresh returns an unstarted ticket', async () => {
