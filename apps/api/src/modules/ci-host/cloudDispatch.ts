@@ -13,7 +13,7 @@ const log = componentLogger('jobs')
 type DispatchOutcome = { outcome: 'pending' | 'busy' | 'rejected' }
   | { outcome: 'settled'; run: CiRunRecord; observed: CiRunSettlement }
 
-function unstarted(run: CiRunRecord, state: 'queued' | 'lost' | 'failed', message: string): CiRunSettlement {
+function unstarted(run: CiRunRecord, state: 'queued' | 'failed', message: string): CiRunSettlement {
   return { runId: run.id, state, step: null, startedAt: null,
     finishedAt: state === 'queued' ? null : new Date().toISOString(), exitCode: null, logBytes: 0, message }
 }
@@ -51,7 +51,9 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
     if (error instanceof DomainError && error.code === 'CI_CLOUD_CLEANUP_PENDING') throw error
     throw new DomainError('CI_CLOUD_CLEANUP_PENDING', 'Cloud cancellation failed; ownership retained.', 503, undefined, { cause: error })
   }
-  return unstarted(run, 'lost', 'Cloud dispatch created no workflow after recovery attempts; the CI slot was released.')
+  const reason = observed?.message ?? run.message
+  return unstarted(run, 'queued', ['Cloud dispatch created no workflow after recovery attempts; queued for another computer.',
+    reason].filter(Boolean).join(' '))
 }
 
 /** Main also bounds failures before the cloud adapter can persist its provider dispatch. */

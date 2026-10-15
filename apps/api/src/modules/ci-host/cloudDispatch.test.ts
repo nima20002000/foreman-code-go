@@ -65,7 +65,8 @@ it.each(['observed start', 'saved start', 'saved dispatch', 'mirror finish'] as 
 
     vi.setSystemTime(Date.parse(dispatchedAt) + startWindowMs)
     await expect(dispatch()).resolves.toMatchObject({ outcome: 'settled', observed: {
-      state: 'lost', message: expect.stringContaining('Cloud dispatch created no workflow after recovery attempts'),
+      state: 'queued', startedAt: null, finishedAt: null,
+      message: expect.stringContaining('queued for another computer'),
     } })
     expect(vi.mocked(f.endpoint.request).mock.calls.map(([, request]) => request.operation))
       .toEqual(['read', 'read', 'read', 'cancel'])
@@ -90,8 +91,7 @@ it.each(['CI_RUN_UNKNOWN', 'CI_CLOUD_RUN_UNREADABLE'])(
     expect(vi.mocked(f.endpoint.request).mock.calls.map(([, request]) => request.operation)).toEqual(['read', 'read'])
 
     vi.setSystemTime(Date.parse(dispatchedAt) + timeoutMs)
-    const state = code === 'CI_RUN_UNKNOWN' ? 'queued' : 'lost'
-    await expect(dispatch()).resolves.toMatchObject({ outcome: 'settled', observed: { state } })
+    await expect(dispatch()).resolves.toMatchObject({ outcome: 'settled', observed: { state: 'queued' } })
     expect(f.sql.query).not.toHaveBeenCalled()
   },
 )
@@ -132,7 +132,9 @@ it('releases an expired dispatch only after confirmed terminal cancellation', as
     operation: 'cancel', run: { runId: run.id, state: 'canceled', step: null, startedAt: run.queuedAt,
       finishedAt: new Date().toISOString(), exitCode: null, message: null, logBytes: 0 },
   }) }
-  await expect(expireCloudDispatch(endpoint, computer, run)).resolves.toMatchObject({ state: 'lost' })
+  await expect(expireCloudDispatch(endpoint, computer, run)).resolves.toMatchObject({
+    state: 'queued', finishedAt: null, message: expect.stringContaining('queued for another computer'),
+  })
 })
 
 

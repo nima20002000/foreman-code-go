@@ -853,7 +853,7 @@ export class HostCiService {
     if (computer.hostRef.kind === 'cloud' && run.state === 'starting') {
       const recovered = await expireCloudDispatch(this.endpoint, computer, run,
         reply?.operation === 'read' ? reply.run : undefined)
-      if (recovered && !['queued', 'starting', 'running'].includes(recovered.state)) {
+      if (recovered && !['starting', 'running'].includes(recovered.state)) {
         await this.settle(run, computer, recovered)
         return
       }
