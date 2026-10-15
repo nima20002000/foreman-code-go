@@ -36,7 +36,7 @@ describe('automatic Worker profile qualification', () => {
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.provider.hideModels()
-      await fixture.restartWorker(undefined, { newBoot: true })
+      await fixture.provider.updatePayload()
       const evidence = await waitForRemoteReview(() => latestEvidence(fixture), proofs =>
         proofs.length === fixture.profiles.length && proofs.every(proof =>
           proof.connectionGeneration !== before[0]!.connectionGeneration && !proof.qualified),

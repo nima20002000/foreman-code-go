@@ -63,7 +63,7 @@ describe('profile-scoped Start after a Worker harness installation update', () =
       const callsBefore = (await fixture.provider.calls()).length
       await fixture.provider.blockModels()
       modelsBlocked = true
-      await fixture.restartWorker(undefined, { newBoot: true })
+      await fixture.provider.updatePayload()
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
         new Set(calls.slice(callsBefore).filter(call => call.method === 'model/list')
           .map(call => call.workingDirectory)).size === 2, 'two parallel profile checks')
