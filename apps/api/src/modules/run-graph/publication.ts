@@ -275,7 +275,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       }
       const code = RunGraphErrorCodeSchema.safeParse(error instanceof Error ? error.message : undefined)
       if (code.success) throw new RunGraphError(code.data, { cause: error })
-      throwPublicationFailure(error, this.scope.runId)
+      return throwPublicationFailure(error, this.scope.runId)
     } finally { if (entered) this.#busy = false }
   }
   /** Verify a source already staged by this branded G1 or durably committed.
@@ -660,7 +660,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       return { replayed, semanticDigest, ...(!replayed && value !== undefined ? { value } : {}) }
     } catch (error) {
       poisonGraphTransaction(this.sql)
-      throwPublicationFailure(error, this.scope.runId)
+      return throwPublicationFailure(error, this.scope.runId)
     } finally { if (entered) this.#busy = false }
   }
   private assertSame(existing: { sourceDigest: string; semanticDigest: string }, sourceDigest: string, semanticDigest: string) {
