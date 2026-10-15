@@ -4,9 +4,9 @@ import {
   assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
   type NativeGraphProjectionKey,
 } from '@foreman-code/contracts/wave25'
-import { poisonGraphTransaction } from './connection.js'
+import { poisonGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { readCurrentNativeActivities, type CurrentNativeActivity } from './currentActivity.js'
-import { readPublicNodeProjection } from './publicProjection.js'
+import { composePublicNodes, readPublicNodeInputs, type PublicNodeInputs } from './publicProjection.js'
 import { readNativeProjectionFacts } from './nativeProjectionFacts.js'
 import { assertRunGraphPublication, graphSourceDigest, type RunGraphPublication } from './publication.js'
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from './records.js'
@@ -175,14 +175,36 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
       if (saved.rowCount !== 1) throw new RunGraphError('GRAPH_SOURCE_CONFLICT')
     })
   }
+  const inputs = await projectionInputs(sql, scope, nodeIds)
   facts.push(...await readNativeProjectionFacts(beforeCandidates, afterCandidates,
-    native => readPublicNodeProjection(sql, scope, nodeIds, { native })))
+    native => composePublicNodes(sql, scope, inputs, { native })))
   const mutate = async () => { for (const write of writes) await write() }
   if (facts.length) {
     // Includes private fields in the source digest, never in the public graph facts.
     await publication.source({ evidence, sourceDigest, facts }, mutate)
   } else await mutate() // Identity bookkeeping is atomic but is NOT a semantic graph event.
   return result
+}
+
+const projectionBatches = new WeakMap<GraphTransactionSql, Map<string, PublicNodeInputs>>()
+
+/** Scopes read-once projection inputs to one native batch transaction. Inside it the
+ * only writes are native-proof rows, which never change these non-native inputs. */
+export async function withNativeGraphProjectionBatch<T>(sql: GraphTransactionSql, batch: () => Promise<T>): Promise<T> {
+  if (projectionBatches.has(sql)) return batch()
+  projectionBatches.set(sql, new Map())
+  try { return await batch() } finally { projectionBatches.delete(sql) }
+}
+
+async function projectionInputs(sql: GraphTransactionSql, scope: RunGraphScope, nodeIds: readonly string[]): Promise<PublicNodeInputs> {
+  const cache = projectionBatches.get(sql)
+  if (!cache) return readPublicNodeInputs(sql, scope, nodeIds)
+  const key = canonicalGraphJson(nodeIds)
+  const cached = cache.get(key)
+  if (cached) return cached
+  const inputs = await readPublicNodeInputs(sql, scope, nodeIds)
+  cache.set(key, inputs)
+  return inputs
 }
 
 function normalizedEvidence(scope: RunGraphScope, observation: NativeGraphObservation | undefined, event: HarnessNativeEvent, binding: ProjectionBinding,
