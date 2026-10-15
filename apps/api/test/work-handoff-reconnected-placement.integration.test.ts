@@ -10,7 +10,7 @@ describe('handed-off node placement after a Worker reconnect', () => {
       const accepted = await f.start()
       const finished = await readUntil(f.details, details => details.run.executionState === 'completed',
         { timeoutMs: 30_000, description: 'all three handed-off Agents finish' })
-      expect(finished.run).toMatchObject({ outcome: 'succeeded' })
+      expect(finished.run, JSON.stringify(finished.run.result)).toMatchObject({ outcome: 'succeeded' })
       expect(finished.executions).toHaveLength(4)
       expect(finished.executions.every(execution => execution.result?.outcome === 'succeeded')).toBe(true)
       expect(new Set(f.base.provider.startedNodes)).toEqual(new Set([f.coordinator.id, ...f.workers.map(node => node.id)]))

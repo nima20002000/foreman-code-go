@@ -36,6 +36,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   }))
   let placement: Awaited<ReturnType<typeof mixedComputerPlacement>> | undefined
   let runId: string | undefined
+  let reportedFailure = false
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
     outputFor: handoffOutput,
@@ -127,7 +128,15 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
           detail: 'full', workspaceId: startInput.workspaceId, runId,
         } })
         if (result.isError) throw new Error(JSON.stringify(result))
-        return SavedRunDetailsSchema.parse(decodeMcpToolResult(result))
+        const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(result))
+        const failures = details.executions.filter(execution => execution.result?.outcome === 'failed')
+        if (failures.length && !reportedFailure) {
+          reportedFailure = true
+          console.error('Handoff execution failed', JSON.stringify(failures.map(execution => ({
+            nodeId: execution.workflowNodeId, result: execution.result,
+          }))))
+        }
+        return details
       },
       async close() {
         delete base.provider.beforeClose
