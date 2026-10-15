@@ -327,13 +327,23 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
     }
   } })
   const inventory = await waitForReplacementReviewInventory(fixture, beforeInventory)
-  const previousBinding = beforeInventory.hostMetadata!.connection!.binding
-  const replacementBinding = inventory.hostMetadata!.connection!.binding
-  expect(replacementBinding.bootId).toBe(previousBinding.bootId)
-  expect(replacementBinding.connectionEpoch).not.toBe(previousBinding.connectionEpoch)
-  expect(replacementBinding.connectionGeneration).toBeGreaterThan(previousBinding.connectionGeneration)
-  expect(inventory.installations[0]?.connectionGeneration)
-    .toBe(beforeInventory.installations[0]?.connectionGeneration)
+  const previousBinding = beforeInventory.hostMetadata?.connection?.binding
+  const replacementBinding = inventory.hostMetadata?.connection?.binding
+  expect(previousBinding).toBeDefined()
+  expect(replacementBinding).toBeDefined()
+  expect(replacementBinding!.connectionEpoch).not.toBe(previousBinding!.connectionEpoch)
+  expect(replacementBinding!.bootId).toBe(previousBinding!.bootId)
+  expect(replacementBinding!.connectionGeneration).toBeGreaterThan(previousBinding!.connectionGeneration)
+  for (const profile of fixture.profiles) {
+    const previous = beforeInventory.installations.find(installation =>
+      installation.harnessInstallationId === profile.target.harnessInstallationId)
+    const replacement = inventory.installations.find(installation =>
+      installation.harnessInstallationId === profile.target.harnessInstallationId)
+    expect(previous).toBeDefined()
+    expect(replacement).toBeDefined()
+    expect(replacement!.connectionGeneration).toBe(previous!.connectionGeneration)
+    expect(replacement!.connectionGeneration).toBe(harnessConnectionGeneration(replacementBinding!))
+  }
   expect(fixture.workerPid()).toBe(originalWorkerPid)
   const profileEvidence = new HostHarnessProfileEvidenceRepository(fixture.db.pool)
   // Inventory arrives before reconnect qualification; dispatching early incurs a retry backoff.

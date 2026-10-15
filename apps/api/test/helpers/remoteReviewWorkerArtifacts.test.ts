@@ -31,7 +31,7 @@ it('makes the installed review Worker bundle ready for new work using its publis
     const contentSha256 = workerArtifactContentSha256(manifest)
     await writeFile(join(release, 'src/cli.mjs'), content)
     await writeFile(join(release, 'manifest.json'), bytes)
-    const artifacts = await remoteReviewWorkerArtifacts(release, join(directory, 'cache'))
+    const artifacts = await remoteReviewWorkerArtifacts(release, join(directory, 'cache'), { publication: 'published' })
     const options = { directory: artifacts, version: manifest.version }
     expect(await readWorkerReleasePublication(options)).toEqual({
       version: manifest.version, state: 'published', lastError: null,
@@ -49,6 +49,6 @@ it('makes the installed review Worker bundle ready for new work using its publis
     expect(readiness.expected).toEqual({ version: manifest.version, target: manifest.target,
       manifestSha256, contentSha256 })
     expect(readiness.running).toEqual(readiness.expected)
-    expect(await remoteReviewWorkerArtifacts(release, join(directory, 'cache'))).toBe(artifacts)
+    expect(await remoteReviewWorkerArtifacts(release, join(directory, 'cache'), { publication: 'published' })).toBe(artifacts)
   })
 })

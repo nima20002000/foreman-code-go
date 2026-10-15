@@ -389,8 +389,7 @@ export async function recoverTerminalBeforeClosure(
     expect(physical).toHaveBeenCalledTimes(kind === 'stop' ? 1 : 2)
     // retry: two entry attempts plus the next node; retry-exhausted: every allowed entry attempt.
     const expectedStarts = kind === 'stop' ? 1 : kind === 'retry' || kind === 'retry-exhausted' ? 3 : 2
-    const expectedSessions = kind === 'stop' || kind === 'retry-exhausted' ? 1 : 2
-    expect(t.provider.counts).toEqual({ sessions: expectedSessions, starts: expectedStarts,
+    expect(t.provider.counts).toEqual({ sessions: expectedStarts, starts: expectedStarts,
       responses: kind === 'approval' ? 1 : 0, attaches: 0 })
     expect(t.provider.startedExecutions.filter((id) => id === original.id)).toHaveLength(1)
     expect(new Set(t.provider.startedExecutions).size).toBe(expectedStarts)
@@ -404,8 +403,10 @@ export async function recoverTerminalBeforeClosure(
       .toEqual(kind === 'retry-exhausted' ? [1, 2, 3] : kind === 'retry' ? [1, 2] : [1])
     if (kind.startsWith('retry')) {
       const retry = attempts.find((item) => item.attempt === 2)!
-      expect(retry.nativeSessionId).toBe(original.nativeSessionId)
-      expect(retry.sessionContinuation?.previousExecutionId).toBe(original.id)
+      expect(retry.nativeSessionId).toBeDefined()
+      expect(retry.nativeSessionId).not.toBe(original.nativeSessionId)
+      expect(retry.sessionContinuation).toBeUndefined()
+      expect(new Set(all.map(item => item.nativeSessionId)).size).toBe(all.length)
     }
     expect(await occurrenceCount(t)).toBe(form === 'repeat' ? 1 : 0)
     const decisions = (await t.db.pool.query<{ record: { reason: string } }>(

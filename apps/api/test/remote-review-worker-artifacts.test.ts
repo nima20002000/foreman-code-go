@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { createWorkerArtifactExtension } from '../src/modules/computers/workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerBundleIdentity } from '../src/modules/computers/workerArtifacts.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { remoteReviewWorkerArtifacts } from './helpers/remoteReviewWorkerArtifacts.js'
 
@@ -32,6 +32,10 @@ it('retains cached Worker manifests through symlinked cache ancestors without ad
     ])
     expect(directory).toBe(reused)
     expect(directory).toBe(await realpath(directory))
+    const published = await remoteReviewWorkerArtifacts(release, cache, { publication: 'published' })
+    await expect(readWorkerBundleIdentity({ directory: published, version: manifest.version }, target))
+      .resolves.toMatchObject({ version: manifest.version, target,
+        manifestSha256: createHash('sha256').update(bytes).digest('hex') })
     await rm(fixture, { recursive: true })
     const extension = createWorkerArtifactExtension({ directory, version: manifest.version })
     const context = {
