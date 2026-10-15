@@ -2806,7 +2806,7 @@ export class ApprovalExecutionCoordinator {
     observation.committedNativeSequences.set(connection, Math.max(previous, event.sequence))
   }
 
-  private async publishRecoveredNativeEvents(observation: WorkflowObservationState, events: NativeHarnessEvent[],
+  private async publishRecoveredNativeEvents(observation: WorkflowObservationState, events: readonly NativeHarnessEvent[],
     lane: SessionWriteLease, lease: WorkflowNativeLease): Promise<boolean> {
     const pending = events.filter(event => event.sequence
       > (observation.committedNativeSequences.get(event.connectionId ?? '') ?? -1))
