@@ -165,9 +165,18 @@ export class HostCiService {
     this.timer = undefined
     this.stoppingRuns += 1
     this.reads.close()
-    await this.dispatching
-    await this.superseding
-    await Promise.all([...this.observingRuns.values(), ...this.observingComputers.values()])
+    await this.drain()
+  }
+
+  /** Resolves when dispatch, superseded cleanup, observations and readiness reads have finished, including work they start. */
+  async drain() {
+    for (;;) {
+      const pending = [this.dispatching, this.superseding,
+        ...this.observingRuns.values(), ...this.observingComputers.values()]
+        .filter((work): work is Promise<void> => work !== undefined)
+      if (!pending.length) return
+      await Promise.allSettled(pending)
+    }
   }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {

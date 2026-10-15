@@ -20,6 +20,7 @@ import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave2
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
+import { ciActivityRunLockMigration } from '../src/infrastructure/ciActivityRunLockMigration.js'
 import { changeRunState, graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
@@ -126,6 +127,7 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
       suite: 'integration', commandId: randomUUID(), ...input,
     }))
     await ci.dispatch()
+    await ci.drain()
     return started
   }
   const activity = async (page: { cursor?: string; limit?: number } = {}) =>
@@ -135,6 +137,7 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
     await value(reader.token, 'run_board_snapshot_get', boardInput))
   const get = async (ticketId: string) => {
     await ci.dispatch()
+    await ci.drain()
     return CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
   }
   const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost', tests?: CiTestResults) => {
@@ -209,6 +212,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const denied = await f.credentials.issueForExecution(deniedExecutionId)
       const deniedToken = denied.environment.variables.GRAPHQL_MCP_TOKEN!
       const catalog = await graphRpc(f.app, deniedToken, 'tools/list')
+      expect(catalog.error).toBeUndefined()
       expect(catalog.result?.tools?.map(tool => tool.name)).not.toContain('ci_get')
       const blocked = await f.call(deniedToken, 'ci_get', input)
       expect(blocked.result?.isError).toBe(true)
@@ -586,7 +590,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
   }, 120000)
 
   it('observes retained Host CI once without inventing earlier transitions', async () => {
-    const f = await fixture({ deferMigration: [hostCiActivityMigration.version, databaseHotQueriesMigration.version] })
+    // The run-lock migration replaces the function the host CI migration creates, so it defers with it.
+    const f = await fixture({ deferMigration: [hostCiActivityMigration.version, ciActivityRunLockMigration.version,
+      databaseHotQueriesMigration.version] })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])

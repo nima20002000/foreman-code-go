@@ -8,6 +8,12 @@ import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { DomainError } from '../src/modules/errors.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
+/** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
+async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
+  await service.dispatch()
+  await service.drain()
+}
+
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 type CollectionReply = 'backpressure' | 'pending' | 'partial' | 'complete' | 'unsupported'
@@ -69,7 +75,7 @@ it.each(['backpressure', 'pending', 'partial'] as const)(
     try {
       for (const [index, delay] of [1000, 2000, 4000, 8000, 16_000, 32_000, 60_000, 60_000].entries()) {
         const attemptedAt = Date.now()
-        await f.ci.dispatch()
+        await settle(f.ci)
         const output = await f.read()
         expect(output.run).toMatchObject({ state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
           collection: 'pending', observation: { status: 'unavailable', lastSuccessAt: f.lastSuccessAt,
@@ -78,12 +84,12 @@ it.each(['backpressure', 'pending', 'partial'] as const)(
         expect(f.counts().collectionReads).toBe(index + 1)
         const counts = f.counts()
         vi.setSystemTime(attemptedAt + delay - 1)
-        await f.ci.dispatch()
+        await settle(f.ci)
         expect(f.counts()).toEqual(counts)
         vi.setSystemTime(attemptedAt + delay)
       }
       f.mode('complete')
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(await f.read()).toMatchObject({ run: { state: 'failed', collection: 'complete',
         observation: { status: 'available', consecutiveFailures: 0, lastError: null,
           lastSuccessAt: new Date().toISOString(), nextAttemptAt: null } }, tests: results })
@@ -92,7 +98,7 @@ it.each(['backpressure', 'pending', 'partial'] as const)(
       expect(stored.test_results).toEqual(results)
       const counts = f.counts()
       vi.setSystemTime(Date.now() + 60_000)
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(f.counts()).toEqual(counts)
       const denied = await f.connect(['workflows:read'])
       expect((await f.call(denied, 'ci_get', { ticketId: f.record.id })).isError).toBe(true)
@@ -106,13 +112,13 @@ it('persists newly finished facts when collection fails and preserves that outco
   const f = await collectionFixture('backpressure', 'running')
   vi.useFakeTimers({ toFake: ['Date'] })
   try {
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
       collection: 'pending', observation: { status: 'unavailable', consecutiveFailures: 1,
         lastSuccessAt: f.lastSuccessAt } }, logTail: 'fresh output' })
     f.remoteState('passed')
     vi.setSystemTime(Date.now() + 1000)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
       observation: { status: 'unavailable', consecutiveFailures: 2, lastSuccessAt: f.lastSuccessAt } } })
   } finally { await f.close() }
@@ -121,11 +127,11 @@ it('persists newly finished facts when collection fails and preserves that outco
 it('finishes unsupported collection without scheduling another observation', async () => {
   const f = await collectionFixture('unsupported')
   try {
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read()).toMatchObject({ run: { state: 'failed', collection: 'unsupported',
       observation: { status: 'available', consecutiveFailures: 0, nextAttemptAt: null } } })
     const counts = f.counts()
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.counts()).toEqual(counts)
   } finally { await f.close() }
 })
@@ -135,13 +141,13 @@ it('recovers a terminal log observation after collection completes and then stop
   vi.useFakeTimers({ toFake: ['Date'] })
   try {
     f.tailUnavailable(true)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
       collection: 'complete', observation: { status: 'unavailable', consecutiveFailures: 1 } } })
     f.tailUnavailable(false)
     f.remoteState('passed')
     vi.setSystemTime(Date.now() + 1000)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const recovered = await f.read()
     expect(recovered).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
       collection: 'complete', observation: { status: 'available', consecutiveFailures: 0, nextAttemptAt: null } },
@@ -150,7 +156,7 @@ it('recovers a terminal log observation after collection completes and then stop
     expect(stored.record).toEqual(recovered.run)
     const counts = f.counts()
     vi.setSystemTime(Date.now() + 60_000)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.counts()).toEqual(counts)
     const denied = await f.connect(['workflows:read'])
     expect((await f.call(denied, 'ci_get', { ticketId: f.record.id })).isError).toBe(true)

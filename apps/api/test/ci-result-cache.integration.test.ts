@@ -136,8 +136,8 @@ async function fixture() {
     suite: 'integration', commit: commit(sha), scope: 'affected', files, commandId: randomUUID() }))
   const read = async (ticketId: string) => CiGetOutputSchema.parse(await call('ci_get', { ticketId }))
   /** Starts the request on the builder, finishes it and collects its results. */
-  // ci_run also starts a background dispatch; a second pass always sees the latest remote state.
-  const settle = async () => { await ci.dispatch(); await ci.dispatch() }
+  // ci_run also starts a background dispatch; observations run in the background, so wait for them to finish.
+  const settle = async () => { await ci.dispatch(); await ci.drain() }
   const complete = async (ticketId: string, state: 'passed' | 'failed' = 'passed') => {
     await settle()
     const run = remote.get(ticketId)
