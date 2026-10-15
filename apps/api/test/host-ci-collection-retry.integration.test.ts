@@ -5,6 +5,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterEach, expect, it, vi } from 'vitest'
 import { DeviceApplicationAdmissionError } from '../src/modules/devices/deviceApplicationError.js'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
+import { DomainError } from '../src/modules/errors.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
@@ -32,13 +33,17 @@ async function collectionFixture(mode: CollectionReply, initialState: 'running' 
   let reads = 0
   let collectionReads = 0
   let remoteState: CiHostRun['state'] = 'failed'
+  let tailUnavailable = false
   const request = f.endpoint.request.bind(f.endpoint)
   vi.spyOn(f.endpoint, 'request').mockImplementation(async (host, input, options): Promise<CiHostReply> => {
     if (input.operation !== 'read') return request(host, input, options)
     reads++
     const run: CiHostRun = { runId: record.id, state: remoteState, step: 'unit',
       startedAt: lastSuccessAt, finishedAt, exitCode: remoteState === 'failed' ? 1 : 0,
-      message: 'Test failure', logBytes: 12 }
+      message: 'Test failure', logBytes: tailUnavailable ? 40_000 : 12 }
+    if (input.afterOffset > 0 && tailUnavailable) {
+      throw new DomainError('CI_LOG_UNAVAILABLE', 'Log tail unavailable', 503)
+    }
     if (!input.testResults) return { operation: 'read', run, text: 'fresh output', nextOffset: 12 }
     collectionReads++
     if (mode === 'backpressure') throw new DeviceApplicationAdmissionError('background_yield')
@@ -53,7 +58,8 @@ async function collectionFixture(mode: CollectionReply, initialState: 'running' 
     return CiGetOutputSchema.parse(decodeMcpToolResult(response))
   }
   return { ...f, record, lastSuccessAt, finishedAt, read, counts: () => ({ reads, collectionReads }),
-    mode: (value: CollectionReply) => { mode = value }, remoteState: (value: CiHostRun['state']) => { remoteState = value } }
+    mode: (value: CollectionReply) => { mode = value }, remoteState: (value: CiHostRun['state']) => { remoteState = value },
+    tailUnavailable: (value: boolean) => { tailUnavailable = value } }
 }
 
 it.each(['backpressure', 'pending', 'partial'] as const)(
@@ -121,5 +127,32 @@ it('finishes unsupported collection without scheduling another observation', asy
     const counts = f.counts()
     await f.ci.dispatch()
     expect(f.counts()).toEqual(counts)
+  } finally { await f.close() }
+})
+
+it('recovers a terminal log observation after collection completes and then stops polling', async () => {
+  const f = await collectionFixture('complete', 'running')
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    f.tailUnavailable(true)
+    await f.ci.dispatch()
+    expect(await f.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
+      collection: 'complete', observation: { status: 'unavailable', consecutiveFailures: 1 } } })
+    f.tailUnavailable(false)
+    f.remoteState('passed')
+    vi.setSystemTime(Date.now() + 1000)
+    await f.ci.dispatch()
+    const recovered = await f.read()
+    expect(recovered).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: f.finishedAt,
+      collection: 'complete', observation: { status: 'available', consecutiveFailures: 0, nextAttemptAt: null } },
+      logTail: 'fresh output', tests: results })
+    const stored = (await f.pool.query('select record from ci_runs where id=$1', [f.record.id])).rows[0]!
+    expect(stored.record).toEqual(recovered.run)
+    const counts = f.counts()
+    vi.setSystemTime(Date.now() + 60_000)
+    await f.ci.dispatch()
+    expect(f.counts()).toEqual(counts)
+    const denied = await f.connect(['workflows:read'])
+    expect((await f.call(denied, 'ci_get', { ticketId: f.record.id })).isError).toBe(true)
   } finally { await f.close() }
 })

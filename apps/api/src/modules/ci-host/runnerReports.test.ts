@@ -38,7 +38,8 @@ async function fixture(suite: 'unit' | 'integration', options: {
   roots.push(root)
   const runId = randomUUID()
   let launches = 0
-  const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(),
+  let now = Date.now()
+  const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(now),
     run: async (file, args) => {
       if (file === 'git' && args.includes('show')) return { code: 0, stdout: '{}', stderr: '' }
       if (file === 'git' && args.includes('worktree') && args.includes('add')) {
@@ -71,7 +72,8 @@ async function fixture(suite: 'unit' | 'integration', options: {
   await fs.writeFile(join(directory, 'log'), 'Suite completed.\n')
   await fs.writeFile(join(directory, 'step'), suite)
   await fs.writeFile(join(directory, 'exit'), '0\n')
-  return { runner, read, directory, reopen: () => new HostCiRunner(root, ports, {}), launches: () => launches }
+  return { runner, read, directory, reopen: () => new HostCiRunner(root, ports, {}), launches: () => launches,
+    advance: (ms: number) => { now += ms } }
 }
 
 it.each(['unit', 'integration'] as const)('retries unreadable and malformed %s reports after terminal outcome', async suite => {
@@ -100,6 +102,21 @@ it('keeps a supported missing report pending and collects it when it appears', a
   await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'passed', collection: 'pending' } })
   await fs.writeFile(join(f.directory, 'test-results.json'), JSON.stringify(tests))
   await expect(f.reopen().handle(f.read)).resolves.toMatchObject({ testResults: tests, run: { collection: 'complete' } })
+  expect(f.launches()).toBe(1)
+})
+
+it.each(['unit', 'integration'] as const)('stops waiting for missing %s reports after a crashed process closes', async suite => {
+  const f = await fixture(suite)
+  await fs.rm(join(f.directory, 'test-results.json'))
+  await fs.rm(join(f.directory, 'measured-durations.json'))
+  await fs.writeFile(join(f.directory, 'exit'), '137\n')
+  const initial = await f.runner.handle(f.read)
+  expect(initial).toMatchObject({ run: { state: 'failed', exitCode: 137, collection: 'pending' } })
+  if (initial.operation !== 'read') throw new Error('Expected a read response')
+  f.advance(15 * 60_000)
+  expect(await f.reopen().handle(f.read)).toMatchObject({ run: {
+    state: 'failed', exitCode: 137, finishedAt: initial.run.finishedAt, collection: 'unsupported',
+  } })
   expect(f.launches()).toBe(1)
 })
 

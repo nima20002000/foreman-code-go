@@ -748,7 +748,8 @@ export class HostCiService {
         log_tail=coalesce($6,log_tail),
         test_results=case when $10 then null else test_results end,
         durations=case when $10 then null else durations end
-      where id=$1 and (state in ('queued','starting','running') or state=$8 and record->>'collection'='pending')
+      where id=$1 and (state in ('queued','starting','running') or state=$8
+        and (record->>'collection'='pending' or record#>>'{observation,status}'='unavailable'))
         and host_key is not distinct from $5
         and record->>'supersededBy' is not distinct from $7
         and record=$9::jsonb

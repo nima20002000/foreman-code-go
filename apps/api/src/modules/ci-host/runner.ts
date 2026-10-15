@@ -23,6 +23,7 @@ import { sweepCiRunDirectories } from './directoryRetention.js'
 import { sweepHostCiCache } from './cacheCleanup.js'
 
 const log = componentLogger('jobs')
+const REPORT_COLLECTION_WINDOW_MS = 5 * 60_000
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -175,7 +176,9 @@ export class HostCiRunner {
       if (tests.state === 'pending' || tests.state === 'absent' && expected || measured?.state === 'pending') {
         collection = 'pending'
       }
-      run.collection = collection
+      const expired = run.finishedAt !== null
+        && this.ports.now().getTime() - Date.parse(run.finishedAt) >= REPORT_COLLECTION_WINDOW_MS
+      run.collection = collection === 'pending' && expired ? 'unsupported' : collection
     }
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
       ...(measured?.state === 'complete' ? { durations: measured.data } : {}),
