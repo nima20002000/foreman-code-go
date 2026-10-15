@@ -89,6 +89,21 @@ describe('received work return identity', () => {
       .toContain(`Valid open request IDs: ${JSON.stringify([f.requestId])}`)
   })
 
+  it.each([undefined, 'saved-caller'])('uses trusted context for a frozen continuation without parentRequest (ID: %s)', id => {
+    const f = fixture()
+    const input = reactivatedInput(f)
+    delete input.parentRequest
+    const executionContext = { parentRequest: { requestId: f.requestId,
+      requesterNodeId: f.version.entryNodeId } }
+    const result = f.answer(id === undefined ? undefined : f.requestId, 'accepted')
+    const execution = { ...f.execution, input, result }
+    expect(parseWorkResultForInput(result, input, executionContext).routing)
+      .toEqual({ kind: 'return', requestId: f.requestId, outcome: 'accepted' })
+    expect(workResultRepairPrompt(result, f.contract, input, executionContext)).toBeUndefined()
+    expect(normalizeRepeatTerminal(f.version, f.scope, f.ref, execution, { executionContext })).toEqual(execution)
+    expect(input).not.toHaveProperty('parentRequest')
+  })
+
   it('resolves an omitted ID for a join with one received request', () => {
     const f = fixture()
     const input = joinedInput(f, 1)
