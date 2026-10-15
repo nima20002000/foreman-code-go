@@ -21,7 +21,7 @@ export async function retainsRunAcrossUnavailableInstallation(executionHost: 'ma
     let last: unknown
     const unavailable = await waitForRemoteReview(async () => (last = await fixture.inventory()) as Awaited<ReturnType<typeof fixture.inventory>>, value => value.installations.some(installation =>
       installation.driverId === 'codex' && !installation.installed && installation.installationFingerprint === null),
-    'unavailable intermediate inventory').catch(error => { throw new Error(`DIAG ${JSON.stringify(last)} ${String(error)}`) })
+    'unavailable intermediate inventory').catch(error => { throw new Error(`DIAG ${JSON.stringify(fixture.failures())} ${JSON.stringify((last as { installations: Array<{ driverId: string; installed: boolean; installationFingerprint: unknown; launcher: { status: unknown; diagnostics: unknown; checkedAt?: unknown } }> }).installations.map(i => [i.driverId, i.installed, i.launcher.status, i.launcher.diagnostics, i.launcher.checkedAt]))} ${String(error)}`) })
     expect(unavailable.installations.find(installation => installation.driverId === 'codex')).toMatchObject({
       harnessInstallationId: before.target.harnessInstallationId,
       installed: false,
