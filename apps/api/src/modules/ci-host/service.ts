@@ -91,6 +91,8 @@ export class HostCiService {
   private observationOffset = 0
   private readonly observingComputers = new Map<string, Promise<void>>()
   private readonly mirrorPublications = new Map<string, { settled: boolean }>()
+  /** Computers that still had a free slot after the last dispatch pass: where a canceled provider-queued ticket can go. */
+  private spareComputers: HostCiComputer[] = []
   private readonly dispatchRejections = new CiDispatchRejections()
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
@@ -764,7 +766,10 @@ export class HostCiService {
     }
     const requeued = state.state === 'queued'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
-    if (requeued && !setupRequeue && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
+    // A workflow the provider only queued is moved when another computer has room; that does not rule the provider out.
+    if (requeued && !setupRequeue && computer.hostRef.provider && run.step !== 'queued') {
+      unstartedProviders.add(computer.hostRef.provider)
+    }
     const messages = ciMessages(run, state.message === null ? null : sanitizeCiText(state.message))
     const terminal = !['queued', 'starting', 'running'].includes(state.state)
     const next = CiRunRecordSchema.parse({ ...run, state: state.state, step: state.step, exitCode: state.exitCode,
@@ -849,6 +854,13 @@ export class HostCiService {
     })
   }
 
+  private spareElsewhere(run: CiRunRecord, computer: HostCiComputer) {
+    return this.spareComputers.some(spare => spare.key !== computer.key
+      && (spare.hostRef.kind !== 'cloud' || !run.unstartedProviders?.includes(spare.hostRef.provider!))
+      && (spare.hostRef.provider !== 'circleci' || runsOnCircleCi(run))
+      && (!needsSystemdExecutor(run) || supportsUserSystemd(spare)))
+  }
+
   private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[],
     options: { observeOnly?: boolean } = {}) {
     const run = CiRunRecordSchema.parse(row.record)
@@ -880,7 +892,9 @@ export class HostCiService {
       return
     }
     const request: CiHostRequest = { operation: 'read', runId: ciExecutionRunId(run), afterOffset: 0, maxBytes: 32_768,
-      ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }
+      ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}),
+      ...(computer.hostRef.kind === 'cloud' && run.step === 'queued' && this.spareElsewhere(run, computer)
+        ? { reassign: true } : {}) }
     const reply = await (computer.hostRef.kind === 'cloud'
       ? requestCloud(this.endpoint, computer, request)
       : this.endpoint.request(computer, request, { priority: 'background' }))
@@ -1302,6 +1316,7 @@ export class HostCiService {
       const message = sanitizeCiText(`${prefix}; ${reasons.join('; ') || 'no eligible computers'}`.slice(0, 2000))
       if (message !== run.message) await saveQueuedCiRun(this.pool, run, { ...run, message })
     })
+    this.spareComputers = computers.filter(computer => freeSlots(computer) > 0)
   }
 }
 

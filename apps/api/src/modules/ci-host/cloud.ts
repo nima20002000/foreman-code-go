@@ -211,7 +211,7 @@ export class CloudCi {
       this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
-    return this.withRead(request.runId, async () => this.answer(request, await this.refresh(request.runId)))
+    return this.withRead(request.runId, async () => this.answer(request, await this.refresh(request.runId, request.reassign)))
   }
 
   private async withRead<T>(runId: string, read: () => Promise<T>): Promise<T> {
@@ -899,7 +899,7 @@ export class CloudCi {
   }
 
   /** Follows the provider's run at most every few seconds, pausing while the service's rate limit is spent. */
-  private async refresh(runId: string): Promise<CloudRun> {
+  private async refresh(runId: string, reassign = false): Promise<CloudRun> {
     const run = await this.read(runId)
     if (run.publicationRequest && run.state === 'starting') {
       this.publishInBackground(run)
@@ -928,7 +928,7 @@ export class CloudCi {
         let next: CloudRun
         if (pendingCancellation) next = await this.cancelAttempts(run)
         else if (pendingCollection) next = run
-        else next = await this.follow(run)
+        else next = await this.follow(run, reassign)
         if (next.reconciliation && next.state !== 'starting') {
           const recovered = { ...next,
             message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
@@ -1008,6 +1008,8 @@ export class CloudCi {
     const recovered: CloudRun = { ...run, state: 'queued', providerRunId: null, finishedAt: null,
       exitCode: null, message }
     delete recovered.reconciliation
+    delete recovered.providerQueuedAt
+    delete recovered.queueCancelRequested
     return this.save(recovered)
   }
 
@@ -1187,32 +1189,39 @@ export class CloudCi {
     return waited ?? undefined
   }
 
-  /** A workflow the provider holds in its own queue is not running; after the start window it is canceled, and only
-   * once that is confirmed does the ticket go to another computer. */
-  private async waitInProviderQueue(run: CloudRun): Promise<CloudRun> {
+  /** A workflow the provider holds in its own queue is not running. It keeps its place there until Main reports another
+   * computer with a free slot; after the start window its cancellation is requested, and only once the provider confirms
+   * the cancellation does the ticket go to that computer. A workflow that starts or finishes meanwhile is kept. */
+  private async waitInProviderQueue(run: CloudRun, reassign: boolean): Promise<CloudRun> {
     const now = this.ports.now()
     const since = run.providerQueuedAt ?? now.toISOString()
-    if (now.getTime() - Date.parse(since) < CLOUD_START_TIMEOUT_MS) {
-      return run.providerQueuedAt ? run : this.save({ ...run, providerQueuedAt: since })
-    }
+    if (!run.providerQueuedAt) run = await this.save({ ...run, providerQueuedAt: since })
+    if (!reassign || run.queueCancelRequested || now.getTime() - Date.parse(since) < CLOUD_START_TIMEOUT_MS) return run
     try {
       await this.provider.cancel(run)
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
       return this.reconcileLookupFailure(run, error)
     }
+    return this.save({ ...run, queueCancelRequested: true })
+  }
+
+  /** The provider confirmed the cancellation of a workflow it only queued: the ticket goes to another computer. */
+  private async requeueCanceledQueue(run: CloudRun): Promise<CloudRun> {
     const message = `${this.provider.label} kept the workflow queued for 75 seconds without starting a job. `
       + 'Canceled; queued for another computer.'
     await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
     const requeued: CloudRun = { ...run, state: 'queued', finishedAt: null, exitCode: null, message,
-      providerRunId: null, cancellation: { at: now.toISOString(), canceledIds: [run.providerRunId!] } }
+      providerRunId: null,
+      cancellation: { at: this.ports.now().toISOString(), canceledIds: [run.providerRunId!] } }
     delete requeued.providerQueuedAt
+    delete requeued.queueCancelRequested
     delete requeued.reconciliation
     return this.save(requeued)
   }
 
   /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
-  private async follow(run: CloudRun): Promise<CloudRun> {
+  private async follow(run: CloudRun, reassign: boolean): Promise<CloudRun> {
     const runId = run.runId
     if (run.state === 'starting' || !run.providerRunId || !run.workflowStarted && this.provider.id === 'circleci') {
       const providerRunId = await this.provider.find(run)
@@ -1226,7 +1235,7 @@ export class CloudCi {
     }
     const status = await this.provider.status(run)
     this.polled.set(runId, this.ports.now().getTime())
-    if (!status.done && status.queued) return this.waitInProviderQueue(run)
+    if (!status.done && status.queued) return this.waitInProviderQueue(run, reassign)
     if (run.providerQueuedAt) {
       run = { ...run }
       delete run.providerQueuedAt
@@ -1235,6 +1244,12 @@ export class CloudCi {
     run = await this.progress(run, status)
     if (!status.done) return run
     this.polled.delete(runId)
+    if (run.queueCancelRequested) {
+      if (status.conclusion === 'cancelled') return this.requeueCanceledQueue(run)
+      // The workflow finished before the cancellation took effect: its result is collected, not rerun.
+      run = { ...run }
+      delete run.queueCancelRequested
+    }
     const passed = status.conclusion === 'success'
     const failedSetup = status.conclusion === 'failure'
       && !status.steps?.some(step => step.name === 'Suite' && step.state !== 'skipped')

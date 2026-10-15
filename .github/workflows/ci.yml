@@ -169,7 +169,9 @@ jobs:
           key: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ steps.cache-inputs.outputs.shard }}
           restore-keys: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
-        run: scripts/ci-suite.sh
+        # The output is also kept as an artifact, so Main settles the result without downloading the provider log.
+        shell: bash
+        run: scripts/ci-suite.sh 2>&1 | tee "${{ runner.temp }}/suite.log"
         env:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
           TEST_RESULTS_OUTPUT: ${{ runner.temp }}/test-results.json
@@ -202,5 +204,6 @@ jobs:
             ${{ runner.temp }}/durations.json.vitest.json
             ${{ runner.temp }}/test-results.json
             ${{ runner.temp }}/watchdog-message.json
+            ${{ runner.temp }}/suite.log
           retention-days: 1
           if-no-files-found: ignore
