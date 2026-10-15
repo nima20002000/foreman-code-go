@@ -132,8 +132,9 @@ describe('installed API fixture packaging', () => {
       const deploy = deployProductionApi(async (command, args) => {
         // This disposable workspace needs no post-deploy installation restoration.
         if (args.includes('install')) return
-        await execute(command, [...args, '--prefer-offline', '--store-dir', storeDir,
-          '--cache-dir', cache, '--registry', registryUrl], {
+        // This disposable copy needs no inode isolation, and hardlinking the store keeps each case fast.
+        await execute(command, [...args, '--package-import-method', 'hardlink', '--prefer-offline',
+          '--store-dir', storeDir, '--cache-dir', cache, '--registry', registryUrl], {
           cwd: directory, env: { ...process.env, CI: 'true' }, timeout: 300_000,
         })
       }, destination)
