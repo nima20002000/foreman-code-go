@@ -30,7 +30,7 @@ it.each(['http', 'mcp'] as const)('returns and replays every maximum unit shard 
   } finally { await f.close() }
 })
 
-it('caps learned unit sizing by free slots and persists the same plan through authenticated MCP', async () => {
+it('sizes learned unit shards from eligible slots, busy ones included, and persists the same plan through authenticated MCP', async () => {
   const files = Array.from({ length: 12 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
   const durations = Object.fromEntries(files.map(file => [file, 10_000]))
   const f = await fixture({ unitInventory: { files, durations, heavy: [] }, cloud: { github: 4, circleci: 0 } })
@@ -54,8 +54,8 @@ it('caps learned unit sizing by free slots and persists the same plan through au
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(result)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: result.ticketId }))
     const api = read.partitions!.filter(part => part.part === 'unit-api')
-    expect(api).toHaveLength(5)
-    expect(api.map(part => part.partition)).toEqual([0, 1, 2, 3, 4].map(index => ({ index, count: 5 })))
+    expect(api).toHaveLength(6)
+    expect(api.map(part => part.partition)).toEqual([0, 1, 2, 3, 4, 5].map(index => ({ index, count: 6 })))
     expect(read.partitions!.filter(part => part.part === 'unit-web-heavy')).toHaveLength(2)
     expect(read.partitions!.filter(part => part.part === 'unit-other')).toHaveLength(1)
     const stored = (await f.pool.query('select record from ci_runs where group_id=$1', [read.run.groupId])).rows
