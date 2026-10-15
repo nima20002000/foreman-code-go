@@ -27,7 +27,7 @@ import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/inte
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
-import { referenceCreatedByExecution, workflowDeliverableContract, workflowDeliverableFailure } from '../src/modules/runs/workflowDeliverable.js'
+import { referencesCreatedByExecution, workflowDeliverableContract, workflowDeliverableFailure } from '../src/modules/runs/workflowDeliverable.js'
 import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
 import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 
@@ -363,13 +363,13 @@ function workResultFixture(results: ExecutionResult[], outputSchema?: Record<str
   const node = version.definition.nodes[0]!
   if (node.kind === 'job') throw new Error('The repair fixture requires an Agent node')
   const ciRunsDb = { query: async (_text: string, values: unknown[]) =>
-    ({ rows: ciRuns.has(String(values[0])) && values[2] === f.candidate.id ? [{}] : [] }) }
+    ({ rows: (values[0] as string[]).filter(id => ciRuns.has(id) && values[2] === f.candidate.id).map(id => ({ id })) }) }
   const pinnedExecution = (execution: HarnessExecution) => ({
     ...execution, runId: pinned.run.id, workflowNodeId: node.id, agentId: node.agentId,
     agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!,
   })
   const deliverable = workflowDeliverableContract(version, pinnedExecution(f.candidate),
-    (kind, value) => referenceCreatedByExecution(ciRunsDb, kind, value, version.workspaceId, f.candidate.id))
+    (kind, values) => referencesCreatedByExecution(ciRunsDb, kind, values, version.workspaceId, f.candidate.id))
   const update = f.runs.updateExecution.bind(f.runs)
   f.runs.updateExecution = async (execution, owner, evidence) => {
     const deliverableFailure = await workflowDeliverableFailure(ciRunsDb, version, pinnedExecution(execution))
