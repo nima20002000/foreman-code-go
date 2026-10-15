@@ -18,6 +18,8 @@ export async function assertIntervalRestart(executionHost: 'main' | 'worker'): P
     const started = (await startWhenReady(fixture))!
     const admittedIds = new Set<string>()
     const before = await readUntil(async () => {
+      // This fixture has no server reconciliation timer to resume pending native settlement.
+      await fixture.reconcile()
       const details = await fixture.details(started.run.id)
       const calls = await fixture.provider.calls()
       for (const execution of details.executions) {
@@ -34,6 +36,8 @@ export async function assertIntervalRestart(executionHost: 'main' | 'worker'): P
       return admitted ? details : undefined
     }, details => details !== undefined, {
       timeoutMs: 180_000, description: 'active graph work and interval check',
+      minimumReadIntervalMs: 1_000,
+      subscribe: fixture.subscribeNativeChanges,
     })
     if (!before) throw new Error('Expected both native turns to be admitted')
     expect(before.executions).toHaveLength(3)
