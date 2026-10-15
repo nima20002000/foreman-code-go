@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { CiHostRequestSchema, type CiHostRequest } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
+import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import { ProductionHostCiEndpoint } from './endpoint.js'
 import type { HostCiComputer } from './service.js'
 
@@ -72,4 +73,31 @@ it('answers a status request without waiting for a slow directory retention swee
     await pending
     await completed.promise
   }
+})
+
+it('keeps a busy Worker ready with its last known status when a background status read yields', async () => {
+  const computer: HostCiComputer = { key: 'fixture:busy-worker',
+    hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-busy-worker' }, label: 'Busy Worker', priority: 50 }
+  const status = { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [],
+    startProtocolVersion: 3 }
+  let answered = false
+  const endpoint = new ProductionHostCiEndpoint({} as pg.Pool, 'fixture-main', () => ({
+    capabilities: () => [],
+    request: async () => {
+      if (answered) throw new DeviceApplicationAdmissionError('background_yield')
+      answered = true
+      return { payload: status }
+    },
+  }), { handle: async () => { throw new Error('Local runner must not be used.') } })
+  expect(await endpoint.request(computer, { operation: 'status' })).toMatchObject({ operation: 'status', ready: true })
+  expect(await endpoint.request(computer, { operation: 'status' })).toMatchObject({ operation: 'status', ready: true })
+})
+
+it('does not report readiness for a Worker that never answered when its status read yields', async () => {
+  const computer: HostCiComputer = { key: 'fixture:silent-worker',
+    hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-silent-worker' }, label: 'Silent Worker', priority: 50 }
+  const endpoint = new ProductionHostCiEndpoint({} as pg.Pool, 'fixture-main', () => ({
+    capabilities: () => [], request: async () => { throw new DeviceApplicationAdmissionError('background_yield') },
+  }), { handle: async () => { throw new Error('Local runner must not be used.') } })
+  await expect(endpoint.request(computer, { operation: 'status' })).rejects.toBeInstanceOf(DeviceApplicationAdmissionError)
 })
