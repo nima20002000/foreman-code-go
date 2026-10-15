@@ -160,7 +160,10 @@ describe.runIf(postgresEnabled)('Workspace root sharing and execution preparatio
         headers: { authorization: `Bearer ${f.base.writer.token}` },
       })
       expect(publicHttp.statusCode).toBe(200)
-      expect(RunActivitiesPageSchema.parse(publicHttp.json()).items).toEqual(publicPage.items)
+      // A completed failed Run can record another cleanup cycle after this read; compare the same history prefix.
+      const readThrough = Math.max(...publicPage.items.map(item => Number(item.sequence)))
+      expect(RunActivitiesPageSchema.parse(publicHttp.json()).items.filter(item => Number(item.sequence) <= readThrough))
+        .toEqual(publicPage.items)
       const stored = await f.base.db.pool.query<{ record: { result: unknown } }>(
         'select record from harness_executions where id=$1', [execution.id])
       expect(stored.rows[0]!.record.result).toEqual(result)

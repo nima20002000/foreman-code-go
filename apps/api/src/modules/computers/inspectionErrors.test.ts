@@ -65,13 +65,16 @@ it('does not infer installation after account discovery fails', async () => {
   const failure = Object.assign(new Error('Discovery unavailable'), { code: 'EIO' })
   const host: AccountProbePorts = { environment: {}, find: async () => { throw failure },
     run: async () => ({ code: 0, stdout: '', stderr: '' }), readText: async () => null }
-  await expect(probeComputerAccounts(host)).rejects.toBe(failure)
+  await expect(probeComputerAccounts(host)).rejects.toMatchObject({
+    code: 'COMPUTER_ACCOUNT_UNAVAILABLE', status: 502, details: { tool: 'codex', retryable: true }, cause: failure })
 })
 
 it('does not hide malformed native account JSON', async () => {
   const host: AccountProbePorts = { environment: {}, find: async name => name === 'claude' ? name : null,
     run: async () => ({ code: 0, stdout: 'invalid-json', stderr: '' }), readText: async () => null }
-  await expect(probeComputerAccounts(host)).rejects.toThrow('Unreadable Claude sign-in status')
+  await expect(probeComputerAccounts(host)).rejects.toMatchObject({
+    code: 'COMPUTER_ACCOUNT_UNAVAILABLE', details: { tool: 'claude', retryable: true },
+    cause: expect.objectContaining({ message: 'Unreadable Claude sign-in status.' }) })
 })
 
 it('does not turn an unexpected account command failure into an ordinary unknown', async () => {
