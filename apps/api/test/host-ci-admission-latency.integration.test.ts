@@ -101,6 +101,8 @@ it('returns replacement tickets before executor cancellation and retains cleanup
     expect(f.started).toHaveLength(1)
     release.resolve()
     await f.ci.dispatch()
+    // Superseded cleanup runs beside the dispatch pass; wait for it before reading the old ticket.
+    await f.ci.drain()
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId }))
     expect(read.run).toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId })).run.state)

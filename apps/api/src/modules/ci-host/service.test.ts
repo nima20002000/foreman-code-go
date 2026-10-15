@@ -88,7 +88,7 @@ function dispatchFixture(settlementError?: Error) {
   const records: CiRunRecord[] = [active, queued]
   const tails = new Map<string, string>()
   const query = async (sql: string, parameters?: unknown[]) => {
-    if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
+    if (sql.includes('ci_dispatch_claims')) return { rows: [{ ticket_id: parameters?.[0] }], rowCount: 1 }
     if (sql.startsWith('update ci_runs')) {
       const next = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       if (next.id === active.id && settlementError) throw settlementError
@@ -164,7 +164,7 @@ it.each(['github', 'circleci'] as const)(
       throw new Error('Unexpected cloud status request')
     })
     for (let attempt = 0; attempt < 3; attempt++) {
-      await f.create().dispatch()
+      await dispatchSettled(f.create())
       const record = f.records[0]!
       if (record.state === 'starting') f.records[0] = { ...record,
         dispatchedAt: new Date(Date.now() - 75_000).toISOString() }
@@ -192,7 +192,7 @@ it.each(['missing-request', 'unavailable-provider'] as const)(
       if (failure === 'missing-request') throw new DomainError('CI_RUN_UNKNOWN', 'No cloud run exists.', 404)
       throw new Error('Cloud provider unavailable')
     })
-    await f.create().dispatch()
+    await dispatchSettled(f.create())
     expect((await f.create().get(caller, { ticketId: f.queued.id })).run)
       .toMatchObject(failure === 'missing-request'
         ? { state: 'queued', startedAt: null }
@@ -235,7 +235,7 @@ it('retains an unacknowledged Worker assignment when incompatible status omits t
       cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] }
   })
   const service = f.create()
-  await service.dispatch()
+  await dispatchSettled(service)
   const result = await service.get(caller, { ticketId: f.queued.id })
   expect(result.run).toMatchObject({ state: 'starting', computer: { hostRef: worker.hostRef },
     dispatchHostKey: worker.key, dispatchAttempts: 3, dispatchRequest: { runId: f.queued.id },
@@ -257,7 +257,7 @@ it('releases a first start rejected by an incompatible Worker before execution',
     return request(target, input)
   })
   const service = f.create()
-  await service.dispatch()
+  await dispatchSettled(service)
   const result = await service.get(caller, { ticketId: f.queued.id })
   expect(result.run).toMatchObject({ state: 'queued', computer: null, startedAt: null,
     message: expect.stringContaining('Update the Worker CI protocol.') })
@@ -271,7 +271,7 @@ it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite ch
   const f = dispatchFixture()
   f.records.splice(0, 1)
   f.records[0] = CiRunRecordSchema.parse({ ...f.queued, suite })
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
     id: f.queued.id, suite, state: 'running', computer: { hostRef: computer.hostRef },
   })
@@ -282,7 +282,7 @@ it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite ch
 
 it('dispatches a queued ticket after settling ordinary output', async () => {
   const f = dispatchFixture()
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('passed')
   expect((await f.create().get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
   expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
@@ -298,7 +298,7 @@ it.each([
 ])('settles invalid log text and dispatches a queued ticket in the same pass: $cleanMessage', async output => {
   const f = dispatchFixture()
   Object.assign(f.output, output)
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   const result = await f.create().get(caller, { ticketId: f.active.id })
   expect(result.run).toMatchObject({ state: 'passed', message: output.cleanMessage })
   expect(result.logTail).toBe(output.cleanText)
@@ -314,7 +314,7 @@ it('continues refreshing later batches and dispatching after one settlement writ
     id: `55555555-5555-4555-8555-${String(index).padStart(12, '0')}`,
   }))
   f.records.push(...later)
-  await f.create().dispatch()
+  await dispatchSettled(f.create())
   expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('running')
   for (const run of later) {
     expect((await f.create().get(caller, { ticketId: run.id })).run.state).toBe('passed')

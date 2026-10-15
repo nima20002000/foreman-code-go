@@ -543,10 +543,13 @@ it('persists direct cancellation before a start reply returns and recovers clean
       principalId: f.operator.principalId, source: 'mcp', commandId, reason: 'direct',
     } })
     expect(f.starts).toHaveLength(1)
+    // A follow-up pass may already retry the cleanup once the start returns; the executor stays unreachable until the restart.
+    f.control.onCancel = async () => { throw new Error('Cancel reply unavailable') }
     release.resolve()
     await dispatch
     expect((await f.read(ticket.ticketId)).cancellation).toEqual(pending.cancellation)
     f.control.onStart = async () => {}
+    f.control.onCancel = async () => {}
     restarted = f.createService()
     await settle(restarted)
     const canceled = await f.read(ticket.ticketId)
