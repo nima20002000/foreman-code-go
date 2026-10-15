@@ -7,6 +7,7 @@ import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-exe
 import { RemoteReceiptPageSchema, type RemoteReceiptPage,
   type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { pageJsonContinuationBytes, readJsonContinuation } from './jsonContinuation.js'
+import { DomainError } from '../../errors.js'
 
 type Response = Record<string, unknown>
 type Continuation = Extract<RemoteExecutionRpcRequest, { method: 'receipt-continuation' }>
@@ -72,10 +73,12 @@ export class InstalledWorkflowResponsePages {
 
   read(frame: Continuation, binding: Readonly<DeviceSessionBinding>): RemoteReceiptPage {
     const retained = this.transfers.get(frame.transferId)
-    if (!retained || retained.expiresAt <= Date.now()
-      || !isDeepStrictEqual(retained.binding, binding) || !isDeepStrictEqual(retained.intent, frame.intent)
+    if (!retained || retained.expiresAt <= Date.now()) {
+      throw new DomainError('transfer-expired', 'Receipt transfer owner or revision changed: snapshot expired.', 409)
+    }
+    if (!isDeepStrictEqual(retained.binding, binding) || !isDeepStrictEqual(retained.intent, frame.intent)
       || !isDeepStrictEqual(retained.placement, frame.placement) || retained.sequence !== frame.receiptSequence) {
-      throw new Error('Receipt transfer owner or revision changed')
+      throw new DomainError('conflict', 'Receipt transfer owner or revision changed', 409)
     }
     const metadata = pageJsonContinuationBytes(retained.bytes, frame.metadata)
     return RemoteReceiptPageSchema.parse({ kind: 'receipt-page', transferId: frame.transferId,
