@@ -7,20 +7,28 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
  */
 export function trackInFlightRequests(app: FastifyInstance,
   options: { graceMs: number; closable: (url: string) => boolean }) {
-  const inFlight = new Map<string, { request: FastifyRequest; label: string }>()
+  const inFlight = new Map<string, { request: FastifyRequest; label: string; readOnlyWait: boolean }>()
   app.addHook('onRequest', async request => {
-    inFlight.set(request.id, { request, label: `${request.method} ${request.url.split('?')[0]}` })
+    inFlight.set(request.id, { request, label: `${request.method} ${request.url.split('?')[0]}`, readOnlyWait: false })
   })
   app.addHook('preHandler', async request => {
     const entry = inFlight.get(request.id)
-    const tool = (request.body as { params?: { name?: unknown } } | null | undefined)?.params?.name
-    if (entry && typeof tool === 'string') entry.label += ` ${tool.slice(0, 80)}`
+    const body = request.body as { method?: unknown; params?: { name?: unknown } } | null | undefined
+    const tool = body?.params?.name
+    if (entry && typeof tool === 'string') {
+      entry.label += ` ${tool.slice(0, 80)}`
+      entry.readOnlyWait = body?.method === 'tools/call' && tool === 'ci_get'
+    }
   })
   const done = async (request: FastifyRequest) => { inFlight.delete(request.id) }
   app.addHook('onResponse', done)
   app.addHook('onRequestAbort', done)
   let grace: NodeJS.Timeout | undefined
   app.addHook('preClose', async () => {
+    // CI status waits are read-only and retry after restart; mutations retain their shutdown grace.
+    for (const { request, readOnlyWait } of inFlight.values()) {
+      if (readOnlyWait && options.closable(request.url)) request.raw.socket?.destroy()
+    }
     grace ??= setTimeout(() => {
       for (const { request } of inFlight.values()) {
         if (options.closable(request.url)) request.raw.socket?.destroy()

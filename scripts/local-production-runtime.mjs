@@ -108,11 +108,33 @@ export async function withProductionSourceSnapshot(repository, directory, action
   return action({ source, commit })
 }
 
-// CI owns the web typecheck; production needs only emitted server code and browser assets.
-export async function buildProductionSource(run) {
+export async function measureProductionStep(step, action, log = console.log) {
+  const started = performance.now()
+  try {
+    return await action()
+  } finally {
+    log(JSON.stringify({ operation: 'production deploy', step, elapsedMs: Math.round(performance.now() - started) }))
+  }
+}
+
+// The full API check overlaps emission, browser bundling and staging, and gates activation.
+export async function buildProductionSource(run, { stage = async () => undefined } = {}) {
   await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
-  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'build'])
-  await run('corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build'])
+  const results = await Promise.allSettled([
+    measureProductionStep('API full check', () => run('corepack', ['pnpm', '--filter', '@foreman-code/api',
+      'exec', 'tsc', '-p', 'tsconfig.build.json', '--noEmit', '--isolatedModules',
+      '--tsBuildInfoFile', 'node_modules/.cache/tsc/production-check.tsbuildinfo'])),
+    (async () => {
+      await measureProductionStep('API emit', () => run('node', ['scripts/emit-production-api.mjs']))
+      await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', '../../scripts/copy-api-runtime.mjs'])
+      await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', 'dist/cli/harnessCompatibility.js'])
+      await measureProductionStep('web bundle', () => run('corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']))
+      return stage()
+    })(),
+  ])
+  const failed = results.find(result => result.status === 'rejected')
+  if (failed) throw failed.reason
+  return results[1].value
 }
 
 export async function backupDatabase({ archive, database, run }) {
@@ -220,7 +242,7 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
   let recoveryAttempted = false
   const perform = async (phase, action) => {
     await saveDeployment(stateFile, state, phase)
-    await action()
+    await measureProductionStep(phase, action)
   }
   const rollback = async error => {
     recoveryAttempted = true
@@ -235,7 +257,7 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
   }
   try {
     await saveDeployment(stateFile, state, 'checking-migrations')
-    const pendingMigrations = await steps.pendingMigrations(release)
+    const pendingMigrations = await measureProductionStep('checking-migrations', () => steps.pendingMigrations(release))
     let schemaBefore
     state.apiMayHaveStopped = true
     await perform('stopping', steps.stop)
@@ -262,10 +284,10 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
       await saveDeployment(stateFile, state, 'checking-readiness')
     }
     if (steps.checkReady) {
-      await steps.checkReady(release, { start, rollback })
+      await measureProductionStep('start-and-readiness', () => steps.checkReady(release, { start, rollback }))
     } else {
       await start()
-      await steps.ready(release)
+      await measureProductionStep('checking-readiness', () => steps.ready(release))
     }
     await saveDeployment(stateFile, state, 'ready')
     await rm(backupFile, { force: true })
@@ -859,8 +881,15 @@ export async function readProductionIdentity(release, databaseUrl) {
 
 export async function waitForProductionReady(options) {
   try {
-    await options.start?.()
-    await pollProductionReady(options)
+    const controller = new AbortController()
+    const start = Promise.resolve().then(() => options.start?.()).catch(error => {
+      controller.abort(error)
+      throw error
+    })
+    // systemctl's start job also checks health; polling concurrently avoids a second serialized readiness wait.
+    const results = await Promise.allSettled([start, pollProductionReady({ ...options, signal: controller.signal })])
+    const failed = results.find(result => result.status === 'rejected')
+    if (failed) throw failed.reason
     await options.smoke?.()
   } catch (error) {
     try { await options.rollback?.(error) }
@@ -869,31 +898,32 @@ export async function waitForProductionReady(options) {
   }
 }
 
-async function pollProductionReady({ origin, expected, timeoutMs = 90_000 }) {
+async function pollProductionReady({ origin, expected, timeoutMs = 90_000, signal }) {
   const deadline = Date.now() + timeoutMs
   let failure = 'API has not responded.'
   const identityMatches = async () => {
-    const response = await fetch(`${origin}/health/identity`, { signal: AbortSignal.timeout(2000) })
+    const response = await fetch(`${origin}/health/identity`, { signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]) })
     const actual = await response.json()
     return response.ok && ['installationId', 'databaseId', 'checkoutId'].every(key => actual[key] === expected[key])
   }
   while (Date.now() < deadline) {
+    signal.throwIfAborted()
     try {
       if (!await identityMatches()) {
         throw new Error('Port 3041 is serving a different database installation or release.')
       }
-      const response = await fetch(`${origin}/health/ready`, { signal: AbortSignal.timeout(2000) })
+      const response = await fetch(`${origin}/health/ready`, { signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]) })
       const health = await response.json()
       if (response.ok && health.service === 'graphql-api' && health.checks?.database === 'ok'
         && health.checks?.checkpoints === 'ok') {
-        const web = await fetch(`${origin}/workspaces`, { signal: AbortSignal.timeout(2000) })
+        const web = await fetch(`${origin}/workspaces`, { signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]) })
         if (web.ok && (await web.text()).includes('/assets/') && await identityMatches()) return
         failure = 'The compiled dashboard is unavailable.'
       } else failure = `Readiness returned HTTP ${response.status}.`
     } catch (error) {
       failure = error.message
     }
-    await delay(Math.min(500, Math.max(0, deadline - Date.now())))
+    await delay(Math.min(500, Math.max(0, deadline - Date.now())), undefined, { signal })
   }
   throw new Error(`${failure} Inspect journalctl --user -u graphql-operator-api.service.`)
 }
