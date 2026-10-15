@@ -45,7 +45,9 @@ export async function prepareHandoffSource(owner: RunOwnership, run: AcceptedWor
       authorizationRevision: pin.registration?.authorizationRevision ?? null,
       verifiedManifestDigest: root.source.manifestDigest, verifiedEntries: 1, verifiedBytes: 29,
       verifiedAt: new Date().toISOString(), localTreeIdentity: root.binding.filesystem,
-      claimScope: 'execution' as const, sharedTree: { id: randomUUID(), referenceIdentity: root.binding.filesystem } }
+      claimScope: 'execution' as const,
+      ...(root.binding.accessMode === 'exclusive-write'
+        ? { sharedTree: { id: randomUUID(), referenceIdentity: root.binding.filesystem } } : {}) }
     const record = SourceMaterializationRecordSchema.parse({ receipt, operationId: intent.operationId,
       rootPolicyId: pin.destination.rootPolicyId, rootPolicyRevision: pin.destination.rootPolicyRevision,
       reservationId: reservation.reservationId, sourceBindingHash: receipt.placementHash,
