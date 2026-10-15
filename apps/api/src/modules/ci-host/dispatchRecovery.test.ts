@@ -65,7 +65,8 @@ it.each(['github', 'circleci'] as const)(
     if (!result) throw new Error('Expected the expired dispatch to settle.')
 
     expectTypeOf(result.startedAt).toEqualTypeOf<string | null>()
-    expect(result).toMatchObject({ state: 'lost', startedAt: null, finishedAt: expect.any(String) })
+    expect(result).toMatchObject({ state: 'queued', startedAt: null, finishedAt: null,
+      message: expect.stringContaining('queued for another computer') })
     expect(f.endpoint.request).toHaveBeenCalledExactlyOnceWith(f.computer,
       { operation: 'cancel', runId: f.run.id })
   })

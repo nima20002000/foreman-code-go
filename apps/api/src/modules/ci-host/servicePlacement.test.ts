@@ -125,6 +125,34 @@ const secondHost: HostCiComputer = {
   label: 'Second builder', priority: -1,
 }
 
+it('moves an expired cloud dispatch to another computer and preserves the lookup reason', async () => {
+  const reason = 'CircleCI execution could not be reconciled: CircleCI run is not visible.'
+  const startedAt = new Date(Date.now() - 225_100).toISOString()
+  const records = [CiRunRecordSchema.parse({ ...queuedRuns(1)[0], state: 'starting', startedAt,
+    computer: { hostRef: cloud.hostRef, label: cloud.label }, step: 'dispatch',
+    message: reason, messageHistory: [reason], providerMessage: reason })]
+  const f = fleet(records, [host, cloud])
+  const request = f.endpoint.request
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input, options) => {
+    if (computer.key === cloud.key && (input.operation === 'read' || input.operation === 'cancel')) {
+      const run = { runId: records[0]!.id, state: 'starting' as const, step: 'dispatch',
+        startedAt, finishedAt: null, exitCode: null, logBytes: 0, message: reason }
+      if (input.operation === 'cancel') return { operation: 'cancel', run: { ...run, state: 'canceled' } }
+      return { operation: 'read', run, text: '', nextOffset: 0 }
+    }
+    return request(computer, input, options)
+  })
+
+  await f.service.dispatch()
+  await expect.poll(() => records[0]!.state).not.toBe('starting')
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]!.computer.key).toBe(host.key)
+  expect(f.started[0]!.assigned).toMatchObject({ unstartedProviders: ['circleci'],
+    messageHistory: expect.arrayContaining([reason, expect.stringContaining('queued for another computer')]) })
+  expect(records[0]!.state).toBe('running')
+})
+
 it.each([false, true])('spreads a two-part integration group across free computers with a saved plan=%s', async saved => {
   const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
     ...(saved ? { partition: { ...run.partition, weights: [1, 1], tier: 'fast' }, plannedHostKey: host.key } : {}),
