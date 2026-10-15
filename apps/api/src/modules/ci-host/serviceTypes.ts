@@ -31,7 +31,7 @@ export interface CiCommits {
   integrationInventory?(repository: string, commit: string): Promise<CiIntegrationInventory>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   /** The commit's files and their blobs, for result cache keys; without it every selected file runs. */
-  testTree?(repository: string, commit: string): Promise<CiTestTree>
+  testTree?(repository: string, commit: string, signal?: AbortSignal): Promise<CiTestTree>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
 }

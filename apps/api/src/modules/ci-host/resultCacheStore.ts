@@ -20,18 +20,23 @@ export interface CachedSelection {
 /** Splits an explicit affected selection into files an earlier passed ticket of the workspace proved with identical
  * inputs and files that must run. Any failure to compute keys runs every file. */
 export async function planCachedSelection(pool: pg.Pool, input: { workspaceId: string; repository: string; commit: string
-  suite: string; files: readonly string[]; partOf(file: string): string; tree(): Promise<CiTestTree> }): Promise<CachedSelection> {
+  suite: string; files: readonly string[]; partOf(file: string): string; tree(signal: AbortSignal): Promise<CiTestTree> }): Promise<CachedSelection> {
   const files = [...new Set(input.files)].sort()
+  const controller = new AbortController()
   let timer: NodeJS.Timeout | undefined
   try {
     const keys = await Promise.race([
       (async () => {
-        const graph = await CiResultKeys.create(await input.tree())
+        const graph = await CiResultKeys.create(await input.tree(controller.signal), controller.signal)
         const entries = await Promise.all(files.map(async file => [file, await graph.key(file, input.suite, input.partOf(file))] as const))
         return new Map(entries)
       })(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => { reject(new Error(`Result cache keys took longer than ${KEY_BUDGET_MS} ms.`)) }, KEY_BUDGET_MS)
+        timer = setTimeout(() => {
+          const error = new Error(`Result cache keys took longer than ${KEY_BUDGET_MS} ms.`)
+          controller.abort(error)
+          reject(error)
+        }, KEY_BUDGET_MS)
       }),
     ])
     const keyed = new Map([...keys].flatMap(([file, value]) => value.key === null ? [] : [[file, value.key] as const]))
@@ -53,6 +58,7 @@ export async function planCachedSelection(pool: pg.Pool, input: { workspaceId: s
     return { files: remaining, cached,
       keys: Object.fromEntries(remaining.flatMap(file => keyed.has(file) ? [[file, keyed.get(file)!]] : [])) }
   } catch (error) {
+    controller.abort(error)
     log.warn({ err: error, workspaceId: input.workspaceId, commit: input.commit }, 'CI result cache unavailable; running every selected file')
     return { files, keys: {}, cached: [] }
   } finally {

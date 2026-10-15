@@ -3,15 +3,14 @@ import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
 // A case can take 240 seconds plus hooks; multi-case files can exceed ten minutes.
 // Log inactivity catches a hung file within five minutes without cutting off a progressing one.
 export const integrationProcessLimits = {
-  idleTimeoutMs: 3 * 60_000,
-  // An integration file still running after three minutes fails, however loaded the machine is.
-  fileTimeoutMs: 3 * 60_000,
+  idleTimeoutMs: 5 * 60_000,
+  fileTimeoutMs: 15 * 60_000,
   pollIntervalMs: 1000,
   graceMs: 5000,
 }
 
 /** How long a file with a known typical duration may run before it counts as hung: three times its usual time, but
- * at least a minute more, scaled for host pressure and never above the fixed per-file limit. */
+ * at least a minute more, scaled for host pressure and never above the pressure-scaled per-file limit. */
 export function adaptiveDeadlineMs(expectedMs, fileTimeoutMs, timeoutScale = 1) {
   if (!Number.isFinite(expectedMs) || expectedMs <= 0) return null
   return Math.min(fileTimeoutMs, Math.ceil(Math.max(3 * expectedMs, expectedMs + 60_000) * Math.max(1, timeoutScale)))

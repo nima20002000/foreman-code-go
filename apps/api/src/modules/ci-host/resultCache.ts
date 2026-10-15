@@ -10,7 +10,7 @@ const CI_RESULT_CACHE_VERSION = 1
 export interface CiTestTree {
   /** Every file with its git mode and blob id (`100644:<sha>`), which change with its content. */
   blobs: ReadonlyMap<string, string>
-  read(path: string): Promise<string>
+  read(path: string, signal: AbortSignal): Promise<string>
 }
 
 /** The key cannot prove the file's inputs, so the file must run. */
@@ -37,6 +37,24 @@ const pathLiteral = /['"`]((?:\.{1,2}\/)*[A-Za-z0-9_@-][A-Za-z0-9_.@-]*(?:\/[A-Z
 const scriptFile = /\.[cm]?[jt]sx?$/
 const DIRECTORY_FILES_MAX = 2000
 
+/** Share the read limit across manifests and all test closures of the selection. */
+function boundedTree(tree: CiTestTree, signal: AbortSignal): CiTestTree {
+  let active = 0
+  const waiting: (() => void)[] = []
+  return { blobs: tree.blobs, read: async path => {
+    if (active >= 16) await new Promise<void>(resolve => { waiting.push(resolve) })
+    else active++
+    try {
+      signal.throwIfAborted()
+      return await tree.read(path, signal)
+    } finally {
+      const next = waiting.shift()
+      if (next) next()
+      else active--
+    }
+  } }
+}
+
 function analyze(path: string, text: string): Analysis {
   const css = path.endsWith('.css')
   const data = css || path.endsWith('.json')
@@ -62,12 +80,13 @@ function packageName(specifier: string) {
 /** Conservative input keys for test files of one commit: a file's key changes whenever anything it can observe
  * changes, and a file whose inputs the import graph cannot prove has no key. */
 export class CiResultKeys {
+  private readonly pendingAnalyses = new Map<string, Promise<Analysis>>()
   private readonly harness = new Map<string, Promise<Set<string>>>()
   private readonly environments = new Map<string, string[]>()
   private readonly directories = new Set<string>()
 
   private constructor(private readonly tree: CiTestTree, private readonly exports: Record<string, unknown>,
-    private readonly packages: ReadonlySet<string>) {
+    private readonly packages: ReadonlySet<string>, private readonly signal: AbortSignal) {
     for (const path of tree.blobs.keys()) {
       const parts = path.split('/')
       for (let index = 1; index < parts.length; index++) this.directories.add(parts.slice(0, index).join('/'))
@@ -75,9 +94,10 @@ export class CiResultKeys {
   }
 
   /** Reads the contracts exports and the external packages every manifest declares (workspace packages excluded). */
-  static async create(tree: CiTestTree): Promise<CiResultKeys> {
+  static async create(input: CiTestTree, signal: AbortSignal): Promise<CiResultKeys> {
+    const tree = boundedTree(input, signal)
     const manifests = await Promise.all([...tree.blobs.keys()].filter(path => posix.basename(path) === 'package.json')
-      .map(async path => ({ path, value: JSON.parse(await tree.read(path)) as Record<string, unknown> })))
+      .map(async path => ({ path, value: JSON.parse(await tree.read(path, signal)) as Record<string, unknown> })))
     const workspace = new Set(manifests.map(manifest => manifest.value.name).filter(name => typeof name === 'string'))
     const packages = new Set<string>()
     for (const { value } of manifests) {
@@ -92,12 +112,13 @@ export class CiResultKeys {
       }
     }
     const contracts = manifests.find(manifest => manifest.path === 'packages/contracts/package.json')?.value.exports
-    return new CiResultKeys(tree, contracts && typeof contracts === 'object' ? contracts as Record<string, unknown> : {}, packages)
+    return new CiResultKeys(tree, contracts && typeof contracts === 'object' ? contracts as Record<string, unknown> : {}, packages, signal)
   }
 
   /** The file's key for the suite and part, or null with the reason it must run. */
   async key(file: string, suite: string, part: string): Promise<{ key: string | null; reason?: string }> {
     try {
+      this.signal.throwIfAborted()
       const project = projectOf(file)
       const environment = this.environment(project)
       const harness = await this.harnessFiles(project, environment)
@@ -149,13 +170,19 @@ export class CiResultKeys {
 
   private async analysis(path: string, blob: string) {
     const id = `${blob}${posix.extname(path)}`
-    let value = analyses.get(id)
-    if (!value) {
-      value = analyze(path, await this.tree.read(path))
-      if (analyses.size >= ANALYSES_MAX) analyses.delete(analyses.keys().next().value!)
-      analyses.set(id, value)
+    const cached = analyses.get(id)
+    if (cached) return cached
+    let pending = this.pendingAnalyses.get(id)
+    if (!pending) {
+      pending = this.tree.read(path, this.signal).then(text => {
+        const value = analyze(path, text)
+        if (analyses.size >= ANALYSES_MAX) analyses.delete(analyses.keys().next().value!)
+        analyses.set(id, value)
+        return value
+      }).finally(() => { this.pendingAnalyses.delete(id) })
+      this.pendingAnalyses.set(id, pending)
     }
-    return value
+    return pending
   }
 
   /** Every repository file the roots import, transitively. Strict closures (a test's own) reject anything the static
