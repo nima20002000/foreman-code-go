@@ -66,11 +66,17 @@ export async function rejectsUnownedStartup(variable: string): Promise<void> {
       cwd: root, env: { ...resources.environment, HOST: '127.0.0.1', PORT: String(port) },
       detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     })
-    restarted.stdout?.resume()
-    restarted.stderr?.resume()
-    await ready(restarted, port)
+    let output = ''
+    restarted.stdout?.on('data', chunk => { output += String(chunk) })
+    restarted.stderr?.on('data', chunk => { output += String(chunk) })
+    try {
+      await ready(restarted, port)
+    } catch (error) {
+      throw new Error(`Valid API restart failed: ${output}`, { cause: error })
+    }
     await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment)
     expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
+    expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
   } finally {
     await stopGroup(restarted?.pid, { signal: 'SIGTERM' })
     await stopGroup(child.pid, { signal: 'SIGTERM' })
