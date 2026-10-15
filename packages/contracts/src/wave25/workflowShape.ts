@@ -6,6 +6,7 @@ import { SavedNodePlacementSchema } from '../nodePlacement.js'
 import { WorkflowArtifactInputsV1Schema, WorkflowArtifactOutputsV1Schema } from '../workflowArtifactDeclarations.js'
 import { GraphqlToolOverrideSchema } from '../graphqlMcpTools.js'
 import { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
+import { NodeSkillOverrideSchema, OutputSchemaSchema } from './outputContract.js'
 export { ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema } from './choice.js'
 export type { WorkflowChoice } from './choice.js'
 
@@ -106,6 +107,10 @@ const CurrentAgentWorkflowNodeFields = {
   graphqlTools: GraphqlToolOverrideSchema.optional(),
   artifactOutputs: WorkflowArtifactOutputsV1Schema.optional(),
   interval: AgentIntervalSchema.optional(),
+  /** Enforced deliverable schema; absent applies the default non-empty deliverable rule. */
+  outputSchema: OutputSchemaSchema.optional(),
+  /** Adds or removes skills from this Agent's assigned skills for this node only. */
+  skills: NodeSkillOverrideSchema.optional(),
 }
 export const CurrentAgentWorkflowNodeSchema = z.object(CurrentAgentWorkflowNodeFields).strict().superRefine((node, context) => {
   if (!node.name && !node.label) context.addIssue({ code: 'custom', path: ['name'], message: 'a workflow node requires name or label' })

@@ -134,6 +134,13 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
     const outside = configuration?.productRole && node.graphqlTools
       ? graphqlToolsOutsideRole(configuration.productRole, [...node.graphqlTools.add, ...node.graphqlTools.remove]) : []
     if (outside.length) fail(`node ${node.id} Foreman Code MCP tools are outside its Agent role: ${outside.join(', ')}`)
+    const assigned = new Set((configuration?.assignedSkills ?? []).map(skill => skill.skillId))
+    for (const skillId of node.skills?.remove ?? []) {
+      if (!assigned.has(skillId)) fail(`node ${node.id} removes skill ${skillId} that its Agent does not assign`)
+    }
+    for (const { skillId } of node.skills?.add ?? []) {
+      if (assigned.has(skillId)) fail(`node ${node.id} adds skill ${skillId} that its Agent already assigns`)
+    }
     if (node.interval && configuration && !agentIntervalAllowed(configuration.harness, version.approval.handler)) {
       fail(`node ${node.id} loops need an Agent that never asks for workflow approval: `
         + 'use workflow approval handler "native", or a Codex Agent with approvalPolicy "never"')
