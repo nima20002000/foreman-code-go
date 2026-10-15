@@ -45,3 +45,15 @@ export function integrationReport(
   files: Array<Omit<IntegrationFileResult, 'report'> & { totals?: TestCounts }>
   retests: Array<Omit<IntegrationFileResult, 'report'> & { totals: TestCounts }>
 }
+
+export function integrationGate(environment: Record<string, string | undefined>): boolean
+
+export function scheduleIntegrationQueue(files: string[], slots: { index: number }[], options: {
+  gate?: boolean
+  maxConcurrency?: number
+  pollIntervalMs?: number
+  samplePressure?: () => Record<string, number>
+  runFile: (...args: never[]) => Promise<{ code: number | null; complete: boolean }>
+  prepareRetest?: (...args: never[]) => Promise<void>
+  [option: string]: unknown
+}): Promise<{ results: { file: string; status: string }[] }>

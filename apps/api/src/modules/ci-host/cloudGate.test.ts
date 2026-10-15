@@ -47,7 +47,7 @@ it.each(['github', 'circleci'] as const)('preserves gate retest behavior through
           memoryUtilization: 0, totalMemoryBytes: 16 * 2 ** 30, cpuCount: 4 }),
         runFile, prepareRetest,
       })
-      expect(result.results[0].status).toBe('FAILED')
+      expect(result.results[0]!.status).toBe('FAILED')
       expect(runFile).toHaveBeenCalledTimes(gate ? 1 : 2)
       expect(prepareRetest).toHaveBeenCalledTimes(gate ? 0 : 1)
     }
