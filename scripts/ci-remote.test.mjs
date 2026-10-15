@@ -83,6 +83,18 @@ test('follows a ticket superseded by a newer commit to its replacement tickets i
   assert.deepEqual(finished.map(run => [run.id, run.state]), [['new-1', 'passed'], ['new-2', 'passed']])
 })
 
+test('a partly superseded group still reports its replacement ticket that failed', async t => {
+  t.mock.method(console, 'log', () => {})
+  t.mock.method(console, 'error', () => {})
+  const runs = {
+    kept: { id: 'kept', suite: 'unit', state: 'passed', group: ['kept', 'old'] },
+    old: { id: 'old', suite: 'unit', state: 'canceled', supersededBy: 'replacement' },
+    replacement: { id: 'replacement', suite: 'unit', state: 'failed' },
+  }
+  const finished = await awaitTickets(reader(runs), 'workspace', ['kept', 'old'])
+  assert.deepEqual(finished.map(run => [run.id, run.state]), [['kept', 'passed'], ['replacement', 'failed']])
+})
+
 test('stops waiting at the overall deadline and returns the open tickets', async () => {
   const runs = { slow: { id: 'slow', suite: 'integration', state: 'running' } }
   const finished = await awaitTickets(reader(runs), 'workspace', ['slow'], { waitMs: 0 })
