@@ -33,6 +33,7 @@ import { DomainError } from '../errors.js'
 import { ReviewerDispatcher } from './reviewer.js'
 import { nativePersistenceRedactor } from './nativePersistence.js'
 import { workResultRepairPrompt } from './workResultRepair.js'
+import { NATIVE_EVENT_BATCH_SIZE } from './nativeEventBatches.js'
 import { assertOriginalWorkflowTerminal } from './workflowTerminalSource.js'
 import { workResultRepairCorrelation } from '../runs/workResultRepair.js'
 import { reviewTurnEvidence } from './reviewerEvidence.js'
@@ -157,6 +158,7 @@ interface WorkflowObservationState {
   repeatLaunch: boolean
   nativeTurnOffered: boolean
   workResultRepairs: number
+  committedNativeSequences: Map<string, number>
   workflowCorrelation: string
   context?: NativeManagerResolutionContext | undefined
   manager?: SingleWriterSessionManager | undefined
@@ -2424,6 +2426,7 @@ export class ApprovalExecutionCoordinator {
       signal: AbortSignal.any([input.signal, credentialFailure.signal]),
       execution: ensured.execution, repeatLaunch: false, nativeTurnOffered: false, workResultRepairs: 0,
       workflowCorrelation: `execution:${ensured.execution.id}`, knownSecrets: [],
+      committedNativeSequences: new Map(),
       bookkeeping: work => retryDatabaseTimeout(work, { signal: observation.signal, check: () => input.owner.assertOwned() }),
       validateContinuation: () => observation.bookkeeping(async () => {
         await this.validateContinuation?.(observation.execution.id, observation.signal)
@@ -2762,6 +2765,7 @@ export class ApprovalExecutionCoordinator {
               throw error
             }
           }, { count: frames.length })
+          for (const { event } of frames) this.recordCommittedNativeEvent(observation, event)
           observation.finishStartup?.()
           const history = await manager.history(observation.session!, observation.signal)
           const waiting = await observation.observePending(history, lease)
@@ -2796,13 +2800,38 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  private recordCommittedNativeEvent(observation: WorkflowObservationState, event: NativeHarnessEvent): void {
+    const connection = event.connectionId ?? ''
+    const previous = observation.committedNativeSequences.get(connection) ?? -1
+    observation.committedNativeSequences.set(connection, Math.max(previous, event.sequence))
+  }
+
+  private async publishRecoveredNativeEvents(observation: WorkflowObservationState, events: NativeHarnessEvent[],
+    lane: SessionWriteLease, lease: WorkflowNativeLease): Promise<boolean> {
+    const pending = events.filter(event => event.sequence
+      > (observation.committedNativeSequences.get(event.connectionId ?? '') ?? -1))
+    for (let offset = 0; offset < pending.length; offset += NATIVE_EVENT_BATCH_SIZE) {
+      await lane.guard.check()
+      const frames = pending.slice(offset, offset + NATIVE_EVENT_BATCH_SIZE).map(event => {
+        const original = observation.safeValue({ ...event, executionId: observation.execution.id })
+        return { event: original, evidence: this.captureNative(observation.input.owner, observation.execution,
+          { type: 'event', event: original }, 'recovery', lane) }
+      })
+      await observation.bookkeeping(() => this.runs.appendNativeEvents(frames, observation.input.owner, lease))
+      for (const { event } of frames) this.recordCommittedNativeEvent(observation, event)
+    }
+    return pending.length > 0
+  }
+
   private async reconcileWorkflowObservation(observation: WorkflowObservationState): Promise<ApprovalExecutionObservation> {
     const manager = observation.manager!
     const ownedSession = observation.ownedSession!
     const { input, repeat } = observation
     if (!observation.session) throw new DomainError('NATIVE_SESSION_IDENTITY_REQUIRED', 'Initial input has no observed session identity.', 409)
     const observed = await manager.withLane(observation.session!, observation.workflowCorrelation, observation.signal, async (nativeManager, lane) => {
+      let idleDelayMs = 100
       for (;;) {
+        let publishedEvents = false
         lane.guard.signal.throwIfAborted()
         input.owner.assertOwned()
         await observation.bookkeeping(() => this.budgets.assertActive(observation.execution.id))
@@ -2879,6 +2908,7 @@ export class ApprovalExecutionCoordinator {
                 await observation.bookkeeping(() => this.runs.appendNativeEvent(original, input.owner,
                   { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: true },
                   undefined, undefined, evidence))
+                this.recordCommittedNativeEvent(observation, original)
                 const history = await nativeManager.history(observation.session!, lane.guard.signal)
                 const waiting = await observation.observePending(history,
                   { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: true })
@@ -2899,19 +2929,13 @@ export class ApprovalExecutionCoordinator {
           observation.execution = (await observation.bookkeeping(() => repeat.readExecution(observation.execution.id))).execution
           ownedSession.execution = observation.execution
         } else {
-          for (const event of observed.events) {
-            await lane.guard.check()
-            const originalEvent = observation.safeValue({ ...event, executionId: observation.execution.id })
-            const original = this.captureNative(input.owner, observation.execution,
-              { type: 'event', event: originalEvent }, 'recovery', lane)
-            await observation.bookkeeping(() => this.runs.appendNativeEvent(originalEvent, input.owner, lease,
-              undefined, undefined, original))
-          }
+          publishedEvents = await this.publishRecoveredNativeEvents(observation, observed.events, lane, lease)
         }
         if (exactTerminal) return { waiting: undefined }
-        // Retain the writer while the resumed actor performs its original MCP calls.
+        if (publishedEvents) idleDelayMs = 100
         await timeRuntimeOperation('engine', 'execution.backoff',
-          () => delay(100, undefined, { signal: lane.guard.signal }), { intervalMs: 100 })
+          () => delay(idleDelayMs, undefined, { signal: lane.guard.signal }), { intervalMs: idleDelayMs })
+        idleDelayMs = Math.min(1000, idleDelayMs * 2)
       }
     })
     const { waiting } = observed

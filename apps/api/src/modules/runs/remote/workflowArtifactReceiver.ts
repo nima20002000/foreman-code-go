@@ -83,6 +83,13 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
   assertConnection(binding: Readonly<DeviceSessionBinding>): void {
     if (!isDeepStrictEqual(this.endpoint.currentBinding(binding.deviceId, BYTE_TRANSFER_NAMESPACE), binding)) return denied()
   }
+  async assertWorkerActive(sql: pg.PoolClient, caller: Caller): Promise<void> {
+    // Parent, execution, principal and binding locks keep the loaded facts stable; expiry still advances.
+    const live = await sql.query(`select id from management_principals
+      where id=$1 and revoked_at is null and expires_at>clock_timestamp()`, [caller.worker.id])
+    if (live.rowCount !== 1) return denied()
+    this.assertConnection(caller.binding)
+  }
   async publication(sql: pg.PoolClient, caller: Caller): Promise<AcceptedArtifactPublication> {
     const accepted = await this.publications.resolveWorkflowContext(caller.attempt, transferContextForBinding(caller.binding), sql)
     const authorized = await this.publications.authorize(accepted, sql)
@@ -113,12 +120,16 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
     const declaration = WorkflowArtifactTransferInputSchema.parse(raw)
     const worker = await this.authorization.authenticate(request)
     let caller: Caller | undefined
+    let accepted: AcceptedArtifactPublication | undefined
     const result = await this.commands.execute<Allocation>({ principal: worker, source, operation: OPERATION,
       commandId: declaration.commandId, targetKey: `workflow-artifact:${worker.id}`, payload: declaration,
-      authorize: async sql => { caller = await this.authorization.locked(sql, worker); await this.writable(sql, caller) },
+      authorize: async sql => {
+        caller = await this.authorization.locked(sql, worker)
+        accepted = await this.writable(sql, caller)
+      },
       perform: async sql => {
-        if (!caller) return denied()
-        const accepted = await this.writable(sql, caller), root = caller.placement.source
+        if (!caller || !accepted) return denied()
+        const root = caller.placement.source
         if (!('kind' in root) || root.kind !== 'pending') return denied()
         const intent = TransferIntentSchema.parse({ version: 1, ...transferContextForBinding(caller.binding), transferId: randomUUID(),
           operationId: caller.intent.operationId, executionId: caller.attempt.executionId, attemptId: caller.attempt.attemptId,
@@ -126,7 +137,7 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
           direction: 'to-main', byteClass: 'artifact', sha256: declaration.sha256, byteSize: declaration.byteSize,
           manifestDigest: workflowArtifactTransferManifestDigest(declaration), expiresAt: new Date(Math.min(Date.parse(caller.worker.expiresAt),
             Date.now() + BYTE_TRANSFER_POLICY.maxLifetimeMs)).toISOString(), chunkBytes: BYTE_TRANSFER_POLICY.maxChunkBytes })
-        await this.writable(sql, caller)
+        await this.authorization.assertWorkerActive(sql, caller)
         return { workerPrincipalId: worker.id, accepted, declaration: structuredClone(declaration), intent }
       } })
     // Coordinator rechecks live authority on retry; return only its original intent.
@@ -136,9 +147,7 @@ export class WorkflowArtifactTransfers implements AcceptedTransferAuthority {
   private async writable(sql: pg.PoolClient, caller: Caller) {
     const accepted = await this.authorization.publication(sql, caller)
     if (!accepted.context.allowMutation || !accepted.context.allowedTools.includes('files.publish_result')) return denied()
-    const current = await this.authorization.locked(sql, caller.worker)
-    if (!isDeepStrictEqual(current.attempt, caller.attempt) || !isDeepStrictEqual(current.authority, caller.authority)
-      || !isDeepStrictEqual(current.binding, caller.binding)) return denied()
+    await this.authorization.assertWorkerActive(sql, caller)
     return accepted
   }
   private async allocation(id: string): Promise<Allocation> {

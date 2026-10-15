@@ -1,3 +1,4 @@
+import { artifactTransferLookupMigration } from './artifactTransferLookupMigration.js'
 import { deviceManagedMcpMigration } from './deviceManagedMcpMigration.js'
 import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
 import { ciGrantMigration } from './ciGrantMigration.js'
@@ -942,6 +943,7 @@ export const migrations = [
   ciGrantMigration,
   deviceManagedMcpMigration,
   workflowFailedAttemptRecoveryMigration,
+  artifactTransferLookupMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

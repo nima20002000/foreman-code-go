@@ -15,6 +15,7 @@ import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, Reposito
 import { runStartSemantics } from './repeatStartDispatch.js'
 import { RepeatRepositoryFactory } from './repeatRepositoryHost.js'
 import { readRepeatExecutionLocked, readRepeatAcceptedResultLocked } from './repeatPostgres.js'
+import { readRepeatExecutionsLocked } from './repeatExecutionRead.js'
 import { readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { captureRepeatNativeEvidence, type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { sameRepeatValue, type RepeatNodeRef } from './repeatResolution.js'
@@ -226,9 +227,7 @@ export class PostgresRunRepository {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000 || typeof afterId !== 'string') throw new DomainError('REPEAT_READ_BOUND_INVALID', 'Use an execution-ID cursor and a limit from 1 to 1000.', 409)
     return this.read(runId, owner, async (sql, snapshot) => {
       const ids = (await sql.query<{ id: string }>('select id from harness_executions where run_id=$1 and id>$2 order by id limit $3', [runId, afterId, limit])).rows
-      const rows = []
-      for (const { id } of ids) rows.push(await readRepeatExecutionLocked(sql, snapshot, id))
-      return rows
+      return readRepeatExecutionsLocked(sql, snapshot, ids.map(({ id }) => id))
     })
   }
   async *executionPages(runId: string, owner?: RunOwnership): AsyncGenerator<HarnessExecution[]> {
@@ -275,8 +274,8 @@ export class PostgresRunRepository {
     return this.read(runId, undefined, async (sql, snapshot) => {
       const ids = (await sql.query<{ id: string }>('select id from harness_executions where run_id=$1 order by id limit 1001', [runId])).rows
       if (ids.length > 1000) throw new DomainError('RUN_DETAIL_LIMIT', 'Use the paged history/occurrence detail APIs for this Run.', 409)
-      const executions = []
-      for (const { id } of ids) executions.push((await readRepeatExecutionLocked(sql, snapshot, id)).execution)
+      const stored = await readRepeatExecutionsLocked(sql, snapshot, ids.map(({ id }) => id))
+      const executions = stored.map(item => item.execution)
       const activity = await this.activityLocked(sql, runId)
       const details = { run: snapshot.run, executions, activity, cleanupPending: snapshot.cleanupPending }
       try { canonicalGraphJson(details, 4 * 1024 * 1024) } catch { throw new DomainError('RUN_DETAIL_LIMIT', 'Use paged history for this Run.', 409) }
