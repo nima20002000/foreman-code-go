@@ -15,7 +15,7 @@ it('collects delayed public readbacks into one JSON value that replays offline',
     workspace: { workspaceId: workflow.workspaceId, project: workflow.project }, graph: { id: workflow.workflowId },
     saved: { version: { id: workflow.workflowVersionId } }, runId: workflow.runId, repository: workflow.repository,
     assignments: workflow.assignments.map(agent => ({ ...agent, profile: { target: { hostRef: agent.hostRef } } })),
-  })) as RunningCiWorkflow[]
+  })) as unknown as RunningCiWorkflow[]
   const observation = createScenarioObservation()
   let published = false
   const callTool = vi.fn<Client['callTool']>(async request => {
