@@ -70,7 +70,7 @@ describe('original physical source selectors and Main SQL consumer',()=>{
       expect(first.metadata.byteSize).toBeGreaterThan(4 * 1024 * 1024)
       expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
       const reconstructed = await readPhysicalReadout(first, async metadata =>
-        pagePhysicalReadout(await readouts.read(selector), metadata))
+        pagePhysicalReadout(await readouts.read({ ...selector, metadata }), metadata))
       expect(reconstructed).toEqual(selected)
       expect(reconstructed.receipt.retainedReviewer?.result).toEqual(workflowResult)
       expect(reconstructed.history?.terminalResult).toEqual(reviewerResult)
@@ -168,7 +168,7 @@ describe('original physical source selectors and Main SQL consumer',()=>{
       const selected = await readouts.read(selector)
       const raw = pagePhysicalReadout(selected)
       const reconstructed = await readPhysicalReadout(raw, async metadata =>
-        pagePhysicalReadout(await readouts.read(selector), metadata))
+        pagePhysicalReadout(await readouts.read({ ...selector, metadata }), metadata))
       expect(reconstructed).toEqual(selected)
       expect(pages).toBeGreaterThan(1)
       expect(rawWorker.maxFrameBytes).toBeLessThanOrEqual(16_384)

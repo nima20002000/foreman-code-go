@@ -278,6 +278,8 @@ describe('installed workflow receipt transfer', () => {
       metadata: { digest: first.metadata.digest, offset: Buffer.from(first.metadata.data, 'base64').byteLength } })
     if (next.method !== 'receipt-continuation') throw new Error('Wrong test request')
     expect(() => pages.read(next, { ...f.binding, connectionEpoch: randomUUID() })).toThrow('owner or revision')
+    expect(() => pages.read(next, { ...f.binding, connectionEpoch: randomUUID() }))
+      .toThrow(expect.objectContaining({ code: 'conflict' }))
     expect(() => pages.read({ ...next, intent: { ...next.intent, owner: { grantId: 'other', epoch: '2' } } },
       f.binding)).toThrow('owner or revision')
     expect(() => pages.read({ ...next, placement: { ...next.placement, nodeId: 'other' } }, f.binding)).toThrow('owner or revision')
@@ -290,6 +292,7 @@ describe('installed workflow receipt transfer', () => {
     expect(pages.read(next, f.binding).metadata.offset).toBe(next.metadata.offset)
     pages.clear()
     expect(() => pages.read(next, f.binding)).toThrow('owner or revision')
+    expect(() => pages.read(next, f.binding)).toThrow(expect.objectContaining({ code: 'transfer-expired' }))
   })
 
   it('expires old snapshots and reuses the bounded retained byte window', () => {
