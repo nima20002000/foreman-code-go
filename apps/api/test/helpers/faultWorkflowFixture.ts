@@ -30,6 +30,7 @@ import { prepareHandoffSource } from './handoffSourcePreparation.js'
 import { insertCurrentRunFixture } from './eng04CurrentRunFixture.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { deferred } from './deferred.js'
+import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 
 vi.hoisted(() => { process.env.LOG_LEVEL = 'warn' })
 
@@ -95,9 +96,7 @@ function faultWorkflowDefinition(options: { loop?: boolean }) {
   return { definition, entry, affected, sibling }
 }
 
-export async function faultWorkflowFixture(options: {
-  loop?: boolean; mcpUnavailable?: boolean; statementTimeoutMs?: number
-} = {}) {
+export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavailable?: boolean } = {}) {
   const directory = await privateFixtureDirectory('workflow-fault-')
   const worker = await faultWorkflowWorker(directory, { mcpUnavailable: options.mcpUnavailable })
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
@@ -105,12 +104,12 @@ export async function faultWorkflowFixture(options: {
   const entryFinished = deferred()
   let entryComplete = false
   const contexts = new Map<string, NativeManagerResolutionContext>()
+  const owners = new Map<string, () => RunOwnership | undefined>()
   let placements: Awaited<ReturnType<typeof mixedComputerPlacement>>
   let validatePlacement: ReturnType<typeof placedContinuationValidator>
   const nativePlacements = new Map<string, NativeExecutionPlacement>()
   let preparationFailure: { error: unknown } | undefined
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
-    statementTimeoutMs: options.statementTimeoutMs,
     approvalNodeIds: [], workerParallelism: 3,
     nativeCommitted: async () => {
       if (entryComplete) return
@@ -147,6 +146,7 @@ export async function faultWorkflowFixture(options: {
     },
     managerFactory: (context, getOwner) => {
       contexts.set(context.executionId, context)
+      owners.set(context.executionId, getOwner)
       if (!context.acceptedPlacement) return worker.manager()
       const intent = intents.get(context.executionId)
       if (!intent) throw new Error('Remote execution requires its admitted dispatch')
@@ -263,6 +263,12 @@ export async function faultWorkflowFixture(options: {
     }, 500)
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
+      async setReportingDeadline(milliseconds: number) {
+        const intent = [...intents.values()].find(value => value.nodeId === affected.id)
+        const owner = intent && owners.get(intent.executionId)?.()
+        if (!owner) throw new Error('Expected the active reporting Run owner')
+        await owner.oneShotConnection().query("select set_config('statement_timeout',$1,false)", [`${milliseconds}ms`])
+      },
       readExecutions: async () => (await Promise.all([...intents.keys()].map(id => base.runs.getExecution(id))))
         .filter((execution): execution is HarnessExecution => execution !== undefined),
       get startupDescription() { return startupDescription },

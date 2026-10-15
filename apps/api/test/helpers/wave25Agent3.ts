@@ -28,21 +28,20 @@ export type Agent3Fixture = ReturnType<typeof makeCurrentWorkflowFixture>
 /** Uses real independent PostgreSQL sessions and an isolated random schema.
  * No DATABASE_URL fallback, public host, destructive shared-table cleanup or
  * paid native model. The integration runner supplies a disposable test DB. */
-export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL,
-  options: Parameters<typeof migratedDatabase>[0] = {}) {
+export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL) {
   const url = databaseUrl
   if (!url) throw new Error('TEST_DATABASE_URL is required for PostgreSQL integration tests')
   const parsed = new URL(url)
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }
-  if (url === process.env.TEST_DATABASE_URL) return migratedDatabase(options)
+  if (url === process.env.TEST_DATABASE_URL) return migratedDatabase()
   const schema = `wave25_a3_${randomUUID().replaceAll('-', '')}`
   const started = performance.now()
   const admin = new pg.Pool({ connectionString: url, max: 1 })
   await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString: url, max: 10,
-    options: `-c search_path=${schema} -c statement_timeout=${options.statementTimeoutMs ?? 10000} -c lock_timeout=5000` })
+    options: `-c search_path=${schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const directory = await privateFixtureDirectory('wave25-a3-')
   const beforeMigration = performance.now()
   try { await applyApplicationMigrations(pool) } catch (error) {

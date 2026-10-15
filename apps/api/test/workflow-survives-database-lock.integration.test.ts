@@ -9,7 +9,7 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 describe.runIf(postgresEnabled)('workflow reporting under database contention', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
-    fixture = await faultWorkflowFixture({ statementTimeoutMs: 1_000 })
+    fixture = await faultWorkflowFixture()
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
@@ -17,6 +17,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
     await fixture.launch()
     await fixture.active()
+    await fixture.setReportingDeadline(1_000)
     const retriesBefore = readOperationalFailures().find(value => value.operation === 'retry database operation')
       ?.failureCount ?? 0
     const locked = deferred<number>()

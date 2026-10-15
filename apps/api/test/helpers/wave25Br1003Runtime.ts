@@ -46,7 +46,7 @@ import { approvalFixture } from './wave25ApprovalFixture.js'
  * registration are retained. Only provider transport and filesystem identity
  * qualification are synthetic. This is not a buildProductionApp/HTTP test. */
 export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerExecution: 1 | 2 = 1,
-  options: { databaseUrl?: string; statementTimeoutMs?: number | undefined;
+  options: { databaseUrl?: string;
     /** A suite-owned database; the caller closes it after all runtimes shut down. */
     database?: Awaited<ReturnType<typeof agent3Database>>;
     acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
@@ -64,7 +64,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     prepareManagerContext?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[13];
     validateContinuation?: ReturnType<typeof continuationValidator>;
     mcpInspector?: (manager: NativeHarnessSessionManager) => NativeMcpInspector } = {}) {
-  const db = options.database ?? await agent3Database(options.databaseUrl, { statementTimeoutMs: options.statementTimeoutMs })
+  const db = options.database ?? await agent3Database(options.databaseUrl)
   const engines: LangGraphWorkflowEngine[] = []
   try {
     const f = options.fixture ?? makeCurrentWorkflowFixture(randomUUID())
