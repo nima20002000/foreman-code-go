@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
 import { latestEvidence, assertMcpReadback, startWhenReady } from './helpers/workerProfileRequalification.js'
+import { completedRun } from './helpers/harnessInstallationUpdate.js'
 import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
@@ -27,7 +28,7 @@ describe('automatic Worker profile qualification', () => {
       expect(await latestEvidence(fixture)).toEqual(before)
       await assertMcpReadback(fixture, before)
       const started = (await startWhenReady(fixture))!
-      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
+      expect((await completedRun(fixture, started.run.id)).run.id).toBe(started.run.id)
       expect((await fixture.provider.calls()).filter(call => call.qualificationSuite)).toHaveLength(checksBefore)
       const audit = await systemChecks()
       expect(audit.rows).toEqual(auditBefore)
