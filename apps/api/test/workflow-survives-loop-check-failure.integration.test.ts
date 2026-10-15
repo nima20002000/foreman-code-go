@@ -16,8 +16,9 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     const remote = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
     const checking = await readUntil(fixture.read, details => details.executions.some(execution =>
       execution.workflowNodeId === fixture.entry.id && execution.state === 'running'
-        && typeof execution.input === 'object' && execution.input !== null && 'tick' in execution.input),
-    { timeoutMs: 12_000, description: 'the scheduled loop check beside graph work' })
+        && typeof execution.input === 'object' && execution.input !== null && 'tick' in execution.input
+        && fixture.worker.replay.starts.some(turn => turn.correlationId === `execution:${execution.id}`)),
+    { timeoutMs: 12_000, minimumReadIntervalMs: 250, description: 'the scheduled loop check beside graph work' })
     const check = checking.executions.find(execution => typeof execution.input === 'object'
       && execution.input !== null && 'tick' in execution.input)!
     const turn = fixture.worker.replay.starts.find(item => item.correlationId === `execution:${check.id}`)!
@@ -30,7 +31,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     })
     const failed = await readUntil(fixture.read, details =>
       details.executions.find(execution => execution.id === check.id)?.state === 'completed',
-    { timeoutMs: 2_000, description: 'the failed loop check being recorded' })
+    { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'the failed loop check being recorded' })
     expect(failed.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(failed.cleanupPending).toBe(false)
     expect(failed.executions.find(execution => execution.id === remote.id)).toMatchObject({
@@ -40,7 +41,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     const details = await readUntil(fixture.read, value =>
       [fixture.affected.id, fixture.sibling.id].every(nodeId => value.executions.some(execution =>
         execution.workflowNodeId === nodeId && execution.result?.outcome === 'succeeded')),
-    { timeoutMs: 2_000, description: 'successful sibling work after the failed check' })
+    { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'successful sibling work after the failed check' })
     expect(details.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(details.executions.filter(execution => execution.result?.outcome === 'failed').map(execution => execution.id))
       .toEqual([check.id])
