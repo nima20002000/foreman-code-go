@@ -130,16 +130,19 @@ export class JobRepository {
       finishedAt: now, waitingReasons: [], queuePosition: null, estimatedStartAt: null })
   }
   async finishCompletedQueueTickets(sql: JobSql): Promise<void> {
-    const rows = await sql.query<{ record: unknown; execution: unknown }>(`select q.record,e.record as execution
+    await sql.query(`with completed as (
+      select q.id,e.record->'finishedAt' as finished_at
       from job_admission_queue q join job_executions e on e.id=q.execution_id and e.workspace_id=q.workspace_id
-      where q.record->>'state'='accepted' order by q.enqueue_sequence for update of q`)
-    for (const row of rows.rows) {
-      const ticket = JobQueueTicketSchema.parse(row.record)
-      const execution = JobExecutionRecordSchema.parse(row.execution)
-      if (execution.process.phase !== 'terminal' || !execution.process.processStopped
-        || ['pending', 'collecting'].includes(execution.publication) || !execution.finishedAt) continue
-      await this.finishQueueTicket(sql, ticket, 'completed', execution.finishedAt)
-    }
+      where q.record->>'state'='accepted' and e.record #>> '{process,phase}'='terminal'
+        and e.record #> '{process,processStopped}'='true'::jsonb
+        and e.record->>'publication' not in ('pending','collecting')
+        and e.record->>'finishedAt' is not null
+      order by q.enqueue_sequence limit 100 for update of q skip locked
+    ) update job_admission_queue q set record=(q.record-'sourceCapacityWait') || jsonb_build_object(
+      'state','terminal','terminalReason','completed','finishedAt',completed.finished_at,
+      'waitingReasons','[]'::jsonb,'queuePosition',null,'estimatedStartAt',null,
+      'revision',(q.record->>'revision')::bigint+1)
+      from completed where q.id=completed.id`)
   }
   async definition(sql: JobSql, workspaceId: string, id: string, lock = false): Promise<JobDefinitionRecord> {
     const row = (await sql.query<{ record: unknown }>(`select record from job_definitions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]

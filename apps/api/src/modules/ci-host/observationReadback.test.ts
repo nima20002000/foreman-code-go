@@ -31,10 +31,16 @@ function fixture() {
     initiator: { principalId: 'operator', executionId: null },
   })
   let tail = 'saved output'
+  let writes = 0
+  let output = 'fresh output'
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
-      record = CiRunRecordSchema.parse(JSON.parse(values![3] as string))
-      if (typeof values![5] === 'string') tail = values![5]
+      const next = CiRunRecordSchema.parse(JSON.parse(values![3] as string))
+      const nextTail = typeof values![5] === 'string' ? values![5] : tail
+      if (JSON.stringify(next) === JSON.stringify(record) && nextTail === tail) return { rows: [], rowCount: 0 }
+      writes++
+      record = next
+      tail = nextTail
       return { rows: [], rowCount: 1 }
     }
     if (sql.includes("'supersededBy' is not null") || sql.includes("state='queued'")
@@ -64,7 +70,7 @@ function fixture() {
       ...(transport ? { transport } : {}),
       startedAt: record.startedAt!, finishedAt: observedState === 'passed' ? new Date().toISOString() : null,
       exitCode: observedState === 'passed' ? 0 : null, message: 'Lint in progress',
-      logBytes: fail === 'tail' ? 40_000 : 12 }, text: 'fresh output', nextOffset: 12 }
+      logBytes: fail === 'tail' ? 40_000 : 12 }, text: output, nextOffset: 12 }
   } }
   const commands = new PostgresCommandCoordinator(pool)
   const create = () => new HostCiService(pool, commands, authority, {} as CiCommits, endpoint)
@@ -85,7 +91,7 @@ function fixture() {
     const data = response.body.split('\n').find(line => line.startsWith('data: '))
     return data ? JSON.parse(data.slice(6)) : response.json()
   }
-  return { ci, create, call, requests, setState: (value: typeof observedState) => { observedState = value }, setTransport: (value: typeof transport) => { transport = value }, read: () => ({ record, tail }),
+  return { ci, create, call, requests, writes: () => writes, setOutput: (value: string) => { output = value }, setState: (value: typeof observedState) => { observedState = value }, setTransport: (value: typeof transport) => { transport = value }, read: () => ({ record, tail }),
     failure: (value: typeof fail) => { fail = value },
     close: async () => { await ci.close(); await app.close() } }
 }
@@ -168,5 +174,41 @@ it('persists provider transport status and exposes its cause through authenticat
     expect((await f.create().get(caller, { workspaceId: 'workspace', ticketId: output.run.id })).run)
       .toMatchObject({ transport })
     expect(JSON.stringify(await f.call('denied'))).toContain('ACCESS_DENIED')
+  } finally { await f.close() }
+})
+
+
+it('throttles unchanged successful observations while persisting logs and ticket changes immediately', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'))
+  const f = fixture()
+  try {
+    f.failure(null)
+    await f.ci.dispatch()
+    const first = f.read().record.observation!.lastSuccessAt
+    const initialWrites = f.writes()
+    for (let second = 1; second < 60; second++) {
+      vi.setSystemTime(new Date(`2026-10-15T00:00:${String(second).padStart(2, '0')}.000Z`))
+      await f.ci.dispatch()
+    }
+    expect(f.read().record.observation!.lastSuccessAt).toBe(first)
+    expect(f.writes()).toBe(initialWrites)
+    vi.setSystemTime(new Date('2026-10-15T00:01:00.000Z'))
+    await f.ci.dispatch()
+    expect(f.read().record.observation!.lastSuccessAt).toBe('2026-10-15T00:01:00.000Z')
+    expect(f.writes()).toBe(initialWrites + 1)
+
+    vi.setSystemTime(new Date('2026-10-15T00:01:01.000Z'))
+    f.setOutput('more output')
+    await f.ci.dispatch()
+    expect(f.read().tail).toBe('more output')
+    expect(f.writes()).toBe(initialWrites + 2)
+    f.setTransport({ source: 'rest', reason: null, lastError: null, fallbackCount: 0 })
+    await f.ci.dispatch()
+    expect(f.read().record.transport?.source).toBe('rest')
+    expect(f.writes()).toBe(initialWrites + 3)
+    f.setState('passed')
+    await f.ci.dispatch()
+    expect(f.read().record.state).toBe('passed')
   } finally { await f.close() }
 })

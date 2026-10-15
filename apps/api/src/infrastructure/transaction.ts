@@ -22,23 +22,52 @@ export interface TransactionOptions {
   readOnly?: boolean
   /** Extra whole-transaction attempts after a serialization failure or deadlock. Only for replay-safe callbacks. */
   conflictRetries?: number
+  operation?: TransactionOperation
 }
+
+export type TransactionOperation = 'transaction' | 'graph.read' | 'graph.write'
+type TransactionOutcome = 'committed' | 'rolled_back' | 'failed'
+const transactionTimings = new WeakMap<pg.ClientBase, { timing: TransactionTiming; restore: () => void }>()
 
 function beginStatement(options: TransactionOptions): string {
   return ['begin', options.isolation && `isolation level ${options.isolation}`, options.readOnly && 'read only']
     .filter(Boolean).join(' ')
 }
 
-export async function beginTransaction(client: pg.ClientBase, options: TransactionOptions = {}): Promise<void> {
-  await client.query(beginStatement(options))
+export async function beginTransaction(client: pg.ClientBase, options: TransactionOptions = {},
+  origin = new Error('transaction caller')): Promise<void> {
+  const timing = new TransactionTiming(origin, options.operation)
+  transactionTimings.set(client, { timing, restore: timeClientStatements(client, timing) })
+  try {
+    await client.query(beginStatement(options))
+  } catch (error) {
+    finishTransactionTiming(client, 'failed')
+    throw error
+  }
 }
 
 export async function commitTransaction(client: pg.ClientBase): Promise<void> {
   await client.query('commit')
+  finishTransactionTiming(client, 'committed')
 }
 
 export async function rollbackTransaction(client: pg.ClientBase): Promise<void> {
-  await client.query('rollback')
+  try {
+    await client.query('rollback')
+    finishTransactionTiming(client, 'rolled_back')
+  } catch (error) {
+    finishTransactionTiming(client, 'failed')
+    throw error
+  }
+}
+
+/** End instrumentation when a connection closes before transaction control can finish. */
+export function finishTransactionTiming(client: pg.ClientBase, outcome: TransactionOutcome): void {
+  const active = transactionTimings.get(client)
+  if (!active) return
+  transactionTimings.delete(client)
+  active.restore()
+  active.timing.finish(outcome)
 }
 
 /**
@@ -47,7 +76,7 @@ export async function rollbackTransaction(client: pg.ClientBase): Promise<void> 
  */
 export async function rollbackAfterFailure(client: pg.ClientBase): Promise<Error | undefined> {
   try {
-    await client.query('rollback')
+    await rollbackTransaction(client)
     return undefined
   } catch (rollbackError) {
     componentLogger('db').error({ operation: 'transaction rollback', err: rollbackError },
@@ -71,7 +100,10 @@ export class TransactionTiming {
   #queries = 0
   #largestGapMs = 0
   #running = 0
-  constructor(private readonly origin: Error) {}
+  readonly #operation: TransactionOperation
+  constructor(private readonly origin: Error, operation: TransactionOperation = 'transaction') {
+    this.#operation = operation === 'graph.read' || operation === 'graph.write' ? operation : 'transaction'
+  }
 
   track<T>(statement: Promise<T>): Promise<T> {
     const started = performance.now()
@@ -86,7 +118,9 @@ export class TransactionTiming {
     return statement.then(result => { settle(); return result }, (error: unknown) => { settle(); throw error })
   }
 
-  finish(): void {
+  finish(outcome: TransactionOutcome): void {
+    componentLogger('db').info({ metric: 'db_transaction_statements', operation: this.#operation,
+      outcome, statements: this.#queries }, 'Database transaction statements')
     const finished = performance.now(), totalMs = finished - this.#started
     if (totalMs <= SLOW_TRANSACTION_MS) return
     const queryMs = Math.min(this.#queryMs, totalMs)
@@ -108,19 +142,20 @@ function timeClientStatements(client: pg.ClientBase, timing: TransactionTiming):
   const own = Object.prototype.hasOwnProperty.call(client, 'query')
   const original = client.query
   const timed = (...args: unknown[]) => {
-    const result: unknown = (original as unknown as (...values: unknown[]) => unknown).apply(client, args)
-    return result instanceof Promise ? timing.track(result) : result
+    try {
+      const result: unknown = Reflect.apply(original, client, args)
+      if (result instanceof Promise) return timing.track(result)
+      void timing.track(Promise.resolve(result))
+      return result
+    } catch (error) {
+      return timing.track(Promise.reject(error))
+    }
   }
   client.query = timed as unknown as typeof client.query
   return () => {
     if (own) client.query = original
     else delete (client as { query?: unknown }).query
   }
-}
-
-async function timedPerform<T>(client: pg.ClientBase, timing: TransactionTiming, perform: () => Promise<T>): Promise<T> {
-  const restore = timeClientStatements(client, timing)
-  try { return await perform() } finally { restore() }
 }
 
 export function isTransactionConflict(error: unknown): boolean {
@@ -140,11 +175,10 @@ export async function withTransaction<T>(
   const origin = new Error('transaction caller')
   for (let attempt = 0; ; attempt += 1) {
     const client = await pool.connect()
-    const timing = new TransactionTiming(origin)
     let releaseError: Error | undefined
     try {
-      await beginTransaction(client, options)
-      const result = await timedPerform(client, timing, () => perform(client))
+      await beginTransaction(client, options, origin)
+      const result = await perform(client)
       await commitTransaction(client)
       return result
     } catch (error) {
@@ -152,7 +186,6 @@ export async function withTransaction<T>(
       if (releaseError || attempt >= (options.conflictRetries ?? 0) || !isTransactionConflict(error)) throw error
     } finally {
       client.release(releaseError)
-      timing.finish()
     }
   }
 }
@@ -166,16 +199,15 @@ export async function withClientTransaction<T>(
   perform: () => Promise<T>,
   options: TransactionOptions = {},
 ): Promise<T> {
-  const timing = new TransactionTiming(new Error('transaction caller'))
   await beginTransaction(client, options)
   try {
-    const result = await timedPerform(client, timing, perform)
+    const result = await perform()
     await commitTransaction(client)
     return result
   } catch (error) {
     await rollbackAfterFailure(client)
     throw error
-  } finally { timing.finish() }
+  }
 }
 
 /** A supplied client belongs to the caller's transaction, including its commit/rollback. */

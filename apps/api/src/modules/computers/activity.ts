@@ -41,6 +41,11 @@ export class ComputerActivityService {
       await this.commands.recordDenied(principal.id, source, 'computer_activity_list', this.mainId)
       throw error
     }
+    const clouds = []
+    for (const cloud of this.clouds) {
+      const ready = await cloud.ready()
+      clouds.push({ provider: cloud.provider, ready, observation: cloud.readinessObservation })
+    }
     return withTransaction(this.pool, async (sql) => {
       const live = await readLiveManagementPrincipal(sql, principal.id)
       requireAuthorization(live, 'settings:read')
@@ -81,7 +86,7 @@ export class ComputerActivityService {
           if (computer && sameDeviceProvisioningTarget(computer.target, target)) computer.agents.push(activity)
         }
       }
-      const cloud = await readCloud(sql, this.mainId, this.clouds)
+      const cloud = await readCloud(sql, this.mainId, clouds)
       const truncated = registrations.rows.length > 100 || jobs.rows.length > COMPUTER_ACTIVITY_LIMIT
         || agents.rows.length > COMPUTER_ACTIVITY_LIMIT
       const latest = await readLiveManagementPrincipal(sql, principal.id)
@@ -98,7 +103,9 @@ export class ComputerActivityService {
   }
 }
 
-async function readCloud(sql: pg.PoolClient, mainId: string, clouds: readonly CloudCiService[]) {
+async function readCloud(sql: pg.PoolClient, mainId: string, clouds: readonly {
+  provider: CloudCiService['provider']; ready: boolean; observation: ReadObservation | undefined
+}[]) {
   if (!clouds.length) return []
   const counts = await sql.query<{ provider: string; running: number }>(`select split_part(host_key, ':', 3) as provider,
     count(*)::int as running from ci_runs where state in ('starting','running') and host_key like $1
@@ -106,8 +113,7 @@ async function readCloud(sql: pg.PoolClient, mainId: string, clouds: readonly Cl
   const running = new Map(counts.rows.map(row => [row.provider, row.running]))
   const listed: CloudCiActivity[] = []
   for (const cloud of clouds) {
-    const ready = await cloud.ready()
-    const observation = cloud.readinessObservation
+    const { ready, observation } = cloud
     const count = running.get(cloud.provider.id) ?? 0
     // A service Main is not logged in to and that runs nothing is not part of this installation.
     if (ready || count > 0 || observation?.status === 'unavailable') listed.push({
