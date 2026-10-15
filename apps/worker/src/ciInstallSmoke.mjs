@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WorkerArtifactReplySchema } from '../../../packages/contracts/src/workerUpdate.ts';
-import { gateIntegrationShards } from '../../../apps/api/src/modules/ci-host/capacity.ts';
 import { WORKER_CI_CAPACITY_WAIT_MS, WORKER_CI_SMOKE_TIMEOUT_MS } from './ciSmokeTiming.mjs';
 
 export async function runCiInstallSmoke({ repository, commit }, { runner,
@@ -19,11 +18,10 @@ export async function runCiInstallSmoke({ repository, commit }, { runner,
   try {
     const status = await bounded(() => runner.handle({ operation: 'status' }));
     if (!status.ready) throw new Error(`Worker CI smoke setup: ${status.reasons.join('; ')}`);
-    const integrationShards = gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9));
     while (true) {
       try {
         await bounded(() => runner.handle({ operation: 'start', runId, repository, commit, suite: 'integration',
-          gate: true, integrationShards, scope: 'full', files: ['apps/api/test/ci-smoke.integration.test.ts'] }));
+          scope: 'affected', files: ['apps/api/test/ci-smoke.integration.test.ts'] }));
         break;
       } catch (error) {
         if (error.code !== 'CI_HOST_BUSY') throw error;
