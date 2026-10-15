@@ -1,4 +1,4 @@
-import { isTransientDatabaseOrSocketCode } from '../infrastructure/transientErrors.js'
+import { isTransientDatabaseOrSocketCode } from '@foreman-code/contracts/failure'
 
 /** Infrastructure failures: the work itself did not fail, the way to run it did. */
 const transientCodes = new Set([

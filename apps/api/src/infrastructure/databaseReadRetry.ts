@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 const reads = new AsyncLocalStorage<{ retried: boolean; signal?: AbortSignal | undefined }>()
 
-import { isDatabasePoolTimeout } from './transientErrors.js'
+import { isDatabasePoolTimeout } from '@foreman-code/contracts/failure'
 export { isDatabasePoolTimeout }
 
 /** One acquisition retry per read, including tools whose handlers format their own errors. */

@@ -21,7 +21,7 @@ async function transport(options: {
 } = {}): Promise<CodexStdioTransport> {
   const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol,
     options.requestHandler ?? (async () => undefined), () => undefined,
-    options.onDisconnect ?? (() => undefined), options.timeout ?? 200)
+    options.onDisconnect ?? (() => undefined), options.timeout ?? 5_000)
   transports.push(value)
   await value.start()
   return value
@@ -137,7 +137,8 @@ void (async () => {
   })
 
   it('F12/F13: timeout and post-submission abort retain uncertain operation identity without listeners', async () => {
-    const value = await transport()
+    // The deadline also bounds provider startup, so it stays far above process scheduling delay on a loaded machine.
+    const value = await transport({ timeout: 2_000 })
     const controller = new AbortController()
     const failures: CodexRpcError[] = []
     await assert.rejects(value.request('test/noresponse', {}, controller.signal), (error: unknown) => {

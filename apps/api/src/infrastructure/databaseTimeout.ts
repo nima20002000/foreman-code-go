@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger } from '../modules/diagnostics/logger.js'
 
-import { isDatabaseTimeout } from './transientErrors.js'
+import { isDatabaseTimeout } from '@foreman-code/contracts/failure'
 export { isDatabaseTimeout }
 
 export interface DatabaseRetryOptions {

@@ -15,7 +15,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
-import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
+import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
 import {
   DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestIsBulk, deviceRequestIsObservation,
   effectiveDeviceRequestPriority,
