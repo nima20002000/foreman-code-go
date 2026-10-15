@@ -102,6 +102,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
   const intents = new Map<string, DispatchIntent>()
   const sessionReady = deferred()
+  const entryReady = deferred()
+  let entryCommitted = false
   let sessionCommitted = false
   const contexts = new Map<string, NativeManagerResolutionContext>()
   const owners = new Map<string, () => RunOwnership | undefined>()
@@ -113,6 +115,14 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     approvalNodeIds: [], workerParallelism: 3,
     nativeCommitted: async () => {
       if (sessionCommitted) return
+      if (!entryCommitted) {
+        const first = [...intents.values()].find(value => value.nodeId === entry.id)
+        const execution = first && await base.runs.getExecution(first.executionId)
+        if (execution?.state === 'completed' && execution.result?.outcome === 'succeeded') {
+          entryCommitted = true
+          entryReady.resolve()
+        }
+      }
       const intent = [...intents.values()].find(value => value.nodeId === affected.id)
       if (!intent) return
       const execution = await base.runs.getExecution(intent.executionId)
@@ -256,6 +266,14 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       }
     }, 10)
     let started: Promise<PromiseSettledResult<void>[]> | undefined
+    const startUntilReady = (ready: Promise<void>) => {
+      started ??= Promise.allSettled([base.engine.start(base.f.run.id)])
+      return Promise.race([ready, started.then(results => {
+        const failed = results.find(result => result.status === 'rejected')
+        if (failed?.status === 'rejected') throw failed.reason
+        return ready
+      })])
+    }
     let reconciliation: Promise<unknown> | undefined
     const report = (error: unknown) => componentLogger('engine').warn({ err: error }, 'Workflow fixture maintenance failed')
     const maintenance = setInterval(() => {
@@ -282,14 +300,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         await readUntil(async () => worker.advanceNativeTimer(delayMs), advanced => advanced,
           { timeoutMs: 1_000, description: 'the native MCP retry timer' })
       },
-      launch() {
-        started = Promise.allSettled([base.engine.start(base.f.run.id)])
-        return Promise.race([sessionReady.promise, started.then(results => {
-          const failed = results.find(result => result.status === 'rejected')
-          if (failed?.status === 'rejected') throw failed.reason
-          return sessionReady.promise
-        })])
-      },
+      prepareEntry: () => startUntilReady(entryReady.promise),
+      launch: () => startUntilReady(sessionReady.promise),
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readActiveRemoteRun(base, placements, affected.id, readStartup),
       async finished() {
