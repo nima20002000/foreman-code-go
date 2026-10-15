@@ -1,13 +1,15 @@
 import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
+import { deviceApplicationFailure } from '../devices/deviceApplicationError.js'
 
 export function isTransientRefreshFailure(error: unknown): boolean {
   if (isDatabaseTimeout(error)) return true
   if (error instanceof DomainError) {
-    if (error.code === 'DATABASE_READ_TIMEOUT') return false
-    return error.status === 503 && error.details?.retryable === true
+    return error.status === 503 && (error.details?.retryable === true
+      || error.details?.retryable !== false && deviceApplicationFailure(error).retryable)
   }
+  if (deviceApplicationFailure(error).retryable) return true
   if (!error || typeof error !== 'object') return false
   const code = 'code' in error ? error.code : undefined
   if (typeof code === 'string' && (code.startsWith('08') || [
@@ -29,13 +31,16 @@ export function maintainCredential(input: {
   check?(): Promise<void>
   refresh(): Promise<void>
   signal: AbortSignal
-  onFailure(error: Error): void
+  onFailure(error: Error, phase: 'check' | 'refresh'): void
 }): () => Promise<void> {
   let stopped = false
   let running: Promise<void> | undefined
   let deadline: ReturnType<typeof setTimeout> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let retryMs = 1_000
+  let phase: 'check' | 'refresh' = 'check'
+  let lastFailure: unknown
+  const deadlineFailure = (message: string) => new Error(message, { cause: lastFailure })
   const remainingLifetime = () => {
     if (input.remainingMs) return input.remainingMs()
     const expiry = input.expiresAt()
@@ -44,7 +49,8 @@ export function maintainCredential(input: {
   const fail = (error: unknown) => {
     if (stopped || input.signal.aborted) return
     stopTimers()
-    input.onFailure(error instanceof Error ? error : new Error('Worker credential renewal failed.'))
+    const failure = error instanceof Error ? error : new Error('Worker credential renewal failed.', { cause: error })
+    input.onFailure(failure, phase)
   }
   const stopTimers = () => {
     stopped = true
@@ -56,13 +62,13 @@ export function maintainCredential(input: {
     if (stopped || input.signal.aborted) return
     const remaining = remainingLifetime()
     if (!Number.isFinite(remaining) || remaining <= WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
-      fail(new Error('The native credential could not be renewed before its safety deadline.'))
+      fail(deadlineFailure('The native credential could not be renewed before its safety deadline.'))
       return
     }
     clearTimeout(deadline)
     // This deadline also stops native work if a database renewal hangs.
     const safeRemaining = remaining - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS
-    deadline = setTimeout(() => fail(new Error('Worker credential renewal timed out.')), safeRemaining)
+    deadline = setTimeout(() => fail(deadlineFailure('Worker credential renewal timed out.')), safeRemaining)
     deadline.unref()
     const waitMs = backoffMs ?? Math.min(20_000, Math.max(1_000, remaining - WORKER_CREDENTIAL_RENEWAL_WINDOW_MS))
     timer = setTimeout(tick, Math.min(waitMs, safeRemaining))
@@ -74,21 +80,25 @@ export function maintainCredential(input: {
     if (!expiry) { fail(new Error('The native process lost its credential lease.')); return }
     const remaining = remainingLifetime()
     if (!Number.isFinite(remaining) || remaining <= WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
-      fail(new Error('The native credential could not be renewed before its safety deadline.')); return
+      fail(deadlineFailure('The native credential could not be renewed before its safety deadline.')); return
     }
     running = Promise.resolve().then(() => {
       if (stopped || input.signal.aborted) return
+      phase = 'check'
       return input.check?.()
     }).then(() => {
       if (stopped || input.signal.aborted) return
       if (remainingLifetime() <= WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
+        phase = 'refresh'
         return input.refresh()
       }
     }).then(() => {
       if (stopped || input.signal.aborted) return
       retryMs = 1_000
+      lastFailure = undefined
       schedule()
     }).catch((error: unknown) => {
+      lastFailure = error
       if (!isTransientRefreshFailure(error)) {
         fail(error)
         return
