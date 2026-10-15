@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import { faultWorkflowFixture, expectRecoveredFault } from './helpers/faultWorkflowFixture.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -23,8 +24,11 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
       activity.payload.nativeEventType === 'turn.mcp_startup_retry'),
     { timeoutMs: 4_000, description: 'the native MCP startup retry' })
     const retry = waiting.activity.find(activity => activity.payload.nativeEventType === 'turn.mcp_startup_retry')!
-    expect(retry.payload).toMatchObject({ attempt: 2, delayMs: 10_000 })
-    await fixture.makeMcpReady(Number(retry.payload.delayMs))
+    const native = (await fixture.base.db.pool.query<{ record: HarnessNativeEvent }>(
+      'select record from harness_native_events where execution_id=$1 and sequence=$2',
+      [retry.harnessExecutionId, retry.payload.nativeEventSequence])).rows[0]!.record
+    expect(native).toMatchObject({ type: 'turn.mcp_startup_retry', payload: { attempt: 2, delayMs: 10_000 } })
+    await fixture.makeMcpReady(Number(native.payload.delayMs))
     fixture.release()
     expectRecoveredFault(await fixture.finished(), fixture, /mcp|readiness|unavailable|retry/i)
   }, 18_000)
