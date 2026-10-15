@@ -1,7 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/server'
 import { ZodError } from 'zod'
 
-import { DomainError, publicFailureClass } from '../../modules/errors.js'
+import { DomainError, databaseReadFailure, publicFailureClass } from '../../modules/errors.js'
 import { FileTransferError } from '../../modules/files/tools/transfers.js'
 import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
 
@@ -18,7 +18,7 @@ export function toolResult(value: unknown): CallToolResult {
 export const TEXT_MIRROR_BYTES = 256 * 1024
 
 export function toolFailure(error: unknown, internalMessage = 'The Operator service could not complete the request.'): CallToolResult {
-  error = deviceBusyFailure(error)
+  error = databaseReadFailure(deviceBusyFailure(error))
   // Only this explicitly public, static executable-validation issue is safe
   // to disclose. Other schema failures can contain private stored evidence and
   // retain their existing generic error. Match HTTP's INVALID_REQUEST shape.
