@@ -70,6 +70,7 @@ if (args.includes('down')) {
     const temporary = join(directory, runId)
     mkdirSync(temporary)
     const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TMPDIR: temporary,
+      FOREMAN_CODE_CI_DATABASE_STATE: temporary,
       CI_HOST_RUNNER: '1', FOREMAN_CODE_CI_HOST_RUN_ID: runId, FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '',
       FOREMAN_CODE_CI_POSTGRES_CACHE: join(directory, 'cache'), SERVERS: state, LIMITS: limits,
       UNAVAILABLE: unavailable ? '1' : '0',
@@ -81,6 +82,17 @@ if (args.includes('down')) {
         const result = spawnSync(process.execPath, [script, 'up'], { env, encoding: 'utf8' })
         assert.equal(result.status, 0, result.stderr)
         return readFileSync(join(temporary, 'test-database-url'), 'utf8')
+      },
+      // The heavy-job wrapper hands the job a fresh TMPDIR; the template cache must stay reachable.
+      wrappedTemplateCache() {
+        const wrapped = join(directory, `${runId}-wrapped`)
+        mkdirSync(wrapped)
+        const cache = new URL('./ci-postgres-cache.mjs', import.meta.url).href
+        const result = spawnSync(process.execPath, ['--input-type=module', '--eval',
+          `import { ciTemplateCacheDirectory } from ${JSON.stringify(cache)}\nconsole.log(ciTemplateCacheDirectory() ?? 'none')`],
+        { env: { ...env, TMPDIR: wrapped }, encoding: 'utf8' })
+        assert.equal(result.status, 0, result.stderr)
+        return result.stdout.trim()
       },
       down() {
         const result = spawnSync(process.execPath, [script, 'down'], { env, encoding: 'utf8' })
@@ -126,4 +138,11 @@ test('a reused persistent server grows to the database size a larger job needs a
   assert.deepEqual(host.limits(), [{ nanoCpus: 4e9, memory: 4 * gib }])
   host.job({ cpus: 2, memory: 2 * gib }).up()
   assert.deepEqual(host.limits(), [{ nanoCpus: 4e9, memory: 4 * gib }])
+})
+
+test('a job whose TMPDIR is replaced still finds the persistent template cache', t => {
+  const host = computer(t)
+  const job = host.job()
+  job.up()
+  assert.notEqual(job.wrappedTemplateCache(), 'none')
 })
