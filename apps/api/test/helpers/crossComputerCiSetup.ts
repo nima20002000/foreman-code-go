@@ -64,6 +64,12 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
       attempt--
       continue
     }
+    // Command deadlines are retryable by contract with the original input.
+    if ((code === 'COMMAND_DATABASE_TIMEOUT' || code === 'COMMAND_LOCK_TIMEOUT') && Date.now() < pendingDeadline) {
+      await delay(1_000)
+      attempt--
+      continue
+    }
     // A reconnected Worker rechecks its Agent profiles first; Start retries the same command meanwhile.
     if (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start' && Date.now() < pendingDeadline) {
       await delay(100)
