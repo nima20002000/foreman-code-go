@@ -120,6 +120,9 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
       },
       async details() {
         if (!runId) throw new Error('Start the Run before reading it.')
+        if (base.dispatchErrors.length) {
+          throw new AggregateError(base.dispatchErrors, 'The handed-off Run failed during dispatch.')
+        }
         const result = await base.client.callTool({ name: 'run_get', arguments: {
           detail: 'full', workspaceId: startInput.workspaceId, runId,
         } })
