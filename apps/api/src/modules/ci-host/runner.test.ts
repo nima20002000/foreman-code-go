@@ -9,6 +9,20 @@ import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 import { integrationShardPlan } from '../../../../../scripts/test-integration.mjs'
 
+declare module '../../../../../scripts/test-integration.mjs' {
+  export function integrationShardPlan(
+    environment: NodeJS.ProcessEnv,
+    resources?: {
+      cpuCount?: number
+      availableMemoryBytes?: number
+      maxConnections?: number
+      reservedConnections?: number
+      activeConnections?: number
+    },
+    fileCount?: number,
+  ): { shards: number; limit: number; reason: string }
+}
+
 const roots: string[] = []
 const children = new Set<ReturnType<typeof spawn>>()
 async function stopUnit(child: ReturnType<typeof spawn>) {
@@ -196,6 +210,7 @@ describe('host CI runner', () => {
     const plan = integrationShardPlan({ FOREMAN_CODE_CI_CPU_COUNT: String(cpuBudget),
       FOREMAN_CODE_CI_MEMORY_BYTES: String(memoryBudget) }, { cpuCount: 16, availableMemoryBytes: 32 * gib })
     expect(plan.shards).toBe(cpuBudget)
+    expect(plan.limit).toBe(cpuBudget)
     for (const runId of runIds) await f.runner.cancel(runId)
   })
 

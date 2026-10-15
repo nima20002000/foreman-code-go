@@ -8,6 +8,12 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
 afterEach(() => { vi.restoreAllMocks() })
 
 const host: HostCiComputer = {
@@ -160,7 +166,7 @@ it('rechecks sibling placement before falling back after a busy start', async ()
     hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
   const f = fleet(records, [host, secondHost, spare], new Map(), new Set(), new Map([[secondHost.key, 2]]))
   const request = f.endpoint.request
-  const siblingStarted = Promise.withResolvers<void>()
+  const siblingStarted = deferred()
   let retriedRunId: string | undefined
   vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
     if (input.operation === 'start' && computer.key === host.key) {
@@ -367,8 +373,8 @@ it.each(['read', 'status'] as const)('dispatches on idle computers while another
   const pending = () => CiRunRecordSchema.parse({ ...queuedRuns(1)[0], suite: 'lint', partition: null })
   records.push(pending())
   const f = fleet(records, [host, secondHost, cloud])
-  const stalled = Promise.withResolvers<void>()
-  const entered = Promise.withResolvers<void>()
+  const stalled = deferred()
+  const entered = deferred()
   const request = f.endpoint.request
   vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
     if (computer.key === host.key && input.operation === operation) {
