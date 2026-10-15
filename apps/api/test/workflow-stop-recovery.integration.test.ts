@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import { DomainError } from '../src/modules/errors.js'
+import { withClientTransaction } from '../src/infrastructure/transaction.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { requireAuthorization } from '../src/modules/access/policy.js'
@@ -109,12 +110,12 @@ it('replays an immutable Stop intent while another reader retains the saved inte
   const reader = await f.db.pool.connect()
   try {
     const first = await admitWorkflowStopIntent(f.db.pool, context)
-    await reader.query('begin')
-    await reader.query('select record from workflow_stop_intents where run_id=$1 for share', [f.f.run.id])
-    expect(await admitWorkflowStopIntent(pool, context)).toEqual(first)
-    expect(await f.runs.getRepeatSnapshot(f.f.run.id)).toMatchObject({ stopRequested: true })
+    await withClientTransaction(reader, async () => {
+      await reader.query('select record from workflow_stop_intents where run_id=$1 for share', [f.f.run.id])
+      expect(await admitWorkflowStopIntent(pool, context)).toEqual(first)
+      expect(await f.runs.getRepeatSnapshot(f.f.run.id)).toMatchObject({ stopRequested: true })
+    })
   } finally {
-    await reader.query('rollback')
     reader.release()
     await pool.end()
     await f.close()
