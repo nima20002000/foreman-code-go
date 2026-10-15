@@ -80,7 +80,38 @@ function boundedArgs(args: string[], index: number): string[] {
     ...args.slice(0, index + 1), ...flags, ...args.slice(index + 1)]
 }
 
-/** Serialize transfers and reserve their maximum footprint on the cache's actual filesystem. */
+/** Transfer bytes reserved in this process by transfers that are still running, per storage directory. */
+const activeReservations = new Map<string, number>()
+
+/** Holds the storage lock only while measuring and reserving this transfer's footprint beside the running transfers. */
+async function reserveTransfer(root: FileHandle, storagePath: string, signal: AbortSignal): Promise<void> {
+  await withPrivateDirectoryLock(root, async () => {
+    const measured = await measureStorage(root, signal)
+    const active = activeReservations.get(storagePath) ?? 0
+    const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
+    const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
+    await writeStorage(root, { ...measured, reservedBytes: active })
+    if (measured.retainedBytes + active + reservedBytes > measured.limitBytes
+      || active + reservedBytes + margin > measured.availableBytes) {
+      throw new DomainError('SOURCE_GIT_CACHE_CAPACITY',
+        'The Git cache has insufficient storage for this transfer. Free cache filesystem space, then retry.',
+        409, { retryable: true, newCommandRequired: false, storage: measured, reservedBytes })
+    }
+    await writeStorage(root, { ...measured, reservedBytes: active + reservedBytes })
+    activeReservations.set(storagePath, active + reservedBytes)
+  }, { signal })
+}
+
+async function releaseTransfer(root: FileHandle, storagePath: string): Promise<void> {
+  const remaining = (activeReservations.get(storagePath) ?? 0) - SOURCE_GIT_CACHE_LIMITS.transferBytes
+  if (remaining > 0) activeReservations.set(storagePath, remaining)
+  else activeReservations.delete(storagePath)
+  const measured = await measureStorage(root)
+  await withPrivateDirectoryLock(root, () => writeStorage(root, { ...measured,
+    reservedBytes: activeReservations.get(storagePath) ?? 0 }))
+}
+
+/** Reserve each transfer's maximum footprint on the cache's actual filesystem; fetches into one repository take turns. */
 export async function runGitWithCacheStorage(cacheRoot: string, args: string[], options: GitProcessOptions,
   run: GitRunner): Promise<GitProcessResult> {
   const index = commandIndex(args)
@@ -107,39 +138,40 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
   }
   const root = await openPrivateRoot(storagePath, false)
   try {
-    return await withPrivateDirectoryLock(root, async guard => {
-      const measured = await measureStorage(root, options.signal)
-      const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
-      const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
-      await writeStorage(root, measured)
-      if (measured.retainedBytes + reservedBytes > measured.limitBytes
-        || reservedBytes + margin > measured.availableBytes) {
-        throw new DomainError('SOURCE_GIT_CACHE_CAPACITY',
-          'The Git cache has insufficient storage for this transfer. Free cache filesystem space, then retry.',
-          409, { retryable: true, newCommandRequired: false, storage: measured, reservedBytes })
-      }
-      await writeStorage(root, { ...measured, reservedBytes })
-      const before = command === 'fetch' ? await packFiles(common) : []
-      if (command === 'clone') {
-        try { await lstat(target) }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-          createdTarget = true
+    await reserveTransfer(root, storagePath, options.signal)
+    try {
+      // Clones write a private staging directory; only fetches share a repository, so only they wait for each other.
+      const transfer = async (lockFd?: number) => {
+        const before = command === 'fetch' ? await packFiles(common) : []
+        if (command === 'clone') {
+          try { await lstat(target) }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            createdTarget = true
+          }
+        }
+        let result: GitProcessResult | undefined
+        try {
+          result = await run(boundedArgs(args, index), { ...options,
+            maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, ...(lockFd !== undefined ? { lockFd } : {}) })
+          return result
+        } finally {
+          if (!result || result.code !== 0) {
+            if (command === 'clone' && createdTarget) await rm(target, { recursive: true, force: true })
+            else if (command === 'fetch') await removeIncompletePacks(common, before)
+          }
         }
       }
-      let result: GitProcessResult | undefined
+      if (command === 'clone') return await transfer()
+      const repository = storagePath === common ? root : await openPrivateRoot(common, false)
       try {
-        result = await run(boundedArgs(args, index), { ...options,
-          maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, lockFd: guard.fd })
-        return result
+        return await withPrivateDirectoryLock(repository, guard => transfer(guard.fd), { signal: options.signal })
       } finally {
-        if (!result || result.code !== 0) {
-          if (command === 'clone' && createdTarget) await rm(target, { recursive: true, force: true })
-          else if (command === 'fetch') await removeIncompletePacks(common, before)
-        }
-        await writeStorage(root, await measureStorage(root))
+        if (repository !== root) await repository.close()
       }
-    }, { signal: options.signal })
+    } finally {
+      await releaseTransfer(root, storagePath)
+    }
   } finally {
     await root.close()
   }
