@@ -3,6 +3,7 @@ import { DurableInteractionSchema, HarnessExecutionSchema, NATIVE_INTERACTION_FI
   withAdvancedDefaults } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { deliveredReview, reviewInProgress } from './helpers/remoteReviewProductionCases.js'
+import { projectInteractionActivity } from '../src/modules/interactions/activityProjection.js'
 
 it.each(['fixture-worker', 'runner-local'])(
   'observes remote review progress with workspace runner %s', async runnerId => {
@@ -98,7 +99,10 @@ it('recovers native delivery after the reviewer accepts its decision and complet
     async reconcile() {
       throw new Error('Application maintenance is unavailable.')
     },
-    async value() { return { interaction } },
+    async value() { return { interaction, activity: projectInteractionActivity(interaction, {
+      response: { authorized: false, qualified: false, usable: false, path: null },
+      workerAcknowledgmentId: 'worker-acknowledgment',
+    }) } },
     db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
   } as unknown as Parameters<typeof deliveredReview>[0]
   const completed = await deliveredReview(fixture, interaction.id)
@@ -137,7 +141,10 @@ it.each(['acknowledged', 'completed'] as const)(
     async reconcile() {
       throw new Error('Application maintenance is unavailable.')
     },
-    async value() { return { interaction } },
+    async value() { return { interaction, activity: projectInteractionActivity(interaction, {
+      response: { authorized: false, qualified: false, usable: false, path: null },
+      workerAcknowledgmentId: 'worker-acknowledgment',
+    }) } },
     db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
   } as unknown as Parameters<typeof deliveredReview>[0]
 
