@@ -27,6 +27,20 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
+/** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
+async function settle(service: HostCiService) {
+  await service.dispatch()
+  await service.drain()
+}
+
+/** The host accepts the start but the reply is lost, and its status stays unreachable so no observation can discover the run. */
+function loseStartReply(f: { control: { onStart: (...args: never[]) => Promise<void>; onStatus: (...args: never[]) => Promise<void> } }, message: string) {
+  f.control.onStart = async () => {
+    f.control.onStatus = async () => { throw new Error('Status unavailable') }
+    throw new Error(message)
+  }
+}
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(done => { resolve = done })
@@ -38,7 +52,8 @@ async function fixture(executor?: HostCiEndpoint) {
   const workspaceId = randomUUID()
   const repository = { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' }
   await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
-    [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI workspace', repository })])
+    [workspaceId, JSON.stringify({ id: workspaceId, name: 'CI workspace', repository,
+      ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const computers: HostCiComputer[] = [0, 1].map(index => ({
     key: `executor:${index}`, hostRef: { kind: 'device', mainId: 'test-main', deviceId: `executor-${index}` },
     label: `Executor ${index}`, priority: 10 - index,
@@ -127,7 +142,7 @@ async function fixture(executor?: HostCiEndpoint) {
   }
   const enqueue = async (input: Record<string, unknown> = {}) => {
     const result = CiRunOutputSchema.parse(await value('ci_run', { suite: 'install', commandId: randomUUID(), ...input }))
-    await ci.dispatch()
+    await settle(ci)
     return result
   }
   const read = async (ticketId: string) => CiGetOutputSchema.parse(await value('ci_get', { ticketId })).run
@@ -183,7 +198,7 @@ it('dispatches on startup while old cloud recovery is blocked and exposes persis
     // This is the production startup entry point, with no manual dispatcher pass or timer tick.
     HostCiService.prototype.start.call(f.ci, 60_000)
     await expect.poll(() => f.starts.length, { timeout: 1000 }).toBe(1)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'running', dispatchAttempts: 1,
       computer: { hostRef: computer.hostRef } })
     const denied = await f.connect(['workspaces:read'])
@@ -206,15 +221,26 @@ it.each(['github', 'circleci'] as const)(
       hostRef: { kind: 'cloud', mainId: 'test-main', provider, slot: 0 } }
     f.computers.splice(0, 2, computer)
     let calls = 0
+    // The provider is unreachable after accepting the start, so no observation can discover the run.
+    let providerReachable = true
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (target, input) => {
+      if (!providerReachable && input.operation === 'read') {
+        throw new DomainError('CI_CLOUD_FAILED', 'The provider is unreachable.', 502)
+      }
+      return request(target, input)
+    }
     f.control.onStart = async () => {
       calls++
+      providerReachable = false
       throw new DomainError('CI_CLOUD_FAILED', 'The start reply was lost.', 502)
     }
     try {
       const ticket = await f.enqueue()
       f.control.available = true
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', startedAt: null })
+      providerReachable = true
       await f.value('ci_cancel', { ticketId: ticket.ticketId })
       expect(calls).toBe(1)
       expect((await f.read(ticket.ticketId)).state).toBe('canceled')
@@ -232,10 +258,10 @@ it.each(['github', 'circleci'] as const)(
     try {
       const ticket = await f.enqueue()
       f.control.available = true
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', startedAt: null })
       expect(cloud.attempts()).toBe(1)
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(cloud.attempts()).toBe(1)
       for (let attempt = 0; attempt < 3; attempt++) {
         const at = new Date(Date.now() - 75_100).toISOString()
@@ -243,7 +269,7 @@ it.each(['github', 'circleci'] as const)(
           where id=$1`, [ticket.ticketId, at])
         const service = f.createService()
         restarted.push(service)
-        await service.dispatch()
+        await settle(service)
       }
       expect(cloud.attempts()).toBe(3)
       expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'queued', computer: null,
@@ -253,7 +279,7 @@ it.each(['github', 'circleci'] as const)(
       const replacement: HostCiComputer = { key: 'replacement', label: 'Replacement executor', priority: 0,
         hostRef: { kind: 'device', mainId: 'test-main', deviceId: 'replacement' } }
       f.computers.push(replacement)
-      await restarted.at(-1)!.dispatch()
+      await settle(restarted.at(-1)!)
       expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'running',
         computer: { hostRef: replacement.hostRef } })
       expect(f.starts[0]!.request.runId).toBe(ticket.ticketId)
@@ -267,10 +293,11 @@ it.each(['github', 'circleci'] as const)(
   'cancels an unstarted %s ticket through MCP without resolving its selected files again', async provider => {
     const f = await fixture()
     const cloud = failingCloud(f, provider)
+    const failingRequest = f.endpoint.request.bind(f.endpoint)
     try {
       const ticket = await f.enqueue()
       f.control.available = true
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(cloud.attempts()).toBe(1)
       const reader = await f.connect(CI_GET_ACTIONS)
       expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
@@ -284,7 +311,8 @@ it.each(['github', 'circleci'] as const)(
         .toEqual([{ state: 'canceled', host_key: null }])
       expect((await f.pool.query("select details from management_audit where action='ci.cancel' and target_key=$1",
         [`ci:${ticket.ticketId}`])).rows).toHaveLength(1)
-      f.endpoint.request = async (_target, input) => {
+      f.endpoint.request = async (target, input) => {
+        if (input.operation === 'status') return failingRequest(target, input)
         if (input.operation !== 'start') throw new Error('Expected a replacement start')
         return { operation: 'start', run: { runId: input.runId, state: 'running', step: input.suite,
           startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null } }
@@ -300,7 +328,7 @@ it('audits queued and running MCP cancellation once with the caller and request 
     const queued = await f.enqueue()
     const running = await f.enqueue()
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     const extra = await f.enqueue()
     const denied = await f.connect(['jobs:cancel'], [randomUUID()])
     expect((await f.call(denied.client, 'ci_cancel', { ticketId: extra.ticketId })).isError).toBe(true)
@@ -325,15 +353,15 @@ it('keeps provider facts stable while successful observation time advances', asy
   try {
     const ticket = await f.enqueue()
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     const key = `${f.starts[0]!.computer.key}:${ticket.ticketId}`
     f.remote.set(key, { ...f.remote.get(key)!, message: 'Observation A' })
-    await f.ci.dispatch()
+    await settle(f.ci)
     f.remote.set(key, { ...f.remote.get(key)!, message: 'Observation B' })
-    await f.ci.dispatch()
+    await settle(f.ci)
     const before = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
-    await f.ci.dispatch()
-    await f.ci.dispatch()
+    await settle(f.ci)
+    await settle(f.ci)
     const after = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     expect(after.record).toEqual({ ...before.record, observation: {
       ...before.record.observation, lastSuccessAt: expect.any(String) } })
@@ -348,22 +376,23 @@ it('retains one executor after an accepted start loses its reply and reconciles 
   let restarted: HostCiService | undefined
   try {
     const ticket = await f.enqueue()
-    f.control.onStart = async () => { throw new Error('Start reply lost') }
+    loseStartReply(f, 'Start reply lost')
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.starts).toHaveLength(1)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', computer: {
       hostRef: f.starts[0]!.computer.hostRef } })
     f.control.onStart = async () => {}
+    f.control.onStatus = async () => {}
     restarted = f.createService()
-    await restarted.dispatch()
+    await settle(restarted)
     expect(f.starts).toHaveLength(1)
     const recovered = await f.read(ticket.ticketId)
     const accepted = f.starts[0]!
     expect(recovered).toMatchObject({ state: 'running', computer: {
       hostRef: accepted.computer.hostRef },
       startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
-    await restarted.dispatch()
+    await settle(restarted)
     expect(await f.read(ticket.ticketId)).toEqual({ ...recovered, observation: {
       status: 'available', consecutiveFailures: 0, lastError: null,
       nextAttemptAt: null, lastSuccessAt: expect.any(String) } })
@@ -378,10 +407,11 @@ it('discovers an accepted run when its start acknowledgement was lost', async ()
   const f = await fixture()
   try {
     const ticket = await f.enqueue()
-    f.control.onStart = async () => { throw new Error('Start reply lost') }
+    loseStartReply(f, 'Start reply lost')
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect((await f.read(ticket.ticketId)).state).toBe('starting')
+    f.control.onStatus = async () => {}
     const computers = await f.value('ci_computers_list', {})
     expect(computers).toMatchObject({ computers: expect.arrayContaining([
       expect.objectContaining({ hostRef: f.starts[0]!.computer.hostRef, running: [ticket.ticketId] }),
@@ -400,18 +430,18 @@ it('preserves the assignment when the database rejects settlement after an accep
     await f.pool.query(`create trigger reject_ci_running before update on ci_runs
       for each row execute function reject_ci_running()`)
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.starts).toHaveLength(1)
     expect((await f.read(ticket.ticketId)).state).toBe('starting')
     await f.pool.query('drop trigger reject_ci_running on ci_runs')
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.starts).toHaveLength(1)
     const recovered = await f.read(ticket.ticketId)
     const accepted = f.starts[0]!
     expect(recovered).toMatchObject({ state: 'running', computer: {
       hostRef: accepted.computer.hostRef },
       startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read(ticket.ticketId)).toEqual({ ...recovered, observation: {
       status: 'available', consecutiveFailures: 0, lastError: null,
       nextAttemptAt: null, lastSuccessAt: expect.any(String) } })
@@ -462,12 +492,12 @@ it('retries persisted cancellation on the assigned executor after transport fail
   try {
     const ticket = await f.enqueue()
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     f.control.onCancel = async () => { throw new Error('Cancel reply unavailable') }
     expect((await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
     f.control.onCancel = async () => {}
     restarted = f.createService()
-    await restarted.dispatch()
+    await settle(restarted)
     expect((await f.read(ticket.ticketId)).state).toBe('canceled')
     expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
     expect(f.starts).toHaveLength(1)
@@ -518,7 +548,7 @@ it('persists direct cancellation before a start reply returns and recovers clean
     expect((await f.read(ticket.ticketId)).cancellation).toEqual(pending.cancellation)
     f.control.onStart = async () => {}
     restarted = f.createService()
-    await restarted.dispatch()
+    await settle(restarted)
     const canceled = await f.read(ticket.ticketId)
     expect(canceled.state).toBe('canceled')
     expect(canceled.cancellation).toBeUndefined()
@@ -558,7 +588,7 @@ it('retains cleanup when cancellation arrives while the accepted start reply is 
     release.resolve()
     await dispatch
     f.control.onStart = async () => {}
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect((await f.read(ticket.ticketId)).state).toBe('canceled')
     expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
     expect(f.starts).toHaveLength(1)
@@ -599,7 +629,7 @@ it.each([2, 3])('preserves direct cancellation during throughput planning with %
     expect((await f.read(ticketId)).state).toBe('canceled')
     release.resolve()
     await dispatch
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect((await f.read(ticketId)).state).toBe('canceled')
     expect(f.starts.some(start => start.request.runId === ticketId)).toBe(false)
     expect(f.starts.length).toBeGreaterThan(0)
@@ -656,7 +686,7 @@ it.each([
       expect(run.partition?.weights).toHaveLength(partitions)
       expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await Promise.all(canceled.map(run => f.read(run.id)))).toEqual(planned)
     expect(f.starts).toEqual([])
   } finally {
@@ -684,10 +714,10 @@ it('pins each workspace mirror at admission and never borrows a duplicate reposi
       const ticket = CiRunOutputSchema.parse(await f.value('ci_run', {
         workspaceId, suite: 'install', commandId: randomUUID(),
       }, caller.client))
-      await f.ci.dispatch()
+      await settle(f.ci)
       await f.pool.query("update workspaces set record=record-'ciMirror' where id=$1", [workspaceId])
       f.control.available = true
-      await f.ci.dispatch()
+      await settle(f.ci)
       const start = f.starts.find(item => item.request.runId === ticket.ticketId)!
       expect(start.request).toMatchObject({ workspaceId, ciMirror: mirrors[index] ? `octo/${mirrors[index]}` : null })
       await f.value('ci_cancel', { workspaceId, ticketId: ticket.ticketId }, caller.client)
@@ -704,13 +734,12 @@ it('retains an overdue unknown start, denies read-only cancellation and cleans t
   try {
     const ticket = await f.enqueue()
     f.control.available = true
-    f.control.onStart = async () => { throw new Error('Accepted start reply lost') }
-    await f.ci.dispatch()
+    loseStartReply(f, 'Accepted start reply lost')
+    await settle(f.ci)
     const accepted = f.starts[0]!
-    f.control.onStatus = async () => { throw new Error('Status unavailable') }
     now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
     restarted = f.createService()
-    for (let attempt = 0; attempt < 4; attempt++) await restarted.dispatch()
+    for (let attempt = 0; attempt < 4; attempt++) await settle(restarted)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', finishedAt: null,
       computer: { hostRef: accepted.computer.hostRef }, dispatchRequest: { runId: ticket.ticketId } })
     const stored = (await f.pool.query('select host_key,record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
@@ -722,7 +751,7 @@ it('retains an overdue unknown start, denies read-only cancellation and cleans t
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
       principalId: f.operator.principalId, source: 'mcp', reason: 'direct' } })
     f.control.onCancel = async () => {}
-    await restarted.dispatch()
+    await settle(restarted)
     expect((await f.read(ticket.ticketId)).state).toBe('canceled')
     expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
     expect(f.starts).toHaveLength(1)
@@ -740,7 +769,7 @@ it('bounds retries for an accepted but unlisted start without failing it or rele
     f.control.available = true
     f.control.hideRuns = true
     f.control.onStart = async () => { throw new Error('Accepted start reply lost') }
-    for (let attempt = 0; attempt < 5; attempt++) await f.ci.dispatch()
+    for (let attempt = 0; attempt < 5; attempt++) await settle(f.ci)
     const assigned = f.starts[0]!.computer
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', finishedAt: null,
       computer: { hostRef: assigned.hostRef }, dispatchRequest: { runId: ticket.ticketId },
@@ -819,11 +848,11 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   try {
     const ticket = await f.enqueue()
     available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     statusUnavailable = true
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
     restoreClock = () => clock.mockRestore()
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting',
       computer: { hostRef: computer.hostRef }, dispatchRequest: { runId: ticket.ticketId } })
     const reader = await f.connect(CI_GET_ACTIONS)
@@ -837,7 +866,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
     release.resolve()
     await expect(start).resolves.toMatchObject({ run: { state: 'canceled' } })
     restarted = f.createService()
-    await restarted.dispatch()
+    await settle(restarted)
     expect((await f.read(ticket.ticketId)).state).toBe('canceled')
     expect((await f.pool.query('select state,host_key from ci_runs where id=$1', [ticket.ticketId])).rows[0])
       .toEqual({ state: 'canceled', host_key: null })
@@ -860,7 +889,7 @@ it('preserves a running ticket without optional message metadata during an uncha
   try {
     const ticket = await f.enqueue()
     f.control.available = true
-    await f.ci.dispatch()
+    await settle(f.ci)
     const stored = async () => (await f.pool.query(
       'select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     const running = await f.read(ticket.ticketId)
@@ -873,8 +902,8 @@ it('preserves a running ticket without optional message metadata during an uncha
     const before = await stored()
     expect(await f.read(ticket.ticketId)).toEqual(withoutMessages)
 
-    await f.ci.dispatch()
-    await f.ci.dispatch()
+    await settle(f.ci)
+    await settle(f.ci)
 
     const refreshed = { ...before.record, observation: {
       status: 'available', consecutiveFailures: 0, lastError: null,

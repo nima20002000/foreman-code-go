@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { buildApp } from '../src/app.js'
 import { createPool } from '../src/infrastructure/pool.js'
+import { createTestPool } from './helpers/testPool.mjs'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -15,6 +16,12 @@ import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/servi
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
+
+/** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
+async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
+  await service.dispatch()
+  await service.drain()
+}
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -32,7 +39,7 @@ it.each(['runner', 'persisted'] as const)('plans a gate away from a builder occu
         suite: 'unit', scope: 'affected', files: ['apps/api/src/site.test.ts'],
         smokeComputer: f.computers[0]!.hostRef, commit: 'b'.repeat(40),
       }))
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: affected.ticketId })).run)
         .toMatchObject({ state: 'running', computer: { hostRef: f.computers[0]!.hostRef } })
     }
@@ -150,12 +157,15 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   cloudProvider?: 'github' | 'circleci';
   readCloud?: (computer: HostCiComputer, request: Extract<CiHostRequest, { operation: 'read' }>)
     => Promise<CiHostReply | undefined> } = {}) {
-  const pool = options.pool ?? database.pool
+  // Observation concurrency is half the pool, so a fleet of this size needs a pool that observes it in one pass.
+  const ownedPool = options.pool ? undefined : createTestPool({ connectionString: database.databaseUrl, max: 64,
+    options: '-c search_path=public -c statement_timeout=10000 -c lock_timeout=5000' })
+  const pool = options.pool ?? ownedPool!
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Gate workspace', repository: {
       provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
-    } })])
+    }, ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, ...{ buildAllowancePercent: options.allowance ?? 100 }, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50, ...{ buildAllowancePercent: options.allowance ?? 100 },
@@ -238,7 +248,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
         if (ids.has(id)) runs.set(id, { ...run, state: 'passed', exitCode: 0,
           finishedAt: new Date(Date.parse(run.startedAt) + 1000).toISOString() })
       }
-      await ci.dispatch()
+      await settle(ci)
       const read = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
       if (read.group?.state === 'passed') return
     }
@@ -248,6 +258,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
+    await ownedPool?.end()
   } }
 }
 
@@ -265,7 +276,7 @@ it.each(['cloud', 'build'] as const)(
       const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
         suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40),
       }))
-      await f.ci.dispatch()
+      await settle(f.ci)
       const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
       const part = initial.partitions!.find(run => run.state === 'running' && run.suite === 'integration'
         && run.computer?.hostRef.provider === 'circleci')!
@@ -273,7 +284,7 @@ it.each(['cloud', 'build'] as const)(
       invisibleId = part.id
       cloud.control.operation = 'run'
       cloud.control.error = 'run.not_found'
-      await f.ci.dispatch()
+      await settle(f.ci)
       const computers = [...f.computers]
       if (destination === 'cloud') {
         const spare: HostCiComputer = { key: 'cloud-spare', label: 'Spare cloud', priority: 30,
@@ -292,7 +303,7 @@ it.each(['cloud', 'build'] as const)(
         computer.hostRef.provider === 'circleci' || (destination === 'cloud'
           ? computer.key === 'cloud-spare' : computer.hostRef.kind !== 'cloud')))
       cloud.advance(75_000)
-      await f.ci.dispatch()
+      await settle(f.ci)
       const recovered = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
       expect(recovered.run).toMatchObject({ id: part.id, groupId: part.groupId, state: 'running',
         commit: part.commit, files: part.files, unstartedProviders: ['circleci'],
@@ -326,7 +337,7 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
     const started = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commandId: randomUUID(), commit: 'a'.repeat(40),
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     const part = initial.partitions!.find(run => run.state === 'running' && run.suite === 'unit'
       && run.computer?.hostRef.kind === 'cloud')!
@@ -354,7 +365,7 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
     f.computers.splice(0, f.computers.length, ...f.computers.filter(computer =>
       computer.key === part.plannedHostKey || (destination === 'cloud'
         ? computer.hostRef.kind === 'cloud' : computer.hostRef.kind !== 'cloud')))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
     expect(read.run).toMatchObject({ state: 'running', id: part.id, groupId: part.groupId,
       setupRetry: { reason, failedComputer: part.computer!.hostRef } })
@@ -378,7 +389,7 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
     f.runs.set(retry.runId, { ...f.runs.get(retry.runId)!, state: 'passed', exitCode: 0,
       finishedAt: new Date().toISOString() })
     f.computers.splice(0, f.computers.length, ...computers)
-    await f.ci.dispatch()
+    await settle(f.ci)
     await f.finishGate(started.ticketId)
     const completed = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
     expect(completed.run).toMatchObject({ state: 'passed', setupRetry: { reason } })
@@ -392,7 +403,7 @@ it('fails the gate on a second setup failure and does not retry a failure after 
     const started = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commandId: randomUUID(), commit: 'a'.repeat(40),
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     const parts = initial.partitions!.filter(run => run.state === 'running' && run.suite === 'unit'
       && run.computer?.hostRef.kind === 'cloud')
@@ -404,7 +415,7 @@ it('fails the gate on a second setup failure and does not retry a failure after 
         finishedAt: new Date().toISOString(), message: reason, testsStarted }
       f.runs.set(run.id, failed)
     }
-    await f.ci.dispatch()
+    await settle(f.ci)
     const retried = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
     expect(retried.run).toMatchObject({ state: 'running', setupRetry: { reason } })
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: other.id })).run)
@@ -413,11 +424,13 @@ it('fails the gate on a second setup failure and does not retry a failure after 
       && value.request.suite === part.suite && value.request.part === part.part)!.request
     if (request.operation !== 'start') throw new Error('Expected a retry start')
     expect(request.runId).not.toBe(part.id)
+    // No test started, so the executor has no results to report.
     const failed = { ...f.runs.get(request.runId)!, state: 'failed' as const, exitCode: 2,
-      finishedAt: new Date().toISOString(), message: 'Second setup failure', testsStarted: false }
+      finishedAt: new Date().toISOString(), message: 'Second setup failure', testsStarted: false,
+      collection: 'unsupported' as const }
     f.runs.set(request.runId, failed)
     const attempts = f.started.length
-    await f.ci.dispatch()
+    await settle(f.ci)
     const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
     expect(finished.run).toMatchObject({ state: 'failed', exitCode: 2,
       message: 'Second setup failure', setupRetry: { reason } })
@@ -441,7 +454,7 @@ it('keeps a draining build gate off cloud until the grace expires, then persists
     const hostShards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 16 * 2 ** 30 })
     const root = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
       suite: 'integration', part: null, partition: null, scope: 'full', files,
-      repository: 'octo/site', commit: 'a'.repeat(40), gate: true, noSupersede: true,
+      repository: 'octo/site', ciMirror: 'octo/site-ci', commit: 'a'.repeat(40), gate: true, noSupersede: true,
       plannedHostKey: 'builder-main', integrationShards: hostShards, expectedDurationMs: 300_000,
       priority: 'high', priorityReason: 'gate', state: 'queued', computer: null, step: null,
       exitCode: null, message: null, queuedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null,
@@ -450,12 +463,12 @@ it('keeps a draining build gate off cloud until the grace expires, then persists
       values($1,$2,$3,'queued',$4::jsonb,$5::jsonb)`,
     [root.id, root.workspaceId, root.groupId, JSON.stringify(root), JSON.stringify(durations)])
     clock.mockReturnValue(now + 90_000)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.started).toEqual([])
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id })).run)
       .toMatchObject({ state: 'queued', files, plannedHostKey: 'builder-main', integrationShards: hostShards })
     clock.mockReturnValue(now + 90_001)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id }))
     expect(read.partitions!.length).toBeGreaterThan(4)
     expect(read.partitions!.flatMap(run => run.files).sort()).toEqual([...files].sort())
@@ -487,7 +500,7 @@ it('persists gate check reassignment to an idle build computer through MCP when 
     expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const check = read.partitions!.find(run => run.suite !== 'integration' && run.state === 'running')!
     expect(check).toMatchObject({ state: 'running', plannedHostKey: expect.stringMatching(/^cloud-/),
@@ -532,12 +545,12 @@ it.each([false, true])('admits consecutive gates on different connections after 
     }
     const first = CiRunOutputSchema.parse(await f.value('ci_run', firstInput))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', firstInput))).toEqual(first)
-    await f.ci.dispatch()
+    await settle(f.ci)
     // Retain every existing connection so the second command cannot reenter a leaked session lock.
     while (pool.idleCount) held.push(await pool.connect())
     const second = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
     expect(second.ticketId).not.toBe(first.ticketId)
-    await f.ci.dispatch()
+    await settle(f.ci)
     for (const ticketId of [first.ticketId, second.ticketId]) {
       const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))
       expect(read.run).toMatchObject({ id: ticketId, gate: true })
@@ -562,7 +575,7 @@ it('admits one complete gate, denies a reader, and persists the plan and measure
     expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     expect(new Set(read.partitions!.map(run => run.suite))).toEqual(new Set(['typecheck', 'lint', 'unit', 'integration']))
     expect(read.partitions!.every(run => run.scope === 'full')).toBe(true)
@@ -598,7 +611,7 @@ it('admits a gate on the ready fleet when another build computer is disconnected
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     expect(read.gate!.computers.some(computer => computer.key === 'builder-paired')).toBe(false)
     expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
@@ -611,6 +624,7 @@ it('runs cloud checks before systemd integration overflow even when checks move 
   const unavailableKeys = new Set<string>()
   const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles], occupiedKeys, unavailableKeys })
   const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
+  vi.spyOn(f.ci, 'start').mockImplementation(() => {})
   const clock = vi.spyOn(Date, 'now')
   try {
     const input = {
@@ -620,14 +634,13 @@ it('runs cloud checks before systemd integration overflow even when checks move 
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
-    await f.ci.close()
     // Overflow is created after build computers drain and their dispatch grace expires.
     unavailableKeys.add('builder-main')
     unavailableKeys.add('builder-paired')
     occupiedKeys.clear()
     dispatch.mockRestore()
     clock.mockReturnValue(Date.now() + 90_001)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const overflow = read.partitions!.filter(run => run.suite === 'integration'
       && run.plannedHostKey?.startsWith('cloud-'))
@@ -671,7 +684,7 @@ it('queues full requests and a second gate behind the first while affected reque
       suite: 'lint', scope: 'affected', files: ['apps/web/src/site.tsx'], commandId: randomUUID(), commit: 'b'.repeat(40),
     }))
     const second = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: first.ticketId })).group?.state).toBe('running')
     for (const ticketId of [full.ticketId, second.ticketId]) {
       expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))).toMatchObject({
@@ -693,7 +706,7 @@ it.each([50, 10])('persists and dispatches a gate within a %i percent build allo
     const reader = await f.connect(true)
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
@@ -714,6 +727,8 @@ it('rechecks the build allowance when dispatching an already planned gate throug
   const files = ['apps/api/test/dev-startup.integration.test.ts', 'apps/api/test/ci-postgres-setup.integration.test.ts']
   const f = await fixture({ occupiedKeys, cloudSlots: 2, files })
   const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
+  vi.spyOn(f.ci, 'start').mockImplementation(() => {})
+  vi.useFakeTimers({ toFake: ['Date'] })
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
@@ -721,7 +736,9 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     occupiedKeys.add('builder-main')
     occupiedKeys.add('builder-paired')
     dispatch.mockRestore()
-    await f.ci.dispatch()
+    // Planning reuses a computer's readiness for a few seconds; let the admission snapshot expire.
+    vi.setSystemTime(Date.now() + 10_000)
+    await settle(f.ci)
     const queued = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const resources = { cpuCount: 16, memoryBytes: 16 * 2 ** 30 }
     const planned = queued.partitions!.filter(run => run.suite === 'integration'
@@ -736,7 +753,8 @@ it('rechecks the build allowance when dispatching an already planned gate throug
       Object.assign(computer, { buildAllowancePercent: 50 })
     }
     occupiedKeys.clear()
-    await f.ci.dispatch()
+    vi.setSystemTime(Date.now() + 10_000)
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
@@ -748,6 +766,7 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     }
   } finally {
     dispatch.mockRestore()
+    vi.useRealTimers()
     await f.close()
   }
 })

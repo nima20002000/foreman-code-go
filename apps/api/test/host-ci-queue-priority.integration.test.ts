@@ -6,6 +6,12 @@ import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
+/** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
+async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
+  await service.dispatch()
+  await service.drain()
+}
+
 it('prefers build computers and CircleCI over higher-priority GitHub slots for integration', async () => {
   const f = await fixture({ cloud: { github: 2, circleci: 2 } })
   try {
@@ -15,7 +21,7 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'integration', commandId: 'integration-preference', partitions: 4,
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(4)
     expect(read.partitions!.filter(run => run.computer?.hostRef.kind === 'device')).toHaveLength(2)
@@ -24,7 +30,7 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
     const fallback = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'integration', commandId: 'integration-fallback', partitions: 3,
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     const fallbackRead = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
     const hostSlice = fallbackRead.partitions!.find(run => run.partition!.index === 0)!
     expect(hostSlice).toMatchObject({ state: 'queued', computer: null,
@@ -32,9 +38,13 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
     expect(fallbackRead.partitions!.filter(run => run.id !== hostSlice.id).every(run => run.state === 'running'
       && run.computer?.hostRef.provider === 'github')).toBe(true)
     f.finish(read.partitions!.find(run => run.computer?.hostRef.kind === 'device')!.id, 0, 'Host slice completed.\n')
-    await f.ci.dispatch()
+    // Observations rotate through running tickets, so the finished slice is noticed within a few passes.
+    await expect.poll(async () => {
+      await settle(f.ci)
+      const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
+      return read.partitions!.every(run => run.state === 'running')
+    }, { timeout: 10_000 }).toBe(true)
     const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
-    expect(running.partitions!.every(run => run.state === 'running')).toBe(true)
     expect(running.partitions!.find(run => run.id === hostSlice.id))
       .toMatchObject({ computer: { hostRef: { kind: 'device' } }, message: null })
   } finally { await f.close() }
@@ -51,24 +61,25 @@ it.each(['typecheck', 'lint', 'build', 'unit'] as const)(
       const integration = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
         suite: 'integration', commandId: 'integration-backlog', partitions: 32,
       }))
-      await f.ci.dispatch()
+      await settle(f.ci)
       const checks = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
         suite, commandId: 'queued-checks',
       }))
-      await f.ci.dispatch()
+      await settle(f.ci)
       expect(f.started).toHaveLength(0)
       f.computers.push(...available)
-      await f.ci.dispatch()
+      await settle(f.ci)
       const dispatched = (await f.pool.query<{ record: unknown }>(
         'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
         [integration.ticketId])).rows
         .map(row => CiRunRecordSchema.parse(row.record))
-      expect(dispatched.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(16)
       const integrationRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
         ticketId: integration.ticketId,
       }))
       const checksRead = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: checks.ticketId }))
+      // Four slots stay reserved while checks wait; once every check part runs, integration may use the rest.
       const integrationLimit = checksRead.partitions!.some(run => run.state === 'queued') ? 16 : 18
+      expect(dispatched.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(integrationLimit)
       expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'github'))
         .toHaveLength(integrationLimit)
       expect(integrationRead.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')).toHaveLength(2)
@@ -80,7 +91,7 @@ it.each(['typecheck', 'lint', 'build', 'unit'] as const)(
       const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
         [checksRead.run.groupId])).rows
       expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(checksRead.partitions!))
-      await f.ci.dispatch()
+      await settle(f.ci)
       const next = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: integration.ticketId }))
       expect(next.partitions!.filter(run => run.computer?.hostRef.provider === 'github')).toHaveLength(integrationLimit)
     } finally { await f.close() }
@@ -93,14 +104,20 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
     const available = f.computers.splice(0)
     for (const commandId of ['integration-first', 'integration-second']) {
       await f.value(f.operator, 'ci_run', { suite: 'integration', commandId, partitions: 32 })
-      await f.ci.dispatch()
+      await settle(f.ci)
     }
     const checks = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'typecheck', commandId: 'typecheck-after-backlog',
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     f.computers.push(...available)
-    await f.ci.dispatch()
+    await settle(f.ci)
+    // Observations rotate through running tickets; wait until the typecheck parts have been observed.
+    await expect.poll(async () => {
+      await settle(f.ci)
+      const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: checks.ticketId }))
+      return read.partitions!.every(run => run.observation?.status === 'available')
+    }, { timeout: 10_000 }).toBe(true)
     const stored = (await f.pool.query<{ record: unknown }>(
       'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
       [checks.ticketId])).rows.map(row => CiRunRecordSchema.parse(row.record))
@@ -208,7 +225,7 @@ it('shows priority and global queue position through MCP and admits high tickets
     expect((await f.call(denied, 'ci_run', { suite: 'install', commandId: 'denied-high', priority: 'high' })).isError)
       .toBe(true)
     f.computers.push(available[0]!)
-    await f.ci.dispatch()
+    await settle(f.ci)
     expect(f.started).toHaveLength(1)
     expect(f.started[0]?.request).toMatchObject({ runId: high.ticketId })
     const admitted = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: high.ticketId }))
@@ -229,9 +246,9 @@ it('lets high integration tickets use cloud slots reserved for normal checks', a
       files: ['apps/api/test/first.integration.test.ts', 'apps/api/test/second.integration.test.ts'],
       commandId: 'high-integration', priority: 'high',
     }))
-    await f.ci.dispatch()
+    await settle(f.ci)
     f.computers.push(...available)
-    await f.ci.dispatch()
+    await settle(f.ci)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: integration.ticketId }))
     expect(read.partitions!.every(run => run.priority === 'high' && run.state === 'running')).toBe(true)
     expect(f.started).toHaveLength(2)

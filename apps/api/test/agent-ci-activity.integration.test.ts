@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
   type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
@@ -16,10 +16,12 @@ import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
+import { ciActivityRunLockMigration } from '../src/infrastructure/ciActivityRunLockMigration.js'
 import { changeRunState, graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
@@ -106,7 +108,9 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
   const credentials = new Wave25WorkerCredentialService(database.pool, graph.access)
   const worker = await credentials.issueForExecution(executionId)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: graph.access, interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands) },
+    appMcp: { access: graph.access, commands: graph.commands,
+      interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands),
+      bugReports: new BugReportService(database.pool, graph.commands) },
     operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci } as never } })
   const reader = await graph.credential([{ actions: ['runs:read'], scope: { runIds: [graph.run.id] } }])
   const denied = await graph.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
@@ -126,6 +130,7 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
       suite: 'integration', commandId: randomUUID(), ...input,
     }))
     await ci.dispatch()
+    await ci.drain()
     return started
   }
   const activity = async (page: { cursor?: string; limit?: number } = {}) =>
@@ -135,6 +140,7 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
     await value(reader.token, 'run_board_snapshot_get', boardInput))
   const get = async (ticketId: string) => {
     await ci.dispatch()
+    await ci.drain()
     return CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
   }
   const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost', tests?: CiTestResults) => {
@@ -184,6 +190,8 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
 const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })
 
 describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
+  afterEach(() => { vi.useRealTimers() })
+
   it('lets another node read and cancel workspace CI tickets while a node without ci_get is denied', async () => {
     const f = await fixture({ form: 'parallel', deniedCiReader: true })
     try {
@@ -209,6 +217,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const denied = await f.credentials.issueForExecution(deniedExecutionId)
       const deniedToken = denied.environment.variables.GRAPHQL_MCP_TOKEN!
       const catalog = await graphRpc(f.app, deniedToken, 'tools/list')
+      expect(catalog.error).toBeUndefined()
       expect(catalog.result?.tools?.map(tool => tool.name)).not.toContain('ci_get')
       const blocked = await f.call(deniedToken, 'ci_get', input)
       expect(blocked.result?.isError).toBe(true)
@@ -443,6 +452,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(await stored(ticket.ticketId)).toBeNull()
       expect((await f.board()).activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
       await f.database.pool.query('alter table ci_runs drop constraint ci_results_blocked')
+      // The failed collection backs off before the next attempt.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(Date.parse(pending.run.observation!.nextAttemptAt!) + 1)
       expect((await f.get(ticket.ticketId)).run).toMatchObject({
         state: 'passed', exitCode: 0, finishedAt: pending.run.finishedAt, collection: 'complete',
       })
@@ -586,7 +598,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
   }, 120000)
 
   it('observes retained Host CI once without inventing earlier transitions', async () => {
-    const f = await fixture({ deferMigration: [hostCiActivityMigration.version, databaseHotQueriesMigration.version] })
+    // The run-lock migration replaces the function the host CI migration creates, so it defers with it.
+    const f = await fixture({ deferMigration: [hostCiActivityMigration.version, ciActivityRunLockMigration.version,
+      databaseHotQueriesMigration.version] })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])
