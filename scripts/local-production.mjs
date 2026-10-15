@@ -20,6 +20,7 @@ import {
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
   needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot, buildProductionSource,
   backupDatabase, restoreDatabase, readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
+  measureProductionStep,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -77,7 +78,7 @@ async function configureEnvironment(buildSource) {
   return environment
 }
 
-async function stageRelease({ source: buildSource, commit }, runBuild) {
+async function stageRelease({ source: buildSource, commit }, runBuild, previousRelease) {
   const releases = join(app, 'releases')
   await mkdir(releases, { recursive: true, mode: 0o700 })
   const release = await mkdtemp(join(releases, 'release-'))
@@ -108,9 +109,9 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
     // Devices wait for the background publisher to verify GitHub assets before selecting this Worker target.
-    await buildWorkerReleaseArtifacts({ repository: buildSource, expectedCommit: commit,
+    await measureProductionStep('Worker artifacts', () => buildWorkerReleaseArtifacts({ repository: buildSource, expectedCommit: commit,
       directory: join(release, 'worker-artifacts'), productManifestPath: join(release, 'package.json'),
-      run: runBuild })
+      previousDirectory: previousRelease ? join(previousRelease, 'worker-artifacts') : undefined, run: runBuild }))
     const provenance = { api: commit, web: commit, contracts: commit, worker: commit }
     await publish(join(release, 'source.json'), JSON.stringify(provenance) + '\n')
     return release
@@ -270,9 +271,17 @@ async function install(timeoutMs) {
   await withProductionSourceSnapshot(source, join(state, 'builds'), async snapshot => {
     const runBuild = (command, args, options = {}) => run(command, args, { cwd: snapshot.source, ...options })
     await runBuild('corepack', ['pnpm', 'install', '--frozen-lockfile'])
-    await buildProductionSource(runBuild)
-    const environment = await configureEnvironment(snapshot.source)
-    const release = await stageRelease(snapshot, runBuild)
+    let release
+    let environment
+    try {
+      await buildProductionSource(runBuild, { stage: async () => {
+        release = await stageRelease(snapshot, runBuild, previousRelease)
+      } })
+      environment = await configureEnvironment(snapshot.source)
+    } catch (error) {
+      if (release) await removeUninstalledRelease(release, current)
+      throw error
+    }
     await finishInstallation({ release, previousRelease, firstInstall, environment, snapshot, timeoutMs })
   })
 }

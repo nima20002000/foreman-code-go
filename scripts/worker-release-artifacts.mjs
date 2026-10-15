@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -108,6 +108,56 @@ async function verifyArtifact(directory, target, version, commit) {
   return { manifestSha256: sha256(bytes), contentSha256: workerArtifactContentSha256(manifest) }
 }
 
+async function readPreviousArtifacts(directory) {
+  if (!directory) return []
+  try {
+    const index = JSON.parse(await readFile(join(directory, 'index.json'), 'utf8'))
+    if (!Array.isArray(index.artifacts)) throw new Error('Worker artifact index is invalid')
+    return index.artifacts
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn(`Worker artifact cache unavailable: ${error.message}`)
+    return []
+  }
+}
+
+const targetKey = target => [target.os, target.osRelease, target.arch, target.libc, target.node].join('/')
+
+function committedBlobIds(repository, commit) {
+  const tree = execFileSync('git', ['ls-tree', '-rz', commit], { cwd: repository, encoding: 'utf8' })
+  return new Map(tree.split('\0').filter(Boolean).map(entry => {
+    const [metadata, path] = entry.split('\t')
+    return [path, metadata.split(' ')[2]]
+  }))
+}
+
+async function reuseWorkerArtifact({ previousDirectory, previousArtifacts, path, target, version, commit, blobs, staging }) {
+  const retained = previousArtifacts.find(artifact => artifact.target && targetKey(artifact.target) === targetKey(target))
+  if (!retained || !/^[a-f0-9]{64}$/.test(retained.manifestSha256)) return false
+  try {
+    const directory = join(previousDirectory, retained.manifestSha256)
+    const bytes = await readFile(join(directory, 'manifest.json'))
+    if (sha256(bytes) !== retained.manifestSha256) throw new Error('Worker manifest checksum mismatch')
+    const manifest = JSON.parse(bytes)
+    const snapshot = manifest.sourceSnapshot
+    const required = ['package.json', 'pnpm-lock.yaml', 'scripts/build-worker-artifact.mjs', path]
+    if (!snapshot || snapshot.commit !== manifest.commit || !Array.isArray(snapshot.files)
+      || !required.every(path => snapshot.files.some(file => file.path === path))
+      || !snapshot.files.every(file => blobs.has(file.path) && blobs.get(file.path) === file.gitBlobSha1)) return false
+    const identity = await verifyArtifact(directory, target, version, manifest.commit)
+    if (identity.contentSha256 !== retained.contentSha256) throw new Error('Worker content identity mismatch')
+    await cp(directory, staging, { recursive: true })
+    // Payload bytes are unchanged; each release still records its own captured commit.
+    const updated = { ...manifest, commit, sourceSnapshot: { ...snapshot, commit } }
+    await writeFile(join(staging, 'manifest.json'), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 })
+    console.log(JSON.stringify({ operation: 'reuse Worker artifact', target: targetKey(target) }))
+    return true
+  } catch (error) {
+    console.warn(`Worker artifact cache unavailable for ${targetKey(target)}: ${error.message}`)
+    await rm(staging, { recursive: true, force: true })
+    return false
+  }
+}
+
 function githubErrorReason(error) {
   return `${error.message ?? ''} ${error.stderr ?? ''}`
 }
@@ -193,7 +243,7 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
 }
 
 export async function buildWorkerReleaseArtifacts({
-  repository, directory, productManifestPath, run, publish, expectedCommit,
+  repository, directory, productManifestPath, run, publish, expectedCommit, previousDirectory,
 }) {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim()
   if (expectedCommit !== undefined && commit !== expectedCommit) {
@@ -204,6 +254,8 @@ export async function buildWorkerReleaseArtifacts({
   assertWorkerUpdateToolchain(product)
   const version = workerReleaseVersion(product)
   const targets = readCommittedWorkerTargets(repository, commit)
+  const previousArtifacts = await readPreviousArtifacts(previousDirectory)
+  const blobs = previousArtifacts.length ? committedBlobIds(repository, commit) : undefined
   await mkdir(directory, { mode: 0o700 })
   try {
     // Targets build independently; all of them settle before a failure removes the shared storage.
@@ -211,10 +263,14 @@ export async function buildWorkerReleaseArtifacts({
       const staging = await mkdtemp(join(directory, '.build-'))
       // The builder requires a fresh directory that it creates itself.
       await rm(staging, { recursive: true })
-      await run(process.execPath, ['scripts/build-worker-artifact.mjs', path, staging], {
-        cwd: repository,
-        env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },
-      })
+      const reused = previousArtifacts.length && await reuseWorkerArtifact({ previousDirectory, previousArtifacts,
+        path, target, version, commit, blobs, staging })
+      if (!reused) {
+        await run(process.execPath, ['scripts/build-worker-artifact.mjs', path, staging], {
+          cwd: repository,
+          env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },
+        })
+      }
       const identity = await verifyArtifact(staging, target, version, commit)
       await chmod(staging, 0o700)
       await rename(staging, join(directory, identity.manifestSha256))
