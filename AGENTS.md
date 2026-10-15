@@ -72,6 +72,14 @@ Do not duplicate one state source in another layer without a documented reason.
 
 ## Verification
 
+Coding agents may run explicitly named API `*.light.test.ts` files with
+`vitest.light.config.mjs`, one worker and one database command per machine under
+the shared `~/.cache/foreman-tmp/foreman-light-db.lock` lock. Follow the exact
+command in [test isolation](docs/test-isolation.md#lightweight-database-tests-for-coding-agents).
+Do not start PostgreSQL or containers for these tests. Tests requiring multiple
+connections or real server/process behavior stay on the existing PostgreSQL
+verification path; they are not eligible for the light fixture.
+
 From the repository root, use the pinned pnpm runtime. Plain npm installs are
 blocked because they bypass the strict 48-hour package-release-age policy.
 Run:

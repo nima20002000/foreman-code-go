@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { env } from 'node:process'
 
 const configuredWorkers = env.FOREMAN_CODE_VERIFICATION_UNIT_WORKERS
@@ -10,8 +10,17 @@ if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 256) {
 export default defineConfig({
   test: {
     ...(env.CI_PROGRESS_FILE ? { runner: '../../packages/contracts/ci-test-runner.mjs', reporters: ['default', '../../scripts/ci-progress-reporter.mjs'] } : {}),
-    globalSetup: ['../../scripts/vitest-heavy-setup.mjs', '../../scripts/vitest-test-resources.mjs'],
-    setupFiles: ['./test/setupResources.ts'],
+    projects: [
+      {
+        test: {
+          name: 'api',
+          exclude: [...configDefaults.exclude, '**/*.light.test.ts'],
+          globalSetup: ['../../scripts/vitest-heavy-setup.mjs', '../../scripts/vitest-test-resources.mjs'],
+          setupFiles: ['./test/setupResources.ts'],
+        },
+      },
+      './vitest.light.config.mjs',
+    ],
     // Leave CPU headroom for the Vitest coordinator and application processes.
     maxWorkers,
     // Many cases start real processes, Postgres sessions or MCP servers; under a full gate the 5 s default
