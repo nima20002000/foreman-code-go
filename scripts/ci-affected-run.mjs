@@ -78,23 +78,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const code = await run(['corepack', 'pnpm', '--filter', '@foreman-code/contracts', 'build'])
     if (code) process.exit(code)
   }
-  // With TEST_RESULTS_OUTPUT, each Vitest command also writes a JSON report; together they become the results.
+  // With TEST_RESULTS_OUTPUT, each Vitest and Node test command also writes a JSON report; together they become the results.
   const output = suite === 'unit' && process.env.TEST_RESULTS_OUTPUT ? resolve(process.env.TEST_RESULTS_OUTPUT) : null
   const reports = []
   for (const command of commands) {
-    const report = output && command.includes('vitest') ? `${output}.${reports.length}.vitest.json` : null
+    const nodeTest = command.includes('--test')
+    const report = output && (command.includes('vitest') || nodeTest) ? `${output}.${reports.length}.report.json` : null
     if (report) reports.push(report)
     const progressReporter = command.includes('vitest') && process.env.CI_PROGRESS_FILE
       ? [`--reporter=${resolve('scripts/ci-progress-reporter.mjs')}`] : []
-    let reported = report
+    let reported = report && !nodeTest
       ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`, ...progressReporter]
       : [...command, ...(progressReporter.length ? ['--reporter=default', ...progressReporter] : [])]
-    if (command.includes('--test') && process.env.CI_PROGRESS_FILE) {
+    if (nodeTest && (report || process.env.CI_PROGRESS_FILE)) {
       reported = command.flatMap(argument => argument === '--test' ? [argument,
         '--test-reporter=spec', '--test-reporter-destination=stdout',
         `--test-reporter=${resolve('scripts/ci-node-test-reporter.mjs')}`,
         // Node flushes file destinations with fsync, which fails on character devices.
-        `--test-reporter-destination=${resolve(`${process.env.CI_PROGRESS_FILE}.node-report.json`)}`] : [argument])
+        `--test-reporter-destination=${report ?? resolve(`${process.env.CI_PROGRESS_FILE}.node-report.json`)}`] : [argument])
     }
     const code = await run(reported)
     if (code) { process.exitCode = code; break }
