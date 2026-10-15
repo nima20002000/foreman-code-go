@@ -12,7 +12,9 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
   it('waits for Foreman Code MCP at turn start and then completes', async () => {
     fixture.launch()
     await readUntil(fixture.mcpInspections, count => count > 0,
-      { timeoutMs: 4_000, description: 'the unavailable Foreman Code MCP inspection' })
+      { timeoutMs: 4_000, get description() {
+        return `the unavailable Foreman Code MCP inspection: ${fixture.startupDescription}`
+      } })
     const before = await fixture.read()
     expect(before.executions.filter(execution => execution.workflowNodeId === fixture.affected.id)
       .every(execution => !fixture.worker.replay.starts.some(turn =>

@@ -159,12 +159,14 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       expect(response.statusCode, response.body).toBe(200)
       return SavedRunDetailsSchema.parse(response.json())
     }
+    let startupDescription = ''
     const readStartup = async () => {
       if (preparationFailure) throw preparationFailure.error
       const details = await read()
+      startupDescription = canonicalGraphJson({ executions: details.executions,
+        failures: readOperationalFailures(), nativeCalls: worker.replay.calls.slice(-10) })
       const failed = details.executions.find(execution => execution.result?.outcome === 'failed')
-      expect(failed?.result, canonicalGraphJson({ result: failed?.result ?? null,
-        failures: readOperationalFailures(), nativeCalls: worker.replay.calls.slice(-10) })).toBeUndefined()
+      expect(failed?.result, startupDescription).toBeUndefined()
       return details
     }
     const completed = new Set<string>()
@@ -186,6 +188,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     let started: Promise<PromiseSettledResult<void>[]> | undefined
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
+      get startupDescription() { return startupDescription },
       async mcpInspections() { await readStartup(); return unavailableInspections },
       makeMcpReady() { mcpReady = true },
       launch() { started = Promise.allSettled([base.engine.start(base.f.run.id)]) },
@@ -195,7 +198,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         && details.activity.some(activity => activity.payload.nativeEventType === 'turn.started'
           && details.executions.some(execution => execution.id === activity.harnessExecutionId
             && execution.workflowNodeId === affected.id)),
-      { timeoutMs: 4_000, description: 'remote Agent turn admission' }),
+      { timeoutMs: 4_000, get description() { return `remote Agent turn admission: ${startupDescription}` } }),
       async finished() {
         const details = await readUntil(read, value => value.run.executionState === 'completed'
           && value.cleanupPending === false, { timeoutMs: 8_000, description: 'terminal Run readback' })
