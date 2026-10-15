@@ -98,6 +98,8 @@ const WorkerArtifactGitHubSchema = z.object({
 export const WorkerArtifactIndexSchema = z.object({
   format: z.literal(1),
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+  /** Installed release provenance; retained bundles keep their original build manifest. */
+  commit: z.string().regex(/^[a-f0-9]{40}$/u).optional(),
   github: WorkerArtifactGitHubSchema.optional(),
   /** Published only after every GitHub asset has been downloaded and checksum verified. */
   publication: WorkerPublicationFieldsSchema.optional(),
@@ -109,6 +111,8 @@ export const WorkerArtifactIndexSchema = z.object({
     target: WorkerArtifactTargetSchema,
     manifestSha256: digest,
     contentSha256: digest.optional(),
+    /** Verified publication retained when this target's bundle is unchanged. */
+    github: WorkerArtifactGitHubSchema.optional(),
   }).strict()).max(100),
 }).strict()
 
