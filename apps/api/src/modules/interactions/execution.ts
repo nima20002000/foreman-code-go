@@ -3045,8 +3045,9 @@ export class ApprovalExecutionCoordinator {
     const sessionWithoutTurn = observation.repeatLaunch && observation.ownedSession?.session && !observation.nativeTurnOffered
     const activeTimeout = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
     // A persisted budget check can detect expiry before the deadline timer fires.
+    // Only a non-waiting attempt is abandoned for a transient failure; a waiting one is recovered, never fenced for it.
     if (!observation.signal.aborted && !activeTimeout && !(rawError instanceof HarnessExecutionError)
-      && !sessionWithoutTurn && !isTransientExecutionError(error)) {
+      && !sessionWithoutTurn && !(isTransientExecutionError(error) && observation.execution.state !== 'waiting')) {
       input.owner.assertOwned()
       if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(observation.execution.id)
       input.owner.assertOwned()
