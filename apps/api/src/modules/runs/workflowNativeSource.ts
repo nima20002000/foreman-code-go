@@ -50,7 +50,8 @@ export async function persistWorkflowNativeSources(sql: GraphTransactionSql,
     if (!previous) distinct.set(record.proofId, record)
   }
   const rows = await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string; identity_digest: string }>(
-    'select record,source_digest,identity_digest from workflow_native_proofs where proof_id=any($1::text[]) for share',
+    // Database triggers reject changes to retained sources; replay needs no row lock.
+    'select record,source_digest,identity_digest from workflow_native_proofs where proof_id=any($1::text[])',
     [[...distinct.keys()]])
   const saved = new Map(rows.rows.map((row) => [row.record.proofId, row]))
   const inserts = []
