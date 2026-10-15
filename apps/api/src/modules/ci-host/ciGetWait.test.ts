@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
 import Fastify from 'fastify'
-import { CiRunRecordSchema, CiGetOutputSchema, CiGetInputSchema, OperatorCiGetInputSchema } from '@foreman-code/contracts'
+import { CI_WAIT_MAX_SECONDS, CiRunRecordSchema, CiGetOutputSchema, CiGetInputSchema, OperatorCiGetInputSchema }
+  from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -14,7 +15,10 @@ import { DomainError } from '../errors.js'
 import { CI_GET_ACTIONS, type CiAuthority } from '../jobs/ciAuthority.js'
 import { HostCiService, type CiCommits, type HostCiEndpoint } from './service.js'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 function fixture() {
   const caller: ManagementPrincipal = {
@@ -66,7 +70,7 @@ function fixture() {
     record = CiRunRecordSchema.parse({ ...record, ...changes })
     if (before.state !== record.state || before.step !== record.step) {
       client.emit('notification', { channel: 'ci_ticket_changed',
-        payload: JSON.stringify({ workspaceId: record.workspaceId, ticketId: record.id }) })
+        payload: JSON.stringify({ workspaceId: record.workspaceId, ticketId: record.id, groupId: record.groupId }) })
     }
   }
   return { app, call, rpc, ci, create, services, caller, pool, client, query, endpoint, persist,
@@ -84,7 +88,7 @@ it('accepts bounded waitSeconds and optional logTail for both MCP roles', () => 
     expect(schema.safeParse(scoped).success).toBe(true)
     expect(schema.safeParse({ ...scoped, waitSeconds: 0 }).success).toBe(true)
     expect(schema.safeParse({ ...scoped, waitSeconds: 0.1 }).success).toBe(true)
-    for (const waitSeconds of [-1, 301, '10']) {
+    for (const waitSeconds of [-1, CI_WAIT_MAX_SECONDS + 1, '10']) {
       expect(schema.safeParse({ ...scoped, waitSeconds }).success).toBe(false)
     }
   }
@@ -233,7 +237,72 @@ it('describes waiting and tail omission in Operator discovery and tools/list', a
     const response = await f.rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
     const message = JSON.parse(response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
     const tool = message.result.tools.find((entry: { name: string }) => entry.name === 'ci_get')
-    expect(tool.inputSchema.properties.waitSeconds).toMatchObject({ minimum: 0, maximum: 300 })
+    expect(tool.inputSchema.properties.waitSeconds).toMatchObject({ minimum: 0, maximum: CI_WAIT_MAX_SECONDS })
     expect(tool.inputSchema.properties.logTail.type).toBe('boolean')
+  } finally { await f.close() }
+})
+
+it('accepts only the group-terminal wait mode for both MCP roles', () => {
+  for (const schema of [CiGetInputSchema, OperatorCiGetInputSchema]) {
+    const scoped = schema === CiGetInputSchema ? { ticketId: 'ticket' } : { workspaceId: 'workspace', ticketId: 'ticket' }
+    expect(schema.safeParse({ ...scoped, waitUntil: 'group-terminal', waitSeconds: 300 }).success).toBe(true)
+    expect(schema.safeParse({ ...scoped, waitUntil: 'ticket', waitSeconds: 300 }).success).toBe(false)
+  }
+})
+
+it('advertises the group-terminal wait in the ci_get schema and description', async () => {
+  const f = fixture()
+  try {
+    const response = await f.rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    const message = JSON.parse(response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+    const tool = message.result.tools.find((entry: { name: string }) => entry.name === 'ci_get')
+    expect(JSON.stringify(tool.inputSchema.properties.waitUntil)).toContain('group-terminal')
+    expect(tool.description).toContain('waitUntil')
+  } finally { await f.close() }
+})
+
+it('refuses a group-terminal wait from an ungranted MCP caller before reading the group', async () => {
+  const f = fixture()
+  try {
+    const denied = await f.call({ waitUntil: 'group-terminal', waitSeconds: 300 }, 1, 'denied')
+    expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
+    expect(f.pool.connect).not.toHaveBeenCalled()
+    expect(f.query).not.toHaveBeenCalled()
+  } finally { await f.close() }
+})
+
+it.each([{}, { waitUntil: 'group-terminal' as const }])(
+  'answers a long %j wait within one 60-second chunk, below the bridge and relay deadlines', async mode => {
+    const f = fixture()
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      let settled = false
+      const pending = f.ci.get(f.caller, { workspaceId: 'workspace', ticketId: f.read().id, logTail: false,
+        waitSeconds: CI_WAIT_MAX_SECONDS, ...mode }).then(result => { settled = true; return result })
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(settled).toBe(true)
+      const result = await pending
+      expect(result.run.state).toBe('running')
+      if (mode.waitUntil) expect(result).toMatchObject({ wait: { status: 'still-running', tickets: 1, settledTickets: 0 } })
+    } finally { await f.close() }
+  })
+
+it('settles a one-ticket group wait only after its results are collected', async () => {
+  const f = fixture()
+  try {
+    let settled = false
+    const pending = f.call({ waitUntil: 'group-terminal', waitSeconds: 30, logTail: false })
+      .then(result => { settled = true; return result })
+    await pause(100)
+    f.persist({ state: 'passed', exitCode: 0, collection: 'pending' })
+    await pause(100)
+    expect(settled).toBe(false)
+    f.persist({ collection: 'complete' })
+    f.client.emit('notification', { channel: 'ci_ticket_changed',
+      payload: JSON.stringify({ workspaceId: 'workspace', ticketId: f.read().id, groupId: f.read().groupId }) })
+    expect(value(await pending)).toMatchObject({ run: { state: 'passed', collection: 'complete' },
+      wait: { until: 'group-terminal', status: 'settled', tickets: 1, settledTickets: 1 } })
   } finally { await f.close() }
 })

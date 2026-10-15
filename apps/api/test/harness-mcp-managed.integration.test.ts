@@ -171,7 +171,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         const name = preset === 'graphql' ? 'foreman-code' : preset
         const original = structuredClone(snapshots[harness].user[name])
         if (preset === 'graphql') {
-          expect(original).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 120 })
+          expect(original).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 1980 })
           expect(JSON.parse(await readFile(file, 'utf8'))[name]).toEqual(original)
         }
         for (const enabled of [false, true]) {
@@ -244,7 +244,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
       expect(snapshots[harness].user['foreman-code']).toMatchObject({ command: process.execPath,
         args: [workerLauncher], enabled: false, disabled_tools: ['interaction_respond'],
-        startup_timeout_sec: 60, tool_timeout_sec: 120 })
+        startup_timeout_sec: 60, tool_timeout_sec: 1980 })
       expect(JSON.parse(await readFile(file, 'utf8'))['foreman-code'])
         .toEqual(snapshots[harness].user['foreman-code'])
     }
