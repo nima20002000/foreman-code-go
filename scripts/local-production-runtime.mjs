@@ -9,7 +9,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { readProductEnvironment, resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { productionMaintenanceKey } from '../packages/contracts/src/productionMaintenance.mjs'
-import { isBackwardCompatibleSchema } from './production-schema.mjs'
 
 export function parseRunWaitMinutes(value) {
   const minutes = value === undefined ? 120 : Number(value)
@@ -137,34 +136,6 @@ export async function buildProductionSource(run, { stage = async () => undefined
   return results[1].value
 }
 
-export async function backupDatabase({ archive, database, run }) {
-  const file = await open(archive, 'wx', 0o600)
-  try {
-    // lz4 halves the stopped-API window against the default gzip level, which is CPU-bound on large tables.
-    await run('pg_dump', ['--format=custom', '--compress=lz4', '--create', '--dbname', database],
-      { stdio: ['ignore', file.fd, 'inherit'] })
-    await file.sync()
-  } finally {
-    await file.close()
-  }
-}
-
-export async function restoreDatabase({ archive, database, run }) {
-  // A client-side migration timeout leaves its statement running on the server, and any open session makes the
-  // DROP DATABASE inside pg_restore fail, leaving production down. The API is stopped, so end the remaining sessions.
-  if (!/^[a-z_][a-z0-9_]*$/.test(database)) throw new Error('Database name must be a plain identifier.')
-  await run('psql', ['--dbname', 'postgres', '--set', 'ON_ERROR_STOP=1', '--command',
-    `select pg_terminate_backend(pid) from pg_stat_activity where datname = '${database}' and pid <> pg_backend_pid()`])
-  const file = await open(archive, 'r')
-  try {
-    // Recreate the database so objects introduced by a failed migration are removed too.
-    await run('pg_restore', ['--clean', '--if-exists', '--create', '--exit-on-error', '--dbname', 'postgres'],
-      { stdio: [file.fd, 'inherit', 'inherit'] })
-  } finally {
-    await file.close()
-  }
-}
-
 export async function findPendingMigrations({ migrations, query }) {
   const { rows } = await query("select to_regclass('application_migrations') is not null as present")
   if (!rows[0].present) return migrations.map(migration => migration.version)
@@ -202,19 +173,13 @@ async function saveDeployment(stateFile, state, phase) {
 export async function recoverReleaseCutover({ stateFile, steps }) {
   const state = await readDeployment(stateFile)
   if (!state || ['ready', 'recovered'].includes(state.phase)) return
-  if (state.apiMayHaveStopped === false && !state.schemaMayHaveChanged) {
+  if (state.apiMayHaveStopped === false) {
     await saveDeployment(stateFile, state, 'recovered')
     return
   }
   try {
     await saveDeployment(stateFile, state, 'recovering')
     await steps.stop()
-    if (state.schemaMayHaveChanged && !(state.migrationComplete && state.backwardCompatible)) {
-      if (!state.backupComplete) throw new Error('No complete pre-migration database backup is available.')
-      await steps.restore(state.backupFile)
-      state.schemaMayHaveChanged = false
-      await saveDeployment(stateFile, state, 'database-restored')
-    }
     await steps.activate(state.previousRelease)
     if (state.previousRelease) {
       await steps.start()
@@ -236,9 +201,8 @@ export async function recoverReleaseCutover({ stateFile, steps }) {
   }
 }
 
-export async function runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }) {
-  const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false,
-    migrationComplete: false, backwardCompatible: false, apiMayHaveStopped: false }
+export async function runReleaseCutover({ release, previousRelease, stateFile, steps }) {
+  const state = { release, previousRelease, apiMayHaveStopped: false }
   let recoveryAttempted = false
   const perform = async (phase, action) => {
     await saveDeployment(stateFile, state, phase)
@@ -258,22 +222,10 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
   try {
     await saveDeployment(stateFile, state, 'checking-migrations')
     const pendingMigrations = await measureProductionStep('checking-migrations', () => steps.pendingMigrations(release))
-    let schemaBefore
     state.apiMayHaveStopped = true
     await perform('stopping', steps.stop)
     if (pendingMigrations.length) {
-      await perform('backing-up', () => steps.backup(backupFile))
-      state.backupComplete = true
-      await saveDeployment(stateFile, state, 'backed-up')
-      schemaBefore = await steps.schema?.(release)
-    }
-    if (pendingMigrations.length) {
-      state.schemaMayHaveChanged = true
       await perform('migrating', () => steps.migrate(release))
-      state.migrationComplete = true
-      if (schemaBefore) {
-        state.backwardCompatible = isBackwardCompatibleSchema(schemaBefore, await steps.schema(release))
-      }
       await saveDeployment(stateFile, state, 'migrated')
     }
     await perform('upgrading-launcher', () => steps.upgradeLauncher(release))
@@ -290,7 +242,6 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
       await measureProductionStep('checking-readiness', () => steps.ready(release))
     }
     await saveDeployment(stateFile, state, 'ready')
-    await rm(backupFile, { force: true })
   } catch (error) {
     if (!recoveryAttempted) await rollback(error)
     throw error
@@ -780,14 +731,6 @@ export async function readActiveRuns(release, databaseUrl, wait) {
 export async function withRunStartMaintenance(pool, action, { timeoutMs = 30_000, pollMs = 100 } = {}) {
   const client = await pool.connect()
   const closed = new Promise(resolve => client.once('end', resolve))
-  let released = false
-  const release = () => {
-    if (released) return closed
-    released = true
-    // Destroy the session so database recreation is possible during recovery.
-    client.release(true)
-    return closed
-  }
   try {
     const deadline = Date.now() + timeoutMs
     for (;;) {
@@ -799,9 +742,11 @@ export async function withRunStartMaintenance(pool, action, { timeoutMs = 30_000
       if (Date.now() >= deadline) throw new Error('Run publication is still in progress. Retry installation later.')
       await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())))
     }
-    return await action(text => client.query(text), release)
+    return await action(text => client.query(text))
   } finally {
-    await release()
+    // Destroy the session to release the maintenance lock before installation completes.
+    client.release(true)
+    await closed
   }
 }
 
