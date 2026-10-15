@@ -32,6 +32,7 @@ it.each([0, 1])('persists a finished integration report through MCP for exit cod
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
       ticketId: started.ticketId, testStatus: ['passed', 'failed', 'skipped'],
+      waitUntil: 'group-terminal', waitSeconds: 10,
     }))
     expect(read.tests).toEqual({ summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false })
     expect(read.run).toMatchObject({ state: exitCode === 0 ? 'passed' : 'failed', collection: 'complete' })
@@ -52,7 +53,9 @@ it('learns integration file durations from finished runs and hands every partiti
     expect(startedDurations()).toEqual([undefined, undefined])
     f.finish(first.partitions![0]!.ticketId, 0, 'ok\n', { [file('a')]: 1000, [file('b')]: 2000 })
     f.finish(first.partitions![1]!.ticketId, 1, 'FAIL\n', { [file('c')]: 3000 })
-    const completed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: first.ticketId }))
+    const completed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: first.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    }))
     expect(completed.group!.state).toBe('failed')
     expect(completed.partitions!.every(run => run.collection === 'complete')).toBe(true)
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
@@ -65,7 +68,11 @@ it('learns integration file durations from finished runs and hands every partiti
     // A slower measurement moves the expectation halfway.
     f.finish(second.partitions![0]!.ticketId, 0, 'ok\n', { [file('a')]: 3000 })
     f.finish(second.partitions![1]!.ticketId, 0, 'ok\n')
-    await f.ci.dispatch()
+    const secondCompleted = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: second.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    }))
+    expect(secondCompleted.group!.state).toBe('passed')
+    expect(secondCompleted.partitions!.every(run => run.collection === 'complete')).toBe(true)
     expect((await f.pool.query(`select file,duration_ms,samples from ci_file_durations where repository='octo/site'
       order by file`)).rows).toEqual([{ file: file('a'), duration_ms: 2000, samples: 2 },
       { file: file('b'), duration_ms: 2000, samples: 1 }, { file: file('c'), duration_ms: 3000, samples: 1 }])
@@ -105,7 +112,9 @@ it.each(['full', 'affected'] as const)('automatically sizes %s integration via M
     expect(stored).toEqual(expect.arrayContaining(read.partitions!))
     for (const run of read.partitions!) f.finish(run.id, 0, 'passed')
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).group?.state)
+    expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    })).group?.state)
       .toBe('passed')
   } finally { await f.close() }
 })

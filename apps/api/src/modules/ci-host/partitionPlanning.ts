@@ -15,7 +15,7 @@ export async function weighCiPartitions(pool: pg.Pool, endpoint: HostCiEndpoint,
   read: (id: string, workspaceId: string) => Promise<CiRunRecord>): Promise<CiRunRecord[]> {
   const groupIds = [...new Set(queued.filter(run => run.suite === 'integration'
     && run.partition && !run.partition.weights).map(run => run.groupId))]
-  if (!groupIds.length) return queued
+  if (!groupIds.length || !free.length) return queued
   const members = (await pool.query<{ record: unknown }>(
     'select record from ci_runs where group_id=any($1::uuid[])', [groupIds])).rows
     .map(row => CiRunRecordSchema.parse(row.record))

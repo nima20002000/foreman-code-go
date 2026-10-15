@@ -29,7 +29,8 @@ async function fixture(realLogs = false) {
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'CI fixture', repository: {
-      provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main' } })])
+      provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main' },
+      ciMirror: { provider: 'github', owner: 'fixture', name: 'site-ci' } })])
   const computers: HostCiComputer[] = Array.from({ length: 3 }, (_, slot) => ({
     key: `fixture-slot-${slot}`, label: `Executor ${slot}`, priority: 0,
     hostRef: { kind: 'cloud', mainId: 'fixture-main', provider: 'circleci', slot },
@@ -91,6 +92,11 @@ async function fixture(realLogs = false) {
   const operator = await connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS, 'jobs:cancel'])
   const call = (client: Client, name: string, args: Record<string, unknown>) =>
     client.callTool({ name, arguments: { workspaceId, ...args } })
+  const settleDispatch = async () => {
+    const result = await call(operator, 'ci_computers_list', {})
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+    await ci.dispatch()
+  }
   const value = async (name: string, args: Record<string, unknown>) => {
     const result = await call(operator, name, args)
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
@@ -100,8 +106,9 @@ async function fixture(realLogs = false) {
     const result = CiRunOutputSchema.parse(await value('ci_run', { commandId: randomUUID(), suite: 'integration',
       commit: 'a'.repeat(40), scope: 'affected', partitions: 3, files: ['apps/api/test/one.integration.test.ts',
         'apps/api/test/two.integration.test.ts', 'apps/api/test/three.integration.test.ts'] }))
-    const closing = ci.close()
-    if (waitForDispatch) await closing
+    if (waitForDispatch) {
+      await settleDispatch()
+    }
     return result
   }
   const stored = async (groupId: string) => (await database.pool.query<{ record: unknown }>(
@@ -117,7 +124,8 @@ async function fixture(realLogs = false) {
     dispatchGate = new Promise<void>(resolve => { release = resolve })
     return release
   }
-  return { root, workspaceId, computers, ci, start, value, stored, close, connect, call, control, pauseDispatch }
+  return { root, workspaceId, computers, ci, start, value, stored, close, connect, call, control, pauseDispatch,
+    settleDispatch }
 }
 
 it('admits selected-file CI with a pinned commit and persists the selection through MCP readback', async () => {
@@ -131,6 +139,7 @@ it('admits selected-file CI with a pinned commit and persists the selection thro
     })
     expect(unpinned.isError).toBe(true)
     const started = await f.start()
+    await f.ci.close()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(3)
     for (const run of read.partitions!) {
@@ -157,7 +166,7 @@ it('cancels a queued ticket through MCP before pending computer discovery comple
       .toBe(true)
     expect(await f.stored(read.run.groupId)).toEqual(expect.arrayContaining(read.partitions!))
     release()
-    await f.ci.dispatch()
+    await f.settleDispatch()
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId })).run.state)
       .toBe('canceled')
   } finally { release(); await f.close() }
@@ -173,7 +182,7 @@ it('plans all admitted slices after an early sibling cancellation and keeps the 
     expect((await f.call(denied, 'ci_cancel', { ticketId: canceled })).isError).toBe(true)
     await f.value('ci_cancel', { ticketId: canceled })
     release()
-    await f.ci.dispatch()
+    await f.settleDispatch()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: canceled }))
     expect(read.partitions!.filter(run => run.id !== canceled).map(run => run.state)).toEqual(['running', 'running'])
     expect(read.run.state).toBe('canceled')
@@ -199,7 +208,7 @@ it('plans a group split by the fifty-row placement page behind unavailable syste
         [run.id, f.workspaceId, run.groupId, 'queued', JSON.stringify(run)])
     }
     release()
-    await f.ci.dispatch()
+    await f.settleDispatch()
     const after = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     expect(after.partitions!.some(run => run.state === 'running')).toBe(true)
     expect(after.partitions!.every(run => run.partition?.weights?.length === 3)).toBe(true)
@@ -212,6 +221,7 @@ it('caps aggregate group log bytes even when the budget is smaller than the part
   try {
     const started = await f.start()
     await f.ci.dispatch()
+    await f.ci.close()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     for (const run of read.partitions!) {
       const directory = join(f.root, 'runs', run.id)
@@ -286,6 +296,12 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     f.control.stopCode = 0
     f.control.code = 0
     await f.ci.dispatch()
+    const cancellationRead = CiGetOutputSchema.parse(await f.value('ci_get', {
+      ticketId: active.id, waitSeconds: 10,
+    }))
+    expect(cancellationRead.run.state).toBe('canceled')
+    await f.ci.dispatch()
+    await f.ci.close()
     const closed = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
     expect(closed.run.state).toBe('canceled')
     expect(closed.partitions!.some(run => run.id !== active.id && run.state === 'running')).toBe(true)
