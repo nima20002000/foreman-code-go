@@ -36,8 +36,11 @@ export function serializeError(value: unknown, seen = new Set<unknown>(), depth 
     ...(value instanceof AggregateError ? { errors: value.errors.slice(0, 8).map(cause => serializeError(cause, seen, depth + 1)) } : {}),
     ...(error.cause !== undefined ? { cause: serializeError(error.cause, seen, depth + 1) } : {}) }
 }
-// Synchronous writes: a crash or process.exit() right after a log call must not lose that line.
-const streams = pino.multistream([{ level: level === 'silent' ? 'fatal' : level as Level, stream: pino.destination({ dest: 1, sync: true }) }])
+// Log backpressure must not block PostgreSQL replies on the API event loop.
+const streams = pino.multistream([{
+  level: level === 'silent' ? 'fatal' : level as Level,
+  stream: pino.destination({ dest: 1, sync: false }),
+}])
 
 /** The one API logger. Everything else is a child of it. */
 export const logger: Logger = pino({
@@ -136,7 +139,9 @@ export async function enableFileLogging(env: NodeJS.ProcessEnv = process.env): P
   const { default: roll } = await import('pino-roll')
   // Daily names prevent a roll from reopening a numbered file from an earlier day.
   const stream = await roll({ file: file.replace(/\.log$/, ''), extension: '.log', frequency: 'daily',
-    dateFormat: 'yyyy-MM-dd', size: env.LOG_MAX_SIZE ?? '20m', mkdir: true, symlink: true, sync: true })
+    dateFormat: 'yyyy-MM-dd', size: env.LOG_MAX_SIZE ?? '20m', mkdir: true, symlink: true, sync: false })
+  // pino.destination flushes stdout at exit; pino-roll needs the same final drain.
+  process.once('exit', () => stream.flushSync())
   const pruned = await pruneLogFiles(file, count, days)
   let cleanup = Promise.resolve()
   // Reopen emits ready after the active symlink changes. Serialize retention across rolls.
