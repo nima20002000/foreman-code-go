@@ -31,7 +31,10 @@ it('counts overlapping publications on a serialized writer once within the uncha
 it('accumulates separate operations without charging idle gaps and preserves results', async () => {
   vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
   const publication = operationDuration()
-  const first = publication.measure(async () => { await delay(2_000); return 'first' })
+  const first = publication.measure(async () => {
+    await delay(2_000)
+    return 'first'
+  })
   await vi.advanceTimersByTimeAsync(2_000)
   expect(await first).toBe('first')
   await vi.advanceTimersByTimeAsync(5_000)
