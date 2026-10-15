@@ -20,7 +20,7 @@ function fixture() {
   const receipt = { result_json: canonicalGraphJson(execution.result), result_digest: repeatDigest(execution.result) }
   const query = vi.fn<GraphTransactionSql['query']>()
   const context: Parameters<typeof admitWorkHandoffLocked>[0] = {
-    sql: { transaction: true, query }, scope: saved.scope,
+    sql: { transaction: true, query: query as GraphTransactionSql['query'] }, scope: saved.scope,
     version: { ...saved.version, definition: { ...saved.version.definition, handoffs: { contractVersion: 1 } } },
     now: saved.createdAt, assertActive: vi.fn(),
     hooks: {

@@ -9,6 +9,20 @@ import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 import { integrationShardPlan } from '../../../../../scripts/test-integration.mjs'
 
+declare module '../../../../../scripts/test-integration.mjs' {
+  export function integrationShardPlan(
+    environment: NodeJS.ProcessEnv,
+    resources?: {
+      cpuCount?: number
+      availableMemoryBytes?: number
+      maxConnections?: number
+      reservedConnections?: number
+      activeConnections?: number
+    },
+    fileCount?: number,
+  ): { shards: number; limit: number; reason: string }
+}
+
 const roots: string[] = []
 const children = new Set<ReturnType<typeof spawn>>()
 async function stopUnit(child: ReturnType<typeof spawn>) {

@@ -154,13 +154,14 @@ it('rechecks sibling placement before falling back after a busy start', async ()
     hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
   const f = fleet(records, [host, secondHost, spare], new Map(), new Set(), new Map([[secondHost.key, 2]]))
   const request = f.endpoint.request
-  const siblingStarted = Promise.withResolvers<void>()
+  let resolveSiblingStarted!: () => void
+  const siblingStarted = new Promise<void>(resolve => { resolveSiblingStarted = resolve })
   vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
     if (input.operation === 'start' && computer.key === host.key) {
-      await siblingStarted.promise
+      await siblingStarted
       throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
     }
-    if (input.operation === 'start' && computer.key === secondHost.key) siblingStarted.resolve()
+    if (input.operation === 'start' && computer.key === secondHost.key) resolveSiblingStarted()
     return request(computer, input)
   })
   await f.service.dispatch()
