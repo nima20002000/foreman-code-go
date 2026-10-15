@@ -10,6 +10,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from 'vitest'
 import { buildApp } from '../../src/app.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
+import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../../src/modules/jobs/ciAuthority.js'
 import {
   HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint,
@@ -164,7 +165,9 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
   const ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), commits,
     options.repositoryRunner?.endpoint ?? computers.endpoint)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access, services: { commands, ci } as unknown as OperatorServices },
+    operator: { access, services: {
+      commands, ci, bugReports: new BugReportService(db.pool, commands),
+    } as unknown as OperatorServices },
     ...(runtime ? { appMcp: { access, commands,
       interactions: new PostgresAppInteractionService(db.pool, runtime.repository, commands) } } : {}) })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
