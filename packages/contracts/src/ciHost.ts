@@ -152,8 +152,9 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
 
 const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
-/** Collection is independent of outcome: unreadable or invalid reports stay pending; unsupported records absent reporting. */
-export const CiCollectionSchema = z.enum(['pending', 'complete', 'unsupported'])
+/** Collection is independent of outcome: unreadable or invalid reports stay pending; unsupported records absent reporting;
+ * failed records required reports that never arrived before the collection deadline. */
+export const CiCollectionSchema = z.enum(['pending', 'complete', 'unsupported', 'failed'])
 export const CiProvenanceSchema = z.object({
   sourceCommit: CommitSchema, workflowCommit: CommitSchema, workflowRef: z.string().min(1).max(200),
 }).strict()
@@ -227,6 +228,15 @@ export const CiRunRecordSchema = z.object({
   /** Kept until the assigned executor confirms cancellation or another terminal result. */
   cancellation: CiCancellationSchema.optional(),
   observation: CiObservationSchema.optional(),
+  /** A phase outlived its maximum age. A retained executor keeps its slot until it confirms the run stopped. */
+  deadlineExceeded: z.object({
+    code: z.enum(['CI_QUEUE_DEADLINE_EXCEEDED', 'CI_START_DEADLINE_EXCEEDED', 'CI_RUN_DEADLINE_EXCEEDED',
+      'CI_COLLECTION_DEADLINE_EXCEEDED']),
+    phase: z.enum(['queued', 'starting', 'running', 'collection']),
+    enteredAt: TimestampSchema, deadlineAt: TimestampSchema, detectedAt: TimestampSchema,
+    cause: z.string().max(2000),
+    executor: z.enum(['none', 'retained', 'released']),
+  }).strict().optional(),
   reassignment: z.object({ count: z.number().int().positive(), previousHostKey: z.string(),
     lastError: z.string(), at: TimestampSchema }).strict().optional(),
   providerMessage: z.string().max(2000).nullable().optional(),

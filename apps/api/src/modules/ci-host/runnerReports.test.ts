@@ -105,7 +105,7 @@ it('keeps a supported missing report pending and collects it when it appears', a
   expect(f.launches()).toBe(1)
 })
 
-it.each(['unit', 'integration'] as const)('stops waiting for missing %s reports after a crashed process closes', async suite => {
+it.each(['unit', 'integration'] as const)('fails collection of missing %s reports after a crashed process closes', async suite => {
   const f = await fixture(suite)
   await fs.rm(join(f.directory, 'test-results.json'))
   await fs.rm(join(f.directory, 'measured-durations.json'))
@@ -115,7 +115,7 @@ it.each(['unit', 'integration'] as const)('stops waiting for missing %s reports 
   if (initial.operation !== 'read') throw new Error('Expected a read response')
   f.advance(15 * 60_000)
   expect(await f.reopen().handle(f.read)).toMatchObject({ run: {
-    state: 'failed', exitCode: 137, finishedAt: initial.run.finishedAt, collection: 'unsupported',
+    state: 'failed', exitCode: 137, finishedAt: initial.run.finishedAt, collection: 'failed',
   } })
   expect(f.launches()).toBe(1)
 })

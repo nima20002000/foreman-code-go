@@ -11,6 +11,8 @@ import {
 import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
+import { startStateDeadlineSweeper } from './modules/diagnostics/stateDeadlines.js'
+import { reportServiceFailure, trackService } from './modules/diagnostics/serviceHealth.js'
 import { ProductionCiEnrollmentInventory } from './modules/jobs/ciEnrollmentInventory.js'
 import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, DEFAULT_STUCK_EXECUTION_IDLE_MS } from '@foreman-code/contracts'
 import { HostCiService } from './modules/ci-host/service.js'
@@ -2478,7 +2480,7 @@ function configureRuntimeHooks(composition: ProductionComposition) {
   composition.reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (composition.closing) return Promise.resolve()
     if (composition.reconciliation) return composition.reconciliation
-    composition.reconciliation = (async () => {
+    composition.reconciliation = trackService('run-reconciliation', { cadenceMs: 5_000, deadlineMs: 10 * 60_000 }, async () => {
       await bugReports.detectStuckExecutions(config.stuckExecutionIdleMs ?? DEFAULT_STUCK_EXECUTION_IDLE_MS)
       if (composition.jobRuntime) await composition.jobRuntime.reconcileFailedCaptures(report)
       composition.jobRuntime?.startMaterializationReservationReconciliation(report)
@@ -2506,7 +2508,7 @@ function configureRuntimeHooks(composition: ProductionComposition) {
         for (const failure of page.errors) report(new Error(`Interaction ${failure.interactionId}: ${failure.error}`))
         afterId = page.nextCursor ?? undefined
       } while (afterId)
-    })().finally(() => { composition.reconciliation = undefined })
+    }).finally(() => { composition.reconciliation = undefined })
     return composition.reconciliation
   }
   app.addHook('preClose', async () => {
@@ -2820,11 +2822,13 @@ async function initializeComputerServices(composition: ProductionComposition, ma
   if (composition.closing) runtimeServices.computerMaintenance.stopAdmission()
   // Keep harnesses current and Main's MCP servers and plugins on every computer. Never under the test runners.
   if (!process.env.VITEST && process.env.NODE_ENV !== 'test' && process.env.FOREMAN_CODE_COMPUTER_UPKEEP !== '0') {
-    const upkeep = () => { void runtimeServices.computerMaintenance!.keepCurrent().catch(error => app.log.warn({ err: error }, 'Computer upkeep failed')) }
+    const upkeep = () => { void trackService('computer-upkeep', { cadenceMs: 6 * 60 * 60_000, deadlineMs: 2 * 60 * 60_000 },
+      () => runtimeServices.computerMaintenance!.keepCurrent()).catch(error => app.log.warn({ err: error }, 'Computer upkeep failed')) }
     const firstUpkeep = setTimeout(upkeep, 120_000)
     const upkeepTimer = setInterval(upkeep, 6 * 60 * 60_000)
     // MCP server and plugin changes on Main reach the other computers within about a minute.
-    const sourceSync = setInterval(() => { void runtimeServices.computerMaintenance!.syncChangedSources()
+    const sourceSync = setInterval(() => { void trackService('fleet-source-sync', { cadenceMs: 60_000, deadlineMs: 30 * 60_000 },
+      () => runtimeServices.computerMaintenance!.syncChangedSources())
       .catch(error => app.log.warn({ err: error }, 'Fleet MCP and plugin sync failed')) }, 60_000)
     firstUpkeep.unref(); upkeepTimer.unref(); sourceSync.unref()
     composition.stopComputerTimers = () => {
@@ -2845,7 +2849,8 @@ async function initializeComputerServices(composition: ProductionComposition, ma
     })
   registerComputerSyncRoutes(app, runtimeServices.computerSync)
   const syncTimer = setInterval(() => {
-    void runtimeServices.computerSync!.poll().catch(error => {
+    void trackService('computer-sync', { cadenceMs: 30_000, deadlineMs: 10 * 60_000 },
+      () => runtimeServices.computerSync!.poll()).catch(error => {
       app.log.warn({ err: error }, 'Shared file sync setup is pending')
     })
   }, 30_000)
@@ -2899,6 +2904,10 @@ async function initializeCiServices(
     agentSnapshots(database.pool, readAgentFiles), { reservedCloudSlots: configuredReservedCloudSlots() })
   composition.hostCi.start()
   app.addHook('onClose', async () => { await composition.hostCi?.close() })
+  const stopDeadlineSweeper = startStateDeadlineSweeper(database.pool, {
+    workerPublication: () => readProductionWorkerReleasePublication({ environment: process.env,
+      releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }) })
+  app.addHook('onClose', async () => { stopDeadlineSweeper() })
   runtimeServices.ci = composition.hostCi
   runtimeServices.jobRuntimeProfiles = jobRuntime.profiles
   runtimeServices.ciRuntime = new CiRuntimeProvisioner(database.pool, jobRuntime.profiles, jobRuntime.sources,
@@ -2985,7 +2994,9 @@ async function initializeHarnessServices(composition: ProductionComposition, mac
       record: (principalId, source, selectorKey) => commands.recordDenied(principalId, source, 'resource_telemetry_selector_get', selectorKey),
     })
     void composition.telemetry.completion.then(result => {
-      if (result.kind === 'failed') app.log.error({ err: result.error }, 'passive resource telemetry collector failed')
+      if (result.kind !== 'failed') return
+      reportServiceFailure('telemetry-collector', result.error)
+      app.log.error({ err: result.error }, 'passive resource telemetry collector failed')
     })
     assertOpen()
   }

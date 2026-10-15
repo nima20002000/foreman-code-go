@@ -64,6 +64,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'nativeEventSequence',a.payload->'nativeEventSequence',
     'fromSequence',a.payload->'fromSequence','toSequence',a.payload->'toSequence',
     'reason',case when a.kind='native_events_skipped' then a.payload->>'reason' end,
+    'code',case when a.kind='run_cleanup_checked' then left(a.payload->>'code',64) end,
     'used',a.payload->'used','maximum',a.payload->'maximum')) as safe_payload,
   case when n.execution_id is null then null else jsonb_strip_nulls(jsonb_build_object(
     'type',left(n.record->>'type',48),

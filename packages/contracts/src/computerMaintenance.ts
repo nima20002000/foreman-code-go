@@ -106,8 +106,21 @@ const HarnessVersionSchema = z.object({
   latest: z.string().max(100).nullable(),
 }).strict()
 
+/** One background loop or unit of this process. Stalled: in flight past its deadline, or past its next due time. */
+export const ServiceHealthSchema = z.object({
+  name: z.string().min(1).max(80),
+  status: z.enum(['ok', 'idle', 'failing', 'stalled']),
+  lastStartedAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable(),
+  lastError: z.string().max(500).nullable(),
+  nextDueAt: z.string().datetime().nullable(),
+  inFlightSince: z.string().datetime().nullable(),
+}).strict()
+export type ServiceHealth = z.infer<typeof ServiceHealthSchema>
+
 export const MaintenanceStatusSchema = z.object({
   operationalFailures: z.array(OperationalFailureSchema).optional(),
+  services: z.array(ServiceHealthSchema).max(50).optional(),
   worker: WorkerUpdateStatusSchema.optional(),
   harnesses: z.array(HarnessVersionSchema).max(2),
   system: z.object({

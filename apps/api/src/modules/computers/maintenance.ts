@@ -1,5 +1,6 @@
 import { errorMessage } from '../../shared/errorMessage.js'
 import { readOperationalFailures } from '../diagnostics/logger.js'
+import { readServiceHealth } from '../diagnostics/serviceHealth.js'
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmStaging.js'
 import { syncFingerprint } from './syncFingerprint.js'
@@ -30,6 +31,8 @@ const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', cl
 const LABELS: Record<MaintainedHarness, string> = { codex: 'Codex', claude: 'Claude' }
 const LATEST_MS = 60 * 60_000
 const LONG_MS = 20 * 60_000
+/** Steps stop after LONG_MS and a Worker update attempt after 45 minutes; a task never stays running longer. */
+const TASK_DEADLINE_MS = 60 * 60_000
 const APT = ['env', 'LC_ALL=C', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
   '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
 
@@ -106,7 +109,23 @@ export class ComputerMaintenance {
     }
   }
 
+  /** Fails tasks past their maximum age; the step or update they wait for is not reported as stopped. */
+  private async expireOverdueTasks(): Promise<void> {
+    const now = this.ports.now().getTime()
+    for (const task of this.tasks.filter(task => task.state === 'running')) {
+      const age = now - Date.parse(task.startedAt)
+      if (age <= TASK_DEADLINE_MS) continue
+      let phase = 'running'
+      if (task.workerTargetVersion !== undefined) phase = 'worker-restart'
+      else if (task.summary.startsWith('Waiting')) phase = 'waiting'
+      await this.finish(task, 'failed', `MAINTENANCE_TASK_DEADLINE_EXCEEDED: phase ${phase}, age ${Math.round(age / 60_000)} min, `
+        + `over the ${TASK_DEADLINE_MS / 60_000} min limit. Cause: ${task.summary} Its work was not confirmed stopped; `
+        + 'check this computer before retrying.')
+    }
+  }
+
   private async observe(signal: AbortSignal): Promise<MaintenanceStatus> {
+    await this.expireOverdueTasks()
     const worker = await this.ports.workerUpdate?.status()
     if (worker) {
       for (const task of this.tasks.filter(task => task.kind === 'update-worker' && task.state === 'running')) {
@@ -127,6 +146,7 @@ export class ComputerMaintenance {
     ])
     return MaintenanceStatusSchema.parse({
       operationalFailures: readOperationalFailures(),
+      services: readServiceHealth(),
       harnesses: (['codex', 'claude'] as const).map((harness, index) => ({ harness, installed: versions[index] !== undefined,
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
       system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
@@ -294,6 +314,8 @@ export class ComputerMaintenance {
   }
 
   private async finish(task: MaintenanceTask, state: 'succeeded' | 'failed', summary: string) {
+    // A task failed by its deadline keeps that result when its work ends later.
+    if (task.state !== 'running') return
     task.state = state
     task.summary = summary.slice(0, 2000)
     task.finishedAt = this.ports.now().toISOString()

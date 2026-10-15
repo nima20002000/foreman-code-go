@@ -1,4 +1,5 @@
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
+import { trackService } from '../diagnostics/serviceHealth.js'
 import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { DomainError } from '../errors.js'
 import type { ScheduleDispatchContext, ScheduleDispatchErrorReporter } from './dispatchErrors.js'
@@ -103,7 +104,8 @@ export class WorkflowScheduleDispatcher {
     if (this.running || this.closed) return
     this.running = true
     const poll = async () => {
-      try { await this.tick() } catch (error) { this.options.reportError(error) }
+      try { await trackService('workflow-schedules', { cadenceMs: this.interval, deadlineMs: 2 * 60_000 }, () => this.tick()) }
+      catch (error) { this.options.reportError(error) }
       if (!this.closed) {
         this.timer = setTimeout(() => { void poll() }, this.interval)
         this.timer.unref()

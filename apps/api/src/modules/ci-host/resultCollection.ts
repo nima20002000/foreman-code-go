@@ -24,8 +24,8 @@ export async function collectCiResults(pool: pg.Pool, endpoint: HostCiEndpoint, 
       if (fetched.testResults) {
         await pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [run.id, serializeCiJson(fetched.testResults)])
         collection = fetched.run.collection === 'pending' ? 'pending' : 'complete'
-      } else if (fetched.run.collection === 'unsupported') {
-        collection = 'unsupported'
+      } else if (fetched.run.collection === 'unsupported' || fetched.run.collection === 'failed') {
+        collection = fetched.run.collection
       }
     }
   } catch (error) {

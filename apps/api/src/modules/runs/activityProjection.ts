@@ -360,7 +360,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     case 'run_stop_requested': kind = 'stop'; status = 'pending'; summary = 'Stop requested'; break
     case 'run_cleanup_checked':
       kind = 'recovery'; status = payload.failed === true ? 'failed' : 'completed'
-      summary = payload.failed === true ? 'Native cleanup remains pending' : 'Native cleanup verified'
+      summary = payload.code === 'RUN_CLEANUP_DEADLINE_EXCEEDED'
+        ? 'Cleanup deadline exceeded; native cleanup is unconfirmed and ownership is retained'
+        : payload.failed === true ? 'Native cleanup remains pending' : 'Native cleanup verified'
       break
     case 'node_scheduled': case 'work_activation_queued':
       status = 'queued'; summary = 'Work turn queued'; break

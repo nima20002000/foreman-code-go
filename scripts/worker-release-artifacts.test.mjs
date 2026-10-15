@@ -397,8 +397,42 @@ test('a failed background upload keeps the target unpublished and records its re
   const publish = async () => { throw new Error('GitHub unavailable') }
   await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
     commit: f.commit, run: f.run, publish }), /GitHub unavailable/)
-  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), { ...index,
-    publication: { state: 'failed', lastError: 'WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub unavailable' } })
+  const retained = JSON.parse(await readFile(join(f.directory, 'index.json')))
+  assert.deepEqual(retained, { ...index, publication: { state: 'failed',
+    lastError: 'WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub unavailable',
+    startedAt: retained.publication.startedAt, deadlineAt: retained.publication.deadlineAt } })
+})
+
+test('publication retries keep the first attempt deadline and fail with its code once it passes', async t => {
+  const f = await fixture(t)
+  await buildWorkerReleaseArtifacts(f)
+  const path = join(f.directory, 'index.json')
+  const attempt = publish => publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
+    commit: f.commit, run: f.run, publish })
+  const unavailable = async () => { throw new Error('GitHub unavailable') }
+  await assert.rejects(attempt(unavailable), /GitHub unavailable/)
+  const first = JSON.parse(await readFile(path)).publication
+  assert.equal(Date.parse(first.deadlineAt) - Date.parse(first.startedAt), 2 * 60 * 60_000)
+  await assert.rejects(attempt(unavailable), /GitHub unavailable/)
+  const retry = JSON.parse(await readFile(path)).publication
+  assert.equal(retry.startedAt, first.startedAt)
+  assert.equal(retry.deadlineAt, first.deadlineAt)
+  assert.match(retry.lastError, /^WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub unavailable$/)
+
+  const startedAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString()
+  const deadlineAt = new Date(Date.now() - 60 * 60_000).toISOString()
+  const index = JSON.parse(await readFile(path))
+  await writeFile(path, JSON.stringify({ ...index, publication: { ...retry, startedAt, deadlineAt } }))
+  await assert.rejects(attempt(unavailable), /GitHub unavailable/)
+  const overdue = JSON.parse(await readFile(path)).publication
+  assert.equal(overdue.state, 'failed')
+  assert.equal(overdue.startedAt, startedAt)
+  assert.match(overdue.lastError,
+    /^WORKER_PUBLICATION_DEADLINE_EXCEEDED: phase publishing, age 180 min, over the 120 min limit\. Cause: GitHub unavailable$/)
+
+  const github = { repository: 'example/fixture', tag: `worker-${f.commit}` }
+  const published = await attempt(async () => github)
+  assert.deepEqual(published.publication, { state: 'published', lastError: null })
 })
 
 test('the installed background publisher loads without build-only source modules', async t => {

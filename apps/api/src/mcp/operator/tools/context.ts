@@ -19,7 +19,11 @@ import { readOperationalFailures } from '../../../modules/diagnostics/logger.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'operational_failure_status', state: 'limited',
-    detail: 'operator_get_capabilities includes operationalFailures with sanitized causes, counts and failure times since Main startup. computers_maintenance_status includes the same history from each computer. Known retry schedules and repair durations are included. Counts reset on process restart; history does not assert that a previous failure is still active.' },
+    detail: 'operator_get_capabilities includes operationalFailures with sanitized causes, counts and failure times since Main startup. computers_maintenance_status includes the same history from each computer. Known retry schedules and repair durations are included. Counts reset on process restart; history does not assert that a previous failure is still active. '
+      + 'computers_maintenance_status status.services reports each background loop as ok, idle, failing or stalled. '
+      + 'In-between states have maximum ages: CI tickets fail with CI_QUEUE/START/RUN/COLLECTION_DEADLINE_EXCEEDED '
+      + '(ci_get run.deadlineExceeded; a running executor keeps its slot until it confirms the stop), Run cleanup records '
+      + 'RUN_CLEANUP_DEADLINE_EXCEEDED in Run activity while native ownership stays retained.' },
   { feature: 'native_tool_loading', state: 'protected',
     detail: 'agent_defaults_get/update reads and replaces role nativeTools policies with global settings grants. '
       + 'agent_create copies them; agent_update overrides them with scoped agents:update and revision checks. '

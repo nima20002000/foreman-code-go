@@ -7,6 +7,7 @@ import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-re
 import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
+import { trackService } from '../diagnostics/serviceHealth.js'
 import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { assertBuildComputerTarget, buildComputerKey } from '../settings/buildComputers.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -92,7 +93,7 @@ export class CiEnrollment {
         const computers = this.requested ? undefined : new Set(this.requestedComputers)
         this.requested = false
         this.requestedComputers.clear()
-        await this.reconcile(computers)
+        await trackService('ci-enrollment', { cadenceMs: 30_000, deadlineMs: 10 * 60_000 }, () => this.reconcile(computers))
         if (!this.closed) this.changed?.()
       }
     })().catch(error => componentLogger('jobs').error({ err: error }, 'Automatic CI enrollment failed'))
