@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { integrationPartition, userSystemdIntegrationFiles } from '@foreman-code/contracts'
+import { CI_MAX_RUN_TICKETS, CiRunOutputSchema, integrationPartition, userSystemdIntegrationFiles } from '@foreman-code/contracts'
 import { planIntegrationParts } from './integrationParts.js'
 
 const files = Array.from({ length: 20 }, (_, index) => `apps/api/test/example-${index}.integration.test.ts`)
@@ -134,4 +135,40 @@ it('allows a single ordinary full slice to run on cloud without changing host-on
   const host = planIntegrationParts(input, { files: [hostFile], durations: { [hostFile]: 120_000 } },
     { host: 1, ordinary: 44 })
   expect(host[0]).toMatchObject({ partition: null, requiresBuildComputer: true })
+})
+
+it.each([[44, 24], [64, 64]])('keeps %i fast and %i slow requested parts within the response ticket limit',
+  (fastCount, slowCount) => {
+    const quick = Array.from({ length: fastCount * 8 }, (_, index) => `apps/api/test/quick-${index}.integration.test.ts`)
+    const slow = Array.from({ length: slowCount }, (_, index) => `apps/api/test/slow-${index}.integration.test.ts`)
+    const selected = [...quick, ...slow]
+    const measured = Object.fromEntries([
+      ...quick.map(file => [file, 30_000]),
+      ...slow.map(file => [file, 90_000]),
+    ])
+    const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 0, ordinary: fastCount })
+    const tickets = parts.map(() => ({ ticketId: randomUUID() }))
+    expect(CiRunOutputSchema.safeParse({ ticketId: tickets[0]!.ticketId, partitions: tickets }).success).toBe(true)
+    expect(parts.length).toBeLessThanOrEqual(CI_MAX_RUN_TICKETS)
+    for (const tier of ['fast', 'slow']) {
+      const tierParts = parts.filter(part => part.partition?.tier === tier)
+      expect(tierParts.length).toBeGreaterThan(0)
+      expect(tierParts.length).toBeLessThanOrEqual(64)
+    }
+    const slices = parts.map(part => integrationPartition(selected, measured, part.partition!))
+    expect(slices.flat().sort()).toEqual([...selected].sort())
+  })
+
+it('reserves host-only parts before sharing local capacity with ordinary files', () => {
+  const hostFiles = [...userSystemdIntegrationFiles].slice(0, 2)
+  const selected = [...hostFiles, ...files]
+  const measured = { ...durations, ...Object.fromEntries(hostFiles.map(file => [file, 120_000])) }
+  const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 3, ordinary: 4 })
+  expect(parts).toHaveLength(4)
+  expect(parts[0]!.partition!.hostIndexes).toEqual([0, 1])
+  const slices = parts.map(part => integrationPartition(selected, measured, part.partition!))
+  expect(slices.flat().sort()).toEqual([...selected].sort())
+  for (const [index, slice] of slices.entries()) {
+    expect(slice.some(file => hostFiles.includes(file))).toBe(index < 2)
+  }
 })
