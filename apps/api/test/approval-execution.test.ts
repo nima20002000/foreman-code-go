@@ -20,7 +20,7 @@ import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execut
 import type { Wave25InteractionRepository as PostgresInteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
-import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import type { UnboundWorkflowClosure, WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
 import type { RepeatNativeEvidence } from '../src/modules/runs/repeatNativeRepository.js'
 import { nativeApprovalContext } from '../src/modules/interactions/nativeApprovalContext.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
@@ -45,6 +45,7 @@ class ScriptedManager implements NativeHarnessSessionManager {
   readonly observed: NativeSessionReference[] = []
   readonly closed: NativeSessionReference[] = []
   readonly canceled: NativeSessionReference[] = []
+  disposals = 0
   responses = 0
   createError: Error | undefined
   attachError: Error | undefined
@@ -98,6 +99,7 @@ class ScriptedManager implements NativeHarnessSessionManager {
     return { ...history, correlationId, nativeTurnId: 'workflow-turn', ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'workflow-turn', result: history.terminalResult } } : {}) }
   }
   async close(session: NativeSessionReference) { this.closed.push(session) }
+  async dispose() { this.disposals += 1 }
 }
 
 it('rejects unsupported Claude configuration before allocating the approval fixture', () => {
@@ -141,6 +143,7 @@ function fixture(harness: AgentHarness = 'codex') {
   let cancelPendingCalls = 0
   let stopRequested = false, cleanupPending = false
   const negativeSettlements: Array<{ id: string; canceled: boolean }> = []
+  const failures = new Map<string, ExecutionResult>()
   // The owner-only Stop pass now re-reads a physical receipt even after the
   // original resident manager closed. Model ONLY that exact persisted close;
   // no SQL arm fabricates recovery evidence from a missing manager.
@@ -159,6 +162,16 @@ function fixture(harness: AgentHarness = 'codex') {
     if (q === 'select record from harness_executions where id=$1 and run_id=$2 for update') {
       assert.deepEqual(values, [candidate.id, candidate.runId])
       return result([{ record: executions.get(candidate.id) }])
+    }
+    if (q.startsWith('select 1 from harness_executions e join approval_execution_state b')) {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      return result(failures.has(candidate.id) ? [{}] : [])
+    }
+    if (q === 'select phase from workflow_native_entries where execution_id=$1 and run_id=$2') {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      assert.equal(manager.creates.length, 0)
+      assert.equal(manager.attaches.length, 0)
+      return result([{ phase: 'reserved' }])
     }
     if (q.startsWith('select generation::text,execution_identity,')) {
       assert.deepEqual(values, [candidate.id])
@@ -185,14 +198,34 @@ function fixture(harness: AgentHarness = 'codex') {
     async getRepeatSnapshot() { return { run: { executionState: 'running' }, stopRequested, cleanupPending } },
     async requestCleanup() { cleanupPending = true },
     async *executionPages() { yield [...executions.values()] },
-    async repeat() { return { async settleNegativeExecution(id: string, canceled: boolean) {
-      // This recording repository port models idempotent disposition receipts,
-      // not native evidence or the production execution/result SQL writer.
-      // A later caller cannot silently change an already recorded disposition.
-      const prior = negativeSettlements.find((receipt) => receipt.id === id)
-      if (prior) assert.deepEqual(prior, { id, canceled })
-      else negativeSettlements.push({ id, canceled })
-    } } },
+    async recordExecutionFailure(actualOwner: RunOwnership, id: string, failure: ExecutionResult) {
+      assert.equal(actualOwner, owner)
+      actualOwner.assertOwned()
+      assert.ok(executions.has(id))
+      failures.set(id, structuredClone(failure))
+    },
+    async repeat() {
+      return {
+        readExecution: (id: string) => store.readExecution(id),
+        async settleNegativeExecution(id: string, canceled: boolean) {
+          const failure = failures.get(id)
+          if (failure) {
+            assert.equal(canceled, false)
+            assert.ok(closed || unbound || !lifetimeStarted,
+              'an entered native lifetime must confirm closure before failure settlement')
+            if (!lifetimeStarted) {
+              assert.equal(manager.creates.length, 0)
+              assert.equal(manager.attaches.length, 0)
+            }
+            executions.set(id, { ...executions.get(id)!, state: 'completed', result: failure, finishedAt: now })
+          }
+          // Repeated cleanup cannot change an already recorded disposition.
+          const prior = negativeSettlements.find((receipt) => receipt.id === id)
+          if (prior) assert.deepEqual(prior, { id, canceled })
+          else negativeSettlements.push({ id, canceled })
+        },
+      }
+    },
     async ensureExecution(input: HarnessExecution) {
       const existing = [...executions.values()].find((item) => item.runId === input.runId
         && item.workflowNodeId === input.workflowNodeId && item.attempt === input.attempt)
@@ -283,14 +316,22 @@ function fixture(harness: AgentHarness = 'codex') {
   const manager = new ScriptedManager(harness)
   const resolver = new ExecutionScopedNativeSessionManagerResolver(() => manager)
   let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
+  let unbound: UnboundWorkflowClosure | undefined
+  let lifetimeStarted = false
   const closures: WorkflowClosureStore = {
     async recoverDetached() { return undefined },
-    async begin() { closed = undefined; return '1' },
+    async begin() { lifetimeStarted = true; closed = undefined; unbound = undefined; return '1' },
     async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
     async read() { return closed },
     async recordDetached(_execution, _session, _generation, check) { check() },
-    async recordUnbound(execution, durableGeneration, check) { check(); return { execution: { ...execution, workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration } },
-    async readUnbound() { return undefined },
+    async recordUnbound(execution, durableGeneration, check) {
+      check()
+      assert.ok(manager.disposals > 0, 'the original manager must confirm disposal')
+      unbound = { execution: { ...execution, workingDirectory: execution.workingDirectory!,
+        runtimeDirectory: execution.runtimeDirectory! }, durableGeneration }
+      return unbound
+    },
+    async readUnbound() { return unbound },
   }
   let launch = true
   const store: RepeatNativeObservationStore = {
@@ -694,17 +735,23 @@ it('persists native failure despite repeated database timeouts before releasing 
   assert.equal(f.manager.turns.length, 1)
 })
 
-it('fails closed for an existing attempt with no durable native identity rather than replaying a start', async () => {
+it('closes an attempt with no launch permit without replaying a start', async () => {
   const f = fixture()
   f.loseLaunch()
   await assert.rejects(f.coordinator.observeExact(f.input), { code: 'NATIVE_SESSION_START_UNCERTAIN' })
   assert.equal(f.manager.creates.length, 0)
   assert.equal(f.manager.turns.length, 0)
-  assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
+  expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
+    state: 'completed', result: { outcome: 'failed', error: {
+      code: 'NATIVE_SESSION_START_UNCERTAIN', retryable: true,
+    } },
+  })
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+  assert.equal((await f.runs.getRepeatSnapshot(f.candidate.runId)).cleanupPending, false)
 })
 
 for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as const) {
-  it(`preserves uncertain execution after a ${failure} transport or persistence failure`, async () => {
+  it(`closes only the failed attempt after a ${failure} transport or persistence failure`, async () => {
     const f = fixture()
     const error = new Error(`${failure} failed`)
     f.snapshot('request-a')
@@ -714,12 +761,36 @@ for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as con
     if (failure === 'activity') f.failActivity(error)
     if (failure === 'budget') f.failBudget(error)
     await assert.rejects(f.coordinator.observeExact(f.input), error)
-    assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
-    assert.equal(f.negativeSettlements.length, 0)
-    assert.equal(f.executions.get(f.candidate.id)?.finishedAt, undefined)
-    assert.equal(f.revoked.length, 0)
+    expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
+      state: 'completed', finishedAt: now, result: { outcome: 'failed', error: {
+        code: 'NATIVE_EXECUTION_FAILED', message: error.message, retryable: true,
+      } },
+    })
+    assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+    assert.equal((await f.runs.getRepeatSnapshot(f.candidate.runId)).cleanupPending, false)
+    assert.equal(f.manager.creates.length, ['create', 'turn', 'activity'].includes(failure) ? 1 : 0)
+    assert.equal(f.manager.turns.length, ['turn', 'activity'].includes(failure) ? 1 : 0)
+    assert.equal(f.manager.attaches.length, 0)
+    assert.ok(f.revoked.includes(f.candidate.id))
   })
 }
+
+it('returns the settled transient failure on reobservation without replaying native work', async () => {
+  const f = fixture()
+  const error = new Error('native transport failed')
+  f.manager.turnError = error
+  await assert.rejects(f.coordinator.observeExact(f.input), error)
+  const completed = await f.coordinator.observeExact(f.input)
+  expect(completed).toMatchObject({ state: 'completed', result: {
+    outcome: 'failed', error: { code: 'NATIVE_EXECUTION_FAILED', retryable: true },
+  } })
+  assert.equal(f.manager.creates.length, 1)
+  assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.manager.attaches.length, 0)
+  assert.deepEqual(f.manager.canceled, [f.manager.session])
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
+})
 
 it('settles resumed history failure using the durable identity and preserves the native failure code', async () => {
   const f = fixture()
@@ -742,11 +813,19 @@ it('does not return an old delivered interaction when cold attachment fails', as
   f.resolver.release({ harness: f.manager.harness, executionId: f.candidate.id, agentId: f.candidate.agentId,
     workingDirectory: f.candidate.workingDirectory!, configuration: f.configuration })
   f.manager.attachError = new Error('native session unavailable')
-  await assert.rejects(f.coordinator.observeExact(f.input), /native session unavailable/)
+  await assert.rejects(f.coordinator.observeExact(f.input), (error: unknown) => {
+    assert.ok(error instanceof AggregateError)
+    assert.equal((error.cause as Error).message, 'native session unavailable')
+    assert.ok(error.errors.some(failure => failure instanceof Error
+      && failure.cause instanceof DomainError && failure.cause.code === 'NATIVE_WORKFLOW_CLOSURE_CONFLICT'))
+    return true
+  })
   assert.notEqual(f.executions.get(f.candidate.id)?.state, 'completed')
   assert.equal(f.executions.get(f.candidate.id)?.result, undefined)
   assert.equal(f.manager.creates.length, 1)
   assert.equal(f.manager.turns.length, 1)
+  assert.equal(f.negativeSettlements.length, 0)
+  assert.equal([...f.records.values()].find(row => row.nativeRequestId === 'request-a')?.status, 'delivered')
 })
 
 it('handles cancellation during post-approval observation without replay', async () => {
@@ -961,7 +1040,8 @@ it('does not stop the shared budget or revoke replacement credentials after owne
   assert.equal(f.stops.length, 0)
   assert.equal(f.revoked.length, 0)
   assert.equal(f.manager.canceled.length, 0)
-  assert.equal(f.manager.closed.length, 0)
+  assert.deepEqual(f.manager.closed, [f.manager.session])
+  assert.deepEqual(f.coordinator.residentRunIds(), [])
 })
 
 it.each([undefined, 3_600_000])('initializes an execution budget from the workflow or server default (%s)', async (override) => {
