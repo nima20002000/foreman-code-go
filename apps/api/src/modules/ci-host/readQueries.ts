@@ -128,16 +128,19 @@ export class HostCiReads {
           and record->'initiator'=$3::jsonb
           order by record->>'suite',record->>'part',(record->'partition'->>'index')::integer,created_at,id`,
         [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
-      const position = run.state === 'queued' ? await this.queuePosition(run.id) : undefined
-      const smokeComputer = (await this.host.smokeTargets([run])).get(run.groupId)
-      return { run: { ...run, ...(smokeComputer ? { smokeComputer } : {}) },
+      // The group read follows the ticket read; report the ticket as the group saw it so a settled wait never
+      // pairs a still-collecting ticket with a group whose collection already finished.
+      const current = group.find(member => member.id === run.id) ?? run
+      const position = current.state === 'queued' ? await this.queuePosition(current.id) : undefined
+      const smokeComputer = (await this.host.smokeTargets([current])).get(current.groupId)
+      return { run: { ...current, ...(smokeComputer ? { smokeComputer } : {}) },
         partitions: group.length > 1 ? group : undefined,
         ...(input.logTail === false ? {} : { logTail: row.log_tail }),
-        queue: position ? { position, reason: ciQueueReason(run) } : null,
-        group: { groupId: run.groupId, state: ciGroupState(group) },
-        ...(run.gate ? { gate: ciGateReport(group) } : {}),
+        queue: position ? { position, reason: ciQueueReason(current) } : null,
+        group: { groupId: current.groupId, state: ciGroupState(group) },
+        ...(current.gate ? { gate: ciGateReport(group) } : {}),
         ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}),
-        ...(run.state === 'failed' ? { failureHistory: await this.failureHistory(run.id, scope.workspaceId) } : {}) }
+        ...(current.state === 'failed' ? { failureHistory: await this.failureHistory(current.id, scope.workspaceId) } : {}) }
     })
   }
 
