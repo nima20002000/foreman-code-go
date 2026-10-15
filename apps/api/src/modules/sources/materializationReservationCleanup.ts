@@ -154,11 +154,11 @@ export class MaterializationReservationCleanup {
       const binding = materialization ? SourceMaterializationRecordSchema.parse(materialization.record).receipt.binding
         : owner?.root.binding
       if (!binding) return null
-      if (materialization && binding.deviceId === null) {
+      if (materialization) {
         const record = SourceMaterializationRecordSchema.parse(materialization.record)
         const native = await sql.query(`select id from harness_executions
           where id=$1 and record->>'nativeSessionId' is not null`, [record.receipt.executionId])
-        // A published result can precede the original native owner's close.
+        // A published result can precede the original native owner's close, on Main or on a Worker.
         if (native.rowCount && !await localWorkflowSourceClosed(sql, record.receipt.executionId)) return null
       }
       const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
