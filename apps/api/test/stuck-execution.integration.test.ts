@@ -110,6 +110,10 @@ it('reports an idle running execution after every CI ticket ends, without stoppi
 
       const credential = await runtime.credentials.issueForExecution(checkId)
       const checker = await connect(credential.environment.variables.GRAPHQL_MCP_TOKEN!)
+      const catalog = await checker.listTools()
+      expect(catalog.tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+        'run_status_get', 'ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read',
+      ]))
       const result = await checker.callTool({ name: 'run_status_get', arguments: {} })
       expect(result.isError).not.toBe(true)
       const status = AgentRunStatusSchema.parse(decodeMcpToolResult(result))
