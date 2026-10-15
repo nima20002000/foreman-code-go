@@ -217,6 +217,41 @@ describe('positive installed native closure consumption',()=>{
 })
 
 describe('installed host resident execution continuity', () => {
+  it('validates ownership on polling and renews the MCP route only in its renewal window', async () => {
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const f = await runningInstalledFixture()
+    const mcpAuthorizations = () => f.requests.filter(request => request.namespace === 'worker-mcp-v2')
+    const ownershipReads = () => f.requests.filter(request => request.namespace === 'execution-authority-v1'
+      && (request.payload as { action: string }).action === 'read')
+    try {
+      const initialAuthorizations = mcpAuthorizations().length
+      const initialReads = ownershipReads().length
+      for (let index = 0; index < 3; index++) {
+        expect((await f.call('history')).payload).toMatchObject({ history: { nativeTurnId: 'original-turn' } })
+        expect((await f.call('status')).payload).toMatchObject({ status: 'known' })
+      }
+      expect(mcpAuthorizations()).toHaveLength(initialAuthorizations)
+      expect(ownershipReads().length).toBeGreaterThan(initialReads)
+
+      clock.mockReturnValue(now + 13 * 60_000)
+      f.renew(new Date(now + 28 * 60_000).toISOString())
+      await f.call('history')
+      expect(mcpAuthorizations()).toHaveLength(initialAuthorizations + 1)
+      await f.call('history')
+      await f.call('status')
+      expect(mcpAuthorizations()).toHaveLength(initialAuthorizations + 1)
+
+      await expect(f.call('history', {}, { ...f.context.binding, connectionEpoch: randomUUID() }))
+        .rejects.toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+    } finally {
+      clock.mockRestore()
+      f.cleanup()
+      await f.stop()
+      await f.host.close()
+    }
+  })
+
   it.each([-90_000, 50_000, 90_000])(
     'closes a retained reviewer at Main expiry through disconnect and a %s ms worker offset', async offset => {
       const mainTime = Date.now()
@@ -312,7 +347,8 @@ describe('installed host resident execution continuity', () => {
         expect(f.requests.filter(request => request.namespace === 'worker-mcp-v2')).toHaveLength(appRequests)
         expect(f.create).toHaveBeenCalledOnce()
         expect(f.attach).not.toHaveBeenCalled()
-        await expect(f.call('history')).rejects.toThrow('App binding requires recovery')
+        expect((await f.call('history')).payload).toMatchObject({ history: { nativeTurnId: 'original-turn' } })
+        expect(f.requests.filter(request => request.namespace === 'worker-mcp-v2')).toHaveLength(appRequests)
       } finally {
         f.cleanup()
         await f.stop()

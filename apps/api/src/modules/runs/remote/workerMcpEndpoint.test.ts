@@ -53,6 +53,7 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     const error = vi.spyOn(log, 'error')
     vi.spyOn(diagnostics, 'componentLogger').mockReturnValue(log)
     const f = await setup()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.expiresAt) - 2 * 60_000)
     f.refresh.mockResolvedValueOnce(new Date(Date.now() - 60_000).toISOString())
     await expect(f.endpoint.refreshLease()).rejects.toThrow('renewed Main MCP lease is unavailable')
     const response = await fetch(f.endpoint.endpoint, { method: 'POST',
@@ -125,20 +126,21 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
   })
   it('refreshes the original private route expiry while keeping its token and endpoint', async () => {
     const f = await setup()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.expiresAt) - 2 * 60_000)
     const renewedExpiry = new Date(Date.now() + 30 * 60_000).toISOString()
     f.refresh.mockResolvedValueOnce(renewedExpiry)
     expect(await f.endpoint.refreshLease()).toBe(renewedExpiry)
     expect(JSON.parse(await readFile(f.route, 'utf8'))).toMatchObject({
       endpoint: f.endpoint.endpoint, expiresAt: renewedExpiry, pid: process.pid,
     })
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20 * 60_000)
+    clock.mockReturnValue(Date.parse(renewedExpiry) - 10 * 60_000)
     try {
       const response = await fetch(f.endpoint.endpoint, { method: 'POST',
         headers: { authorization: `Bearer ${f.token}` }, body: '{"method":"tools/list"}' })
       expect(response.status).toBe(200)
       expect(await response.json()).toEqual({ result: 'Main grant checked' })
     } finally {
-      clock.mockRestore()
+      clock.mockReturnValue(Date.parse(renewedExpiry) - 2 * 60_000)
     }
     f.refresh.mockRejectedValueOnce(new Error('Original lease revoked'))
     await expect(f.endpoint.refreshLease()).rejects.toThrow('Original lease revoked')
@@ -146,5 +148,25 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     await f.endpoint.close()
     await expect(f.endpoint.refreshLease()).rejects.toThrow('closing')
     await expect(readFile(f.route)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps a live route without renewing outside its renewal window', async () => {
+    const f = await setup()
+    for (let index = 0; index < 3; index++) {
+      expect(await f.endpoint.refreshLease()).toBe(f.expiresAt)
+    }
+    expect(f.refresh).not.toHaveBeenCalled()
+    expect(JSON.parse(await readFile(f.route, 'utf8')).expiresAt).toBe(f.expiresAt)
+  })
+
+  it('renews once when concurrent polls enter the renewal window', async () => {
+    const f = await setup()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.expiresAt) - 2 * 60_000)
+    const renewedExpiry = new Date(Date.now() + 15 * 60_000).toISOString()
+    f.refresh.mockResolvedValue(renewedExpiry)
+    const expiries = await Promise.all(Array.from({ length: 8 }, () => f.endpoint.refreshLease()))
+    expect(expiries).toEqual(Array(8).fill(renewedExpiry))
+    expect(f.refresh).toHaveBeenCalledOnce()
+    expect(JSON.parse(await readFile(f.route, 'utf8')).expiresAt).toBe(renewedExpiry)
   })
 })

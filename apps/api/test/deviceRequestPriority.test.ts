@@ -84,6 +84,32 @@ function fixture() {
 
 afterEach(() => vi.useRealTimers())
 
+it('caps background bulk reads and leaves capacity for short foreground calls', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    const bulk = Array.from({ length: 7 }, (_, index) => f.request(`bulk-${index}`,
+      'ci-host-v1', { operation: 'read' }, { priority: 'background' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).toEqual(['bulk-0', 'bulk-1', 'bulk-2', 'bulk-3'])
+    for (const yielded of bulk.slice(4)) {
+      expect(await yielded).toMatchObject({ code: 'backpressure', retryable: true })
+    }
+    const foreground = Array.from({ length: 4 }, (_, index) => f.request(`short-${index}`))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started.slice(4)).toEqual(['short-0', 'short-1', 'short-2', 'short-3'])
+    f.release('bulk-0')
+    expect(await bulk[0]).toEqual({ payload: 'bulk-0' })
+    f.release('short-0')
+    expect(await foreground[0]).toEqual({ payload: 'short-0' })
+    const retry = f.request('bulk-retry', 'ci-host-v1', { operation: 'read' }, { priority: 'background' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).toContain('bulk-retry')
+    f.release('bulk-retry')
+    expect(await retry).toEqual({ payload: 'bulk-retry' })
+  } finally { await f.close() }
+})
+
 it.each(backgroundRequests)('leaves foreground capacity when %s background traffic is slow', async (namespace, payload) => {
   vi.useFakeTimers()
   const f = fixture()
