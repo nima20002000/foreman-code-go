@@ -23,16 +23,20 @@ function commitWasRejected(error: unknown): boolean {
 async function acquireSessionLock(client: pg.PoolClient, key: string): Promise<void> {
   // Source preparation can take five minutes; queued captures need their own wait budget.
   const deadline = performance.now() + 600_000
+  let backoffMs = 50
   for (;;) {
     const result = await client.query<{ locked: boolean }>(
       'select pg_try_advisory_lock(hashtext($1)) as locked', [key])
     if (result.rows[0]!.locked) return
-    if (performance.now() >= deadline) {
+    const remainingMs = deadline - performance.now()
+    if (remainingMs <= 0) {
       throw new DomainError('COMMAND_LOCK_TIMEOUT',
         'Another command is still using this resource. Retry the original command.', 503,
         { retryable: true, newCommandRequired: false })
     }
-    await delay(25)
+    const waitMs = Math.min(backoffMs * (0.5 + Math.random() * 0.5), remainingMs)
+    await delay(waitMs)
+    backoffMs = Math.min(1000, backoffMs * 2)
   }
 }
 

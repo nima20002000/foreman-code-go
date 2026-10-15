@@ -182,7 +182,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       perform: async () => {
         // Existing workspace/host ownership is checked before location.snapshot
         // probes its persisted path; input has no filesystem selector.
-        const capturedOrigin = await this.captureTransaction<ApprovalRow | { reused: ApprovedSource }>(async sql => {
+        const readOrigin = async (sql: pg.PoolClient) => {
           const live = await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
           // The location snapshot locks the workspace for update; lock it first so concurrent captures queue
@@ -197,7 +197,19 @@ export class PostgresSourceService implements SourceAdmissionPort {
           }
           const location = repository ? await this.repositoryOrigin(sql, input.workspaceId, input.expectedLocationRevision, repository)
             : await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
-          const approvedPaths = await approvedGitTreePaths(location.rootPath, input.commit)
+          return { location, ownerId: live.ownerId }
+        }
+        const prepared = await this.captureTransaction(readOrigin)
+        const approvedPaths = 'location' in prepared
+          ? await approvedGitTreePaths(prepared.location.rootPath, input.commit) : []
+        const capturedOrigin = 'location' in prepared
+          ? await this.capacityTransaction<ApprovalRow | { reused: ApprovedSource }>(async sql => {
+          const current = await readOrigin(sql)
+          if (!('location' in current)) return current
+          const { location, ownerId } = current
+          if (!isDeepStrictEqual(location, prepared.location) || ownerId !== prepared.ownerId) {
+            throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location or root ownership changed during source inventory.', 409)
+          }
           if (repository) {
             const reusable = (await sql.query<{ record: unknown }>(`select s.record from source_snapshots s
               join source_approvals a on a.snapshot_id=s.snapshot_id
@@ -224,14 +236,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
             reservedBytes: SOURCE_LIMITS.bytes + sourceStructureBytes(approvedPaths) })
           const configured = WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
             'select record from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!.record).repository
-          const origin = { location, mainId: this.mainId, ownerId: live.ownerId, reservation,
+          const origin = { location, mainId: this.mainId, ownerId, reservation,
             approvedPaths,
             ...(configured ? { repository: `${configured.owner}/${configured.name}` } : {}) }
           await sql.query(`insert into source_approvals(approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
-            values($1,$2,$3,$4,$5,$6,$7,'capturing',$8::jsonb,$9::jsonb)`, [approvedSourceId, snapshotId, input.workspaceId, live.ownerId, principal.id,
+            values($1,$2,$3,$4,$5,$6,$7,'capturing',$8::jsonb,$9::jsonb)`, [approvedSourceId, snapshotId, input.workspaceId, ownerId, principal.id,
             input.commandId, commandInputHash(input), JSON.stringify(origin), JSON.stringify(input)])
           return { approved_source_id: approvedSourceId, snapshot_id: snapshotId, input_hash: commandInputHash(input), state: 'capturing', origin, request: input }
-        })
+        }) : prepared
         if ('reused' in capturedOrigin) return capturedOrigin.reused
         let origin = capturedOrigin
         return this.store.withCaptureLock(origin.snapshot_id, async () => {
