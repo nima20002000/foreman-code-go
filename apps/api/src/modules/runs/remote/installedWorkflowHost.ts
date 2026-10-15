@@ -1051,7 +1051,10 @@ class InstalledWorkflowHostRuntime {
       || owner.preparationNativeSession && (!['codex', 'opencode'].includes(owner.preparationNativeSession.harness)
         || owner.preparationNativeSession.nativeSessionId !== receipt.native?.sessionId)
       || receipt.entryAttempted && !receipt.native && !hasPositiveRemoteEntryClosure(receipt)
-      || owned?.native && !hasPositiveRemoteEntryClosure(receipt) && !isDeepStrictEqual(owned.native.native, receipt.native)
+      // The journal adds the started turn to the native identity; the captured process identity never has it.
+      || owned?.native && !hasPositiveRemoteEntryClosure(receipt)
+        && (owned.native.native.sessionId !== receipt.native?.sessionId
+          || owned.native.native.processIdentityDigest !== receipt.native?.processIdentityDigest)
       || owned?.session && !hasPositiveRemoteEntryClosure(receipt)
         && owned.session.nativeSessionId !== receipt.native?.sessionId) return false
     if (await log.isRetired(receipt.intent.operationId)) {
