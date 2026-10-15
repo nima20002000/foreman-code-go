@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -239,7 +240,8 @@ UMask=0077
 `
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url) && ['publish', 'recover'].includes(process.argv[2])) {
+// The publication service starts this script through the current-release symlink; Node reports the real path.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && ['publish', 'recover'].includes(process.argv[2])) {
   const [directory, repositoryName, commit] = process.argv.slice(3)
   const run = (command, args, options = {}) => new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ['ignore', 'inherit', 'pipe'] })
