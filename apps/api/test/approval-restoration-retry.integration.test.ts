@@ -1,3 +1,4 @@
+import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { expect, it, vi } from 'vitest'
 import { createApprovalRecoverySetup, startWaiting } from './helpers/approvalRecovery.js'
 import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
@@ -81,5 +82,25 @@ it.each(['execution read', 'native attachment', 'native reconciliation'] as cons
     await t.finishApprovals()
     expect(t.f.provider.counts.responses).toBe(1)
     expect(t.f.provider.counts.starts).toBe(2)
+  }, 90_000,
+)
+
+it.each(['CODEX_APP_SERVER_TIMEOUT', 'CODEX_APP_SERVER_DISCONNECTED'])(
+  'restores the original approval after native transport failure %s', async code => {
+    const t = await setup('ordinary')
+    const pending = await startWaiting(t)
+    const original = await t.runtime.runs.getExecution(pending.executionId!)
+    await t.restart()
+    vi.spyOn(t.f.provider, 'attachSession').mockRejectedValueOnce(new HarnessExecutionError(code, 'Native link unavailable'))
+    await expect(t.runtime.engine.prepareInteraction(pending)).rejects.toThrow('Native link unavailable')
+    expect(await t.runtime.runs.hasPendingCleanup(t.runId)).toBe(false)
+    expect(await t.runtime.repository.get(pending.id)).toEqual(pending)
+    expect(await t.runtime.runs.getExecution(pending.executionId!)).toEqual(original)
+    await t.runtime.engine.prepareInteraction(pending)
+    const response = await t.runtime.service.respond(t.responder, approvalResponse(pending))
+    expect(response.interaction).toMatchObject({ id: pending.id, nativeSessionId: pending.nativeSessionId,
+      executionId: pending.executionId, deliveryState: 'delivered' })
+    await t.finishApprovals()
+    expect(t.f.provider.counts.responses).toBe(1)
   }, 90_000,
 )

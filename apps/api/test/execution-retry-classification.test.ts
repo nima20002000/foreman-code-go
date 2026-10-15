@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { ZodError } from 'zod'
 import { DomainError } from '../src/modules/errors.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import {
-  EXECUTION_MAX_ATTEMPTS, executionRetryDelayMs, isTransientExecutionError, transientExecutionFailure,
+  EXECUTION_MAX_ATTEMPTS, executionRetryDelayMs, isTransientExecutionError, isTransientExecutionResult, transientExecutionFailure,
 } from '../src/modules/runs/executionRetryPolicy.js'
 
 const testBackoff = process.env.FOREMAN_EXECUTION_RETRY_BACKOFF_MS
@@ -26,6 +26,7 @@ describe('execution failure classification', () => {
     Object.assign(new Error('reset'), { code: 'ECONNRESET' }),
     new Error('Query read timeout'),
     new Error('Native process is gone'),
+    new Error('Native process is gone', { cause: 'process disconnected' }),
   ])('retries infrastructure failure %#', (error) => {
     expect(isTransientExecutionError(error)).toBe(true)
   })
@@ -56,5 +57,30 @@ describe('execution failure classification', () => {
     expect([1, 2, 3, 4].map(executionRetryDelayMs)).toEqual([10_000, 30_000, 60_000, 60_000])
     process.env.FOREMAN_EXECUTION_RETRY_BACKOFF_MS = '5,7'
     expect([1, 2, 3].map(executionRetryDelayMs)).toEqual([5, 7, 7])
+  })
+})
+
+describe('wrapped infrastructure failures', () => {
+  it.each([
+    new HarnessExecutionError('PROVIDER_TEMPORARY_FAILURE', 'Try again', true),
+    new NativeDeliveryError('turn_submission', 'unknown', Object.assign(new Error('Lock unavailable'), { code: '55P03' })),
+    new DomainError('DATABASE_RETRY_DEADLINE_EXCEEDED', 'Retry the operation', 503, { retryable: true }),
+    new Error('Turn acknowledgement failed', { cause: Object.assign(new Error('Database disconnected'), { code: '08006' }) }),
+    Object.assign(new Error('Temporary wrapper'), { code: 'ACK_FAILED', cause: Object.assign(new Error('Lock unavailable'), { code: '55P03' }) }),
+  ])('preserves retryability through the error and recorded result %#', error => {
+    expect(isTransientExecutionError(error)).toBe(true)
+    expect(isTransientExecutionResult(transientExecutionFailure(error))).toBe(true)
+  })
+
+  it('accepts explicitly retryable provider results without an infrastructure allowlist entry', () => {
+    expect(isTransientExecutionResult({ outcome: 'failed', error: {
+      code: 'PROVIDER_TEMPORARY_FAILURE', message: 'Try again', retryable: true,
+    } })).toBe(true)
+  })
+
+  it('handles a cyclic cause without treating a coded task failure as infrastructure', () => {
+    const error = new DomainError('WORK_RESULT_INVALID', 'Invalid result', 409)
+    error.cause = error
+    expect(isTransientExecutionError(error)).toBe(false)
   })
 })

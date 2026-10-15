@@ -22,8 +22,9 @@ const transientCodes = new Set([
   'DEVICE_TRANSPORT_ERROR', 'DEVICE_RUNTIME_CLOSING', 'DEVICE_RUNTIME_UNAVAILABLE', 'DEVICE_CONNECTION_UNAVAILABLE',
   'DEVICE_HOST_UNAVAILABLE', 'DEVICE_CHANNEL_BACKPRESSURE', 'DEVICE_TRANSFER_CONNECTION_CHANGED', 'DEVICE_TRANSFER_EXPIRED',
   // PostgreSQL statement timeout, connection and restart failures; Node socket failures.
-  '40P01', '40001', '57014', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08006',
-  'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
+  '57014', '55P03', '40001', '40P01', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08006',
+  'DATABASE_RETRY_DEADLINE_EXCEEDED',
+  'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
 ])
 const transientPrefixes = ['CODEX_APP_SERVER_']
 
@@ -35,15 +36,7 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined
   const result = (error as { result?: ExecutionResult }).result
   if (result?.outcome === 'failed' && result.error?.code) return result.error.code
-  if ('code' in error && error.code !== undefined) return String(error.code)
-  const seen = new Set<unknown>([error])
-  let cause = (error as Error).cause
-  while (cause && typeof cause === 'object' && !seen.has(cause) && seen.size < 8) {
-    seen.add(cause)
-    if ('code' in cause && cause.code !== undefined) return String(cause.code)
-    cause = (cause as Error).cause
-  }
-  return undefined
+  return 'code' in error && error.code !== undefined ? String(error.code) : undefined
 }
 
 /** Shared classification. Transient: database timeouts and connection loss,
@@ -52,26 +45,33 @@ function errorCode(error: unknown): string | undefined {
  * runtime errors. Everything else (an Agent's failed result, an invalid output
  * contract, Stop, budget exhaustion, revoked access) is a real failure. */
 export function isTransientExecutionError(error: unknown): boolean {
-  if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
-  if (error instanceof ZodError) return false
-  if (typeof error === 'object' && error !== null
-    && (error as { result?: ExecutionResult }).result?.error?.retryable === true) return true
-  const code = errorCode(error)
-  if (code === undefined) return error instanceof Error && !(error instanceof AggregateError)
-  return isTransientExecutionCode(code)
+  const seen = new Set<object>()
+  while (typeof error === 'object' && error !== null && !seen.has(error)) {
+    seen.add(error)
+    if (error instanceof ZodError || error instanceof AggregateError) return false
+    if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
+    const wrapped = error as { result?: ExecutionResult; details?: { retryable?: boolean }; cause?: unknown }
+    if (wrapped.result?.error?.retryable === true || wrapped.details?.retryable === true) return true
+    const code = errorCode(error)
+    if (code !== undefined && isTransientExecutionCode(code)) return true
+    if (typeof wrapped.cause !== 'object' || wrapped.cause === null) {
+      return code === undefined && error instanceof Error
+    }
+    error = wrapped.cause
+  }
+  return false
 }
 
 /** The recorded cause of one abandoned attempt; retryable marks it for a fresh attempt. */
 export function transientExecutionFailure(error: unknown, fallbackCode = 'EXECUTION_START_INTERRUPTED'): ExecutionResult {
   const code = errorCode(error)
-  const known = code !== undefined && isTransientExecutionCode(code)
   const message = error instanceof Error && error.message ? error.message.slice(0, 2_000)
     : 'The attempt stopped before it produced an accepted result.'
-  return { outcome: 'failed', error: { code: known ? code : fallbackCode, message, retryable: true } }
+  return { outcome: 'failed', error: { code: code ?? fallbackCode, message, retryable: true } }
 }
 
 export function isTransientExecutionResult(result: ExecutionResult | undefined): boolean {
-  return result?.outcome === 'failed' && result.error?.retryable === true && isTransientExecutionCode(result.error.code)
+  return result?.outcome === 'failed' && result.error?.retryable === true
 }
 
 /** Delay before starting the attempt after `failedAttempt`. */

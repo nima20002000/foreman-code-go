@@ -10,6 +10,7 @@ import { translateCodexInteraction } from '../codexInteractions.js'
 import { normalizeCodexNotification } from '../codexNormalization.js'
 import { isObject, text, type JsonObject, type RpcRequest } from '../codexStdioTransport.js'
 import { CODEX_CAPACITY_ATTEMPTS, isCodexCapacityError } from '../codexCapacity.js'
+import { codexTurnFailure } from '../codexTurnFailure.js'
 import type { WaitingRequest, ResolvedRequest, StartingTurn, Runtime } from './types.js'
 import { MAX_EVENTS, MAX_EVENT_BYTES, MAX_STAGED, MAX_INTERACTIONS, requestKey, itemNotificationKey,
   stagedNativeOutputTerminal } from './support.js'
@@ -91,7 +92,7 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     const result: ExecutionResult = turn.status === 'completed'
       ? { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
       : turn.status === 'interrupted' ? { outcome: 'canceled' }
-        : { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: text(isObject(turn.error) ? turn.error.message : undefined) ?? 'Codex turn failed.', retryable: false } }
+        : codexTurnFailure(turn.error)
     const retry = runtime.capacityRetry
     runtime.terminalResult = result
     if (turn.status === 'failed' && retry?.canAdvanceIdentity && isCodexCapacityError(turn.error)

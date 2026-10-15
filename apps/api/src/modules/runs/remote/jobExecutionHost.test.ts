@@ -1,3 +1,4 @@
+import { DomainError } from '../../errors.js'
 import { privateFixtureDirectory } from '../../../../test/helpers/privateFixtureDirectory.js'
 import { prepareJobRepositoryFixture } from '../../../../test/helpers/jobRepositoryFixture.js'
 import { JOB_PRIVATE_GIT_LAYOUT } from '../../jobs/privateGitMounts.js'
@@ -27,10 +28,13 @@ import { RemoteJobExecutionHost } from './jobExecutionHost.js'
 import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 const roots: string[] = [], journals: RemoteOperationJournal[] = [], hosts: RemoteJobExecutionHost[] = []
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(hosts.splice(0).map(host => host.drain())); await Promise.all(journals.splice(0).map(journal => journal.close())); await Promise.all(roots.splice(0).map(root => rm(root,{recursive:true,force:true}))) })
-async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false) {
+async function fixture(loseClosureAck = false, denyPublication = false, wrongInput = false, loseCollectionAck = false,
+  options: { outputs?: ReturnType<typeof jobExecution>['acceptedSpec']['outputs']; preparationTimeoutMs?: number } = {}) {
   const root = await privateFixtureDirectory('w08-job-'); roots.push(root)
   const journal = await RemoteOperationJournal.open(join(root,'journal'),{initializeNewInstallation:true}); journals.push(journal)
   const execution = jobExecution()
+  if (options.outputs) execution.acceptedSpec.outputs = options.outputs
+  if (options.preparationTimeoutMs !== undefined) execution.acceptedSpec.policy.preparationTimeoutMs = options.preparationTimeoutMs
   const runtimeRoot = join(root, 'runtime')
   await mkdir(runtimeRoot, { mode: 0o700 })
   const { sourceRoot, gitMounts } = await prepareJobRepositoryFixture(execution, root, runtimeRoot)
@@ -39,7 +43,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,inputDigest:`sha256:${execution.acceptedSpec.specDigest}`,owner:execution.owner }
   const state = { loseClosureAck, loseCollectionAck, creates:0, collected:0, closureAccepted:false, reports:[] as string[], allowed:true,
     containerPresent: false, removals: 0, removalFailures: 0,
-    collectionError: null as Error | null }
+    collectionError: null as Error | null, publicationError: null as Error | null, sourceFailures: 0, verifications: 0 }
   let executionGate: Promise<void> | undefined
   let preparationGate: Promise<void> | undefined
   let preparationBegan: ((signal: AbortSignal) => void) | undefined
@@ -78,7 +82,11 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   vi.spyOn(OwnedOCIContainer.prototype,'close').mockResolvedValue(true)
   const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
-    source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts})},
+    source:{verify:async()=>{
+      state.verifications++
+      if (state.sourceFailures-- > 0) throw new DomainError('DEVICE_TRANSPORT_ERROR', 'Source is reconnecting', 503)
+      return {privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts}
+    }},
     inputs:{prepare:async (current, _source, signal)=>{
       preparationBegan?.(signal)
       await preparationGate
@@ -88,7 +96,7 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
       const inputHandle=await open(inputRoot,constants.O_RDONLY|constants.O_DIRECTORY),inputIdentity=await identity(inputHandle);await inputHandle.close()
       return {version:1,bindingId:'1'.repeat(64),recipient:{workspaceId:current.workspaceId,executionId:current.id,attemptId:wrongInput?'wrong':current.attemptId,operationId:current.operationId,owner:current.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest},inputSnapshotDigest:jobInputSnapshotDigest(current),manifestSha256:hash(manifest),manifestByteSize:manifest.length,directory:{relativePath:JOB_INPUT_DIRECTORY,...inputIdentity},files:[{relativePath:'manifest.json',sha256:hash(manifest),byteSize:manifest.length},{relativePath:'workflow-input.json',sha256:hash(workflow),byteSize:workflow.length}],readonlyMountRequired:true}
     }},
-    authorize:async(_intent,_execution,action)=>{if(denyPublication&&action==='publish')throw new Error('cleanup cannot publish');if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(state.loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(state.loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
+    authorize:async(_intent,_execution,action)=>{if(action==='publish'&&state.publicationError)throw state.publicationError;if(denyPublication&&action==='publish')throw new DomainError('ACCESS_DENIED','cleanup cannot publish',403);if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(state.loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(state.loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
     collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++;if(state.collectionError)throw state.collectionError} });hosts.push(host)
   return {root,journal,execution,intent,state,host,supervisor,
     holdExecution(gate: Promise<void>) { executionGate = gate },
@@ -390,4 +398,70 @@ describe('SQL-only current accepted job closure receipts',()=>{
     if(field==='native')f.row.last_receipt={...f.receipt,native:undefined}
     await expect(f.dispatch.readAcceptedClosureReceipt(f.sql,f.input)).rejects.toMatchObject({code:expect.stringMatching(/^JOB_CLOSURE_/)})
   })
+})
+
+describe('remote Job infrastructure retries', () => {
+  it.each([
+    new DomainError('DEVICE_CHANNEL_BACKPRESSURE', 'Main is busy', 503),
+    Object.assign(new Error('Database lock timed out'), { code: '55P03' }),
+    new Error('Main connection closed'),
+  ])('retains successful outputs after transient publication authorization failure %#', async failure => {
+    const f = await fixture(false, false, false, false, {
+      outputs: [{ path: 'result.json', mediaType: 'application/json', required: true }],
+    })
+    f.state.publicationError = failure
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      terminal: { processStopped: true, exitCode: 7 }, publication: 'process_recorded',
+    } })
+    expect(f.state.collected).toBe(0)
+    const command = await f.journal.jobOutputCommand(f.intent.operationId, {
+      path: 'result.json', mediaType: 'application/json', sha256: '1'.repeat(64), byteSize: 2,
+    })
+    f.state.publicationError = null
+    await f.host.handle({ method: 'job-status', intent: f.intent })
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      terminal: { processStopped: true, exitCode: 7 }, publication: 'complete',
+    } })
+    expect(await f.journal.jobOutputCommand(f.intent.operationId, {
+      path: 'result.json', mediaType: 'application/json', sha256: '1'.repeat(64), byteSize: 2,
+    })).toBe(command)
+    expect(f.state.creates).toBe(1)
+    expect(f.state.collected).toBe(1)
+  })
+
+  it('retries transient source preparation in the same accepted operation before native entry', async () => {
+    const f = await fixture()
+    f.state.sourceFailures = 1
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      intent: f.intent, execution: { id: f.execution.id, attemptId: f.execution.attemptId },
+      publication: 'complete', terminal: { outcome: 'build_failed', processStopped: true },
+    } })
+    expect(f.state.verifications).toBe(2)
+    expect(f.state.creates).toBe(1)
+  })
+})
+
+it('resumes the original Job from status after transient preparation exhausts its local deadline', async () => {
+  const f = await fixture(false, false, false, false, { preparationTimeoutMs: 1000 })
+  f.state.sourceFailures = Infinity
+  await f.host.deliver(f.intent, f.execution)
+  await f.host.drain()
+  const pending = await f.journal.jobStatus(f.intent.operationId)
+  expect(pending).toMatchObject({ status: 'known', receipt: {
+    phase: 'received', entryAttempted: false, publication: 'pending',
+  } })
+  if (pending.status !== 'known') throw new Error('Original Job receipt missing')
+  expect(pending.receipt.terminal).toBeUndefined()
+  expect(f.state.creates).toBe(0)
+  f.state.sourceFailures = 0
+  await f.host.handle({ method: 'job-status', intent: f.intent })
+  await f.host.drain()
+  expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+    intent: f.intent, publication: 'complete', terminal: { outcome: 'build_failed', processStopped: true },
+  } })
+  expect(f.state.creates).toBe(1)
 })
