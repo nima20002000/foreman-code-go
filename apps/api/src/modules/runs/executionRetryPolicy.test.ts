@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { managedMcpChannelFixture } from '../../../test/helpers/managedMcpChannel.js'
 import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
+import { RunGraphError } from '../run-graph/errors.js'
 import {
-  isTransientExecutionCode, isTransientExecutionError, isTransientExecutionResult, transientExecutionFailure,
+  executionFailureClass, isTransientExecutionCode, isTransientExecutionError, isTransientExecutionResult,
+  transientExecutionFailure,
 } from './executionRetryPolicy.js'
 
 describe('lost original remote replies', () => {
@@ -44,6 +46,25 @@ describe('lost original remote replies', () => {
 })
 
 describe('explicit execution retry classification', () => {
+  it('retries an uncoded database disconnect wrapped in a graph transaction failure', () => {
+    const cause = new Error('Connection terminated unexpectedly')
+    const error = new RunGraphError('GRAPH_TRANSACTION_FAILED', { cause })
+
+    expect(executionFailureClass(error)).toBe('transient')
+    expect(isTransientExecutionError(error)).toBe(true)
+  })
+
+  it.each(['wrapper', 'cause'] as const)(
+    'honors an explicit permanent class on the %s of a wrapped database disconnect', target => {
+      const cause = new Error('Connection terminated unexpectedly')
+      const error = new RunGraphError('GRAPH_TRANSACTION_FAILED', { cause })
+      Object.assign(target === 'wrapper' ? error : cause, { class: 'permanent' })
+
+      expect(executionFailureClass(error)).toBe('permanent')
+      expect(isTransientExecutionError(error)).toBe(false)
+    },
+  )
+
   it.each([
     { code: 'CODEX_APP_SERVER_DISCONNECTED', retryable: false },
     { code: 'ECONNRESET', details: { retryable: false } },
