@@ -8,6 +8,7 @@ import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled, readCurrentExecutions } from './helpers/wave25Agent3.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { rejectableDeferred } from './helpers/deferred.js'
+import { operationDuration } from './helpers/operationDuration.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -181,13 +182,11 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
     const batches: number[] = []
     const initialFramesPublished = rejectableDeferred()
     let publishedFrames = 0
-    let publicationMs = 0
+    const publication = operationDuration()
     const append = f.runs.appendNativeEvents.bind(f.runs)
     vi.spyOn(f.runs, 'appendNativeEvents').mockImplementation(async (...args) => {
       batches.push(args[0].length)
-      const began = performance.now()
-      try { await append(...args) }
-      finally { publicationMs += performance.now() - began }
+      await publication.measure(() => append(...args))
       publishedFrames += args[0].filter(({ event }) => event.type === 'native.notification').length
       if (publishedFrames === 64) initialFramesPublished.resolve()
     })
@@ -262,7 +261,7 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
          on s.run_id=p.run_id and s.source_kind='native_event' and s.source_id=p.proof_id
          where p.run_id=$1 and p.record#>>'{original,event,type}'='native.notification'`, [runId])
       expect(sources.rows[0]?.count).toBe(512)
-      expect(publicationMs).toBeLessThan(10_000)
+      expect(publication.elapsedMs).toBeLessThan(10_000)
       expect(await f.runs.hasPendingCleanup(runId)).toBe(false)
       await (await graphParity(f.db.pool, scope)).compare()
       const read = await graphRpc(operator.app, operator.reader.token, 'tools/call', { name: 'run_get',
