@@ -60,3 +60,25 @@ it('retains periodic recovery checks and stops them on shutdown', async () => {
     vi.useRealTimers()
   }
 })
+
+it('starts before Worker artifacts exist and keeps periodic synchronization active', async () => {
+  const f = await fixture()
+  f.stop()
+  await rm(f.directory, { recursive: true })
+  f.reportError.mockClear()
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  try {
+    const stop = startWorkerPublicationSync({ directory: f.directory, version: '1.0.0' }, f.sync, f.reportError)
+    cleanup.push(stop)
+    await mkdir(f.directory)
+    await f.write('published')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f.sync).toHaveBeenCalledOnce()
+    expect(f.reportError).not.toHaveBeenCalled()
+    stop()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(f.sync).toHaveBeenCalledOnce()
+  } finally {
+    vi.useRealTimers()
+  }
+})
