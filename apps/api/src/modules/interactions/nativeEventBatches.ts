@@ -43,10 +43,12 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
       if (!batch.length) flushAt = Date.now() + flushIntervalMs
       batch.push(next.value)
       // Provider frames acquire their execution identity at the persistence boundary.
+      const evidence = selectNativeGraphEvidence(next.value.type, next.value.payload)
       const immediate = [
         NATIVE_PRODUCER_REJECTION_TYPE, 'transport.disconnected', 'interaction.pending', 'permission.asked',
       ].includes(next.value.type)
-        || selectNativeGraphEvidence(next.value.type, next.value.payload).kind !== 'ignored'
+        || evidence.kind === 'invalid'
+        || evidence.kind === 'evidence' && !next.value.type.startsWith('item.')
       // Ready reads fill the bounded batch; the timer race flushes a waiting read.
       if (immediate || batch.length === NATIVE_EVENT_BATCH_SIZE) {
         yield batch

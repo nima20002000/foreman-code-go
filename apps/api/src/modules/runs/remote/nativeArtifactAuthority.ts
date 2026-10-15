@@ -131,7 +131,11 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
   }
   /** Resolves an already admitted workflow conversation. It never creates a chat or forks a native session. */
   resolveWorkflowContext(attempt: ArtifactAttempt, transferContext: TransferContext, query?: FileQuery): Promise<AcceptedArtifactPublication> {
-    const resolve = async (sql: FileQuery): Promise<AcceptedArtifactPublication> => {
+    return this.resolveAuthorizedWorkflowContext(attempt, transferContext, query).then(result => result.accepted)
+  }
+  resolveAuthorizedWorkflowContext(attempt: ArtifactAttempt, transferContext: TransferContext,
+    query?: FileQuery): Promise<{ accepted: AcceptedArtifactPublication; authorized: AuthorizedFileCaller }> {
+    const resolve = async (sql: FileQuery) => {
       const current = await acceptedAttempt(this.mainId, this.ports, attempt, sql)
       if (current.configuration.harness.harness !== 'codex' || !current.execution.nativeSessionId) return denied()
       const conversation = await sql.query<{ id: string }>(`select id from operator_conversations where kind='agent' and deleted_at is null
@@ -153,13 +157,14 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
         nativeSessionId: current.execution.nativeSessionId, turnId: receipt.native.turnId,
         allowMutation: current.configuration.harness.sandbox === 'workspace-write', allowedTools: codexChatFileTools(current.configuration.harness) }
       const accepted = { attempt: structuredClone(attempt), transferContext: structuredClone(transferContext), context }
-      await this.locked(accepted, sql)
-      return accepted
+      const authorized = await this.locked(accepted, sql, current)
+      return { accepted, authorized }
     }
     return query ? resolve(query) : withExclusiveGraphConnection(this.pool, connection => connection.transaction(resolve))
   }
-  private async locked(accepted: AcceptedArtifactPublication, sql: FileQuery): Promise<AuthorizedFileCaller> {
-    const current = await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql)
+  private async locked(accepted: AcceptedArtifactPublication, sql: FileQuery,
+    loaded?: Awaited<ReturnType<typeof acceptedAttempt>>): Promise<AuthorizedFileCaller> {
+    const current = loaded ?? await acceptedAttempt(this.mainId, this.ports, accepted.attempt, sql)
     const { context, transferContext: transfer } = accepted, scope = context.scope.chat
     if (current.placement.hostRef.kind !== 'device' || !current.placement.registration || scope.kind !== 'agent'
       || scope.workspaceId !== accepted.attempt.workspaceId || scope.workflowId !== accepted.attempt.workflowId

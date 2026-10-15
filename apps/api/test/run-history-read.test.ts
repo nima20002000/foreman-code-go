@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementGrant } from '@foreman-code/contracts/management'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, RUN_GRAPH_LIMITS, type RunWorktree } from '@foreman-code/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, RepeatOccurrenceV1Schema, RUN_GRAPH_LIMITS, type RunWorktree } from '@foreman-code/contracts/wave25'
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
-import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
+import { readRepeatExecutionLocked, readRepeatExecutionsLocked } from '../src/modules/runs/repeatExecutionRead.js'
+import { repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
+import { isGraphTransactionFinalizing } from '../src/modules/run-graph/connection.js'
 import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activitiesSql.js'
 import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
@@ -14,12 +16,19 @@ import { compactRunDetails } from '../src/mcp/operator/runSummary.js'
 // The immutable publication readers are ports here; live grants, transaction
 // ownership, bounded queries and public redaction run their real implementations.
 vi.mock('../src/modules/runs/repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: vi.fn(), readRecordedRepeatRunSnapshot: vi.fn() }))
-vi.mock('../src/modules/runs/repeatPostgres.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../src/modules/runs/repeatPostgres.js')>(), readRepeatExecutionLocked: vi.fn() }))
+vi.mock('../src/modules/runs/repeatExecutionRead.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/modules/runs/repeatExecutionRead.js')>()
+  return { ...actual, readRepeatExecutionLocked: vi.fn(actual.readRepeatExecutionLocked),
+    readRepeatExecutionsLocked: vi.fn(actual.readRepeatExecutionsLocked) }
+})
 beforeEach(() => vi.resetAllMocks())
 
-function fixture(queued = false) {
-  const f = makeCurrentWorkflowFixture('history', 'single')
+function fixture(queued = false, size = 1, form: 'single' | 'repeat' = 'single') {
+  const f = makeCurrentWorkflowFixture('history', form)
+  const entry = { runInput: {}, external: [], carry: null }
+  const occurrence = form === 'repeat' ? RepeatOccurrenceV1Schema.parse({ contractVersion: 1,
+    identity: { scope: f.scope, blockId: 'repair', occurrenceId: 'history-occurrence', occurrenceIndex: 1 },
+    input: { bindingId: 'history-entry', inputDigest: repeatDigest(entry), previous: null } }) : null
   const run = AcceptedWorkflowRunV3Schema.parse({ ...f.run, authorizationPrincipalId: 'private-authority',
     ...(queued ? { executionState: 'running', outcome: 'pending' } : {
       executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded', output: { text: 'saved-result' } },
@@ -27,7 +36,8 @@ function fixture(queued = false) {
       identityHash: `sha256:${'1'.repeat(64)}` } })
   const { executionId, ...identity } = f.identities[0]!
   const execution = { ...identity, id: executionId, runId: run.id,
-    input: {}, createdAt: f.createdAt,
+    input: form === 'repeat' ? { executionSemanticsVersion: 3, runInput: {}, occurrence, entry, predecessors: [] } : {},
+    createdAt: f.createdAt,
     ...(queued ? { state: 'queued' as const } : { state: 'completed' as const, result: run.result, finishedAt: f.createdAt }),
     workingDirectory: '/private/project', runtimeDirectory: '/private/runtime' }
   const worktree: RunWorktree = { workingDirectory: '/private/worktree', branch: 'run-branch',
@@ -39,9 +49,25 @@ function fixture(queued = false) {
   let revoked = false
   vi.mocked(readRecordedRepeatRunSnapshot).mockResolvedValue({ run, version: f.version,
     configurations: f.configurations, stopRequested: false, cleanupPending: false } as Awaited<ReturnType<typeof readAcceptedRepeatRunLocked>>)
-  vi.mocked(readRepeatExecutionLocked).mockResolvedValue({ execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
-    slotId: 'history-slot', input: { executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [] },
-    inputDigest: `sha256:${'1'.repeat(64)}`, accepted: true })
+  const executions = Array.from({ length: size }, (_, index) => index === 0 ? execution
+    : { ...execution, id: `history-execution-${index}`, attempt: index + 1 })
+  const storedRow = (item: typeof execution) => ({ record: item, accepted: true,
+    execution_id: item.id, identity: occurrence ? { ...repeatExecutionIdentity(item), occurrence: occurrence.identity }
+      : repeatExecutionIdentity(item),
+    slot_id: repeatSlotId(run.id, { nodeId: item.workflowNodeId, occurrence: occurrence?.identity ?? null }),
+    occurrence_id: occurrence?.identity.occurrenceId ?? null,
+    occurrence_record: occurrence, occurrence_input: JSON.stringify(entry), occurrence_digest: repeatDigest(entry),
+    work_activation_id: null, native_work_activation_id: null, attempt_work_activation_id: null,
+    execution_run_id: run.id, execution_node_id: item.workflowNodeId, execution_agent_id: item.agentId,
+    execution_attempt: item.attempt, execution_occurrence_id: occurrence?.identity.occurrenceId ?? null,
+    identity_occurrence_id: occurrence?.identity.occurrenceId ?? null,
+    technical_attempt: item.attempt, workflow_node_id: item.workflowNodeId,
+    input_json: JSON.stringify(item.input), input_digest: repeatDigest(item.input),
+    protocol_version: 1, payload_digest: repeatDigest(item.input) })
+  const receipt = { workspace_id: run.workspaceId, workflow_id: run.workflowId, workflow_version_id: run.workflowVersionId,
+    execution_semantics_version: 3, protocol_version: 1, head_sequence: '1', source_digest: repeatDigest(execution.input),
+    source_semantic_digest: repeatDigest({ saved: true }), source_sequence: '1', effect_digest: repeatDigest(execution.input),
+    effect_semantic_digest: repeatDigest({ saved: true }), effect_sequence: '1' }
   let transactionOutcome = 'open'
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (/^(begin|commit|rollback)/.test(sql)) {
@@ -49,6 +75,19 @@ function fixture(queued = false) {
       if (sql === 'rollback') transactionOutcome = 'rolled_back'
       return { rows: [] }
     }
+    if (sql.includes('with pinned_head')) {
+      const item = executions.find(item => item.id === values?.[0])!
+      return { rows: [{ heads: [{ protocol_version: 1 }], executions: [storedRow(item)],
+        effects: [{ payload_digest: repeatDigest(item.input) }] }] }
+    }
+    if (sql.includes('with head as materialized')) return { rows: executions.map(storedRow).reverse() }
+    if (sql.includes('from run_repeat_occurrences')) return { rows: [{ record: occurrence,
+      input_json: JSON.stringify(entry), input_digest: repeatDigest(entry) }] }
+    if (sql.includes('as receipts')) {
+      const inputs = JSON.parse(String(values?.[0])) as { ordinal: number }[]
+      return { rows: inputs.map(input => ({ ordinal: input.ordinal, receipts: [receipt] })) }
+    }
+    if (sql.includes('from runs r join workflow_versions')) return { rows: [receipt] }
     if (sql.startsWith('select workspace_id,workflow_id from runs')) {
       expect(values).toEqual([run.id, run.workspaceId])
       return { rows: [{ workspace_id: run.workspaceId, workflow_id: run.workflowId }] }
@@ -74,8 +113,11 @@ function fixture(queued = false) {
     if (sql.includes('from ci_runs')) return { rows: [] }
     if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
     if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
-    if (sql.startsWith('select record from harness_executions')) return { rows: [{ record: execution }] }
-    if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
+    if (sql.startsWith('select record from harness_executions')) {
+      return { rows: executions.filter(item => Array.isArray(values?.[1])
+        ? values[1].includes(item.id) : item.id === values?.[0]).map(item => ({ record: item })) }
+    }
+    if (sql.includes('from harness_executions')) return { rows: executions.map(item => ({ id: item.id })) }
     if (sql.includes('from run_activity')) return { rows: [] }
     if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
     if (sql.includes('from run_worktrees')) return { rows: [{ record: worktree }] }
@@ -84,7 +126,7 @@ function fixture(queued = false) {
   })
   const release = vi.fn()
   const pool = { connect: async () => ({ query, release, on() {}, removeListener() {} }) } as unknown as pg.Pool
-  return { ...f, run, execution, worktree, principal, query, release,
+  return { ...f, run, execution, executions, worktree, principal, query, release,
     transactionOutcome: () => transactionOutcome,
     read: () => readCurrentRunDetails(pool, principal, run.workspaceId, run.id),
     grants: (value: ManagementGrant[]) => { liveGrants = value }, revoke: () => { revoked = true } }
@@ -148,8 +190,6 @@ describe('saved current Run read', () => {
     expect(value.activitySnapshot).toMatchObject({ scope: { runId: f.run.id, workflowVersionId: f.version.id }, active: [], queued: [] })
     expect(JSON.stringify(value)).not.toMatch(/private-authority|private\/project|private\/runtime|private\/worktree/)
     expect(value).not.toHaveProperty('worktrees')
-    expect(readRepeatExecutionLocked).toHaveBeenCalledWith(expect.objectContaining({ transaction: true }),
-      expect.objectContaining({ run: f.run }), f.execution.id)
     expect(f.transactionOutcome()).toBe('committed')
     expect(f.release).toHaveBeenCalledOnce()
   })
@@ -171,6 +211,7 @@ describe('saved current Run read', () => {
     await expect(f.read()).rejects.toMatchObject({ status: 403 })
     expect(readRecordedRepeatRunSnapshot).not.toHaveBeenCalled()
     expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
+    expect(readRepeatExecutionsLocked).not.toHaveBeenCalled()
     expect(f.transactionOutcome()).toBe('rolled_back')
     expect(f.release).toHaveBeenCalledOnce()
   })
@@ -179,16 +220,48 @@ describe('saved current Run read', () => {
     const f = fixture()
     f.execution.input = { payload: 'x'.repeat(RUN_GRAPH_LIMITS.snapshotBytes) }
     vi.mocked(readRepeatExecutionLocked).mockRejectedValue(new Error('execution pin changed'))
+    vi.mocked(readRepeatExecutionsLocked).mockRejectedValue(new Error('execution pin changed'))
 
     await expect(f.read()).rejects.toMatchObject({ code: 'RUN_DETAIL_TOO_LARGE', status: 409 })
     expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
+    expect(readRepeatExecutionsLocked).not.toHaveBeenCalled()
     expect(f.release).toHaveBeenCalledOnce()
   })
 
   it('propagates an immutable execution pin conflict without returning partial history', async () => {
     const f = fixture()
     vi.mocked(readRepeatExecutionLocked).mockRejectedValue(new Error('execution pin changed'))
+    vi.mocked(readRepeatExecutionsLocked).mockRejectedValue(new Error('execution pin changed'))
     await expect(f.read()).rejects.toThrow('execution pin changed')
+    expect(f.transactionOutcome()).toBe('rolled_back')
+  })
+
+  it.each([[1, 27], [16, 27], [128, 34]])('reads %i execution attempts within %i statements', async (size, ceiling) => {
+    const f = fixture(false, size)
+    const detail = await f.read()
+    expect(detail.executions.map(item => item.id)).toEqual(f.executions.map(item => item.id))
+    expect(f.query.mock.calls.length).toBeLessThanOrEqual(ceiling)
+    expect(f.transactionOutcome()).toBe('committed')
+  })
+
+  it.each([[1, 27], [16, 27], [128, 34]])('reads %i repeated execution attempts within %i statements', async (size, ceiling) => {
+    const f = fixture(false, size, 'repeat')
+    const detail = await f.read()
+    expect(detail.executions.map(item => item.id)).toEqual(f.executions.map(item => item.id))
+    expect(f.query.mock.calls.length).toBeLessThanOrEqual(ceiling)
+  })
+
+  it('rejects a missing canonical receipt at the live commit check', async () => {
+    const f = fixture(false, 16)
+    const query = f.query.getMockImplementation()!
+    f.query.mockImplementation(async (...args) => {
+      const result = await query(...args)
+      const sql = vi.mocked(readRepeatExecutionsLocked).mock.calls[0]?.[0]
+        ?? vi.mocked(readRepeatExecutionLocked).mock.calls[0]?.[0]
+      if (sql && isGraphTransactionFinalizing(sql)) return { rows: [] }
+      return result
+    })
+    await expect(f.read()).rejects.toMatchObject({ code: 'REPEAT_PUBLICATION_RECEIPT_CONFLICT' })
     expect(f.transactionOutcome()).toBe('rolled_back')
   })
 })
