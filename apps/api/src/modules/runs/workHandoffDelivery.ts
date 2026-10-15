@@ -10,8 +10,7 @@ import {
   availableWorkAlternativesLocked, createWorkLimitNotice, type WorkLimitNoticeInput,
 } from './workHandoffNotice.js'
 import { selectedWorkHandoffRoutes } from './workHandoffRouting.js'
-import { parseWorkResultForInput } from './workHandoffResult.js'
-import { readWorkReturnRequestLocked } from './workReturnValidation.js'
+import { parseWorkResultLocked, readWorkReturnRequestLocked } from './workReturnValidation.js'
 
 interface DeliveryContext {
   sql: GraphTransactionSql; scope: RepeatScope; version: WorkflowVersionV3; now: string
@@ -38,7 +37,7 @@ async function assertNoticeFits(context: DeliveryContext, input: WorkLimitNotice
 
 async function assertReturnFits(context: DeliveryContext, execution: HarnessExecution,
   activationId: string, result: WorkHandoffResult): Promise<void> {
-  const routing = parseWorkResultForInput(execution.result!, execution.input).routing
+  const routing = (await parseWorkResultLocked(context, execution, activationId)).routing
   if (routing.kind !== 'return') return repeatConflict('WORK_RETURN_RESULT_CONFLICT')
   const request = await readWorkReturnRequestLocked(context, activationId, routing.requestId)
   if (request.destinationNodeId !== execution.workflowNodeId) return repeatConflict('WORK_RETURN_ANCESTRY_CONFLICT')
