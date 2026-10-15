@@ -79,7 +79,11 @@ export class CircleRest {
     const workflows = await this.list<Workflow>(`/api/v2/pipeline/${id}/workflow`, args, timeoutMs)
     if (!workflows) return null
     const mapped = await Promise.all(workflows.map(async workflow => {
-      const jobs = await this.list<JobRef>(`/api/v2/workflow/${workflow.id}/job`, args, timeoutMs)
+      const jobs = await this.list<JobRef>(`/api/v2/workflow/${workflow.id}/job`, args, timeoutMs).catch(error => {
+        // A workflow can be visible before CircleCI serves its jobs; the pipeline still exists.
+        if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND') return []
+        throw error
+      })
       if (!jobs) return null
       return { ...lifecycle(workflow.status), stopped_at: workflow.stopped_at, jobs }
     }))
