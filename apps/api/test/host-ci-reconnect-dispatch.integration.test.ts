@@ -50,8 +50,10 @@ it('dispatches a planned gate part when fresh Worker readiness is observed durin
     }
     await f.value(f.operator, 'ci_computers_list', {})
     let pause = true
+    let discoveries = 0
     const computers = f.endpoint.computers.bind(f.endpoint)
     f.endpoint.computers = async () => {
+      discoveries++
       const available = await computers()
       if (pause) {
         pause = false
@@ -64,9 +66,11 @@ it('dispatches a planned gate part when fresh Worker readiness is observed durin
     await observingOffline
     ready = true
     await f.value(f.operator, 'ci_computers_list', {})
+    const beforeWake = discoveries
     wake = f.ci.dispatch()
     release()
     await Promise.all([dispatch, wake])
+    expect(discoveries).toBeGreaterThan(beforeWake)
 
     const recovered = (await read()).partitions!.find(run => run.id === planned.id)!
     expect(recovered).toMatchObject({ state: 'running', plannedHostKey: worker.key,
