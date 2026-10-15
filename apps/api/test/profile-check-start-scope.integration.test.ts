@@ -7,6 +7,7 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflo
   ManualRunStartResultSchema, type WorkflowDefinitionV3, type WorkflowVersionV3 }
   from '@foreman-code/contracts/wave25'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { reportProfileCheckState } from './helpers/workerProfileRequalification.js'
 import { latestEvidence, pinnedPlacements, profileReader, profiles }
   from './helpers/harnessInstallationUpdate.js'
 
@@ -155,6 +156,9 @@ describe('profile-scoped Start after Worker reconnect', () => {
         ?.qualification).toBe('qualifying')
       const replay = ManualRunStartResultSchema.parse(await fixture.value('run_start', readyInput))
       expect(replay.run.id).toBe(started.run.id)
+    } catch (error) {
+      await reportProfileCheckState(fixture, 'Profile check Start scope state', error)
+      throw error
     } finally {
       if (modelsBlocked) await fixture.provider.releaseModels()
       if (turnsBlocked) await fixture.provider.releaseWorkflowTurns()

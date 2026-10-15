@@ -2,17 +2,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { DomainError } from '../src/modules/errors.js'
 import { WorkerLaunchCredentialService } from '../src/modules/harnesses/mcpDetection.js'
+import { EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS } from '../src/modules/runs/executionRetryPolicy.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { deferred } from './helpers/deferred.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { handoffOutput, workHandoffSiblings } from './helpers/workHandoffSiblings.js'
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+})
+
+/** Two immediate retries, then a third delay beyond the infrastructure retry window: three attempts per node. */
+const exhaustAfterThreeAttempts = () =>
+  vi.stubEnv('FOREMAN_EXECUTION_RETRY_BACKOFF_MS', `0,0,${EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS}`)
 
 describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
   it.each([false, true])('keeps queued and starting siblings open after the first return (preflight fails: %s)',
     async failPreflight => {
+      exhaustAfterThreeAttempts()
       const fixture = workHandoffSiblings()
       const [coordinator, first, starting, queued] = fixture.version.definition.nodes
       if (!coordinator || !first || !starting || !queued) throw new Error('Four nodes are required')
@@ -127,6 +136,7 @@ describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
     }, 60_000)
 
   it('retains both sibling launch causes and completes their work activations', async () => {
+    exhaustAfterThreeAttempts()
     const fixture = workHandoffSiblings()
     const [coordinator, healthy, first, second] = fixture.version.definition.nodes
     if (!coordinator || !healthy || !first || !second) throw new Error('Four nodes are required')
