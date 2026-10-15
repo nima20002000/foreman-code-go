@@ -15,6 +15,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
+import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
 import {
   DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestIsBulk, deviceRequestIsObservation,
   effectiveDeviceRequestPriority,
@@ -77,6 +78,8 @@ export class DeviceApplicationChannel {
   private inboundBytes = 0
   private outboundBytes = 0
   private failure: Error | undefined
+  private authorization: Promise<void> | undefined
+  private heartbeatAuthorizing = false
   private readonly detach: () => void
   constructor(private readonly options: {
     side: 'main' | 'worker'; binding: DeviceSessionBinding; socket: DeviceSocket; signal: AbortSignal
@@ -124,8 +127,36 @@ export class DeviceApplicationChannel {
   }
   private async authorized() {
     this.current()
-    if (this.options.revalidate) await withDeviceDeadline(this.track(this.options.revalidate()), this.abort.signal, 10_000)
+    if (this.options.revalidate) {
+      // Share only an in-flight read; every later operation still validates live authority.
+      this.authorization ??= this.track(this.options.revalidate()).finally(() => { this.authorization = undefined })
+      try {
+        await withDeviceDeadline(this.authorization, this.abort.signal, 10_000)
+      } catch (error) {
+        this.current()
+        if (isTransientDatabaseOrSocketError(error)
+          || error instanceof DeviceConnectionError && error.code === 'timeout') {
+          const failure = deviceApplicationFailure(error)
+          throw new DeviceApplicationError(failure.code, undefined, { cause: error, class: failure.class })
+        }
+        this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
+        throw error
+      }
+    }
     this.current()
+  }
+  private revalidateHeartbeat() {
+    if (this.heartbeatAuthorizing) return
+    this.heartbeatAuthorizing = true
+    void this.track(this.authorized()).catch(error => {
+      if (this.abort.signal.aborted) return
+      if (error instanceof DeviceApplicationError && error.retryable) {
+        componentLogger('devices').warn({ err: error, deviceId: this.binding.deviceId,
+          operation: 'revalidate device heartbeat' }, 'Device heartbeat authorization temporarily unavailable')
+        return
+      }
+      this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
+    }).finally(() => { this.heartbeatAuthorizing = false })
   }
   private stopRequest(namespace: string, payload: unknown): boolean {
     if (namespace === EXECUTION_AUTHORITY_EXTENSION.namespace) {
@@ -470,7 +501,11 @@ export class DeviceApplicationChannel {
       const payload: unknown = JSON.parse(packet.subarray(0, assembly.jsonBytes).toString())
       const bytes = assembly.binaryBytes ? packet.subarray(assembly.jsonBytes) : undefined
       if (assembly.kind !== 'request') {
-        await this.authorized()
+        try { await this.authorized() }
+        catch (error) {
+          this.pending.get(id)?.reject(error instanceof Error ? error : new DeviceConnectionError('transport'))
+          return
+        }
         if (assembly.abort.signal.aborted) return
         const pending = this.pending.get(id)
         if (pending) {
@@ -482,11 +517,11 @@ export class DeviceApplicationChannel {
         }
         return
       }
-      await this.authorized()
       const registration = this.registrations.find((item) => item.namespace === assembly.namespace)
       if (!registration?.handle || assembly.abort.signal.aborted) return
       let result: DeviceApplicationResult
       try {
+        await this.authorized()
         if (assembly.stop && !this.stopRequest(assembly.namespace, payload)) throw new DeviceApplicationError('forbidden')
         if (assembly.observation && !deviceRequestIsObservation(assembly.namespace, payload)) {
           throw new DeviceApplicationError('forbidden')
@@ -549,7 +584,7 @@ export class DeviceApplicationChannel {
         const frame = readFrame(next.value)
         if (frame.type === (worker ? 'pong' : 'ping')) {
           if (frame.connectionEpoch !== this.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
-          await this.authorized(); lastHeartbeat = Date.now()
+          lastHeartbeat = Date.now()
           const peerTime = typeof frame.observedAt === 'string' ? Date.parse(frame.observedAt) : NaN
           if (worker && Number.isFinite(peerTime)) this.mainClock.observe(peerTime)
           if (!worker) {
@@ -557,6 +592,8 @@ export class DeviceApplicationChannel {
             this.queueFrame({ type: 'pong', connectionEpoch: this.binding.connectionEpoch,
               observedAt: new Date(lastHeartbeat).toISOString() })
           }
+          // Transport liveness does not wait for database-backed application authority.
+          this.revalidateHeartbeat()
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
         this.current(); this.options.onObservedFrame?.(observedAt)
@@ -574,7 +611,7 @@ export class DeviceApplicationChannel {
       detail: error instanceof DeviceConnectionError ? error.detail : undefined, ...(code ? {} : { err: error }) },
     'Device link closed')
     // Name the cause to the peer, whose own log would otherwise only see the socket end.
-    if (code && code !== 'transport' && code !== 'revoked') {
+    if (code && code !== 'transport') {
       try { sendFrame(this.options.socket, { type: 'blocked', code }) } catch { /* ignore: the socket is already unusable */ }
     }
     for (const pending of this.pending.values()) { pending.abort.abort(); pending.reject(error) }
