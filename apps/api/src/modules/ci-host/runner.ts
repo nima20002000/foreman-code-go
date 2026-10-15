@@ -276,7 +276,10 @@ export class HostCiRunner {
     const runs = []
     const directory = join(this.root, 'runs')
     const names = existsSync(directory) ? (await readdir(directory)).sort() : []
-    for (const runId of names) runs.push(await this.refresh(runId))
+    for (const runId of names) {
+      const run = await this.refreshRetained(runId)
+      if (run) runs.push(run)
+    }
     const active: RunMeta[] = []
     for (const run of runs) {
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(run.runId))
@@ -332,10 +335,20 @@ export class HostCiRunner {
     if (!existsSync(directory)) return []
     const active = []
     for (const runId of await readdir(directory)) {
-      const run = await this.refresh(runId)
+      const run = await this.refreshRetained(runId)
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
     return active
+  }
+
+  /** One incomplete or damaged retained run must not abort status and admission for the rest of the computer. */
+  private async refreshRetained(runId: string): Promise<CiHostRun | null> {
+    try {
+      return await this.refresh(runId)
+    } catch (error) {
+      log.warn({ err: error, runId }, 'Skipping an incomplete or damaged CI run record')
+      return null
+    }
   }
 
   private start(request: StartRequest) {
