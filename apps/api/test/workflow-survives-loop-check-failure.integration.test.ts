@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { canonicalGraphJson, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { faultWorkflowFixture } from './helpers/faultWorkflowFixture.js'
 import { readUntil } from './helpers/observableCondition.js'
@@ -48,8 +49,13 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     expect(details.executions.filter(execution => execution.result?.outcome === 'failed').map(execution => execution.id))
       .toEqual([check.id])
     expect(details.executions.filter(execution => execution.workflowNodeId === fixture.sibling.id)).toHaveLength(1)
-    expect(details.activity.some(activity => /LOOP_CHECK_FAILED|failed/i.test(canonicalGraphJson(activity.payload))
-      && activity.harnessExecutionId === check.id)).toBe(true)
+    const nativeEvents = (await fixture.base.db.pool.query<{ record: HarnessNativeEvent }>(
+      'select record from harness_native_events where execution_id=$1 order by sequence', [check.id])).rows
+    expect(nativeEvents.some(({ record }) => record.type === 'turn.completed'
+      && /LOOP_CHECK_FAILED/.test(canonicalGraphJson(record.payload)))).toBe(true)
+    expect(details.activitySnapshot.activities.some(activity => activity.kind === 'diagnostic'
+      && activity.owner.kind === 'execution' && activity.owner.executionId === check.id
+      && /failed/i.test(activity.message))).toBe(true)
     const response = await fixture.base.client.callTool({ name: 'run_get', arguments: {
       workspaceId: fixture.base.f.run.workspaceId, runId: fixture.base.f.run.id, detail: 'full',
     } })
