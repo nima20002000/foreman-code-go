@@ -605,9 +605,13 @@ export class RemoteExecutionHost {
         if (archived) history = archived
         else if (resident.settlementHistory) history = structuredClone(resident.settlementHistory)
         else {
-          history = afterSequence !== undefined && resident.manager.reconcileHistoryPage
-            ? await resident.manager.reconcileHistoryPage(resident.session, correlation, afterSequence)
-            : await resident.manager.reconcile(resident.session, correlation)
+          const starting = !review && status.status === 'known' && status.receipt.phase === 'start_acknowledged'
+            && !status.receipt.native?.turnId && resident.turn !== undefined
+          // MCP startup can emit events before there is a submitted native turn to reconcile.
+          if (starting) history = await resident.manager.history(resident.session)
+          else if (afterSequence !== undefined && resident.manager.reconcileHistoryPage) {
+            history = await resident.manager.reconcileHistoryPage(resident.session, correlation, afterSequence)
+          } else history = await resident.manager.reconcile(resident.session, correlation)
           context = resident.manager.contextSnapshot?.(resident.session) ?? null
         }
       }
