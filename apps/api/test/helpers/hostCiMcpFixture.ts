@@ -27,6 +27,7 @@ import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connec
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { migratedDatabase } from './migratedDatabase.js'
 import { onlyCiInfrastructure } from '../../src/modules/ci-host/priority.js'
 
@@ -164,12 +165,13 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
   } }
   const computers = fakeComputers(options.github, options.cloud, options.hostSlots, options.cloudSystemd)
   const commands = new PostgresCommandCoordinator(db.pool)
+  const bugReports = new BugReportService(db.pool, commands)
   const ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), commits,
     options.repositoryRunner?.endpoint ?? computers.endpoint)
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { commands, ci } as unknown as OperatorServices },
     ...(runtime ? { appMcp: { access, commands,
-      interactions: new PostgresAppInteractionService(db.pool, runtime.repository, commands) } } : {}) })
+      interactions: new PostgresAppInteractionService(db.pool, runtime.repository, commands), bugReports } } : {}) })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const clients: Client[] = []
   const credential = (actions: ManagementAction[]) => access.issue({ name: 'CI HTTP caller', audience: 'operator',
