@@ -119,6 +119,9 @@ it.each([
   const fake = await fakeEndpoint(({ index }) => ({ status: 200,
     delayMs: stall && index > 0 ? timeoutMs / scale * 2 : 20, result: waitResult('still-running') }))
   const bridge = await startBridge(fake.endpoint, { clockScale: scale, ...(claudeTimeoutMs ? { claudeTimeoutMs } : {}) })
+  // The harness keeps its bridge running between calls, so process startup is not part of the client's deadline.
+  await bridge.request(1, 'tools/call', { name: 'ci_get', arguments: { ticketId: 'ticket' } })
+  fake.calls.length = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const reply = await Promise.race([
