@@ -12,7 +12,7 @@ import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartP
 import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
 import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { VerifiedRemoteEvidence } from '../../src/modules/runs/remote/resultBridge.js'
-import { persistVerifiedRemoteReceipt } from '../../src/modules/runs/remote/persistence.js'
+import { persistVerifiedRemoteReceipt, readRemoteReceipts } from '../../src/modules/runs/remote/persistence.js'
 import type { DispatchIntent, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import type { NativeManagerResolutionContext } from '../../src/modules/interactions/runtimePorts.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
@@ -140,7 +140,6 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       if (!context.acceptedPlacement) return worker.manager()
       const intent = intents.get(context.executionId)
       if (!intent) throw new Error('Remote execution requires its admitted dispatch')
-      let prior: Parameters<typeof persistVerifiedRemoteReceipt>[2]['receipt'] | null = null
       const placement = context.acceptedPlacement
       const native = nativePlacements.get(context.executionId)
       if (!native) throw new Error('Expected native placement before manager allocation')
@@ -151,14 +150,16 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         if (!owner) throw new Error('Remote readback requires the active Run owner')
         await VerifiedRemoteEvidence.commit(receipt, worker.connection, {
           transaction: (_operationId, work) => owner.oneShotConnection().transaction(async sql => work({
-            authority: async () => ({ intent, placement, originalConnection,
-              originalIncarnationId, grantIsLive: true,
-              lastSequence: prior?.sequence ?? -1, lastReceipt: prior,
-              native: prior?.native ?? null, terminal: prior?.terminal ?? null }),
+            authority: async () => {
+              const prior = (await readRemoteReceipts(sql, intent.runId, intent.nodeId))
+                .find(value => value.intent.operationId === intent.operationId)
+              return { intent, placement, originalConnection, originalIncarnationId, grantIsLive: true,
+                lastSequence: prior?.sequence ?? -1, lastReceipt: prior ?? null,
+                native: prior?.native ?? null, terminal: prior?.terminal ?? null }
+            },
             reject: async (_receipt, reason) => { throw new Error(`Worker receipt rejected: ${reason}`) },
             accept: async verified => {
               await persistVerifiedRemoteReceipt(sql, owner, verified, async () => owner.assertOwned())
-              prior = verified.receipt
             },
           })),
         })
