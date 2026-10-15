@@ -20,17 +20,23 @@ export function startWorkerPublicationSync(
       published = true
     }).catch(reportError)
   }
-  const watcher = watch(location.directory, { persistent: false }, (_event, filename) => {
-    // The publisher replaces index.json atomically, so watch its directory rather than its inode.
-    if (filename === null || filename === 'index.json') check()
-  })
-  watcher.on('error', reportError)
-  check()
+  let watcher: ReturnType<typeof watch> | undefined
+  try {
+    watcher = watch(location.directory, { persistent: false }, (_event, filename) => {
+      // The publisher replaces index.json atomically, so watch its directory rather than its inode.
+      if (filename === null || filename === 'index.json') check()
+    })
+    watcher.on('error', reportError)
+    check()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    // A fresh checkout has no artifacts yet; periodic sync discovers their first publication.
+  }
   const timer = setInterval(() => { void sync().catch(reportError) }, 60_000)
   timer.unref()
   return () => {
     stopped = true
-    watcher.close()
+    watcher?.close()
     clearInterval(timer)
   }
 }
