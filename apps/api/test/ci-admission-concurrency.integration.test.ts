@@ -12,6 +12,7 @@ import { HostCiService, type CiCommits } from '../src/modules/ci-host/service.js
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { createTestPool } from './helpers/testPool.mjs'
+import { expectCiPreparationOutsideTransaction } from './helpers/ciPreparationTransactions.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -129,10 +130,7 @@ it('admits concurrent authenticated MCP and HTTP requests while another commit r
     const calls = resolve.mock.calls.length
     expect((await f.call('ci_run', { ...fastInput, commandId: 'denied' }, denied.client)).isError).toBe(true)
     expect(resolve).toHaveBeenCalledTimes(calls)
-    const transactions = (await f.pool.query<{ count: number }>(`select count(*)::int as count
-      from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()
-      and application_name in ('ci-admission-test','graphql-lifecycle-command') and xact_start is not null`)).rows[0]!
-    expect(transactions.count).toBe(0)
+    await expectCiPreparationOutsideTransaction(f.pool, `command:${f.principalId}:ci.run:${input.commandId}`)
     blocked.release()
     const result = await first
     expect(result.isError).not.toBe(true)
