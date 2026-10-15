@@ -3,7 +3,9 @@ import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { failureClass, type FailureClass } from '@foreman-code/contracts/failure'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
-import { isDatabasePoolTimeout, isDatabaseTimeout } from '../../infrastructure/transientErrors.js'
+import {
+  isDatabasePoolTimeout, isDatabaseTimeout, isTransientDatabaseOrSocketError,
+} from '../../infrastructure/transientErrors.js'
 import { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 export { isTransientExecutionCode } from '../../shared/executionFailureCodes.js'
 
@@ -36,7 +38,10 @@ export function executionFailureClass(error: unknown): FailureClass {
     if (code === undefined) return undefined
     coded = true
     return isTransientExecutionCode(code) ? 'transient' : undefined
-  }, last => !coded && last instanceof Error ? 'transient' : 'permanent')
+  }, last => {
+    if (isTransientDatabaseOrSocketError(last)) return 'transient'
+    return !coded && last instanceof Error ? 'transient' : 'permanent'
+  })
 }
 
 export function isTransientExecutionError(error: unknown): boolean {
