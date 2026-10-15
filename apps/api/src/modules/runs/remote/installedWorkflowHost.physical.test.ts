@@ -156,7 +156,7 @@ describe('original physical source selectors and Main SQL consumer',()=>{
       signal: parent.signal, extensions, registrations: [server] })
     const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
       worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
-    for (const task of tasks) void task.catch(() => {})
+    for (const task of tasks) void task.catch(() => { /* ignore: the test awaits the operation itself; this observer only prevents an unhandled rejection. */ })
     f.request.mockImplementation(payload => main.request('execution-v1', payload))
     try {
       const original = await f.bind()
