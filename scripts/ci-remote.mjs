@@ -101,19 +101,21 @@ export function requestedTestFiles(args, cwd = process.cwd()) {
     .map(arg => relative(root, resolve(cwd, arg))).filter(file => existsSync(join(root, file))))]
 }
 
-/** Polls the tickets until every one finished, prints each failed part with its ticket, failed tests and log
- * lines, and returns the finished runs. A ticket superseded by a newer commit is replaced by its replacement's
- * tickets. After waitMs it stops waiting and returns the runs as they are; open tickets keep running on CI. */
+/** Waits for the tickets' group with one log-free read, prints each failed part with its ticket, failed tests and log
+ * lines once the group's results are collected, and returns the finished runs. A ticket superseded by a newer commit is
+ * replaced by its replacement's tickets. After waitMs it stops waiting and returns the runs as they are; open tickets
+ * keep running on CI. */
 export async function awaitTickets(call, workspaceId, tickets,
   { waitMs = Number(environment.FOREMAN_CODE_CI_WAIT_MS || 2 * 3_600_000) } = {}) {
   const startedAt = Date.now(), states = new Map()
   for (;;) {
-    // A few reads at a time keep Main's database pool free for the runs themselves.
-    const runs = []
-    for (let index = 0; index < tickets.length; index += 4) {
-      runs.push(...await Promise.all(tickets.slice(index, index + 4)
-        .map(ticketId => call('ci_get', { workspaceId, ticketId }).then(value => value.run))))
-    }
+    // Main holds this read until every ticket of the group is terminal with its results collected, or for about a minute.
+    const remainingSeconds = Math.ceil((waitMs - (Date.now() - startedAt)) / 1000)
+    const read = await call('ci_get', { workspaceId, ticketId: tickets[0], waitUntil: 'group-terminal',
+      waitSeconds: Math.min(1800, Math.max(1, remainingSeconds)), logTail: false })
+    if (!read.wait) throw new Error('Main answered ci_get without the requested group wait.')
+    const members = (read.partitions ?? [read.run]).filter(run => tickets.includes(run.id))
+    const runs = members.length ? members : [read.run]
     for (const run of runs) {
       const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
       if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
@@ -122,7 +124,7 @@ export async function awaitTickets(call, workspaceId, tickets,
     if (superseded.length) {
       const replacements = new Set()
       for (const replacement of new Set(superseded.map(run => run.supersededBy))) {
-        const next = await call('ci_get', { workspaceId, ticketId: replacement })
+        const next = await call('ci_get', { workspaceId, ticketId: replacement, logTail: false })
         for (const value of next.partitions ?? [next.run]) replacements.add(value.id)
         console.error(`[ci] superseded by a newer commit's ticket ${replacement}; following it`)
       }
@@ -130,35 +132,34 @@ export async function awaitTickets(call, workspaceId, tickets,
       continue
     }
     const open = runs.filter(run => ['queued', 'starting', 'running'].includes(run.state))
-    if (open.length && Date.now() - startedAt > waitMs) {
+    const settled = read.wait?.status === 'settled' && !open.length
+    if (!settled && Date.now() - startedAt < waitMs) continue
+    if (open.length) {
       console.log(`\n[ci] Stopped waiting after ${Math.round(waitMs / 60_000)} min (FOREMAN_CODE_CI_WAIT_MS); still open, `
         + `and still running on CI: ${open.map(run => `${partName(run)} ${run.state} (ticket ${run.id})`).join(', ')}`)
       return runs
     }
-    if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
-      for (const run of runs.filter(value => value.state !== 'passed')) {
-        const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => {
-          console.error(`[ci] ci_logs_read for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
-          return { text: '' }
-        })
-        const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] }).catch(() => {
-          console.error(`[ci] test results for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
-          return {}
-        })
-        const tests = read.tests?.files ?? []
-        const history = new Map((read.failureHistory ?? []).map(entry => [`${entry.file}\0${entry.test}`, entry]))
-        const flaky = (file, test) => {
-          const entry = history.get(`${file}\0${test}`)
-          return entry?.runs ? ` (failed ${entry.failedRuns} of the last ${entry.runs} gate runs)` : ''
-        }
-        const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
-        console.log(`\n[ci] ${run.suite} ${partName(run)} ${run.state} (ticket ${run.id})${run.message ? `: ${run.message}` : ''}`)
-        for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}${flaky(file.file, test.name)}`)
-        console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
+    for (const run of runs.filter(value => value.state !== 'passed')) {
+      const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => {
+        console.error(`[ci] ci_logs_read for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
+        return { text: '' }
+      })
+      const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'], logTail: false }).catch(() => {
+        console.error(`[ci] test results for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
+        return {}
+      })
+      const tests = read.tests?.files ?? []
+      const history = new Map((read.failureHistory ?? []).map(entry => [`${entry.file}\0${entry.test}`, entry]))
+      const flaky = (file, test) => {
+        const entry = history.get(`${file}\0${test}`)
+        return entry?.runs ? ` (failed ${entry.failedRuns} of the last ${entry.runs} gate runs)` : ''
       }
-      return runs
+      const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
+      console.log(`\n[ci] ${run.suite} ${partName(run)} ${run.state} (ticket ${run.id})${run.message ? `: ${run.message}` : ''}`)
+      for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}${flaky(file.file, test.name)}`)
+      console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
     }
-    await new Promise(resolve => setTimeout(resolve, 5_000))
+    return runs
   }
 }
 
