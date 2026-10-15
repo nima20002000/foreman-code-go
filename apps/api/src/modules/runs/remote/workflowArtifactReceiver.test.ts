@@ -1,7 +1,8 @@
 import type pg from 'pg'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import Fastify, { type FastifyRequest } from 'fastify'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -30,9 +31,9 @@ const request = (token = 'unit-workflow') => ({ headers: { authorization: `Beare
 // Unit SQL/authentication boundaries; the receiver uses real private file storage.
 // These fixtures cannot authorize a production worker or establish physical acceptance.
 async function fixture() {
-  // The scheduler's TMPDIR may have shared ancestors. Linux /tmp is sticky;
-  // mkdtemp creates this receiver's owned 0700 staging directory below it.
-  const root = await mkdtemp('/tmp/graphql-workflow-artifacts-'); roots.push(root)
+  const parent = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true, mode: 0o700 })
+  const root = await mkdtemp(join(parent, 'workflow-artifacts-')); roots.push(root)
   const digest = 'a'.repeat(64), mainId = randomUUID(), deviceId = randomUUID(), installation = randomUUID()
   const original: DeviceSessionBinding = { mainId, deviceId, workerInstallationId: installation, keyRevision: 1,
     authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 7 }
@@ -67,6 +68,7 @@ async function fixture() {
     state.calls.push(text); let rows: unknown[] = []
     if (text === 'begin') backup = structuredClone(state.receipts)
     else if (text === 'rollback' && backup) state.receipts = backup
+    else if (text.includes('from management_principals')) rows = state.revoked ? [] : [{ id: worker.id }]
     else if (text.includes('from worker_credential_bindings b join harness_executions e')) rows = [row]
     else if (text.includes('select input_hash, target_key')) {
       const found = state.receipts.get(JSON.stringify(args)); if (found) rows = [found]
@@ -118,6 +120,20 @@ async function fixture() {
 function isSame(a: unknown, b: unknown) { return JSON.stringify(a) === JSON.stringify(b) }
 
 describe('accepted workflow artifact receiver', () => {
+  it('loads the locked execution graph once per authorization and rechecks across byte writes', async () => {
+    const t = await fixture()
+    const intent = await t.receiver.admit(request(), t.declaration)
+    await t.send(intent.transferId, 'start')
+    vi.mocked(readDispatchIntent).mockClear()
+    t.authority.authorize.mockClear()
+    await t.append(intent.transferId)
+    // Routing plus the checks before and after the byte write each need one loaded graph.
+    expect(readDispatchIntent).toHaveBeenCalledTimes(3)
+    expect(t.authority.authorize).toHaveBeenCalledTimes(3)
+    t.state.revoked = true
+    await expect(t.append(intent.transferId)).rejects.toThrow()
+  })
+
   it('admits only derived original pins, immutable manifest and worker identity through the command ledger', async () => {
     const t = await fixture(), admitted = await t.receiver.admit(request(), t.declaration)
     if (!('rootId' in t.placement.source)) throw new Error('unit pending source required')
