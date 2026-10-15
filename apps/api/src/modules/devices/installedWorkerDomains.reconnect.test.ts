@@ -65,7 +65,7 @@ describe('installed source operations across Worker link reconnection', () => {
     vi.spyOn(f.sources, 'handle').mockImplementation(async (payload, context) => {
       entered.resolve()
       await release.promise
-      return (await f.sourceExtension.handle!(payload, context)).payload
+      return (await f.sourceExtension.handle!(payload, context)).payload as Awaited<ReturnType<typeof f.sources.handle>>
     })
     const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
     const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)

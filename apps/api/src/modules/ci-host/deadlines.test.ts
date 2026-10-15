@@ -162,7 +162,7 @@ it('reconciles a completed executor result before expiring a stale assigned tick
       }
       if (request.operation !== 'read') throw new Error(`Unexpected ${request.operation}`)
       return { operation: 'read', run: { runId: run.id, state: 'passed', step: null, exitCode: 0,
-        startedAt: run.startedAt, finishedAt, logBytes: 0, message: null }, text: '', nextOffset: 0 }
+        startedAt: run.startedAt!, finishedAt, logBytes: 0, message: null }, text: '', nextOffset: 0 }
     } }
   const authority: CiAuthority = { resolve: async principal => ({ principal, workspaceId: 'workspace' }) }
   const service = new HostCiService(store.pool, new PostgresCommandCoordinator(store.pool), authority, {} as CiCommits, endpoint)
@@ -189,7 +189,7 @@ it('keeps the starting phase deadline after repeated acknowledgements with a sta
     request: async (_computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply> => {
       if (request.operation !== 'read') throw new Error(`Unexpected ${request.operation}`)
       return { operation: 'read', run: { runId: run.id, state: 'starting', step: 'publishing', exitCode: null,
-        startedAt: run.startedAt, finishedAt: null, logBytes: 0, message: null }, text: '', nextOffset: 0 }
+        startedAt: run.startedAt!, finishedAt: null, logBytes: 0, message: null }, text: '', nextOffset: 0 }
     } }
   const authority: CiAuthority = { resolve: async principal => ({ principal, workspaceId: 'workspace' }) }
   const service = new HostCiService(store.pool, new PostgresCommandCoordinator(store.pool), authority, {} as CiCommits, endpoint)
