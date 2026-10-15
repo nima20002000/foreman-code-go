@@ -49,7 +49,7 @@ function fixture(options: { receipt?: unknown; failReceipt?: boolean } = {}) {
       }
       if (text.includes('management_audit')) records.audits.push(JSON.parse(String(values?.at(-1))))
     }
-    return { rows: text.includes('select input_hash') && options.receipt ? [options.receipt] : [], rowCount: 0 }
+    return { rows: text.startsWith('select principal_id, input_hash') && options.receipt ? [options.receipt] : [], rowCount: 0 }
   }
   const client = { query, release: vi.fn() }
   const pool = { options: {}, connect: async () => client, end: vi.fn(async () => undefined) }

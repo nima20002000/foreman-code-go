@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { expect, it, vi } from 'vitest'
 import * as diagnostics from './logger.js'
@@ -21,9 +24,16 @@ it('retains sanitized warning causes, failure counts and age for owner readback'
 })
 
 it('exposes invalid provided retention settings while preserving documented defaults', async () => {
-  await diagnostics.enableFileLogging({ LOG_FILE: '/fixture/uncreated/log.log', LOG_MAX_FILES: 'invalid' })
-  expect(diagnostics.readOperationalFailures()).toContainEqual(expect.objectContaining({
-    operation: 'read log retention configuration', lastError: 'INVALID_LOG_CONFIG' }))
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const directory = await mkdtemp(join(cache, 'operational-failures-'))
+  try {
+    await diagnostics.enableFileLogging({ LOG_FILE: join(directory, 'uncreated', 'log.log'), LOG_MAX_FILES: 'invalid' })
+    expect(diagnostics.readOperationalFailures()).toContainEqual(expect.objectContaining({
+      operation: 'read log retention configuration', lastError: 'INVALID_LOG_CONFIG' }))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 it('counts disconnected resource cleanup failures without replacing the primary outcome', async () => {

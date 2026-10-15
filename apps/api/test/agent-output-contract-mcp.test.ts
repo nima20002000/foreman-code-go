@@ -82,7 +82,10 @@ it('discovers, saves, rejects and reads back Agent output schemas and node skill
     const reply = await f.call(CURRENT_WORKFLOW_TOOLS.save, { ...input, commandId: randomUUID(), expectedRevision: saved.revision,
       expectedWorkflowVersionId: saved.currentVersionId, graph: next })
     expect(reply.result?.isError).toBe(true)
-    return JSON.stringify(graphRpcValue(reply.result))
+    // Schema violations are refused by MCP input validation as plain text; domain refusals are structured JSON.
+    const { structuredContent, content } = reply.result!
+    return structuredContent !== undefined ? JSON.stringify(structuredContent)
+      : content?.find(item => item.type === 'text')?.text ?? ''
   }
   // Invalid schemas, unassigned removals and unknown skill versions are refused before anything is saved.
   await refused(agentNode => { agentNode.outputSchema = { type: 'object', properties: { ticket: { type: 'number', 'x-foreman-reference': 'ciTicket' } } } })
