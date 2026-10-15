@@ -33,7 +33,7 @@ it('retains cached Worker manifests through symlinked cache ancestors without ad
     expect(directory).toBe(reused)
     expect(directory).toBe(await realpath(directory))
     const published = await remoteReviewWorkerArtifacts(release, cache, { publication: 'published' })
-    await expect(readWorkerBundleIdentity({ directory: published, version: manifest.version, target }))
+    await expect(readWorkerBundleIdentity({ directory: published, version: manifest.version }, target))
       .resolves.toMatchObject({ version: manifest.version, target,
         manifestSha256: createHash('sha256').update(bytes).digest('hex') })
     await rm(fixture, { recursive: true })
