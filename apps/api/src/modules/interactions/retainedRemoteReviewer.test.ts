@@ -153,6 +153,7 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
     recordDetached: vi.fn(async () => { f.state.detached = true }),
   }
   const resident = vi.fn()
+  const requestCleanup = vi.fn(async () => {})
   const coordinator = () => {
     const manager = new RemoteNativeSessionManager({ intent: f.receipt.intent, placement: f.placement,
       harness: 'codex', configuration: f.base.configurations[0]!,
@@ -192,6 +193,8 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
       repeat: async () => ({ readWorkExecutionContext: async () => ({ parentRequest: null }) }),
       get: async () => ({ ...f.base.run, executionState: 'running', outcome: 'pending' }),
       getRepeatSnapshot: async () => ({ run: f.base.run, stopRequested: false, cleanupPending: false }),
+      async *executionPages() { yield [f.execution] },
+      requestCleanup,
       acquireOwnership,
     } as unknown as Args[0], { coordination } as Args[1], {} as Args[2],
     { resolve: () => ({ manager, processState: 'resident', markResident: resident }) }, 60_000,
@@ -205,7 +208,7 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
     ...(job ? { reviewJob: job } : {}),
   }, f.session)
   return { ...f, worker, coordination, requests, proxies, originalRequest, credentials, closures, resident,
-    owner, acquireOwnership, coordinator, attach }
+    owner, acquireOwnership, requestCleanup, coordinator, attach }
 }
 
 describe('atomic original remote reviewer retention', () => {
@@ -307,6 +310,42 @@ describe('atomic original remote reviewer retention', () => {
 })
 
 describe('retained remote reviewer recovery', () => {
+  it('requests Run cleanup when the Worker closes the original reviewer during cold recovery', async () => {
+    const f = await recoveryFixture()
+    const original = structuredClone(f.execution)
+    f.worker.receipt = RemoteOperationReceiptSchema.parse({ ...f.worker.receipt,
+      sequence: f.worker.receipt.sequence + 1, phase: 'confirmed_terminal', stopFence: true,
+      terminal: { kind: 'cancelled', closureEvidenceDigest: 'b'.repeat(64) },
+    })
+    try {
+      const main = f.coordinator()
+      await expect(main.requestColdRunCleanup(f.owner)).resolves.toBe(true)
+      expect(f.requestCleanup).toHaveBeenCalledWith(f.owner.runId, f.owner, {
+        outcome: 'failed', error: { code: 'REVIEWER_AUTHORITY_LOST',
+          message: 'The original remote reviewer lifetime has already closed.', retryable: false },
+      })
+      expect(f.execution).toEqual(original)
+      expect(f.credentials.recoverRemote).not.toHaveBeenCalled()
+      expect(f.resident).not.toHaveBeenCalled()
+      expect(f.requests).toEqual(['reattach'])
+    } finally {
+      await f.connection.close()
+    }
+  })
+
+  it('leaves a failed Worker connection retryable during cold reviewer recovery', async () => {
+    const f = await recoveryFixture()
+    f.worker.authenticated = false
+    try {
+      await expect(f.coordinator().requestColdRunCleanup(f.owner))
+        .rejects.toThrow('Authenticated Worker connection unavailable')
+      expect(f.requestCleanup).not.toHaveBeenCalled()
+      expect(f.credentials.recoverRemote).not.toHaveBeenCalled()
+    } finally {
+      await f.connection.close()
+    }
+  })
+
   it('declines recovery after credential revocation while live reviewer access remains denied', async () => {
     const f = fixture()
     f.state.revoked = true
