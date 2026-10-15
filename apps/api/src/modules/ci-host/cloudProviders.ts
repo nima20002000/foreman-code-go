@@ -34,6 +34,8 @@ export interface CloudRun {
   live?: { step: string | null; seen: string[]; output?: { key: string; bytes: number }; bytes: number }
 }
 export const CLOUD_START_TIMEOUT_MS = 75_000
+export const CLOUD_LOG_LIMIT = 4 * 1024 * 1024
+const LIVE_OUTPUT_POLL_MS = 60_000
 
 /** One step of the provider's job; `key` stays the same across polls. */
 export interface CloudStep { key: string; name: string; state: 'running' | 'passed' | 'failed' | 'skipped' }
@@ -45,6 +47,7 @@ export type CloudStatus = ({ done: false } | {
 export interface CloudDispatchInput {
   mirror: string; branch: string; snapshotCommit?: string; runId: string; suite: CiExecutionSuite; slice: string
   expectedDurationMs?: number
+  gate?: boolean
   scope?: CiScope; files?: string; defaultBranch?: string; baseCommit?: string; partition?: string; durations?: string
   workflowRef?: string; workflowCommit?: string
 }
@@ -202,6 +205,7 @@ export class GitHubActionsProvider implements CloudProvider {
       '-f', `ref=${input.workflowRef ?? input.branch}`,
       '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`,
       '-f', `expected_duration_ms=${input.expectedDurationMs ?? 0}`,
+      ...(input.gate ? ['-f', 'gate=1'] : []),
       ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : []),
       ...(input.defaultBranch ? ['-f', `default_branch=${input.defaultBranch}`] : []),
       ...(input.baseCommit ? ['-f', `base_commit=${input.baseCommit}`] : []),
@@ -320,6 +324,7 @@ export class CircleCiProvider implements CloudProvider {
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
 
   private readonly rest: CircleRest
+  private readonly outputPolls = new Map<string, { key: string; at: number }>()
 
   get transport() { return this.rest.transport }
 
@@ -345,6 +350,7 @@ export class CircleCiProvider implements CloudProvider {
       '--branch', input.workflowRef ?? input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
       '--parameter', `slice=${input.slice}`, '--parameter', `expected_duration_ms=${input.expectedDurationMs ?? 0}`, ...(input.scope ? ['--parameter', `scope=${input.scope}`] : []),
+      ...(input.gate ? ['--parameter', 'gate=1'] : []),
       ...(input.files !== undefined ? ['--parameter', `files=${input.files}`] : []),
       ...(input.defaultBranch ? ['--parameter', `default_branch=${input.defaultBranch}`] : []),
       ...(input.baseCommit ? ['--parameter', `base_commit=${input.baseCommit}`] : []),
@@ -390,6 +396,7 @@ export class CircleCiProvider implements CloudProvider {
     const pipelineEnded = view.phase === 'ended'
     const workflowsEnded = workflows.length > 0 && workflows.every(workflow => workflow.phase === 'ended')
     const ended = pipelineEnded || workflowsEnded
+    if (ended) this.outputPolls.delete(run.runId)
     let finalOutcomes: (string | undefined)[] = []
     const pipelineOutcome = view.outcome ?? view.current_outcome
     if (pipelineEnded && pipelineOutcome !== undefined) finalOutcomes = [pipelineOutcome]
@@ -429,9 +436,15 @@ export class CircleCiProvider implements CloudProvider {
         || !workflow.jobs?.length && workflow.phase !== 'ended' && view.phase !== 'ended')
       || jobs.some(job => job.detail.phase !== 'ended') || !workflows.length)
     if (pending) {
-      // CircleCI serves a running step's output so far; it is read whole, so only the running step is read.
+      // CircleCI serves the whole running step log; status polling stays frequent while output reads are bounded.
       const current = raw.findLast(step => step.phase !== 'ended')
-      if (!current) return { done: false, steps }
+      if (!current || (run.live?.bytes ?? 0) >= CLOUD_LOG_LIMIT) return { done: false, steps }
+      const previous = this.outputPolls.get(run.runId)
+      const now = this.ports.now().getTime()
+      if (previous?.key === key(current) && now - previous.at < LIVE_OUTPUT_POLL_MS) {
+        return { done: false, steps }
+      }
+      this.outputPolls.set(run.runId, { key: key(current), at: now })
       const output = await this.rest.output(current.jobId, current.num, 60_000)
       if (output !== null) {
         return { done: false, steps, ...(output.ok ? { output: { key: key(current), text: output.text } } : {}) }
@@ -516,6 +529,7 @@ export class CircleCiProvider implements CloudProvider {
   }
 
   async cancel(run: CloudRun) {
+    this.outputPolls.delete(run.runId)
     let view: { phase?: string; workflows?: unknown[] } | null
     try {
       view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'], 15_000)) as typeof view
