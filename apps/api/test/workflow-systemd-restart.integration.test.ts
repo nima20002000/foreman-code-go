@@ -28,7 +28,8 @@ describe('queued workflow preparation across engine restart', () => {
         details => (details?.executions.length ?? 0) >= 2,
         { timeoutMs: 30_000, description: 'a fresh attempt after unavailable preparation' }))!
       expect(before.run.executionState).not.toBe('completed')
-      expect(before.executions[0]).toMatchObject({ state: 'completed', attempt: 1, result: {
+      const firstAttempt = before.executions.find(execution => execution.attempt === 1)
+      expect(firstAttempt).toMatchObject({ state: 'completed', result: {
         outcome: 'failed', error: { code: 'EXECUTION_PREPARATION_UNAVAILABLE', retryable: true } } })
       await fixture.engine.shutdown()
       await started
@@ -42,7 +43,8 @@ describe('queued workflow preparation across engine restart', () => {
         outcome: 'failed', error: { code: failure.code, message: failure.message, retryable: false },
       } })
       expect(finished!.executions.length).toBeGreaterThanOrEqual(before.executions.length)
-      expect(finished!.executions[0]).toMatchObject({ id: before.executions[0]!.id, state: 'completed', attempt: 1 })
+      expect(finished!.executions.find(execution => execution.attempt === 1))
+        .toMatchObject({ id: firstAttempt!.id, state: 'completed' })
       const reader = await fixture.access.issue({ name: 'Restart failure reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
           scope: { workspaceIds: [fixture.f.scope.workspaceId], workflowIds: [fixture.f.scope.workflowId] } }] })
