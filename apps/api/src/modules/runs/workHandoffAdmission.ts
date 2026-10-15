@@ -332,15 +332,8 @@ export async function ensureWorkEntryLocked(context: AdmissionContext): Promise<
   return activationId
 }
 
-/** Called only inside RepeatRunRepository's owner-fenced, Run-locked transaction.
- * This is an admission receipt; native launch still uses the original one-use
- * claim, authorization, session and possible-submission boundary. */
-export async function admitWorkHandoffLocked(context: AdmissionContext, sourceExecutionId: string,
-  selectedRelationshipId?: string): Promise<WorkRequestAdmission> {
-  const { sql, scope, version, hooks } = context
-  if (!version.definition.handoffs || version.definition.repeat
-    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
-  await hooks.assertAuthorityLocked(sql)
+async function readAcceptedWorkSourceLocked(context: AdmissionContext, sourceExecutionId: string) {
+  const { sql, scope, version } = context
   const row = (await sql.query<{ record: unknown; accepted: boolean; work_activation_id: string | null }>(
     `select record,accepted,work_activation_id from harness_executions
       where id=$1 and run_id=$2 for share`, [sourceExecutionId, scope.runId])).rows[0]
@@ -352,12 +345,25 @@ export async function admitWorkHandoffLocked(context: AdmissionContext, sourceEx
     return repeatConflict('WORK_SOURCE_PIN_CONFLICT')
   }
   await assertAcceptedWorkResult(sql, scope, execution, row.work_activation_id)
+  return { execution, activationId: row.work_activation_id }
+}
+
+/** Called only inside RepeatRunRepository's owner-fenced, Run-locked transaction.
+ * This is an admission receipt; native launch still uses the original one-use
+ * claim, authorization, session and possible-submission boundary. */
+export async function admitWorkHandoffLocked(context: AdmissionContext, sourceExecutionId: string,
+  selectedRelationshipId?: string): Promise<WorkRequestAdmission> {
+  const { sql, scope, version, hooks } = context
+  if (!version.definition.handoffs || version.definition.repeat
+    || version.definition.nodes.some((node) => node.kind === 'job')) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
+  await hooks.assertAuthorityLocked(sql)
+  const { execution, activationId: sourceActivationId } = await readAcceptedWorkSourceLocked(context, sourceExecutionId)
   const source = (await sql.query<{ record: unknown; workflow_node_id: string }>(
     'select record,workflow_node_id from run_work_activations where activation_id=$1 and run_id=$2 for share',
-    [row.work_activation_id, scope.runId])).rows[0]
+    [sourceActivationId, scope.runId])).rows[0]
   if (!source || source.workflow_node_id !== execution.workflowNodeId) return repeatConflict('WORK_SOURCE_ACTIVATION_CONFLICT')
   const activation = WorkActivationIdentitySchema.parse(source.record)
-  if (!sameRepeatValue(activation.scope, scope) || activation.activationId !== row.work_activation_id) {
+  if (!sameRepeatValue(activation.scope, scope) || activation.activationId !== sourceActivationId) {
     return repeatConflict('WORK_SOURCE_ACTIVATION_CONFLICT')
   }
   const result = WorkHandoffResultSchema.parse(parseWorkHandoffResult(execution.result))
