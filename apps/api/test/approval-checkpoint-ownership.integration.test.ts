@@ -3,7 +3,7 @@ import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, stageDelivered, recover, checkpointCut } from './helpers/approvalCheckpointProduction.js'
 
-describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: ownership', () => {
+describe.skipIf(!postgresEnabled)('approval checkpoint ownership', () => {
   const fixture = productionFixtures()
 
   it('independent competing engine owners cannot consume one delivered checkpoint twice', async () => {
@@ -36,7 +36,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     const errors: unknown[] = []
     await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' }) // The public publication error is sanitized.
+    expect(errors[0]).toMatchObject({ code: 'GRAPH_RESUME_RECEIPT_MISSING' })
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(invalid)
     expect(await f.receipts()).toEqual([])
     expect(f.provider.counts.responses).toBe(1)

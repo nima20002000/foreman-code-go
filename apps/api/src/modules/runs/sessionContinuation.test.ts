@@ -29,7 +29,8 @@ describe('workflow session continuity', () => {
     expect(execution.runtimeDirectory).not.toBe(previous.runtimeDirectory)
   })
 
-  it.each(['CODEX_APP_SERVER_DISCONNECTED', 'EXECUTION_INTERRUPTED', 'NATIVE_EXECUTION_FAILED'])(
+  it.each(['CODEX_APP_SERVER_DISCONNECTED', 'EXECUTION_INTERRUPTED', 'NATIVE_EXECUTION_FAILED',
+    'PROVIDER_TEMPORARILY_UNAVAILABLE'])(
     'starts a fresh session after an abandoned %s attempt', async code => {
       const failed = HarnessExecutionSchema.parse({ ...previous, result: { outcome: 'failed',
         error: { code, message: 'The original native connection was lost.', retryable: true } } })

@@ -24,15 +24,17 @@ describe.runIf(postgresEnabled)('interval check failure during API restart', () 
         return active.length === 2 && active.every(execution => execution.nativeSessionId
           && details.activity.some(activity => activity.harnessExecutionId === execution.id
             && activity.payload.nativeEventType === 'turn.started'))
-      }, { timeoutMs: 180_000, description: 'graph work and the first loop check', minimumReadIntervalMs: 1_000 })
+      }, { timeoutMs: 180_000, description: 'graph work and a loop check', minimumReadIntervalMs: 1_000 })
       const check = before.executions.find(execution =>
-        (execution.input as { tick?: { index: number } }).tick?.index === 1)!
+        execution.state === 'running' && (execution.input as { tick?: { index: number } }).tick)!
+      const checkIndex = (check.input as { tick: { index: number } }).tick.index
       const worker = before.executions.find(execution =>
         execution.state === 'running' && execution.id !== check.id)!
-      const calls = await fixture.provider.calls()
-      const turn = calls.map(call => call.workflowTurn as { pid: number; sessionId: string } | undefined)
-        .find(value => value?.sessionId === check.nativeSessionId)!
-      expect(turn).toBeDefined()
+      const turn = await readUntil(async () => (await fixture.provider.calls())
+        .map(call => call.workflowTurn as { pid: number; sessionId: string } | undefined)
+        .find(value => value?.sessionId === check.nativeSessionId), value => value !== undefined,
+      { timeoutMs: 30_000, description: 'the interval provider process' })
+      if (!turn) throw new Error('Expected the interval provider process')
       const reader = await fixture.access.issue({ name: 'Loop recovery reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
           scope: { workspaceIds: [started.run.workspaceId], workflowIds: [started.run.workflowId] } }] })
@@ -46,8 +48,9 @@ describe.runIf(postgresEnabled)('interval check failure during API restart', () 
       } })
       const recovered = await readUntil(read, details => {
         expect(details.run.executionState, JSON.stringify(details.run.result)).toBe('running')
-        return details.executions.some(execution => execution.state === 'running'
-          && (execution.input as { tick?: { index: number } }).tick?.index === 2)
+        expect(details.cleanupPending).toBe(false)
+        return details.executions.some(execution => execution.state === 'running' && execution.nativeSessionId
+          && (execution.input as { tick?: { index: number } }).tick?.index === checkIndex + 1)
       }, { timeoutMs: 90_000, description: 'the next check after native interruption', minimumReadIntervalMs: 1_000 })
       expect(recovered.cleanupPending).toBe(false)
       expect(recovered.executions.find(execution => execution.id === check.id)).toMatchObject({

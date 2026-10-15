@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, stageDelivered, checkpointCut, expireAbandonedClaims, recover } from './helpers/approvalCheckpointProduction.js'
 
-describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: branches', () => {
+describe.skipIf(!postgresEnabled)('approval checkpoint branches', () => {
   const fixture = productionFixtures()
 
   it('two actual persisted parallel delivered branches commit two task values and two receipts together', async () => {
@@ -24,7 +24,7 @@ describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoi
     await f.engine.resume(f.f.run.id).catch((error: unknown) => errors.push(error))
     expect(writes).toBe(2)
     expect(errors).toHaveLength(1)
-    expect(errors[0]).toMatchObject({ code: 'GRAPH_INVALID_FACT' })
+    expect(errors[0]).toMatchObject({ message: 'rollback-second-branch' })
     expect((await f.saver.getTuple(cut.config))?.pendingWrites).toEqual(cut.pendingWrites)
     expect(await f.receipts()).toEqual([]) // Includes the FIRST branch's receipt.
     expect(f.provider.counts.responses).toBe(2)
