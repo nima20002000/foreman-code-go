@@ -2,7 +2,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_CHUNK_WINDOW,
-  DEVICE_APPLICATION_IN_FLIGHT,
+  DEVICE_APPLICATION_IN_FLIGHT, DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT,
   DEVICE_APPLICATION_STOP_IN_FLIGHT, DEVICE_APPLICATION_STOP_BYTES,
   parseExtensionDescriptors, type DeviceApplicationResult, type DeviceExtensionDescriptor, type DeviceNegotiatedExtension,
   type DeviceRequestPriority,
@@ -15,7 +15,10 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
-import { DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestIsBulk, effectiveDeviceRequestPriority } from './deviceRequestQueue.js'
+import {
+  DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestIsBulk, deviceRequestIsObservation,
+  effectiveDeviceRequestPriority,
+} from './deviceRequestQueue.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
@@ -37,11 +40,12 @@ interface Pending {
   namespace: string
   abort: AbortController
   stop: boolean
+  observation: boolean
 }
 interface Assembly {
   namespace: string; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number
   received: number; chunks: Buffer[]; abort: AbortController
-  stop: boolean; released?: boolean
+  stop: boolean; observation: boolean; released?: boolean
 }
 export function extensionDescriptors(registrations: DeviceExtensionRegistration[]) {
   for (const registration of registrations) if (registration.role !== 'client' && typeof registration.handle !== 'function') throw new Error('A device server extension requires its actual domain handler')
@@ -164,7 +168,10 @@ export class DeviceApplicationChannel {
     const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
     const priority = effectiveDeviceRequestPriority(namespace, payload, options.priority)
     const bulk = deviceRequestIsBulk(namespace, payload, options.bytes !== undefined)
-    const release = await this.requestQueue.acquire({ priority, stop, bulk, namespace, signal: options.signal }).catch((error: unknown) => {
+    const observation = options.bytes === undefined && deviceRequestIsObservation(namespace, payload)
+    const release = await this.requestQueue.acquire({
+      priority, stop, bulk, observation, namespace, signal: options.signal,
+    }).catch((error: unknown) => {
       if (error instanceof DeviceApplicationAdmissionError) this.reportSaturation(namespace, error.reason)
       throw error
     })
@@ -176,7 +183,7 @@ export class DeviceApplicationChannel {
         await this.authorized()
         if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
         try {
-          return await this.sendRequest(namespace, payload, extension.version, options, { stop, priority })
+          return await this.sendRequest(namespace, payload, extension.version, options, { stop, observation, priority })
         } catch (error) {
           const remaining = deadline - Date.now()
           if (priority !== 'foreground' || !(error instanceof DeviceApplicationAdmissionError)
@@ -188,13 +195,15 @@ export class DeviceApplicationChannel {
     } finally { release() }
   }
   private async sendRequest(namespace: string, payload: unknown, version: number,
-    options: DeviceApplicationRequestOptions, admission: { stop: boolean; priority: DeviceRequestPriority }) {
+    options: DeviceApplicationRequestOptions,
+    admission: { stop: boolean; observation: boolean; priority: DeviceRequestPriority }) {
     const id = randomUUID(), abort = new AbortController()
     let uploading = true
     let reject!: (error: Error) => void
     const result = new Promise<DeviceApplicationResult>((resolve, fail) => {
       reject = fail
-      this.pending.set(id, { namespace, resolve, reject: fail, abort, stop: admission.stop })
+      this.pending.set(id, { namespace, resolve, reject: fail, abort,
+        stop: admission.stop, observation: admission.observation })
     })
     const cancel = () => { abort.abort(); reject(new DeviceApplicationError('cancelled')); this.trySendCancel(id) }
     options.signal?.addEventListener('abort', cancel, { once: true })
@@ -298,7 +307,9 @@ export class DeviceApplicationChannel {
     try { await transmission }
     finally { this.chunkTransmissions.delete(finished) }
   }
-  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal, admission: { stop: boolean; priority?: DeviceRequestPriority } = { stop: false }) {
+  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'],
+    payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal,
+    admission: { stop: boolean; observation?: boolean; priority?: DeviceRequestPriority } = { stop: false }) {
     this.current()
     const { stop } = admission
     const extension = this.extensions.find((item) => item.namespace === namespace)!
@@ -333,7 +344,8 @@ export class DeviceApplicationChannel {
     try {
       await this.waitAck(id, 0, upload.signal, { type: 'application-open', id, namespace, version, kind,
         jsonBytes: json.byteLength, binaryBytes: bytes?.byteLength ?? 0,
-        ...(kind === 'request' && stop ? { admission: 'stop' as const } : {}) })
+        ...(kind === 'request' && stop ? { admission: 'stop' as const } : {}),
+        ...(kind === 'request' && admission.observation ? { admission: 'observation' as const } : {}) })
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
       const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * DEVICE_APPLICATION_CHUNK_WINDOW
       for (let start = 0; start < packet.byteLength; start += windowBytes) {
@@ -399,9 +411,14 @@ export class DeviceApplicationChannel {
       if (typeof frame.namespace !== 'string' || !['request', 'response', 'error'].includes(String(frame.kind))) throw new DeviceConnectionError('malformed-frame')
       const kind = frame.kind as Assembly['kind']
       const stopNamespace = this.options.side === 'worker' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
-      if (frame.admission !== undefined && (frame.admission !== 'stop' || kind !== 'request'
-        || frame.namespace !== stopNamespace)) throw new DeviceConnectionError('malformed-frame')
+      if (frame.admission !== undefined) {
+        const allowed = kind === 'request' && (frame.admission === 'stop' && frame.namespace === stopNamespace
+          || frame.admission === 'observation' && frame.namespace === 'execution-v1')
+        if (!allowed) throw new DeviceConnectionError('malformed-frame')
+      }
       const stop = kind === 'request' ? frame.admission === 'stop' : this.pending.get(id)?.stop === true
+      const observation = kind === 'request'
+        ? frame.admission === 'observation' : this.pending.get(id)?.observation === true
       const extension = kind === 'request' ? this.negotiated(frame.namespace, false) : this.extensions.find((item) => item.namespace === frame.namespace)
       if (kind !== 'request' && !this.pending.has(id)) { this.trySendCancel(id); return }
       if (!extension || frame.version !== extension.version || (kind !== 'request' && this.pending.get(id)?.namespace !== frame.namespace)) throw new DeviceConnectionError('malformed-frame')
@@ -410,17 +427,23 @@ export class DeviceApplicationChannel {
       // Replies to admitted outgoing requests have their own bounded capacity.
       if (this.assemblies.has(id) || this.handlers.has(id) || this.rawHandlers.has(id) || this.replies.has(id)) throw new DeviceConnectionError('malformed-frame')
       const active = kind === 'request' ? new Map([...this.rawHandlers, ...this.handlers]) : this.replies
-      const assembling = [...this.assemblies.values()].filter(item => (item.kind === 'request') === (kind === 'request') && item.stop === stop).length
-      const occupied = [...active.values()].filter(item => item.stop === stop).length
-      const countLimit = stop ? DEVICE_APPLICATION_STOP_IN_FLIGHT : DEVICE_APPLICATION_IN_FLIGHT
+      const sameClass = (item: Assembly) => item.stop === stop && item.observation === observation
+      const assembling = [...this.assemblies.values()].filter(item =>
+        (item.kind === 'request') === (kind === 'request') && sameClass(item)).length
+      const occupied = [...active.values()].filter(sameClass).length
+      let countLimit = DEVICE_APPLICATION_IN_FLIGHT
+      if (stop) countLimit = DEVICE_APPLICATION_STOP_IN_FLIGHT
+      else if (observation) countLimit = DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT
       const byteLimit = this.bufferBytes - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
       if (assembling + occupied >= countLimit || this.inboundBytes + total > byteLimit
-        || stop && kind === 'request' && (total > DEVICE_APPLICATION_STOP_BYTES || binaryBytes !== 0)) {
+        || stop && kind === 'request' && (total > DEVICE_APPLICATION_STOP_BYTES || binaryBytes !== 0)
+        || observation && kind === 'request' && binaryBytes !== 0) {
         this.queueFrame({ type: 'application-reject', id, code: 'backpressure' })
         return
       }
       this.inboundBytes += total
-      this.assemblies.set(id, { namespace: frame.namespace, kind, jsonBytes, binaryBytes, received: 0, chunks: [], abort: new AbortController(), stop })
+      this.assemblies.set(id, { namespace: frame.namespace, kind, jsonBytes, binaryBytes, received: 0,
+        chunks: [], abort: new AbortController(), stop, observation })
       this.queueFrame({ type: 'application-ack', id, offset: 0 }); return
     }
     if (frame.type !== 'application-chunk') throw new DeviceConnectionError('malformed-frame')
@@ -457,6 +480,9 @@ export class DeviceApplicationChannel {
       let result: DeviceApplicationResult
       try {
         if (assembly.stop && !this.stopRequest(assembly.namespace, payload)) throw new DeviceApplicationError('forbidden')
+        if (assembly.observation && !deviceRequestIsObservation(assembly.namespace, payload)) {
+          throw new DeviceApplicationError('forbidden')
+        }
         this.rawHandlers.set(id, assembly)
         const raw = this.track(Promise.resolve().then(() => registration.handle!(payload, {
           binding: Object.freeze({ ...this.binding }), signal: assembly.abort.signal, connectionSignal: this.abort.signal, ...(bytes ? { bytes } : {}),
