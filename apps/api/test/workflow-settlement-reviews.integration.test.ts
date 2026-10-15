@@ -115,7 +115,11 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement revie
         data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
       } })
       if (restart) await f.restart()
-      await expect(f.accept(admitted.execution.id)).rejects.toMatchObject({ code: 'WORK_RETURN_ANCESTRY_CONFLICT' })
+      await expect(f.accept(admitted.execution.id)).rejects.toMatchObject({ issues: [{
+        code: 'custom', path: ['routing', 'requestId'],
+        message: 'Return requestId must match an open received request. '
+          + `Valid open request IDs: ${JSON.stringify([right.request.requestId])}`,
+      }] })
       expect((await f.store.readExecution(admitted.execution.id)).accepted).toBe(false)
       expect((await f.db.pool.query('select execution_id from run_work_results where execution_id=$1',
         [admitted.execution.id])).rowCount).toBe(0)

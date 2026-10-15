@@ -6,13 +6,13 @@ describe.runIf(postgresEnabled)('workflow Worker restart', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
     fixture = await faultWorkflowFixture()
-    fixture.launch()
+    await fixture.launch()
     await fixture.active()
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   // Worker restart must recover the turn or exhaust only that node's bounded retry budget.
-  it.fails('reopens the Worker journal mid-turn and leaves sibling work intact', async () => {
+  it('reopens the Worker journal mid-turn and leaves sibling work intact', async () => {
     const before = await fixture.read()
     const original = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
     const intent = fixture.intents.get(original.id)!
@@ -22,7 +22,8 @@ describe.runIf(postgresEnabled)('workflow Worker restart', () => {
     await fixture.worker.restart()
     expect(fixture.worker.connection.bootId).not.toBe(bootId)
     expect(await fixture.worker.journal.status(intent.operationId)).toMatchObject({ status: 'known',
-      receipt: { intent: { executionId: original.id, attemptId: intent.attemptId } } })
+      receipt: { intent: { executionId: original.id, attemptId: intent.attemptId },
+        terminal: { kind: 'failed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: true } } } } })
     fixture.release()
     const details = await fixture.finished()
     expectBoundedNodeFault(details, fixture, /worker|restart|interrupt|uncertain/i)

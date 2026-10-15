@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
+import { DomainError } from '../src/modules/errors.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -82,7 +83,7 @@ it.each(['api', 'worker'] as const)('settles a Run after %s owner loss and then 
       f.disconnect()
       f.recover.mockResolvedValue(false)
       vi.spyOn(f.runs, 'appendNativeEvents').mockRejectedValueOnce(
-        Object.assign(new Error('Native event persistence was interrupted.'), { code: '57014' }))
+        new DomainError('NATIVE_OBSERVATION_LOST', 'Native event observation was interrupted.', 503))
       await expect(f.engine.start(f.f.run.id)).rejects.toThrow()
       f.recover.mockImplementation((id, signal) => f.registry.closeOwner(`execution:${id}`, signal))
       f.recover.mockClear()

@@ -70,7 +70,7 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
     'type',left(n.record->>'type',48),
     'subagent',case when n.record->>'subagent'='true' then true end,
     'nativeMethod',left(n.record#>>'{payload,nativeMethod}',100),
-    'turnStatus',left(n.record#>>'{payload,turn,status}',48),
+    'turnStatus',left(coalesce(n.record#>>'{payload,status}',n.record#>>'{payload,turn,status}'),48),
     'unsupportedInteractionCode',case when n.record->>'type'='interaction.unsupported'
       then left(n.record#>>'{payload,code}',100) end,
     'itemType',left(n.record#>>'{payload,item,type}',48),
