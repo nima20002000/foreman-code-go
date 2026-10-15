@@ -22,7 +22,7 @@ export async function faultWorkflowWorker(directory: string) {
   const adapters: CodexAppServerSessionManager[] = []
   const manager = () => {
     const adapter = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
-      undefined, 'none', undefined, infrastructure.codex)
+      undefined, 'scoped', undefined, infrastructure.codex)
     adapters.push(adapter)
     return adapter
   }
