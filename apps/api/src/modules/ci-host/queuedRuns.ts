@@ -1,6 +1,5 @@
 import type pg from 'pg'
-import { CiRunRecordSchema, type CiDurations, type CiRunRecord } from '@foreman-code/contracts'
-import { saveQueuedCiRun } from './dispatch.js'
+import { CiRunRecordSchema, type CiDurations } from '@foreman-code/contracts'
 import { CI_QUEUE_ORDER } from './priority.js'
 
 export async function readQueuedCiRuns(pool: pg.Pool) {
@@ -29,33 +28,4 @@ export async function readCiGateReservation(pool: pg.Pool) {
   const reservedHosts = new Set(live.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
     .map(run => run.plannedHostKey))
   return { gate, reservedHosts }
-}
-
-/** Full requests collect failures from both tiers; affected requests stop after a fast-tier failure. */
-export async function releaseCiSlowTier(pool: pg.Pool, queued: CiRunRecord[]): Promise<CiRunRecord[]> {
-  const deferred = queued.filter(run => run.deferred)
-  if (!deferred.length) return queued
-  const groups = [...new Set(deferred.map(run => run.groupId))]
-  const rows = (await pool.query<{ group_id: string; state: string }>(
-    `select record->>'groupId' as group_id, state from ci_runs
-      where record->>'groupId' = any($1::text[]) and coalesce((record->>'deferred')::boolean, false) = false`,
-    [groups])).rows
-  const waiting = new Set<string>()
-  for (const groupId of groups) {
-    const states = rows.filter(row => row.group_id === groupId).map(row => row.state)
-    const slowRuns = deferred.filter(run => run.groupId === groupId)
-    const continueAfterFailure = slowRuns.some(run => run.gate || run.scope === 'full')
-    const stop = states.some(state => state === 'canceled' || state === 'lost'
-      || state === 'failed' && !continueAfterFailure)
-    if (stop) {
-      const now = new Date().toISOString()
-      for (const run of slowRuns) {
-        const skipped = { ...run, state: 'canceled' as const, finishedAt: now,
-          message: 'Skipped: slow tests run only after every other test of this request passed, and some did not.' }
-        await saveQueuedCiRun(pool, run, skipped)
-      }
-      waiting.add(groupId)
-    } else if (states.some(state => state !== 'passed' && state !== 'failed')) waiting.add(groupId)
-  }
-  return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
 }

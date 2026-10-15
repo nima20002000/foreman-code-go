@@ -70,9 +70,6 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
     if (sql.includes('where group_id=any')) {
       return { rows: records.map(record => ({ record })) }
     }
-    if (sql.includes('as group_id')) {
-      return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
-    }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued')
         .map(record => ({ record, durations: options.durations ?? null })) }
@@ -611,11 +608,11 @@ function tieredRuns({ gate = false }: { gate?: boolean } = {}) {
       ? { partition: null, files: [file],
         integrationShards: 8, plannedHostKey: cloud.key, requiresBuildComputer: false }
       : { partition: { index: 0, count: 1, weights: [1], tier, slowFiles: [slowFile] } }
-    return CiRunRecordSchema.parse({ ...run, ...selection, gate, ...(index === 1 ? { deferred: true } : {}) })
+    return CiRunRecordSchema.parse({ ...run, ...selection, gate })
   })
 }
 
-it('dispatches the deferred gate selection with valid host requests after a fast failure', async () => {
+it('dispatches the gate selection with valid host requests after a fast failure', async () => {
   const records = tieredRuns({ gate: true })
   records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
     finishedAt: '2026-10-12T00:05:00.000Z' })
@@ -627,7 +624,7 @@ it('dispatches the deferred gate selection with valid host requests after a fast
     operation: 'start', runId: records[1]!.id, gate: true, scope: 'full',
     files: records[1]!.files, integrationShards: 8,
   })
-  expect(records[1]).toMatchObject({ state: 'running', deferred: true })
+  expect(records[1]).toMatchObject({ state: 'running' })
   expect(records[0]).toEqual(failed)
 })
 

@@ -61,27 +61,26 @@ it('preserves separate host-only slices when hosts are busy and leaves ordinary 
 it('uses the measured median for unknown files and sizes runner-derived selections conservatively', () => {
   const parts = planIntegrationParts({ suite: 'integration', commandId: 'derived' },
     { files, durations: { [files[0]!]: 120_000 } }, { host: 0, ordinary: 44 })
-  // The one measured slow file forms the deferred slow tier; unmeasured files are estimated at the median.
-  const fast = parts.filter(part => !part.deferred)
+  // The one measured slow file forms a separate tier; unmeasured files are estimated at the median.
+  const fast = parts.filter(part => part.partition?.tier !== 'slow')
   expect(fast).toHaveLength(10)
   expect(fast.every(part => part.expectedDurationMs <= 330_000)).toBe(true)
-  expect(parts.filter(part => part.deferred)).toHaveLength(1)
+  expect(parts.filter(part => part.partition?.tier === 'slow')).toHaveLength(1)
 })
 
-it('runs slow files in a deferred tier that no fast part contains', () => {
+it('plans separate slow parts that no fast part contains', () => {
   const quick = files.slice(0, 8)
   const slow = files.slice(8, 11)
   const measured = { ...Object.fromEntries(quick.map(file => [file, 20_000])),
     ...Object.fromEntries(slow.map(file => [file, 90_000])) }
   const parts = planIntegrationParts(input, { files: [...quick, ...slow], durations: measured }, { host: 0, ordinary: 44 })
   const slices = parts.map(part => integrationPartition([...quick, ...slow], measured, part.partition!))
-  const fastSlices = slices.filter((_, index) => !parts[index]!.deferred)
-  const slowSlices = slices.filter((_, index) => parts[index]!.deferred)
+  const fastSlices = slices.filter((_, index) => parts[index]!.partition?.tier === 'fast')
+  const slowSlices = slices.filter((_, index) => parts[index]!.partition?.tier === 'slow')
   expect(fastSlices.flat().sort()).toEqual([...quick].sort())
   expect(slowSlices.flat().sort()).toEqual([...slow].sort())
   // Each slow file gets its own part, so the slow tier lasts as long as its slowest file.
   expect(slowSlices.every(slice => slice.length === 1)).toBe(true)
-  expect(parts.filter(part => part.deferred).every(part => part.partition?.tier === 'slow')).toBe(true)
 })
 
 it.each([2, 3])('balances measured tier durations across %i parts including the systemd slice', partitions => {
@@ -102,7 +101,6 @@ it.each([2, 3])('balances measured tier durations across %i parts including the 
   for (const [tier, tierFiles] of [['fast', fastFiles], ['slow', slowFiles]] as const) {
     const tierParts = parts.filter(part => part.partition?.tier === tier)
     expect(tierParts).toHaveLength(partitions)
-    expect(tierParts.every(part => Boolean(part.deferred) === (tier === 'slow'))).toBe(true)
     const slices = tierParts.map(part => integrationPartition(selected, measured, part.partition!))
     expect(slices.flat().sort()).toEqual([...tierFiles].sort())
     const loads = slices.map(slice => slice.reduce((sum, file) => sum + measured[file]!, 0))
@@ -121,9 +119,9 @@ it.each([2, 3])('balances measured tier durations across %i parts including the 
 it('keeps a request with only fast or only slow files in one tier', () => {
   const quick = Object.fromEntries(files.map(file => [file, 20_000]))
   expect(planIntegrationParts(input, { files, durations: quick }, { host: 0, ordinary: 44 })
-    .some(part => part.deferred || part.partition?.tier)).toBe(false)
+    .some(part => part.partition?.tier)).toBe(false)
   expect(planIntegrationParts(input, { files, durations }, { host: 0, ordinary: 44 })
-    .some(part => part.deferred || part.partition?.tier)).toBe(false)
+    .some(part => part.partition?.tier)).toBe(false)
 })
 
 

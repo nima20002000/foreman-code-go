@@ -272,8 +272,6 @@ export const CiRunRecordSchema = z.object({
   speedFactor: z.number().positive().finite().optional(),
   /** The planned slice contains files requiring a build computer. */
   requiresBuildComputer: z.boolean().optional(),
-  /** A slow-tier part waits for fast parts to finish. Full and gate requests continue after fast failures. */
-  deferred: z.boolean().optional(),
   /** Providers that accepted a dispatch but exhausted retries without creating work. */
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
   /** One fresh executor attempt after a cloud failure before its first test case. */
