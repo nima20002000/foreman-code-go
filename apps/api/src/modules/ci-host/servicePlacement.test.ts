@@ -43,7 +43,8 @@ function queuedRuns(count: number) {
 
 function fleet(records: CiRunRecord[], available: HostCiComputer[],
   unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>(),
-  options: { cpuCounts?: Map<string, number>; durations?: CiDurations; reservedCloudSlots?: number } = {}) {
+  options: { cpuCounts?: Map<string, number>; durations?: CiDurations; reservedCloudSlots?: number;
+    publishMirror?: HostCiEndpoint['publishMirror'] } = {}) {
   const started: { computer: HostCiComputer; request: CiHostRequest; assigned: CiRunRecord }[] = []
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
     if (sql.includes('ci_dispatch_claims')) return { rows: [], rowCount: 1 }
@@ -119,6 +120,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
     },
   }
+  if (options.publishMirror) endpoint.publishMirror = options.publishMirror
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits,
     endpoint, undefined, options)
   return { service, endpoint, started }
@@ -978,4 +980,47 @@ it('lets later full requests dispatch when the oldest gate already has a failed 
   expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([later!.id])
   expect(records[2]).toMatchObject({ state: 'running', message: null })
   expect(records[1]!.state).toBe('running')
+})
+
+it('publishes the mirror snapshot before a cloud ticket claims its slot', async () => {
+  const github: HostCiComputer = { ...cloud, key: 'cloud:github:0', hostRef: { ...cloud.hostRef, provider: 'github' } }
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+  const publication = deferred()
+  const publishMirror = vi.fn(async () => publication.promise)
+  const f = fleet(records, [github], new Map(), new Set(), new Map(), { publishMirror })
+  try {
+    await f.service.dispatch()
+    expect(publishMirror).toHaveBeenCalledWith(expect.objectContaining({ repository: 'owner/repo',
+      mirror: 'example/ci-mirror', commit: 'a'.repeat(40) }))
+    expect(f.started).toEqual([])
+    expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+    publication.resolve()
+    await expect.poll(() => f.started.length).toBe(1)
+    expect(records[0]).toMatchObject({ state: 'running' })
+    expect(publishMirror).toHaveBeenCalledTimes(1)
+  } finally {
+    publication.resolve()
+    await f.service.close()
+  }
+})
+
+it('keeps GitHub integration slots free when the only queued check is blocked behind a gate', async () => {
+  const githubs = Array.from({ length: 5 }, (_, slot): HostCiComputer => ({ ...cloud, key: `cloud:github:${slot}`,
+    hostRef: { ...cloud.hostRef, provider: 'github', slot }, label: `GitHub ${slot + 1}` }))
+  const [gate] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true, state: 'running',
+    computer: { hostRef: cloud.hostRef, label: cloud.label }, startedAt: '2026-10-12T00:00:01.000Z' }))
+  const [blocked] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+    queuedAt: '2026-10-12T00:02:00.000Z' }))
+  const integrations = [1, 2].map(index => CiRunRecordSchema.parse({ ...queuedRuns(1)[0], suite: 'integration',
+    partition: null, id: randomUUID(), groupId: randomUUID(), scope: 'affected',
+    files: [`apps/api/test/example-${index}.integration.test.ts`], queuedAt: '2026-10-12T00:03:00.000Z' }))
+  const records = [gate!, blocked!, ...integrations]
+  const f = fleet(records, [cloud, ...githubs])
+  try {
+    await f.service.dispatch()
+    expect(integrations.map(run => records.find(record => record.id === run.id)!.state)).toEqual(['running', 'running'])
+    expect(records.find(record => record.id === blocked!.id)!.state).toBe('queued')
+  } finally {
+    await f.service.close()
+  }
 })

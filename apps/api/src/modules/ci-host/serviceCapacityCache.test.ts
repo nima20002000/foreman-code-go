@@ -33,7 +33,8 @@ function fixture() {
     await input.prepare?.()
     return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
   } } as PostgresCommandCoordinator
-  const wait = () => new Promise<void>(resolve => { setTimeout(resolve, 2000) })
+  let statusDelayMs = 2000
+  const wait = (ms = 2000) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
   const endpoint: HostCiEndpoint = {
     computers: vi.fn<HostCiEndpoint['computers']>(async () => {
       await wait()
@@ -42,7 +43,7 @@ function fixture() {
     }),
     request: vi.fn<HostCiEndpoint['request']>(async (_computer, request) => {
       if (request.operation !== 'status') throw new Error('Unexpected executor request')
-      await wait()
+      await wait(statusDelayMs)
       return { operation: 'status', ready, reasons: ready ? [] : ['Executor unavailable'], cpuCount: 8,
         memoryBytes: 16 * 2 ** 30, slotsTotal: 5, slotsUsed: 0, runs: [] }
     }),
@@ -58,10 +59,10 @@ function fixture() {
   vi.spyOn(service, 'dispatch').mockResolvedValue(undefined)
   const run = () => service.run(caller, { workspaceId, suite: 'unit', scope: 'affected', files })
   return { service, run, records, endpoint,
-    occupy: (count: number) => { occupied = count }, unavailable: () => { ready = false }, hide: () => { available = false } }
+    occupy: (count: number) => { occupied = count }, slowStatus: () => { statusDelayMs = 60_000 }, unavailable: () => { ready = false }, hide: () => { available = false } }
 }
 
-it('reuses slow computer capacity reads on a second admission and counts fresh database reservations', async () => {
+it('reuses slow computer capacity reads on a second admission without shrinking shards for busy slots', async () => {
   vi.useFakeTimers()
   const f = fixture()
   try {
@@ -77,16 +78,16 @@ it('reuses slow computer capacity reads on a second admission and counts fresh d
     const assertion = expect(result).resolves.toMatchObject({ ticketId: expect.any(String) })
     await vi.advanceTimersByTimeAsync(500)
     await assertion
-    expect((await second).partitions).toBeUndefined()
+    expect((await second).partitions).toHaveLength(4)
     expect(f.endpoint.computers).toHaveBeenCalledTimes(1)
     expect(f.endpoint.request).toHaveBeenCalledTimes(1)
-    expect(f.records.filter(record => record.groupId === f.records.at(-1)!.groupId)).toHaveLength(1)
+    expect(f.records.filter(record => record.groupId === f.records.at(-1)!.groupId)).toHaveLength(4)
   } finally {
     await f.service.close()
   }
 })
 
-it('refreshes expired computer readiness before planning another admission', async () => {
+it('plans from the last readiness snapshot while an expired one refreshes in the background', async () => {
   vi.useFakeTimers()
   const f = fixture()
   try {
@@ -96,10 +97,48 @@ it('refreshes expired computer readiness before planning another admission', asy
     f.unavailable()
     await vi.advanceTimersByTimeAsync(6000)
     const second = f.run()
-    await vi.advanceTimersByTimeAsync(4000)
-    expect((await second).partitions).toBeUndefined()
-    expect(f.endpoint.computers).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((await second).partitions).toHaveLength(4)
+    await vi.advanceTimersByTimeAsync(2000)
     expect(f.endpoint.request).toHaveBeenCalledTimes(2)
+    const third = f.run()
+    expect((await third).partitions).toBeUndefined()
+  } finally {
+    await f.service.close()
+  }
+})
+
+it('does not let a stalled computer status read delay admission once a snapshot exists', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    const first = f.run()
+    await vi.advanceTimersByTimeAsync(4000)
+    await first
+    f.slowStatus()
+    await vi.advanceTimersByTimeAsync(6000)
+    const second = f.run()
+    const deadline = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('Admission awaited a stalled status read')), 2500)
+    })
+    const result = Promise.race([second, deadline])
+    const assertion = expect(result).resolves.toMatchObject({ ticketId: expect.any(String) })
+    await vi.advanceTimersByTimeAsync(2500)
+    await assertion
+    expect((await second).partitions).toHaveLength(4)
+  } finally {
+    await f.service.close()
+  }
+})
+
+it('sizes unit shards from eligible capacity when every slot is busy', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    f.occupy(5)
+    const admitted = f.run()
+    await vi.advanceTimersByTimeAsync(4000)
+    expect((await admitted).partitions).toHaveLength(4)
   } finally {
     await f.service.close()
   }
