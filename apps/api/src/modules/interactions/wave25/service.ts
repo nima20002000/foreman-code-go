@@ -11,6 +11,7 @@ import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, selectedIntera
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
 import type { Wave25InteractionRepository } from './repository.js'
 import { fail } from './context.js'
+import { holdResumeClaims } from './resume.js'
 import { SingleWriterSessionManager } from '../sessionWriter.js'
 import { canUserInteract } from '../../access/userPolicy.js'
 import { requireRespondableInteraction } from '../../access/appPolicy.js'
@@ -118,10 +119,14 @@ export async function resumeApproval(deps: ApprovalRuntimeDependencies, interact
   if (interaction.deliveryState !== 'delivered' || interaction.status === 'canceled') return
   if (!deps.atomicResume) return fail('GRAPH_RESUME_ATOMIC_CONSUMER_REQUIRED',
     'The current checkpoint consumer is not attached. Delivery is persisted; no native response or graph callback was replayed.')
+  const claimedAt = Date.now()
   const claim = await deps.repository.delivery.claimAtomicGraphResume(interaction.id, randomUUID())
   if (!claim) return
+  // The response is already delivered; keep its claim while the Run owner finishes earlier work.
+  const [held] = holdResumeClaims(deps.repository.delivery, [claim], claimedAt)
   let error: string | undefined
-  try { await deps.atomicResume(claim) } catch { error = 'GRAPH_RESUME_CHECKPOINT_UNCERTAIN' }
+  try { await deps.atomicResume(held!) } catch { error = 'GRAPH_RESUME_CHECKPOINT_UNCERTAIN' }
+  finally { await held!.release!() }
   await deps.repository.delivery.finishGraphResume(claim, error)
 }
 export async function respondToApproval(deps: ApprovalRuntimeDependencies, responder: InteractionResponder,

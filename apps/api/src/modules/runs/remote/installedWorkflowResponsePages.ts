@@ -59,6 +59,7 @@ export class InstalledWorkflowResponsePages {
     const bytes = Buffer.from(JSON.stringify(receipt))
     const metadata = pageJsonContinuationBytes(bytes)
     for (const [id, transfer] of this.transfers) if (transfer.expiresAt <= Date.now()) this.remove(id)
+    // Least recently read first: a transfer that is still being read stays retained.
     while (this.retainedBytes + bytes.byteLength > retainedBytesLimit || this.transfers.size >= 128) {
       this.remove(this.transfers.keys().next().value!)
     }
@@ -81,6 +82,10 @@ export class InstalledWorkflowResponsePages {
       throw new DomainError('conflict', 'Receipt transfer owner or revision changed', 409)
     }
     const metadata = pageJsonContinuationBytes(retained.bytes, frame.metadata)
+    // A served page is reader progress: renew the retention and evict idle transfers before this one.
+    retained.expiresAt = Date.now() + retentionMs
+    this.transfers.delete(frame.transferId)
+    this.transfers.set(frame.transferId, retained)
     return RemoteReceiptPageSchema.parse({ kind: 'receipt-page', transferId: frame.transferId,
       receiptSequence: retained.sequence, metadata })
   }

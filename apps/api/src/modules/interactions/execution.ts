@@ -45,7 +45,7 @@ import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowCo
 import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
 import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
-import { isTransientRefreshFailure, maintainCredential } from '../harnesses/credentialHeartbeat.js'
+import { isTransientRefreshFailure, renewOwnedLeases, type OwnedLease } from '../leases/ownerLeases.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { isTransientExecutionError, isTransientExecutionResult, transientExecutionFailure } from '../runs/executionRetryPolicy.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
@@ -990,6 +990,12 @@ export class ApprovalExecutionCoordinator {
     return prepared.credential.environment
   }
 
+  /** The execution credential as one lease of its owner; Worker relays and launcher routes follow its expiry. */
+  private credentialLease(manager: NativeHarnessSessionManager, renew: () => Promise<void>): OwnedLease {
+    return { name: 'execution credential', renewWithinMs: WORKER_CREDENTIAL_RENEWAL_WINDOW_MS,
+      remainingMs: () => remainingCredentialLifetime(this.managerCredentials.get(manager)), renew }
+  }
+
   private renewCredential(manager: NativeHarnessSessionManager, executionId: string,
     options: { force?: boolean; check(): Promise<void> }): Promise<void> {
     const renew = async () => {
@@ -1175,12 +1181,10 @@ export class ApprovalExecutionCoordinator {
       clearTimeout(preflightDeadline)
       if (abortPreflight) signal.removeEventListener('abort', abortPreflight)
     }
-    const stopRenewal = !signal.aborted && initial && this.credentials ? maintainCredential({
-      expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
-      remainingMs: () => remainingCredentialLifetime(this.managerCredentials.get(owned.manager)),
+    const stopRenewal = !signal.aborted && initial && this.credentials ? renewOwnedLeases({
       signal,
       check,
-      refresh: async () => {
+      leases: [this.credentialLease(owned.manager, async () => {
         const credential = this.managerCredentials.get(owned.manager)
         if (!credential || credential.principalId !== initial.principalId || credential.environment !== initial.environment
           || !Number.isFinite(remainingCredentialLifetime(credential)) || remainingCredentialLifetime(credential) <= 0) {
@@ -1189,7 +1193,7 @@ export class ApprovalExecutionCoordinator {
         if (remainingCredentialLifetime(credential) <= WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
           await this.renewCredential(owned.manager, executionId, { check })
         }
-      },
+      })],
       onFailure: (error) => {
         // Lease loss must remain distinguishable: it cannot cancel a successor's native turn.
         if (isLeaseLost(error)) {
@@ -1272,12 +1276,10 @@ export class ApprovalExecutionCoordinator {
       await this.validateContinuation?.(owned.execution.id, owned.controller.signal)
       owned.controller.signal.throwIfAborted()
     }
-    owned.stopWaitingRenewal = maintainCredential({
-      expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
-      remainingMs: () => remainingCredentialLifetime(this.managerCredentials.get(owned.manager)),
+    owned.stopWaitingRenewal = renewOwnedLeases({
       signal: owned.controller.signal,
       check,
-      refresh: async () => {
+      leases: [this.credentialLease(owned.manager, async () => {
         try {
           await owned.manager.withCredentialLease(session, owned.controller.signal, async signal => {
             await this.renewCredential(owned.manager, owned.execution.id, { check: async () => {
@@ -1293,24 +1295,22 @@ export class ApprovalExecutionCoordinator {
           busy.cause = error
           throw busy
         }
-      },
+      })],
       onFailure: error => owned.controller.abort(error),
     })
   }
 
   private maintainRetainedReviewer(owned: OwnedNativeSession): void {
     if (owned.stopReviewerRenewal || !this.credentials?.renew) return
-    owned.stopReviewerRenewal = maintainCredential({
+    owned.stopReviewerRenewal = renewOwnedLeases({
       signal: owned.controller.signal,
-      expiresAt: () => this.managerCredentials.get(owned.manager)?.expiresAt,
-      remainingMs: () => remainingCredentialLifetime(this.managerCredentials.get(owned.manager)),
-      refresh: () => {
+      leases: [this.credentialLease(owned.manager, () => {
         const renewal = this.renewRetainedReviewer(owned).finally(() => {
           if (owned.reviewerRenewal === renewal) delete owned.reviewerRenewal
         })
         owned.reviewerRenewal = renewal
         return renewal
-      },
+      })],
       onFailure: error => owned.controller.abort(error),
     })
   }
@@ -2501,9 +2501,7 @@ export class ApprovalExecutionCoordinator {
     const { input } = observation
     observation.watchCredential()
     if (!this.credentials || observation.stopRenewal || !observation.manager! || !this.managerCredentials.has(observation.manager!)) return
-    observation.stopRenewal = maintainCredential({
-      expiresAt: () => this.managerCredentials.get(observation.manager!)?.expiresAt,
-      remainingMs: () => remainingCredentialLifetime(this.managerCredentials.get(observation.manager!)),
+    observation.stopRenewal = renewOwnedLeases({
       signal: observation.signal,
       check: async () => {
         observation.signal.throwIfAborted()
@@ -2511,7 +2509,7 @@ export class ApprovalExecutionCoordinator {
         await this.validateContinuation?.(observation.execution.id, observation.signal)
         input.owner.assertOwned()
       },
-      refresh: async () => {
+      leases: [this.credentialLease(observation.manager!, async () => {
         const credential = this.managerCredentials.get(observation.manager!)
         if (!credential) throw new Error('The execution lost its native credential lease.')
         if (remainingCredentialLifetime(credential) <= WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
@@ -2523,13 +2521,13 @@ export class ApprovalExecutionCoordinator {
           })
         }
         input.owner.assertOwned()
-      },
-      onFailure: (error, phase) => {
+      })],
+      onFailure: (error, phase, lease) => {
         const failure = new DomainError('WORKER_CREDENTIAL_EXPIRING',
           'Execution stopped before its App credential expired. Active native work was not restarted.', 409)
         failure.cause = error
         componentLogger('harness').warn({ operation: 'maintain workflow credential',
-          executionId: observation.execution.id, runId: observation.execution.runId, phase,
+          executionId: observation.execution.id, runId: observation.execution.runId, phase, lease,
           remainingMs: remainingCredentialLifetime(this.managerCredentials.get(observation.manager!)),
           err: observation.safeError(failure) }, 'Worker credential maintenance failed')
         observation.credentialFailure.abort(failure)

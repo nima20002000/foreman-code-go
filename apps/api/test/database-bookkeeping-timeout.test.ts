@@ -8,7 +8,7 @@ import { LeaseGuard, SingleWriterSessionManager } from '../src/modules/interacti
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { RunGraphError } from '../src/modules/run-graph/errors.js'
 import { executeRepeatRuntime, type RepeatRuntimeLifecycle } from '../src/modules/runs/repeatRuntime.js'
-import { maintainCredential } from '../src/modules/harnesses/credentialHeartbeat.js'
+import { renewOwnedLeases } from '../src/modules/leases/ownerLeases.js'
 import { a1Scenario, graphHarness } from './helpers/eng04A1GraphHarness.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
 
@@ -65,9 +65,9 @@ it('keeps the credential heartbeat alive through a wrapped database timeout', as
   vi.useFakeTimers()
   const check = vi.fn().mockRejectedValueOnce(timeouts[2]).mockResolvedValue(undefined)
   const onFailure = vi.fn()
-  const stop = maintainCredential({
-    expiresAt: () => new Date(Date.now() + 600_000).toISOString(),
-    check, refresh: async () => {}, signal: new AbortController().signal, onFailure,
+  const stop = renewOwnedLeases({
+    leases: [{ name: 'execution credential', renewWithinMs: 60_000, remainingMs: () => 600_000, renew: async () => {} }],
+    check, signal: new AbortController().signal, onFailure,
   })
   try {
     await vi.advanceTimersByTimeAsync(1_000)

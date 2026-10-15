@@ -190,6 +190,28 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     expect(error.mock.calls.filter(([, message]) => message === 'Worker MCP relay failed')).toHaveLength(1)
   })
 
+  it('records why its renewal stopped in the route, so the launcher reports the cause instead of a bare expiry', async () => {
+    const root = await temporaryDirectory('worker-lease-refused-')
+    roots.push(root)
+    const token = 'refused-renewal-credential'
+    const refresh = vi.fn(async (): Promise<string> => { throw new DeviceApplicationError('AUTH_REVOKED') })
+    const expiresAt = new Date(Date.now() + 60_000).toISOString()
+    const endpoint = await createWorkerMcpEndpoint({ launcher: join(root, 'graphql-mcp.mjs'),
+      signal: new AbortController().signal, relay: {
+        environment: { agentId: 'abandoned-agent', variables: { GRAPHQL_MCP_TOKEN: token } }, expiresAt,
+        request: vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{}' })),
+        refresh,
+      } })
+    endpoints.push(endpoint)
+    const route = join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`)
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(route, 'utf8'))).toMatchObject({
+      endpoint: endpoint.endpoint, expiresAt, renewalFailure: expect.stringContaining('AUTH_REVOKED') }))
+    expect(JSON.stringify(JSON.parse(await readFile(route, 'utf8')))).not.toContain(token)
+    // Main refused the lease for good: the attempt's renewal stops instead of asking again.
+    await new Promise(resolve => setTimeout(resolve, 2_500))
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
   it('renews once when concurrent polls enter the renewal window', async () => {
     const f = await setup()
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.expiresAt) - 2 * 60_000)

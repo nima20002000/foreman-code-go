@@ -10,7 +10,7 @@ import { beforeGraphCommit, didGraphTransactionCommit, type GraphTransactionSql 
 import type { PostgresInteractionRepository } from '../interactions/postgres.js'
 import { Wave25InteractionRepository } from '../interactions/wave25/repository.js'
 import { lockInteraction, readContext } from '../interactions/wave25/context.js'
-import { consumeApprovalGraphResume } from '../interactions/wave25/resume.js'
+import { consumeApprovalGraphResume, holdResumeClaims } from '../interactions/wave25/resume.js'
 import type { GraphResumeClaim } from '../interactions/deliveryPostgres.js'
 import type { RunOwnership } from './ownership.js'
 import { mintWorkflowResumePermit, type WorkflowResumePermit } from './workflowResumePermit.js'
@@ -63,14 +63,21 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
   if (!delivered.length) return undefined
   const ordered = [...delivered].sort((a, b) => a.id.localeCompare(b.id))
   const claims = new Map<string, GraphResumeClaim>()
+  const claimedAt = Date.now()
   for (const item of ordered) {
     owner.assertOwned()
     const claim = suppliedClaim?.interaction.id === item.id ? suppliedClaim
       : await repository.delivery.claimAtomicGraphResume(item.id, randomUUID())
     if (claim) claims.set(item.id, claim)
   }
+  for (const claim of holdResumeClaims(repository.delivery, [...claims.values()].filter(claim => claim !== suppliedClaim), claimedAt)) {
+    claims.set(claim.interaction.id, claim)
+  }
+  const releaseClaims = () => Promise.all([...claims.values()].map(claim => claim.release?.()))
   let transaction: GraphTransactionSql | undefined
   const committed = await owner.oneShotConnection().transaction(async (sql) => {
+    // The owner takes over the claims here; a renewal must not queue behind this transaction's row locks.
+    await releaseClaims()
     transaction = sql
     owner.assertOwned()
     const row = (await sql.query<{ record: unknown }>('select record from runs where id=$1', [owner.runId])).rows[0]
@@ -175,7 +182,7 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
     if (!ready || checkpointIds.size !== 1) throw new DomainError('GRAPH_INTERRUPT_NOT_CURRENT', 'Resume did not consume one current checkpoint.', 409)
     return { runId: owner.runId, versionId: currentRun.workflowVersionId, checkpointId: [...checkpointIds][0]!,
       fence: await owner.readOneShotFence(sql), interactions: current }
-  })
+  }).finally(releaseClaims)
   owner.assertOwned()
   if (!transaction || !didGraphTransactionCommit(transaction) || owner.oneShotConnection().unusable) {
     throw new DomainError('GRAPH_RESUME_COMMIT_UNCERTAIN', 'No confirmed checkpoint commit permits graph continuation.', 409)

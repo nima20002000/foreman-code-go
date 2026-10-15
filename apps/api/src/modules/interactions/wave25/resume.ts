@@ -12,6 +12,10 @@ import { fail, identity, lockInteraction, readContext, requireLeaseAtCommit } fr
 import { decisionDigest, interactionFact, nextInteraction, writeInteraction } from './publication.js'
 import { approvalAttentionFacts } from './attention.js'
 import { approvalAckRecord, assertWorkflowApprovalAckLocked } from '../nativeApprovalProof.js'
+import { componentLogger } from '../../diagnostics/logger.js'
+import { leaseFailureCause, renewOwnedLeases } from '../../leases/ownerLeases.js'
+
+const RESUME_CLAIM_RENEWAL_WINDOW_MS = 40_000
 
 interface ResumeRow { lease_expires_at: Date | null; last_error: string | null; state: string; lease_token: string | null; lease_fence: string; revision: string; live: boolean;
   approval_dispatch_started_at: Date | null; approval_native_ack_id: string | null }
@@ -102,6 +106,31 @@ export async function renewResume(pool: pg.Pool, claim: GraphResumeClaim): Promi
       and r.id=g.run_id and r.stop_requested_at is null and r.execution_state in ('running','waiting','queued')`,
   [claim.interaction.id, claim.ownerToken, INTERACTION_DELIVERY_LEASE_MS])
   if (result.rowCount !== 1) return fail('GRAPH_RESUME_OWNER_LOST')
+}
+/** Renews claims while their claimant waits for the Run owner (queued behind other work on the Run). Renewal
+ * stops when `release` runs, before the owner transaction locks the claim rows, or when the claimant ends.
+ * A claim's commit stays fenced by its lease expiry; a failed renewal is logged with its real cause. */
+export function holdResumeClaims(delivery: { renewGraphResume(claim: GraphResumeClaim): Promise<void> },
+  claims: readonly GraphResumeClaim[], claimedAt: number): GraphResumeClaim[] {
+  if (!claims.length) return []
+  const owner = new AbortController()
+  const stop = renewOwnedLeases({ signal: owner.signal,
+    leases: claims.map(claim => {
+      let expiresAt = claimedAt + INTERACTION_DELIVERY_LEASE_MS
+      return { name: 'graph resume claim', renewWithinMs: RESUME_CLAIM_RENEWAL_WINDOW_MS,
+        remainingMs: () => expiresAt - Date.now(),
+        renew: async () => {
+          const started = Date.now()
+          await delivery.renewGraphResume(claim)
+          expiresAt = started + INTERACTION_DELIVERY_LEASE_MS
+        } }
+    }),
+    onFailure: (error, phase) => componentLogger('engine').warn({ operation: 'renew graph resume claim', phase,
+      interactionIds: claims.map(claim => claim.interaction.id), cause: leaseFailureCause(error) },
+    'Graph resume claim renewal stopped'),
+  })
+  const release = async () => { owner.abort(); await stop() }
+  return claims.map(claim => ({ interaction: claim.interaction, ownerToken: claim.ownerToken, release }))
 }
 export async function finishResume(pool: pg.Pool, claim: GraphResumeClaim, error?: string): Promise<void> {
   await transact(pool, claim.interaction.runId, async (publication) => {

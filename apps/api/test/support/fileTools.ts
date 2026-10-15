@@ -112,6 +112,12 @@ export class MemoryTools implements FileToolRepository {
   async revokeSession(hash: string) {
     this.sessions.delete(hash)
   }
+  async renewSession(hash: string, expiresAt: string, now: string) {
+    const value = this.sessions.get(hash)
+    if (!value || Date.parse(value.expiresAt) <= Date.parse(now)) return false
+    value.expiresAt = expiresAt
+    return true
+  }
   async createArtifact(value: FileToolArtifact) { this.artifacts.set(value.artifactId, clone(value)) }
   async artifact(binding: string, id: string) {
     const value = this.artifacts.get(id); return value?.binding === binding ? clone(value) : undefined

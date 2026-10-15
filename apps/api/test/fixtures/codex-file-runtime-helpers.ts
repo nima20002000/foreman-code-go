@@ -78,6 +78,10 @@ export function filePorts() {
       },
       authenticate,
       revoke: async (token) => { tokens.delete(token); events.push('revoke') },
+      renew: async (token) => {
+        if (!tokens.has(token)) throw new Error('FILE_SESSION_EXPIRED')
+        return new Date(Date.now() + 15 * 60_000).toISOString()
+      },
     },
     artifacts: {
       beginWrite: async (token) => { await authenticate(token); return 'write-a' },

@@ -72,7 +72,7 @@ export interface CodexFileHostLease {
 
 export type CodexFileServices = Pick<AgentFileToolService,
   'list' | 'read' | 'createWorkingCopy' | 'publish' | 'publishedForTurn' | 'writeWorkingCopy' | 'applyFormatEdit'> & {
-    sessions: Pick<AgentFileToolService['sessions'], 'issueForAcceptedSession' | 'authenticate' | 'revoke'>
+    sessions: Pick<AgentFileToolService['sessions'], 'issueForAcceptedSession' | 'authenticate' | 'revoke' | 'renew'>
     artifacts: Pick<AgentFileToolService['artifacts'], 'beginWrite' | 'completeWrite' | 'abortWrite'>
   }
 

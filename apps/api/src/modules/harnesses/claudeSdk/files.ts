@@ -1,6 +1,7 @@
 import type { AgentFileToolService } from '../../files/tools/service.js'
 import type { FileToolContext, FileToolOperation } from '../../files/tools/types.js'
-import { isMutation } from '../../files/tools/context.js'
+import { FILE_SESSION_LEASE_MS, FILE_SESSION_RENEWAL_WINDOW_MS, isMutation } from '../../files/tools/context.js'
+import { leaseFailureCause, renewOwnedLeases } from '../../leases/ownerLeases.js'
 import { HarnessExecutionError } from '../errors.js'
 import type { ClaudeCallbackIdentity } from './interactions.js'
 
@@ -12,6 +13,9 @@ export class ClaudeFileBridge {
   private token: string | undefined
   private issue: Promise<string> | undefined
   private closed = false
+  /** The bridge owns its file session: renewal runs while it is open and stops when it closes. */
+  private readonly sessionOwner = new AbortController()
+  private renewalFailure: Error | undefined
   constructor(private readonly identity: ClaudeCallbackIdentity, private readonly admission: ClaudeFileAdmission,
     private readonly service: AgentFileToolService) { this.identity = structuredClone(identity) }
 
@@ -38,9 +42,12 @@ export class ClaudeFileBridge {
     this.issue ??= this.service.sessions.issueForAcceptedSession(accepted.context, accepted.expiresAt).then(async (token) => {
       this.token = token
       if (this.closed) { await this.service.sessions.revoke(token); throw new HarnessExecutionError('CLAUDE_FILE_CONTEXT_DENIED', 'The file bridge closed during issuance.') }
+      this.renewSession(token, Math.min(accepted.expiresAt.getTime(), Date.now() + FILE_SESSION_LEASE_MS))
       return token
     })
     const token = await this.issue
+    if (this.renewalFailure) throw new HarnessExecutionError('CLAUDE_FILE_SESSION_RENEWAL_FAILED',
+      `File tools stopped because their session could not be renewed: ${leaseFailureCause(this.renewalFailure)}`)
     signal?.throwIfAborted()
     await this.accepted(tool)
     signal?.throwIfAborted()
@@ -54,12 +61,22 @@ export class ClaudeFileBridge {
       case 'files.publish_result': return this.service.publish(token, input)
     }
   }
+  private renewSession(token: string, initialExpiry: number): void {
+    let expiresAt = initialExpiry
+    void renewOwnedLeases({ signal: this.sessionOwner.signal,
+      leases: [{ name: 'file-tool session', renewWithinMs: FILE_SESSION_RENEWAL_WINDOW_MS,
+        remainingMs: () => expiresAt - Date.now(),
+        renew: async () => { expiresAt = Date.parse(await this.service.sessions.renew(token)) } }],
+      onFailure: error => { this.renewalFailure = error },
+    })
+  }
   /** Pre-ack reads remain credential-free and are available only through trusted admission. */
   async readAccepted(input: unknown): Promise<unknown> {
     return this.service.readAccepted((await this.accepted('files.read')).context, input)
   }
   async close(): Promise<void> {
     this.closed = true
+    this.sessionOwner.abort()
     if (this.issue) await this.issue.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     if (this.token) await this.service.sessions.revoke(this.token)
     this.token = undefined

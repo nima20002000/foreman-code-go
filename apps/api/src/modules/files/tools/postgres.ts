@@ -20,6 +20,12 @@ export class PostgresFileToolRepository implements FileToolRepository {
     return (await this.pool.query<{ record: FileToolSession }>(`select record - 'binding' as record from file_tool_sessions
       where token_hash=$1 and revoked_at is null and expires_at>$2`, [tokenHash, asOfUtc])).rows[0]?.record
   }
+  async renewSession(tokenHash: string, expiresAt: string, asOfUtc: string): Promise<boolean> {
+    const result = await this.pool.query(`update file_tool_sessions set expires_at=$2::timestamptz,
+      record=jsonb_set(record,'{expiresAt}',to_jsonb($2::text)) where token_hash=$1 and revoked_at is null and expires_at>$3`,
+    [tokenHash, expiresAt, asOfUtc])
+    return result.rowCount === 1
+  }
   async revokeSession(tokenHash: string): Promise<void> {
     await this.pool.query('update file_tool_sessions set revoked_at=coalesce(revoked_at,now()) where token_hash=$1', [tokenHash])
   }

@@ -12,7 +12,9 @@ import { WORKER_BINDING_ELIGIBLE } from './workerEligibility.js'
 export const APP_MCP_TOKEN_ENVIRONMENT_VARIABLE = 'GRAPHQL_MCP_TOKEN'
 export const DEFAULT_WORKER_CREDENTIAL_TTL_MS = 15 * 60 * 1000
 export { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS } from './credentialLifetime.js'
-export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 60_000
+/** Main renews the execution credential this early so every dependent Worker relay and launcher route,
+ * which renew inside their final two minutes, always reads an already extended expiry. */
+export const WORKER_CREDENTIAL_RENEWAL_WINDOW_MS = 5 * 60_000
 
 export interface IssuedWorkerCredential {
   principalId: string

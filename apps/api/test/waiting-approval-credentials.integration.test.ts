@@ -2,9 +2,9 @@ import { readUntil } from './helpers/observableCondition.js'
 import { expect, it, vi } from 'vitest'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
-import { maintainCredential } from '../src/modules/harnesses/credentialHeartbeat.js'
+import { renewOwnedLeases } from '../src/modules/leases/ownerLeases.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
-import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../src/modules/access/workerCredentials.js'
+import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../src/modules/access/workerCredentials.js'
 
 it('issues and renews against database time despite API clock offsets and jumps', async () => {
   const f = await currentOperatorIntegration()
@@ -28,9 +28,9 @@ it('issues and renews against database time despite API clock offsets and jumps'
     const lifetime = credential as typeof credential & { renewalDeadline?: number }
     const remainingMs = () => lifetime.renewalDeadline === undefined
       ? Date.parse(credential.expiresAt) - Date.now() : lifetime.renewalDeadline - performance.now()
-    stop = maintainCredential({ expiresAt: () => credential.expiresAt, ...{ remainingMs },
-      signal: new AbortController().signal, onFailure: error => failures.push(error),
-      refresh: async () => { credential.expiresAt = await service.renewForExecution(pending.executionId!, credential) },
+    stop = renewOwnedLeases({ signal: new AbortController().signal, onFailure: error => failures.push(error),
+      leases: [{ name: 'execution credential', renewWithinMs: WORKER_CREDENTIAL_RENEWAL_WINDOW_MS, remainingMs,
+        renew: async () => { credential.expiresAt = await service.renewForExecution(pending.executionId!, credential) } }],
     })
     for (const offset of [120_000, -180_000, 0]) {
       clock.mockImplementation(() => wallNow() + offset)

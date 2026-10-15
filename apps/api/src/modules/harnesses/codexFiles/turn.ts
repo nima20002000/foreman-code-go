@@ -3,6 +3,8 @@ import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { FileRevisionSchema, type FileRevision, type FileWithRevision, type MessageAttachmentRef } from '@foreman-code/contracts/files'
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { markdownReadText } from '../../files/tools/markdownReadText.js'
+import { FILE_SESSION_LEASE_MS, FILE_SESSION_RENEWAL_WINDOW_MS } from '../../files/tools/context.js'
+import { leaseFailureCause, renewOwnedLeases } from '../../leases/ownerLeases.js'
 import { assertRegisteredCodexCopy, CodexFileDeliveryError, collectCodexFileBytes, fail, sha256 } from './bytes.js'
 import { warnCodexFileError } from './errorLog.js'
 import type {
@@ -26,8 +28,8 @@ const sameScope = (left: unknown, right: unknown): boolean => canonicalJson(left
 const textResult = (value: unknown, extra?: string): CodexFileCallResult => ({ success: true,
   contentItems: [{ type: 'inputText', text: JSON.stringify(value) }, ...(extra ? [{ type: 'inputText' as const, text: extra }] : [])],
 })
-const refused = (): CodexFileCallResult => ({ success: false,
-  contentItems: [{ type: 'inputText', text: 'File operation unavailable or denied.' }],
+const refused = (reason?: string): CodexFileCallResult => ({ success: false,
+  contentItems: [{ type: 'inputText', text: reason ?? 'File operation unavailable or denied.' }],
 })
 interface Delivery { ref: MessageAttachmentRef; revision: FileRevision; filename: string; copy: RegisteredCodexCopy; image?: RegisteredCodexCopy; firstFrameOnly: boolean }
 interface WorkingCopy { copy?: RegisteredCodexCopy; writeId: string; completed: boolean; busy: boolean }
@@ -69,6 +71,9 @@ export class CodexFileTurn {
   #nativeTurnId: string | undefined
   #activation: Promise<void> | undefined
   #closing = false
+  /** The turn owns its file session: renewal runs while the turn is open and stops when it closes. */
+  #sessionOwner = new AbortController()
+  #renewalFailure: Error | undefined
   #closeAttempt: Promise<void> | undefined
   #pending = new Set<Promise<CodexFileCallResult>>()
 
@@ -215,14 +220,27 @@ export class CodexFileTurn {
         fail('CODEX_FILE_SESSION_INVALID')
       }
       this.#token = token
+      this.renewSession(token)
     })()
     return this.#activation
+  }
+
+  private renewSession(token: string): void {
+    let expiresAt = Math.min(this.#accepted.expiresAt.getTime(), this.now().getTime() + FILE_SESSION_LEASE_MS)
+    void renewOwnedLeases({ signal: this.#sessionOwner.signal,
+      leases: [{ name: 'file-tool session', renewWithinMs: FILE_SESSION_RENEWAL_WINDOW_MS,
+        remainingMs: () => expiresAt - this.now().getTime(),
+        renew: async () => { expiresAt = Date.parse(await this.#dependencies.files.sessions.renew(token)) } }],
+      onFailure: error => { this.#renewalFailure = error; warnCodexFileError(error) },
+    })
   }
 
   /** The adapter routes only this file-tool allowlist. No shell or path-read,
    * Operator, worker, or workflow Foreman Code entry points are accepted here. */
   call(request: CodexFileCall): Promise<CodexFileCallResult> {
     if (this.#closing) return Promise.resolve(refused())
+    if (this.#renewalFailure) return Promise.resolve(refused(
+      `File tools stopped because their session could not be renewed: ${leaseFailureCause(this.#renewalFailure)}`))
     const operation = this.dispatch(request).catch((error: unknown) => { warnCodexFileError(error); return refused() })
     this.#pending.add(operation)
     void operation.finally(() => this.#pending.delete(operation))
@@ -342,6 +360,7 @@ export class CodexFileTurn {
   close(): Promise<void> {
     if (this.#closeAttempt) return this.#closeAttempt
     this.#closing = true
+    this.#sessionOwner.abort()
     const attempt = (async () => {
       await this.#activation?.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
       if (this.#token) { await this.#dependencies.files.sessions.revoke(this.#token); this.#token = undefined }

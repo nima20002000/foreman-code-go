@@ -89,7 +89,7 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
       ownerPrincipalId, scope, nativeSessionId: row.native_session_id, messageId: row.message_id,
       admissionId: row.request_id, executionHostId: lease.executionHostId,
       projectMode: allowMutation ? 'write' as const : 'read' as const,
-      allowMutation, allowedTools, expiresAt: new Date(Math.min(Date.parse(owner.expiresAt), Date.now() + 60 * 60_000)), attachments,
+      allowMutation, allowedTools, expiresAt: new Date(owner.expiresAt), attachments,
     }
     const target = { kind: 'agent' as const, workspaceId: row.workspace_id, conversationId: input.conversationId }
     const recheck = async (ref: MessageAttachmentRef) => {

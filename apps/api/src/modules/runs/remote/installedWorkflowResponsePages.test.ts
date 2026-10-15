@@ -112,7 +112,7 @@ function carrier(f: ReturnType<typeof fixture>, journal: RemoteOperationJournal)
     signal: parent.signal, extensions, registrations: [registration] })
   const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
     worker.run(workerSocket.messages[Symbol.asyncIterator](), 500)]
-  for (const task of tasks) void task.catch(() => {})
+  for (const task of tasks) void task.catch(() => { /* ignore: the channels end when the test closes their sockets; requests report their own failures. */ })
   const committed: RemoteOperationReceipt[] = []
   const manager = remoteNativeManager({ harness: 'codex', agentId: f.start.request.configuration.agentId,
     executionId: f.intent.executionId, configuration: f.start.request.configuration, workingDirectory: '/project' },
@@ -323,6 +323,39 @@ describe('installed workflow receipt transfer', () => {
       expect(() => pages.read(latest, f.binding)).toThrow('owner or revision')
       const renewed = snapshot()
       expect(pages.read(renewed, f.binding).metadata.offset).toBe(renewed.metadata.offset)
+    } finally {
+      pages.clear()
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps a transfer that is still being read past its idle retention and ahead of idle transfers', () => {
+    const f = fixture()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    const receipt = { schemaVersion: 1, intent: f.intent, connection: f.connection,
+      workerIncarnationId: randomUUID(), sequence: 1, phase: 'confirmed_terminal', native: f.native,
+      terminal: { kind: 'completed', closureEvidenceDigest: f.digest, result: f.result },
+      entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [] }
+    const pages = new InstalledWorkflowResponsePages()
+    const frame = RemoteExecutionRpcRequestSchema.parse({ method: 'status', intent: f.intent, placement: f.placement })
+    const snapshot = () => {
+      const response = pages.page({ status: 'known', receipt }, frame, f.binding) as { receipt: unknown }
+      const first = RemoteReceiptPageSchema.parse(response.receipt)
+      const request = RemoteExecutionRpcRequestSchema.parse({ ...frame, method: 'receipt-continuation',
+        transferId: first.transferId, receiptSequence: first.receiptSequence,
+        metadata: { digest: first.metadata.digest, offset: Buffer.from(first.metadata.data, 'base64').byteLength } })
+      if (request.method !== 'receipt-continuation') throw new Error('Wrong test request')
+      return request
+    }
+    try {
+      const active = snapshot()
+      for (let index = 0; index < 20; index++) snapshot()
+      clock.mockReturnValue(100_000)
+      expect(pages.read(active, f.binding).metadata.offset).toBe(active.metadata.offset)
+      // New receipts fill the retained byte window; idle transfers go first.
+      for (let index = 0; index < 20; index++) snapshot()
+      clock.mockReturnValue(200_000)
+      expect(pages.read(active, f.binding).metadata.offset).toBe(active.metadata.offset)
     } finally {
       pages.clear()
       clock.mockRestore()

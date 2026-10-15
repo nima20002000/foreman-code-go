@@ -65,6 +65,7 @@ export function productionCodexChatFiles(app: () => FastifyInstance, conversatio
           },
           authenticate: (...args) => service.sessions.authenticate(...args),
           revoke: (...args) => service.sessions.revoke(...args),
+          renew: (...args) => service.sessions.renew(...args),
         },
         artifacts: service.artifacts,
         list: (...args) => service.list(...args),

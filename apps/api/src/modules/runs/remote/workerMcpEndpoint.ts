@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { componentLogger } from '../../diagnostics/logger.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 import { DeviceConnectionError } from '../../devices/deviceWire.js'
+import { leaseFailureCause, renewOwnedLeases } from '../../leases/ownerLeases.js'
 
 const PublicationCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.literal('files.publish_transferred_result'),
@@ -70,9 +71,9 @@ export interface WorkerMcpRelay {
   refresh?(signal?: AbortSignal): Promise<string>
 }
 
-/** A bound route renews itself this long before it expires, without waiting for a Main status frame. */
+/** A bound route renews itself this long before it expires, without waiting for a Main status frame.
+ * Main renews the credential earlier (WORKER_CREDENTIAL_RENEWAL_WINDOW_MS), so this reads an extended expiry. */
 export const WORKER_MCP_LEASE_RENEWAL_WINDOW_MS = 2 * 60_000
-const WORKER_MCP_LEASE_RENEWAL_RETRY_MS = 15_000
 
 interface WorkerMcpEndpointOptions {
   launcher: string
@@ -157,7 +158,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
   let unregister: (() => Promise<void>) | undefined
   const close = () => shutdown ??= (async () => {
     closing = true
-    clearTimeout(renewal)
+    renewal?.abort()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     await Promise.all([...active])
     await updates
@@ -171,6 +172,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       if (closing || !token || !Number.isFinite(Date.parse(relay.expiresAt)) || Date.parse(relay.expiresAt) <= Date.now()) {
         throw new Error('The original Main MCP lease is unavailable.')
       }
+      renewal?.abort()
       bound = undefined
       await unregister?.()
       unregister = undefined
@@ -181,7 +183,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       }
       unregister = release
       bound = { relay, digest: createHash('sha256').update(`Bearer ${token}`).digest(), expiresAt: relay.expiresAt }
-      scheduleRenewal(bound, renewalDelay(relay.expiresAt))
+      renewWhileBound(bound)
       log.info({ agentId: relay.environment.agentId, launcher: input.launcher, expiresAt: relay.expiresAt },
         'Worker MCP launcher route registered')
     }).catch(error => {
@@ -224,25 +226,34 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
     updates = task.then(() => undefined, () => undefined)
     return task
   }
-  /** The bound route renews itself in its final window, so a long native turn never depends on Main status frames. */
-  let renewal: ReturnType<typeof setTimeout> | undefined
-  const renewalDelay = (expiresAt: string) => Date.parse(expiresAt) - Date.now() - WORKER_MCP_LEASE_RENEWAL_WINDOW_MS
-  const scheduleRenewal = (lease: NonNullable<typeof bound>, delay: number) => {
-    if (closing || bound !== lease || !lease.relay.refresh || Date.parse(lease.expiresAt) <= Date.now()) return
-    clearTimeout(renewal)
-    renewal = setTimeout(() => { renewal = undefined; void renewLease(lease) }, Math.max(0, delay))
-    renewal.unref()
+  /** The bound route is one lease of this attempt: it renews in its final window, so a long native turn never
+   * depends on Main status frames, and stops when the endpoint closes, the lease is rebound, or Main refuses it. */
+  let renewal: AbortController | undefined
+  const renewWhileBound = (lease: NonNullable<typeof bound>) => {
+    renewal?.abort()
+    renewal = undefined
+    if (!lease.relay.refresh) return
+    const owner = new AbortController()
+    renewal = owner
+    void renewOwnedLeases({ signal: AbortSignal.any([owner.signal, input.signal]),
+      leases: [{ name: 'Worker MCP route', renewWithinMs: WORKER_MCP_LEASE_RENEWAL_WINDOW_MS,
+        remainingMs: () => bound === lease ? Date.parse(lease.expiresAt) - Date.now() : NaN,
+        renew: async () => { await refreshLease() } }],
+      onFailure: error => { void reportRenewalFailure(lease, error) },
+    })
   }
-  const renewLease = async (lease: NonNullable<typeof bound>) => {
-    if (closing || bound !== lease) return
-    try {
-      await refreshLease()
-      scheduleRenewal(lease, Math.max(WORKER_MCP_LEASE_RENEWAL_RETRY_MS, renewalDelay(lease.expiresAt)))
-    } catch {
-      // ignore: refreshLease already logged the failed renewal. A refused lease stays refused; anything else
-      // is retried until the lease expires.
-      if (!lease.refused) scheduleRenewal(lease, WORKER_MCP_LEASE_RENEWAL_RETRY_MS)
-    }
+  /** The route keeps its expiry but records why renewal stopped, so the launcher reports the real cause. */
+  const reportRenewalFailure = (lease: NonNullable<typeof bound>, error: Error) => {
+    const cause = leaseFailureCause(error)
+    log.error({ operation: 'renewal stopped', launcher: input.launcher, agentId: lease.relay.environment.agentId,
+      expiresAt: lease.expiresAt, cause }, 'Worker MCP route renewal stopped')
+    const task = updates.then(async () => {
+      if (closing || bound !== lease) return
+      const token = readProductEnvironment(lease.relay.environment.variables, 'MCP_TOKEN')!
+      unregister = await registerAppRoute(token, endpoint, lease.expiresAt, input.launcher, cause)
+    }).catch(failure => logFailure('report renewal failure', failure))
+    updates = task
+    return task
   }
   return { endpoint, bindRelay, refreshLease, close }
 }

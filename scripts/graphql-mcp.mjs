@@ -101,6 +101,10 @@ async function forwardAttempt(message, controller, timeoutMs, emit = output) {
       throw new BridgeFailure('route_unavailable',
         'The owning app MCP route is unavailable. Open the owning app to refresh this credential’s connection.')
     }
+    if (typeof route.renewalFailure === 'string' && Date.parse(route.expiresAt) <= Date.now()) {
+      throw new BridgeFailure('renewal_failed',
+        `The owning app MCP route expired because its renewal failed: ${route.renewalFailure.slice(0, 500)}`)
+    }
     const url = new URL(route.endpoint)
     if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
       || url.pathname !== '/mcp' || url.username || url.password || url.search || url.hash

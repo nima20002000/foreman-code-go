@@ -9,7 +9,7 @@ import { currentOperatorIntegration } from './helpers/currentOperatorIntegration
 import { readUntil } from './helpers/observableCondition.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
 import { retryDatabaseTimeout } from '../src/infrastructure/databaseTimeout.js'
-import { maintainCredential } from '../src/modules/harnesses/credentialHeartbeat.js'
+import { renewOwnedLeases } from '../src/modules/leases/ownerLeases.js'
 import { deferred } from './helpers/deferred.js'
 
 it.each(['canceling statement due to user request', 'Native event persistence was interrupted.'])(
@@ -21,14 +21,14 @@ it.each(['canceling statement due to user request', 'Native event persistence wa
     vi.useFakeTimers()
     const check = vi.fn().mockRejectedValue(error)
     const onFailure = vi.fn()
-    const stop = maintainCredential({
-      expiresAt: () => new Date(Date.now() + 600_000).toISOString(),
-      check, refresh: async () => {}, signal: new AbortController().signal, onFailure,
+    const stop = renewOwnedLeases({
+      leases: [{ name: 'execution credential', renewWithinMs: 60_000, remainingMs: () => 600_000, renew: async () => {} }],
+      check, signal: new AbortController().signal, onFailure,
     })
     try {
       await vi.advanceTimersByTimeAsync(1_000)
       expect(check).toHaveBeenCalledTimes(1)
-      expect(onFailure).toHaveBeenCalledWith(error)
+      expect(onFailure).toHaveBeenCalledWith(error, 'check')
     } finally {
       await stop()
       vi.useRealTimers()

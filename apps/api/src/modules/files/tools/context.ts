@@ -33,6 +33,10 @@ export function isMutation(tool: FileToolOperation): boolean {
     || tool === 'files.write_working_copy' || tool === 'files.apply_format_edit'
 }
 
+/** A file session lives this long unless its owning native turn renews it; nothing caps a live turn. */
+export const FILE_SESSION_LEASE_MS = 15 * 60_000
+export const FILE_SESSION_RENEWAL_WINDOW_MS = 5 * 60_000
+
 export class FileToolSessions {
   constructor(private readonly repository: FileToolRepository,
     private readonly currentOwner: (id: string) => Promise<ManagementPrincipal>,
@@ -65,7 +69,7 @@ export class FileToolSessions {
   async issueForAcceptedSession(binding: FileToolContext, expiresAt: Date): Promise<string> {
     const context = FileToolContextSchema.parse(binding)
     const caller = await this.current(context, context.allowMutation && context.allowedTools.some(isMutation) ? 'write' : 'read')
-    const expiry = Math.min(expiresAt.getTime(), Date.parse(caller.principal.expiresAt), this.clock().getTime() + 60 * 60 * 1_000)
+    const expiry = Math.min(expiresAt.getTime(), Date.parse(caller.principal.expiresAt), this.clock().getTime() + FILE_SESSION_LEASE_MS)
     if (!Number.isFinite(expiry) || expiry <= this.clock().getTime()) throw new DomainError('FILE_SESSION_INVALID', 'A live file session expiry is required.', 400)
     const token = `gql_file_${randomBytes(32).toString('base64url')}`
     await this.repository.putSession(digest(token), { context, expiresAt: new Date(expiry).toISOString() })
@@ -93,5 +97,19 @@ export class FileToolSessions {
     return this.current(context, tool && isMutation(tool) ? 'write' : 'read')
   }
   async revoke(token: string): Promise<void> { await this.repository.revokeSession(digest(token)) }
+
+  /** Called only by the session's owning native turn while it is live. The owner and conversation scope are
+   * rechecked; a revoked or expired session stays dead. Returns the new expiry. */
+  async renew(token: string): Promise<string> {
+    const now = this.clock()
+    const session = await this.repository.session(digest(token), now.toISOString())
+    if (!session) throw new DomainError('FILE_SESSION_EXPIRED', 'The file session is expired or revoked.', 401)
+    const caller = await this.current(FileToolContextSchema.parse(session.context), 'read')
+    const expiry = new Date(Math.min(Date.parse(caller.principal.expiresAt), now.getTime() + FILE_SESSION_LEASE_MS)).toISOString()
+    if (!await this.repository.renewSession(digest(token), expiry, now.toISOString())) {
+      throw new DomainError('FILE_SESSION_EXPIRED', 'The file session is expired or revoked.', 401)
+    }
+    return expiry
+  }
 
 }

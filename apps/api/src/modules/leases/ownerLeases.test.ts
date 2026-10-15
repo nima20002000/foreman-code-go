@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
-import { maintainCredential } from './credentialHeartbeat.js'
+import { renewOwnedLeases } from './ownerLeases.js'
 
 const stops: Array<() => Promise<void>> = []
 
@@ -26,7 +26,9 @@ function fixture(remainingMs = WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
   const refresh = vi.fn(async () => {
     expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()
   })
-  const stop = maintainCredential({ expiresAt: () => expiresAt, check, refresh, signal: controller.signal, onFailure })
+  const stop = renewOwnedLeases({ check, signal: controller.signal, onFailure, leases: [{ name: 'execution credential',
+    renewWithinMs: WORKER_CREDENTIAL_RENEWAL_WINDOW_MS,
+    remainingMs: () => expiresAt === undefined ? NaN : Date.parse(expiresAt) - Date.now(), renew: refresh }] })
   stops.push(stop)
   return { check, refresh, onFailure, controller, stop, setExpiry: (value: string | undefined) => { expiresAt = value } }
 }
@@ -60,11 +62,11 @@ it('retries a transient continuation failure long before expiry and checks owner
 
 it('waits for the renewal window initially and after each renewal', async () => {
   const f = fixture(15 * 60_000)
-  await vi.advanceTimersByTimeAsync(14 * 60_000 - 1)
+  await vi.advanceTimersByTimeAsync(15 * 60_000 - WORKER_CREDENTIAL_RENEWAL_WINDOW_MS - 1)
   expect(f.refresh).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1)
   expect(f.refresh).toHaveBeenCalledTimes(1)
-  await vi.advanceTimersByTimeAsync(14 * 60_000 - 1)
+  await vi.advanceTimersByTimeAsync(15 * 60_000 - WORKER_CREDENTIAL_RENEWAL_WINDOW_MS - 1)
   expect(f.refresh).toHaveBeenCalledTimes(1)
   await vi.advanceTimersByTimeAsync(1)
   expect(f.refresh).toHaveBeenCalledTimes(2)
@@ -123,7 +125,7 @@ it.each([
   const f = fixture()
   f.refresh.mockRejectedValueOnce(error)
   await vi.advanceTimersByTimeAsync(0)
-  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(error, 'refresh')
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(error, 'refresh', 'execution credential')
   await vi.advanceTimersByTimeAsync(60_000)
   expect(f.refresh).toHaveBeenCalledTimes(1)
 })
@@ -166,7 +168,8 @@ it('retries an unavailable continuation until the confirmed safety deadline and 
   expect(f.onFailure).not.toHaveBeenCalled()
   expect(f.refresh).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1)
-  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: unavailable }), 'check')
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: unavailable }), 'check',
+    'execution credential')
   const attempts = f.check.mock.calls.length
   await vi.advanceTimersByTimeAsync(60_000)
   expect(f.check).toHaveBeenCalledTimes(attempts)
@@ -188,7 +191,7 @@ it('retains the last renewal error if a subsequent renewal hangs until the safet
   let finish!: () => void
   f.refresh.mockRejectedValueOnce(error).mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
   await vi.advanceTimersByTimeAsync(WORKER_CREDENTIAL_RENEWAL_WINDOW_MS - WORKER_CREDENTIAL_EXPIRY_MARGIN_MS)
-  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: error }), 'refresh')
+  expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: error }), 'refresh', 'execution credential')
   finish()
   await vi.advanceTimersByTimeAsync(60_000)
   expect(f.refresh).toHaveBeenCalledTimes(2)
@@ -244,3 +247,47 @@ it.each([undefined, 'invalid', new Date('2029-12-31T23:59:59Z').toISOString()])(
     expect(f.refresh).toHaveBeenCalledTimes(1)
   },
 )
+
+it('renews every lease of one owner together, in dependency order, on one schedule', async () => {
+  const order: string[] = []
+  const expiries = { credential: Date.now() + 15 * 60_000, route: Date.now() + 15 * 60_000 }
+  const lease = (name: keyof typeof expiries, renewWithinMs: number, renew: () => void) => ({ name, renewWithinMs,
+    remainingMs: () => expiries[name] - Date.now(), renew: async () => { order.push(name); renew() } })
+  const onFailure = vi.fn()
+  stops.push(renewOwnedLeases({ signal: new AbortController().signal, onFailure, leases: [
+    lease('credential', 5 * 60_000, () => { expiries.credential = Date.now() + 15 * 60_000 }),
+    // The route copies the credential's expiry, as a Worker relay reads it from Main.
+    lease('route', 2 * 60_000, () => { expiries.route = expiries.credential }),
+  ] }))
+  await vi.advanceTimersByTimeAsync(10 * 60_000)
+  expect(order).toEqual(['credential'])
+  await vi.advanceTimersByTimeAsync(3 * 60_000)
+  expect(order).toEqual(['credential', 'route'])
+  expect(expiries.route).toBe(expiries.credential)
+  await vi.advanceTimersByTimeAsync(60 * 60_000)
+  expect(onFailure).not.toHaveBeenCalled()
+  expect(expiries.route - Date.now()).toBeGreaterThan(2 * 60_000)
+})
+
+it('stops at once when its owner is abandoned, even with a renewal in flight', async () => {
+  const f = fixture()
+  let finish!: () => void
+  f.refresh.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(f.refresh).toHaveBeenCalledTimes(1)
+  f.controller.abort()
+  finish()
+  await vi.advanceTimersByTimeAsync(60 * 60_000)
+  expect(f.refresh).toHaveBeenCalledTimes(1)
+  expect(f.check).toHaveBeenCalledTimes(1)
+  expect(f.onFailure).not.toHaveBeenCalled()
+})
+
+it('backs off a dependent lease whose source has not renewed yet instead of polling every second', async () => {
+  const renew = vi.fn(async () => {})
+  stops.push(renewOwnedLeases({ signal: new AbortController().signal, onFailure: vi.fn(), leases: [{
+    name: 'Worker MCP route', renewWithinMs: 2 * 60_000, remainingMs: () => 90_000, renew }] }))
+  await vi.advanceTimersByTimeAsync(0)
+  await vi.advanceTimersByTimeAsync(30_000)
+  expect(renew.mock.calls.length).toBeLessThanOrEqual(9)
+})

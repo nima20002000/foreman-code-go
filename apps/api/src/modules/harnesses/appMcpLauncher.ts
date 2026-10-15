@@ -228,14 +228,17 @@ export type AppMcpRouteRegistration = (() => Promise<void>) & {
   refresh(expiresAt: string): Promise<void>
 }
 
+/** `renewalFailure` records why the route's lease stopped renewing; the launcher reports it once the route expires. */
 export async function registerAppRoute(
-  token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath(),
+  token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath(), renewalFailure?: string,
 ): Promise<AppMcpRouteRegistration> {
-  return registerAppRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher)
+  return registerAppRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher,
+    undefined, renewalFailure)
 }
 
 export async function registerAppRouteDigest(
   digest: string, endpoint: string, expiresAt: string, launcher = appLauncherPath(), ownership?: AppMcpRouteOwnership,
+  renewalFailure?: string,
 ): Promise<AppMcpRouteRegistration> {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid Foreman Code MCP route identity.')
   const directory = join(dirname(launcher), 'routes')
@@ -251,7 +254,7 @@ export async function registerAppRouteDigest(
       throw error
     }
   }
-  const publish = (expiration: string, mode: 'register' | 'refresh'): Promise<void> =>
+  const publish = (expiration: string, mode: 'register' | 'refresh', failure?: string): Promise<void> =>
     withLauncherLock(launcher, async signal => {
       ownership?.assertActive()
       if (mode === 'refresh' && !await ownsRoute()) return
@@ -259,7 +262,7 @@ export async function registerAppRouteDigest(
       const temporary = `${file}.${randomUUID()}.tmp`
       try {
         await writeFile(temporary, JSON.stringify({ endpoint, expiresAt: expiration, pid: process.pid,
-          registrationId, runtimeEpoch }), { mode: 0o600, flag: 'wx' })
+          registrationId, runtimeEpoch, ...(failure ? { renewalFailure: failure } : {}) }), { mode: 0o600, flag: 'wx' })
         signal.throwIfAborted()
         ownership?.assertActive()
         await rename(temporary, file)
@@ -267,7 +270,7 @@ export async function registerAppRouteDigest(
         await rm(temporary, { force: true })
       }
     })
-  await publish(expiresAt, 'register')
+  await publish(expiresAt, 'register', renewalFailure)
   const remove = async (): Promise<void> => {
     await withLauncherLock(launcher, async () => {
       if (await ownsRoute()) await rm(file, { force: true })

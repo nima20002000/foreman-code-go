@@ -22,6 +22,8 @@ interface AttemptRow {
 export interface GraphResumeClaim {
   interaction: DurableInteraction
   ownerToken: string
+  /** Stops the claimant's renewal; the Run owner calls it before its transaction locks the claim. */
+  release?(): Promise<void>
 }
 
 /** Owns delivery fencing and its transactional graph-resume outbox, not decisions. */
