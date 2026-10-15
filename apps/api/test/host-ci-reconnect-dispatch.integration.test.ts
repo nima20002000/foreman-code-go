@@ -4,7 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
-it('dispatches a planned gate part when its Worker becomes ready during an offline dispatch pass', async () => {
+it('dispatches a planned gate part when fresh Worker readiness is observed during an offline dispatch pass', async () => {
   const files = Array.from({ length: 64 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
   const f = await fixture({ cloud: { github: 8, circleci: 0 },
     unitInventory: { files: ['apps/api/src/feature.test.ts', 'apps/web/src/feature.test.tsx'],
@@ -41,23 +41,29 @@ it('dispatches a planned gate part when its Worker becomes ready during an offli
     admissionDispatch.mockRestore()
 
     let ready = false
-    let pause = true
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       const reply = await request(computer, input)
       if (reply.operation !== 'status') return reply
-      const status = { ...reply, ready: ready && computer.key === worker.key,
+      return { ...reply, ready: ready && computer.key === worker.key,
         reasons: ready && computer.key === worker.key ? [] : ['Worker reconnecting'] }
-      if (computer.key === worker.key && pause) {
+    }
+    await f.value(f.operator, 'ci_computers_list', {})
+    let pause = true
+    const computers = f.endpoint.computers.bind(f.endpoint)
+    f.endpoint.computers = async () => {
+      const available = await computers()
+      if (pause) {
         pause = false
         entered()
         await blocked
       }
-      return status
+      return available
     }
     dispatch = f.ci.dispatch()
     await observingOffline
     ready = true
+    await f.value(f.operator, 'ci_computers_list', {})
     wake = f.ci.dispatch()
     release()
     await Promise.all([dispatch, wake])
