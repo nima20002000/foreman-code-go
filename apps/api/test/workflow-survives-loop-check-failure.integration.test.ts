@@ -63,6 +63,15 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
     expect(persisted.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(persisted.executions.find(execution => execution.id === check.id)?.result?.outcome).toBe('failed')
+    expect(persisted.activitySnapshot.activities.some(activity => activity.kind === 'diagnostic'
+      && activity.owner.kind === 'execution' && activity.owner.executionId === check.id
+      && /failed/i.test(activity.message))).toBe(true)
+    const denied = await fixture.base.access.issue({ name: 'Other workspace reader', audience: 'operator',
+      grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['workspace-outside-scope'] } }] })
+    const deniedClient = await fixture.base.connect(denied.token)
+    expect((await deniedClient.callTool({ name: 'run_get', arguments: {
+      workspaceId: fixture.base.f.run.workspaceId, runId: fixture.base.f.run.id, detail: 'full',
+    } })).isError).toBe(true)
     expect(await fixture.base.runs.get(fixture.base.f.run.id))
       .toMatchObject({ executionState: 'running', outcome: 'pending' })
   }, 19_000)
