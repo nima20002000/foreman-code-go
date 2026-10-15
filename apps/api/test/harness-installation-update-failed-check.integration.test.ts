@@ -13,7 +13,12 @@ describe('installed harness updates', () => {
         value.qualification === 'unqualified' && value.qualificationFailure !== undefined), 'failed update readback')
       expect(failed).toHaveLength(fixture.profiles.length)
       expect(failed.every(value => value.qualificationFailure!.message.length > 0)).toBe(true)
-      expect((await latestEvidence(fixture)).every(proof => !proof.qualified && proof.failure !== undefined)).toBe(true)
+      expect(failed.map(value => value.qualificationFailure?.code))
+        .toEqual(fixture.profiles.map(() => 'CODEX_MODEL_UNAVAILABLE'))
+      const evidence = await latestEvidence(fixture)
+      expect(evidence).toHaveLength(fixture.profiles.length)
+      expect(evidence.every(proof => !proof.qualified && proof.failure !== undefined)).toBe(true)
+      expect(evidence.map(proof => proof.failure?.code)).toEqual(failed.map(value => value.qualificationFailure?.code))
       await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_UNAVAILABLE')
       expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
     } finally { await fixture.close() }

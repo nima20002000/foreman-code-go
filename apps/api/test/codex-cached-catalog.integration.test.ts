@@ -23,6 +23,7 @@ it.each([false, true])('checks cached Codex catalogs through authenticated MCP (
       expect(checked.proof.completedNativeQualification?.record.checks)
         .toContainEqual({ id: 'selected-profile', passed: false, detail: 'CODEX_MODEL_UNAVAILABLE' })
       await expect(f.start()).rejects.toThrow('HARNESS_PROFILE_UNAVAILABLE')
+      expect((await f.db.pool.query('select id from runs')).rows).toEqual([])
     } else {
       expect(checked.proof).toMatchObject({ modelCatalogSource: 'cached' })
       const started = await f.start()
