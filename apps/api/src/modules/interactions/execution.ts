@@ -525,14 +525,21 @@ export class ApprovalExecutionCoordinator {
     const generation = owned.generation
     const marker = Symbol(assigned.id)
     owned.reviewFinalizer = marker
+    // Stop, ownership loss or credential loss can close or tear down this same lifetime while the review ends.
+    // That path then owns the closure, so the finalizer has nothing left to do and must not report a conflict.
+    let yielded: DomainError | undefined
     const check = () => {
       if (this.ownedSessions.get(executionId) !== owned || owned.generation !== generation
         || owned.reviewFinalizer !== marker || owned.opening || owned.controller.signal.aborted) {
-        throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The reviewer finalizer lost its native lifetime.', 409)
+        const lost = new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The reviewer finalizer lost its native lifetime.', 409)
+        const registered = this.ownedSessions.get(executionId)
+        if (owned.generation === generation && owned.reviewFinalizer === marker && !owned.opening
+          && (registered === undefined || registered === owned)) yielded = lost
+        throw lost
       }
       this.assertSessionIdentity(owned.session!, session)
     }
-    return async (settled) => {
+    const finalize = async (settled: ReviewJob) => {
       assertSameReviewJob(assigned, settled)
       check()
       const run = await this.runs.get(owned.execution.runId)
@@ -577,6 +584,12 @@ export class ApprovalExecutionCoordinator {
           await lane.guard.check()
         })
       } finally { if (owned.reviewFinalizer === marker) delete owned.reviewFinishing }
+    }
+    return async (settled) => {
+      try { await finalize(settled) } catch (error) {
+        if (yielded && error === yielded) return
+        throw error
+      }
     }
   }
 

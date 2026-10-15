@@ -7,6 +7,7 @@ import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { receipts, useRemoteReviewFixture, waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
 import { startWhenReady } from './helpers/harnessInstallationUpdate.js'
+import { waitForRequesterSession } from './helpers/remoteReviewEntryStartup.js'
 
 const withRemoteReviewFixture = useRemoteReviewFixture()
 
@@ -14,14 +15,15 @@ it('closes an unbound attempt after owner restarts, records interruption, and ad
   await withRemoteReviewFixture(async fixture => {
     await fixture.provider.blockRequesterSession()
     const started = await fixture.start()
-    const blocked = await waitForRemoteReview(async () => {
-      const executions = await fixture.executions(started.run.id)
-      const requester = executions.find(execution => execution.workflowNodeId !== fixture.version.entryNodeId)
-      const calls = await fixture.provider.calls()
-      return { requester, calls }
-    }, value => !!value.requester && value.calls.some(call => 'requesterSessionBlocked' in call),
-    'native creation before Main session binding')
-    const requester = blocked.requester!
+    await waitForRequesterSession({
+      entryNodeId: fixture.version.entryNodeId,
+      readExecutions: async () => (await fixture.details(started.run.id)).executions,
+      readCalls: fixture.provider.calls,
+      reconcile: fixture.reconcileReviews,
+      subscribe: fixture.subscribeNativeChanges,
+    })
+    const requester = (await fixture.executions(started.run.id))
+      .find(execution => execution.workflowNodeId !== fixture.version.entryNodeId)!
     expect(requester.nativeSessionId).toBeUndefined()
     const originalOwners = fixture.registry.snapshot().launches.filter(launch => launch.owner === `execution:${requester.id}`)
     const activeOwner = originalOwners.find(launch => launch.lifecycle === 'active')

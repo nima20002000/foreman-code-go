@@ -49,6 +49,23 @@ test('NATIVE-2 reviewer generation replacement invalidates the captured callback
   assert.ok(!f.calls.some((call) => call.startsWith('close:')))
 })
 
+test('NATIVE-2 captured finalizer yields to a cleanup that is tearing down its lifetime', async () => {
+  const f = reviewFixture()
+  const finish = f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!
+  f.resident.controller.abort()
+  await finish(f.job)
+  assert.ok(!f.calls.some((call) => call.startsWith('close:') || call.startsWith('revoke:')))
+})
+
+test('NATIVE-2 captured finalizer yields to a cleanup that already closed its lifetime', async () => {
+  const f = reviewFixture()
+  const finish = f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!
+  f.internals.ownedSessions.delete(f.get().id)
+  await finish(f.job)
+  await finish({ ...f.job, state: 'acknowledged' })
+  assert.ok(!f.calls.some((call) => call.startsWith('close:') || call.startsWith('revoke:')))
+})
+
 test('NATIVE-2 native review acknowledgement alone cannot close the lifetime', async () => {
   const f = reviewFixture()
   const finish = f.coordinator.captureReviewFinalizer(f.get().id, f.session, f.job)!
