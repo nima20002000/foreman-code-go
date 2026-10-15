@@ -796,7 +796,7 @@ export class HostCiRunner {
         // The repository's suite hook writes structured test results here; integration has its own setting.
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
           + (meta.suite === 'integration' ? '' : ` TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`)
-          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(run, 'vitest-cache'))}` : '') + integrationEnvironment,
+          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(source, '..', 'vitest-cache'))}` : '') + integrationEnvironment,
       ...(database ? [`export FOREMAN_CODE_CI_HOST_RUN_ID=${quote(meta.runId)}`
         + ` FOREMAN_CODE_CI_DATABASE_CPUS=${databaseResources.cpuCount}`
         + ` FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES=${databaseResources.memoryBytes}`] : []),
