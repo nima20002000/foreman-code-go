@@ -80,7 +80,9 @@ export function checkWorkerImports(root) {
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) continue
       const target = ts.resolveModuleName(specifier, join(root, file), options, ts.sys).resolvedModule
       if (!target) throw new Error(`Cannot resolve Worker import ${specifier} from ${file}`)
-      pending.push([...chain, relative(root, target.resolvedFileName).replaceAll('\\', '/')])
+      // TypeScript prefers a sibling declaration (x.d.mts) for x.mjs; the bundler loads the JavaScript itself.
+      const runtime = target.resolvedFileName.replace(/\.d\.(m|c)?ts$/, (_, kind) => `.${kind ?? ''}js`)
+      pending.push([...chain, relative(root, ts.sys.fileExists(runtime) ? runtime : target.resolvedFileName).replaceAll('\\', '/')])
     }
   }
 }

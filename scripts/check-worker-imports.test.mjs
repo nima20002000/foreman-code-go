@@ -83,3 +83,12 @@ test('applies the snapshot allowlist to imports outside Worker source directorie
   assert.equal(result.status, 1)
   assert.match(result.stderr, /Forbidden snapshot source: scripts\/unlisted\.mjs/)
 })
+
+test('follows a JavaScript module with a sibling declaration to the JavaScript the bundler loads', t => {
+  const f = fixture(t)
+  f.write(entries[2], "import { run } from '../../../../../scripts/verification-runner.mjs'\nrun()")
+  f.write('scripts/verification-runner.mjs', 'export function run() {}')
+  f.write('scripts/verification-runner.d.mts', 'export declare function run(): void')
+  const result = f.run()
+  assert.equal(result.status, 0, result.stderr)
+})
