@@ -1,5 +1,5 @@
 import { MemorySaver } from '@langchain/langgraph-checkpoint'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import type { RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
@@ -46,7 +46,11 @@ function fixture() {
 }
 
 describe('terminal resume cleanup', () => {
-  it('does not reopen cleanup when a queued resume follows successful cleanup', async () => {
+  beforeEach(() => {
+    runtime.work.mockReset()
+  })
+
+  it.each([1, 3])('does not reopen cleanup when %i queued resumes follow successful cleanup', async (resumeCount) => {
     const f = fixture()
     const entered = deferred()
     const finish = deferred()
@@ -60,17 +64,17 @@ describe('terminal resume cleanup', () => {
     })
     const active = f.engine.start(f.run.id)
     await entered.promise
-    const queued = f.engine.resume(f.run.id)
+    const queued = Array.from({ length: resumeCount }, () => f.engine.resume(f.run.id))
     finish.resolve()
     await active
     expect(f.cleanup.pending).toBe(false)
     expect(f.runs.requestCleanup).toHaveBeenCalledTimes(1)
-    await queued
+    await Promise.all(queued)
     expect(f.runs.requestCleanup).toHaveBeenCalledTimes(1)
     expect(f.cleanup.pending).toBe(false)
     expect(runtime.work).toHaveBeenCalledTimes(1)
-    expect(f.owner.release).toHaveBeenCalledTimes(2)
-    expect(f.onTerminal).toHaveBeenCalledTimes(2)
+    expect(f.owner.release).toHaveBeenCalledTimes(resumeCount + 1)
+    expect(f.onTerminal).toHaveBeenCalledTimes(resumeCount + 1)
     expect(f.native.cancelRun).not.toHaveBeenCalled()
   })
 
