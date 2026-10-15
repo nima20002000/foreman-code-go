@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import {
-  DEVICE_APPLICATION_IN_FLIGHT, DEVICE_APPLICATION_STOP_IN_FLIGHT,
+  DEVICE_APPLICATION_IN_FLIGHT, DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT, DEVICE_APPLICATION_STOP_IN_FLIGHT,
   type DeviceRequestPriority,
 } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationAdmissionError, DeviceApplicationError } from './deviceApplicationError.js'
@@ -13,24 +13,28 @@ interface RequestSlot {
   priority: DeviceRequestPriority
   stop: boolean
   bulk?: boolean
+  observation?: boolean
   namespace?: string
 }
 interface WaitingRequest {
   bulk: boolean
+  observation: boolean
   admit(): void
   reject(error: Error): void
 }
 export interface DeviceRequestSlotSnapshot {
   active: number
   bulk: number
+  observation: number
   waiting: number
   byNamespace: Record<string, number>
 }
 
-/** Background work leaves one slot available and yields to queued foreground requests; a long foreground request in flight does not starve it. */
+/** Background work leaves one slot available; observations use a separate bounded pool. */
 export class DeviceRequestQueue {
   private active = 0
   private bulkActive = 0
+  private observationActive = 0
   private foreground = 0
   private stops = 0
   private readonly waiting: WaitingRequest[] = []
@@ -38,26 +42,35 @@ export class DeviceRequestQueue {
   private failure: Error | undefined
 
   get busy(): boolean {
-    return this.waiting.length > 0 || this.active >= DEVICE_APPLICATION_IN_FLIGHT - 1
+    return this.waiting.some(waiter => !waiter.observation) || this.active >= DEVICE_APPLICATION_IN_FLIGHT - 1
   }
 
   snapshot(): DeviceRequestSlotSnapshot {
-    return { active: this.active, bulk: this.bulkActive, waiting: this.waiting.length, byNamespace: Object.fromEntries(this.namespaces) }
+    return { active: this.active, bulk: this.bulkActive, observation: this.observationActive,
+      waiting: this.waiting.length, byNamespace: Object.fromEntries(this.namespaces) }
   }
 
-  async acquire({ priority, stop, bulk = false, namespace = 'unlabeled', signal }: RequestSlot & { signal?: AbortSignal | undefined }): Promise<() => void> {
+  async acquire({ priority, stop, bulk = false, observation = false, namespace = 'unlabeled', signal }:
+    RequestSlot & { signal?: AbortSignal | undefined }): Promise<() => void> {
     if (this.failure) throw this.failure
     if (signal?.aborted) throw new DeviceApplicationError('cancelled')
+    const slot = { priority, stop, bulk, observation, namespace }
     if (stop) {
       if (this.stops >= DEVICE_APPLICATION_STOP_IN_FLIGHT) throw new DeviceApplicationAdmissionError()
-      return this.reserve({ priority, stop, bulk, namespace })
+      return this.reserve(slot)
     }
     if (priority === 'background') {
-      if (this.busy) throw new DeviceApplicationAdmissionError('background_yield')
-      return this.reserve({ priority, stop, bulk, namespace })
+      const busy = observation
+        ? this.observationActive >= DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT - 1
+          || this.waiting.some(waiter => waiter.observation)
+        : this.busy
+      if (busy) throw new DeviceApplicationAdmissionError('background_yield')
+      return this.reserve(slot)
     }
-    if (this.canAdmit(bulk) && !this.waiting.some(waiter => waiter.bulk === bulk)) return this.reserve({ priority, stop, bulk, namespace })
-    if (this.waiting.length >= 64) throw new DeviceApplicationAdmissionError('admission_queue_full')
+    if (this.canAdmit(slot) && !this.waiting.some(waiter =>
+      waiter.observation === observation && (observation || waiter.bulk === bulk))) return this.reserve(slot)
+    if (this.waiting.filter(waiter => waiter.observation === observation).length >= 64)
+      throw new DeviceApplicationAdmissionError('admission_queue_full')
     return new Promise<() => void>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer)
@@ -66,8 +79,8 @@ export class DeviceRequestQueue {
         if (index >= 0) this.waiting.splice(index, 1)
       }
       const waiter: WaitingRequest = {
-        bulk,
-        admit: () => { cleanup(); resolve(this.reserve({ priority, stop, bulk, namespace })) },
+        bulk, observation,
+        admit: () => { cleanup(); resolve(this.reserve(slot)) },
         reject: error => { cleanup(); reject(error); this.drain() },
       }
       const cancel = () => waiter.reject(new DeviceApplicationError('cancelled'))
@@ -78,20 +91,25 @@ export class DeviceRequestQueue {
     })
   }
 
-  private canAdmit(bulk: boolean): boolean {
-    return this.active < DEVICE_APPLICATION_IN_FLIGHT && (!bulk || this.bulkActive < DEVICE_APPLICATION_IN_FLIGHT - interactiveSlotReserve)
+  private canAdmit({ bulk, observation }: { bulk: boolean; observation: boolean }): boolean {
+    if (observation) return this.observationActive < DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT
+    return this.active < DEVICE_APPLICATION_IN_FLIGHT
+      && (!bulk || this.bulkActive < DEVICE_APPLICATION_IN_FLIGHT - interactiveSlotReserve)
   }
 
-  private reserve({ priority, stop, bulk, namespace }: Required<RequestSlot>): () => void {
+  private reserve({ priority, stop, bulk, observation, namespace }: Required<RequestSlot>): () => void {
+    const ordinary = !stop && !observation
     if (stop) this.stops++
+    else if (observation) this.observationActive++
     else this.active++
-    if (!stop && bulk) this.bulkActive++
+    if (ordinary && bulk) this.bulkActive++
     if (!stop && priority === 'foreground') this.foreground++
     this.namespaces.set(namespace, (this.namespaces.get(namespace) ?? 0) + 1)
     return () => {
       if (stop) this.stops--
+      else if (observation) this.observationActive--
       else this.active--
-      if (!stop && bulk) this.bulkActive--
+      if (ordinary && bulk) this.bulkActive--
       if (!stop && priority === 'foreground') this.foreground--
       const remaining = (this.namespaces.get(namespace) ?? 1) - 1
       if (remaining) this.namespaces.set(namespace, remaining)
@@ -102,7 +120,7 @@ export class DeviceRequestQueue {
 
   private drain(): void {
     if (this.failure) return
-    for (const waiter of [...this.waiting]) if (this.canAdmit(waiter.bulk)) waiter.admit()
+    for (const waiter of [...this.waiting]) if (this.canAdmit(waiter)) waiter.admit()
   }
 
   close(error: Error): void {
@@ -136,4 +154,13 @@ export function deviceRequestIsBulk(namespace: string, payload: unknown, hasByte
   if (hasBytes) return true
   const fields = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
   return namespace === 'execution-v1' && fields.method === 'history' || namespace === 'ci-host-v1' && fields.operation === 'read'
+}
+
+/** Provider history and physical settlement can outlast short device calls. */
+export function deviceRequestIsObservation(namespace: string, payload: unknown): boolean {
+  if (namespace !== 'execution-v1' || !payload || typeof payload !== 'object') return false
+  const fields = payload as Record<string, unknown>
+  return typeof fields.method === 'string'
+    && ['history', 'conversation.history', 'conversation.reconcile', 'physical-readout'].includes(fields.method)
+    || fields.method === 'physical-ack' && fields.retire === true
 }

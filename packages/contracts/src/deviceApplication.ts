@@ -8,6 +8,7 @@ export const DEVICE_APPLICATION_BINARY_BYTES = 1_048_576
 export const DEVICE_APPLICATION_CHUNK_BYTES = 8_192
 export const DEVICE_APPLICATION_CHUNK_WINDOW = 4
 export const DEVICE_APPLICATION_IN_FLIGHT = 8
+export const DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT = 8
 export const DEVICE_APPLICATION_STOP_IN_FLIGHT = 1
 export const DEVICE_APPLICATION_STOP_BYTES = DEVICE_APPLICATION_JSON_BYTES
 export const DEVICE_APPLICATION_BUFFER_BYTES = 4_194_304
@@ -28,7 +29,7 @@ export interface DeviceNegotiatedExtension {
   maxBinaryBytes: number
 }
 export type DeviceApplicationFrame =
-  | { type: 'application-open'; id: string; namespace: string; version: number; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number; admission?: 'stop' }
+  | { type: 'application-open'; id: string; namespace: string; version: number; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number; admission?: 'stop' | 'observation' }
   | { type: 'application-chunk'; id: string; offset: number; data: string }
   | { type: 'application-ack'; id: string; offset: number }
   | { type: 'application-cancel'; id: string }
