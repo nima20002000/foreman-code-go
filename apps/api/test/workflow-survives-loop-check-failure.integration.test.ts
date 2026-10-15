@@ -53,7 +53,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
       'select record from harness_native_events where execution_id=$1 order by sequence', [check.id])).rows
     expect(nativeEvents.some(({ record }) => record.type === 'turn.completed'
       && record.payload.status === 'failed')).toBe(true)
-    expect(details.activitySnapshot.activities.some(activity => activity.kind === 'diagnostic'
+    expect(details.activitySnapshot?.activities.some(activity => activity.kind === 'diagnostic'
       && activity.owner.kind === 'execution' && activity.owner.executionId === check.id
       && /failed/i.test(activity.message))).toBe(true)
     const response = await fixture.base.client.callTool({ name: 'run_get', arguments: {
@@ -63,7 +63,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
     expect(persisted.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(persisted.executions.find(execution => execution.id === check.id)?.result?.outcome).toBe('failed')
-    expect(persisted.activitySnapshot.activities.some(activity => activity.kind === 'diagnostic'
+    expect(persisted.activitySnapshot?.activities.some(activity => activity.kind === 'diagnostic'
       && activity.owner.kind === 'execution' && activity.owner.executionId === check.id
       && /failed/i.test(activity.message))).toBe(true)
     const denied = await fixture.base.access.issue({ name: 'Other workspace reader', audience: 'operator',
