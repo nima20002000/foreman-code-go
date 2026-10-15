@@ -23,7 +23,7 @@ describe('integration partitions', () => {
     expect(Math.max(...loads) - Math.min(...loads)).toBeLessThan(2000)
   })
 
-  it('isolates user-systemd files and balances ordinary files across cloud slices', () => {
+  it('places user-systemd files on capable slices and fills remaining capacity with ordinary files', () => {
     const systemd = [
       'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
       'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
@@ -39,14 +39,16 @@ describe('integration partitions', () => {
       'apps/api/test/local-human-native.integration.test.ts',
     ]
     const selected = [...systemd, ...cloud, ...files]
-    const slices = [0, 1, 2].map(index => integrationPartition(selected, durations,
-      { index, count: 3, weights: [100, 2, 1], hostIndexes: [0] }))
+    const measured = { ...durations, ...Object.fromEntries([...systemd, ...cloud].map(file => [file, 100])) }
+    const weights = [2, 1, 1]
+    const slices = [0, 1, 2].map(index => integrationPartition(selected, measured,
+      { index, count: 3, weights, hostIndexes: [0] }))
     expect(slices.flat().sort()).toEqual([...selected].sort())
-    expect(slices[0]).toEqual(systemd)
-    expect(slices.slice(1).flat()).toEqual(expect.arrayContaining(cloud))
+    expect(slices[0]!.filter(file => systemd.includes(file))).toEqual(systemd)
+    expect(slices.slice(1).flat().some(file => systemd.includes(file))).toBe(false)
+    expect(slices[0]!.some(file => files.includes(file))).toBe(true)
     expect(slices.slice(1).every(slice => slice.length > 0)).toBe(true)
-    const loads = slices.slice(1).map(slice => work(slice.filter(file => files.includes(file))))
-    expect(loads[0]! / loads[1]!).toBeGreaterThan(1.8)
-    expect(loads[0]! / loads[1]!).toBeLessThan(2.2)
+    const finish = slices.map((slice, index) => slice.reduce((sum, file) => sum + measured[file]!, 0) / weights[index]!)
+    expect(Math.max(...finish) - Math.min(...finish)).toBeLessThan(2000)
   })
 })

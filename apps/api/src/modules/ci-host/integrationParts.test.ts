@@ -84,6 +84,40 @@ it('runs slow files in a deferred tier that no fast part contains', () => {
   expect(parts.filter(part => part.deferred).every(part => part.partition?.tier === 'slow')).toBe(true)
 })
 
+it.each([2, 3])('balances measured tier durations across %i parts including the systemd slice', partitions => {
+  const hostFiles = [...userSystemdIntegrationFiles]
+  const ordinary = Array.from({ length: 707 }, (_, index) => `apps/api/test/ordinary-${index}.integration.test.ts`)
+  const slow = Array.from({ length: 12 }, (_, index) => `apps/api/test/slow-${index}.integration.test.ts`)
+  const fastFiles = [...hostFiles.slice(0, 3), ...ordinary]
+  const slowFiles = [...hostFiles.slice(3), ...slow]
+  const selected = [...fastFiles, ...slowFiles]
+  const measured = Object.fromEntries([
+    ...hostFiles.slice(0, 3).map(file => [file, 1_000]),
+    ...ordinary.map((file, index) => [file, 10_000 + (index % 5) * 10_000]),
+    ...slowFiles.map((file, index) => [file, 60_000 + (index % 3) * 10_000]),
+  ])
+  const parts = planIntegrationParts({ ...input, partitions }, { files: selected, durations: measured },
+    { host: 1, ordinary: 44 })
+
+  for (const [tier, tierFiles] of [['fast', fastFiles], ['slow', slowFiles]] as const) {
+    const tierParts = parts.filter(part => part.partition?.tier === tier)
+    expect(tierParts).toHaveLength(partitions)
+    expect(tierParts.every(part => Boolean(part.deferred) === (tier === 'slow'))).toBe(true)
+    const slices = tierParts.map(part => integrationPartition(selected, measured, part.partition!))
+    expect(slices.flat().sort()).toEqual([...tierFiles].sort())
+    const loads = slices.map(slice => slice.reduce((sum, file) => sum + measured[file]!, 0))
+    expect(Math.max(...loads) - Math.min(...loads)).toBeLessThanOrEqual(
+      Math.max(...tierFiles.map(file => measured[file]!)))
+    for (const [index, part] of tierParts.entries()) {
+      expect(part.partition!.weights).toEqual(Array(partitions).fill(1))
+      expect(part.expectedDurationMs).toBe(90_000 + loads[index]!)
+      expect(part.requiresBuildComputer).toBe(index === 0)
+      expect(slices[index]!.filter(file => hostFiles.includes(file)))
+        .toEqual(index === 0 ? tierFiles.filter(file => hostFiles.includes(file)) : [])
+    }
+  }
+})
+
 it('keeps a request with only fast or only slow files in one tier', () => {
   const quick = Object.fromEntries(files.map(file => [file, 20_000]))
   expect(planIntegrationParts(input, { files, durations: quick }, { host: 0, ordinary: 44 })
