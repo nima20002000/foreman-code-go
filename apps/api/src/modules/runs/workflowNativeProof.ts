@@ -76,7 +76,7 @@ async function persistOriginalRecord(sql: GraphTransactionSql, record: WorkflowN
   return (await persistWorkflowNativeSources(sql, [record]))[0]!
 }
 
-function transcriptEvent(event: HarnessNativeEvent): boolean {
+export function isWorkflowTranscriptEvent(event: HarnessNativeEvent): boolean {
   const normalized = normalizeNativeProducerEvent(event)
   return !normalized.rejected && event.type !== 'transport.disconnected'
     && event.payload.nativeMessageId === undefined
@@ -394,7 +394,7 @@ export class WorkflowNativeProofServices {
     if (!activeNativeBatch(sql)) return
     const records: WorkflowNativeProofRecord[] = []
     for (const frame of frames) {
-      if (transcriptEvent(frame.event)) continue
+      if (isWorkflowTranscriptEvent(frame.event)) continue
       const capture = this.eventCapture(frame.event, frame.evidence)
       const { stored, scope } = await this.current(sql, run, capture.execution.id, owner)
       records.push(workflowNativeSourceRecord(capture, stored, scope, await owner.readOneShotFence(sql)))
@@ -420,7 +420,7 @@ export class WorkflowNativeProofServices {
       }
       for (const frame of frames) {
         const capture = this.eventCapture(frame.event, frame.evidence, lease)
-        const transcript = transcriptEvent(frame.event)
+        const transcript = isWorkflowTranscriptEvent(frame.event)
         const previous = transcripts.at(-1)?.capture
         const samePhysical = !previous || samePhysicalCapture(previous, capture)
         if (!transcript || !samePhysical) await flush()
@@ -435,7 +435,7 @@ export class WorkflowNativeProofServices {
   async tryAppendTranscriptsLocked(sql: GraphTransactionSql,
     input: readonly { event: HarnessNativeEvent; evidence: RepeatNativeEvidence }[],
     owner: RunOwnership, lease?: WorkflowNativeLease): Promise<boolean> {
-    if (!lease || !input.every(frame => transcriptEvent(frame.event))) return false
+    if (!lease || !input.every(frame => isWorkflowTranscriptEvent(frame.event))) return false
     const frames = input.map(frame => ({ ...frame, capture: this.eventCapture(frame.event, frame.evidence, lease) }))
     const first = frames[0]!
     const capture = first.capture

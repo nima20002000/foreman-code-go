@@ -24,7 +24,7 @@ import { markRepeatRunRunning, requestRepeatRunStop, openWorkflowLifecycleLocked
 import { requestWorkflowCleanup, finishWorkflowCleanup, settleWorkflowRun, recordWorkflowExecutionFailure } from './workflowLifecycle.js'
 import type { WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { WorkflowNativeLease, WorkflowApprovalCorrelation, WorkflowContinuationProof } from './workflowNativeGraph.js'
-import { WorkflowNativeProofServices } from './workflowNativeProof.js'
+import { isWorkflowTranscriptEvent, WorkflowNativeProofServices } from './workflowNativeProof.js'
 import { NATIVE_EVENT_BATCH_SIZE } from '../interactions/nativeEventBatches.js'
 
 /** Saved pins never default to an old mode. Independent native/graph protocol
@@ -189,12 +189,25 @@ export class PostgresRunRepository {
       evidence: captureRepeatNativeEvidence(evidence),
     }))
     owner.assertOwned()
-    await owner.oneShotConnection().transaction(async (sql) => {
-      if (await this.nativeProof.tryAppendTranscriptsLocked(sql, frames, owner, lease)) return
-      const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
-      await withNativeGraphProjectionBatch(sql, owner.runId, () => this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease))
-    })
-    for (const { evidence } of frames) await this.nativeCommitted?.(evidence)
+    const groups: typeof frames[] = []
+    for (const frame of frames) {
+      const previous = groups.at(-1)
+      if (previous && isWorkflowTranscriptEvent(previous[0]!.event) === isWorkflowTranscriptEvent(frame.event)) {
+        previous.push(frame)
+      } else {
+        groups.push([frame])
+      }
+    }
+    // Transcript groups commit before a graph writer takes the exclusive Run lock.
+    for (const group of groups) {
+      await owner.oneShotConnection().transaction(async (sql) => {
+        if (await this.nativeProof.tryAppendTranscriptsLocked(sql, group, owner, lease)) return
+        const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+        await withNativeGraphProjectionBatch(sql, owner.runId,
+          () => this.nativeProof.appendEventsLocked(sql, snapshot.run, group, owner, lease))
+      })
+      for (const { evidence } of group) await this.nativeCommitted?.(evidence)
+    }
   }
   async updateState(runId: string, update: RunStateUpdate, owner: RunOwnership, resume?: WorkflowResumePermit): Promise<void> {
     await markRepeatRunRunning(this.requireOwner(runId, owner), this.locations, update, resume)
