@@ -1,11 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFile, mkdtemp } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { afterEach, expect, it } from 'vitest'
-import { removeFixtureDirectory } from './helpers/testResources.js'
 import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
 
 const cleanup: Array<() => Promise<unknown> | unknown> = []
@@ -48,8 +47,10 @@ interface BridgeReply {
 
 /** Starts the managed stdio bridge the way a harness launches it, with a route to the fake endpoint. */
 async function startBridge(endpoint: string) {
-  const directory = await mkdtemp(join(tmpdir(), 'graphql-group-wait-'))
-  cleanup.push(() => removeFixtureDirectory(directory))
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const directory = await mkdtemp(join(cache, 'graphql-group-wait-'))
+  cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const launcher = join(directory, 'graphql-mcp.mjs')
   await copyFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
   const token = `group-wait-${Math.random().toString(36).slice(2)}`
@@ -112,6 +113,66 @@ it('continues the same wait after a transient Main outage', async () => {
   expect(reply.result.structuredContent.wait.status).toBe('settled')
   expect(fake.calls).toHaveLength(2)
 }, 20_000)
+
+const toolError = (code: string, retryable?: boolean) => ({ isError: true,
+  content: [{ type: 'text', text: JSON.stringify({ error: { code, message: 'Fixture tool failure',
+    ...(retryable === undefined ? {} : { details: { retryable } }) } }) }] })
+
+it('backs off and retries explicitly retryable tool failures within the group wait', async () => {
+  const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+    result: index < 2 ? toolError('DATABASE_READ_TIMEOUT', true) : waitResult('settled') }))
+  const bridge = await startBridge(fake.endpoint)
+  const started = Date.now()
+  const reply = await bridge.request(13, 'tools/call', groupWait('ticket', 30))
+  expect(reply.result.structuredContent.wait.status).toBe('settled')
+  expect(Date.now() - started).toBeGreaterThanOrEqual(3_000)
+  expect(fake.calls).toHaveLength(3)
+  expect(fake.calls[2]!.waitSeconds).toBeLessThan(fake.calls[0]!.waitSeconds)
+  expect(bridge.lines.filter(line => line.id === 13)).toHaveLength(1)
+})
+
+it.each([
+  ['ACCESS_DENIED', true],
+  ['AUTH_EXPIRED', true],
+  ['DATABASE_READ_TIMEOUT', false],
+  ['DATABASE_READ_TIMEOUT', undefined],
+] as const)('returns terminal tool failure %s with retryable=%s once', async (code, retryable) => {
+  const failure = toolError(code, retryable)
+  const fake = await fakeEndpoint(() => ({ status: 200, result: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(14, 'tools/call', groupWait('ticket', 2))
+  expect(reply.result).toEqual(failure)
+  expect(fake.calls).toHaveLength(1)
+})
+
+it('does not retry an explicitly retryable tool failure for an ordinary ci_get', async () => {
+  const failure = toolError('DATABASE_READ_TIMEOUT', true)
+  const fake = await fakeEndpoint(() => ({ status: 200, result: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(17, 'tools/call', { name: 'ci_get', arguments: { ticketId: 'ticket' } })
+  expect(reply.result).toEqual(failure)
+  expect(fake.calls).toHaveLength(1)
+})
+
+it('returns the last still-running result when retryable tool failures exhaust the budget', async () => {
+  const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+    result: index === 0 ? waitResult('still-running') : toolError('DATABASE_READ_TIMEOUT', true) }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(15, 'tools/call', groupWait('ticket', 1))
+  expect(reply.result.structuredContent.wait.status).toBe('still-running')
+  expect(fake.calls.length).toBeGreaterThan(1)
+  expect(bridge.lines.filter(line => line.id === 15)).toHaveLength(1)
+})
+
+it('returns the retryable tool failure when no successful wait reply arrives before the deadline', async () => {
+  const failure = toolError('DATABASE_READ_TIMEOUT', true)
+  const fake = await fakeEndpoint(() => ({ status: 200, result: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const started = Date.now()
+  const reply = await bridge.request(16, 'tools/call', groupWait('ticket', 1))
+  expect(reply.result).toEqual(failure)
+  expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+})
 
 it('fails a denied group wait once without polling', async () => {
   const fake = await fakeEndpoint(() => ({ status: 403 }))

@@ -416,15 +416,18 @@ export async function settleWorkflowRun(owner: RunOwnership, interrupted = false
     if (failure && failure.outcome !== 'failed') return fail('RUN_FAILURE_CAUSE_INVALID')
     let executionFailure: ExecutionResult | undefined
     if (!snapshot.stopRequested && !failure) {
-      // An interrupted Run keeps its interruption cause. Otherwise the most recent
-      // failed selected execution is the cause, even when cleanup never received it
-      // (a restart reads a preparation failure that was already recorded).
-      const execution = (await sql.query<{ result: unknown }>(`
-        select record->'result' as result from harness_executions
-        where run_id=$1 and tick_index is null and record->>'state'='completed'
-          and record#>>'{result,outcome}'='failed'
-          and ($2::boolean or record#>>'{result,error,code}'='EXECUTION_INTERRUPTED')
-        order by ${interrupted ? 'created_at,id' : 'created_at desc,id desc'} limit 1`, [run.id, !interrupted])).rows[0]
+      // Only exhausted node attempts have a failed resolution. Cleanup siblings
+      // and superseded retries must not replace that cause.
+      const candidates = (await sql.query<{ result: unknown; failed_resolution: boolean }>(`
+        select e.record->'result' as result, exists(
+          select 1 from run_repeat_resolutions r where r.run_id=e.run_id and r.execution_id=e.id
+            and r.record#>>'{value,resolution}'='failed') as failed_resolution
+        from harness_executions e
+        where e.run_id=$1 and e.tick_index is null and e.record->>'state'='completed'
+          and e.record#>>'{result,outcome}'='failed'
+          and ($2::boolean or e.record#>>'{result,error,code}'='EXECUTION_INTERRUPTED')
+        order by ${interrupted ? 'e.created_at,e.id' : 'e.created_at desc,e.id desc'}`, [run.id, !interrupted])).rows
+      const execution = candidates.find(candidate => interrupted || candidate.failed_resolution)
       if (execution) executionFailure = ExecutionResultSchema.parse(execution.result)
     }
     const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? executionFailure ?? { outcome: 'failed', error: {

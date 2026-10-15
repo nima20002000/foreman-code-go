@@ -7,7 +7,6 @@ import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { CiMirrorInput } from './serviceTypes.js'
 import type { HostCiRunner } from './runner.js'
 import type { CloudCi } from './cloud.js'
-import { retainCiHostStatus } from './status.js'
 import { DomainError } from '../errors.js'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { assertBuildComputerTarget } from '../settings/buildComputers.js'
@@ -146,20 +145,16 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     const deviceId = computer.hostRef.deviceId
     if (!devices || !deviceId) throw new Error('The build computer is offline.')
     const priority = options?.priority ?? (request.operation === 'status' ? 'background' : 'foreground')
-    const send = async (): Promise<CiHostReply> => {
-      const reply = await devices.request(deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000, priority })
-      const parsed = CiHostReplySchema.parse(reply.payload)
-      if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
-        return { ...parsed, ready: false, reasons: [...parsed.reasons,
-          'Worker CI start protocol is unsupported; update the Worker.'].slice(-10) }
-      }
-      return parsed
+    // Execution and cleanup need live replies; readiness caching belongs to CiPlanningSnapshot.
+    const reply = await devices.request(deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000, priority })
+    const parsed = CiHostReplySchema.parse(reply.payload)
+    if (request.operation === 'status' && parsed.operation !== 'status') {
+      throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
     }
-    if (request.operation !== 'status' || priority !== 'background') return send()
-    return retainCiHostStatus(computer.hostRef, async () => {
-      const reply = await send()
-      if (reply.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
-      return reply
-    })
+    if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
+      return { ...parsed, ready: false, reasons: [...parsed.reasons,
+        'Worker CI start protocol is unsupported; update the Worker.'].slice(-10) }
+    }
+    return parsed
   }
 }
