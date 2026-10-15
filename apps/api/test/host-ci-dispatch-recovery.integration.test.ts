@@ -44,7 +44,8 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     exhausted = true
     const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(queued.run).toMatchObject({ state: 'queued', computer: null, step: null, startedAt: null,
-      finishedAt: null, unstartedProviders: [provider], message: expect.stringContaining('dispatch retries exhausted') })
+      finishedAt: null, unstartedProviders: [provider],
+      message: 'Dispatch retries exhausted; queued for another computer.' })
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toMatchObject({ host_key: null, record: queued.run })
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(tickets)
