@@ -298,6 +298,10 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
         return structuredClone(loaded.session)
       }
       const detached = this.processRecovery && hasDetachedStdioProcess(this.processRecovery)
+      if (this.processRecovery && isWorkflowStart(input) && !input.sessionContinuation && !detached) {
+        throw new HarnessExecutionError('EXECUTION_INTERRUPTED',
+          'The original workflow native process exited before it produced an accepted result.', true)
+      }
       const prepared = detached
         ? await this.dependencies.withDiagnostics({ binary: this.binary, cwd: sessionStartDirectory(input),
           configurationIdentity: canonicalJsonNumericKeysFirstLegacy(configuration(input)),

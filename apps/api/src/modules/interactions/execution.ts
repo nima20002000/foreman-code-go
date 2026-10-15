@@ -723,7 +723,25 @@ export class ApprovalExecutionCoordinator {
       'The accepted Agent configuration is unavailable.', 409)
     const context = await this.managerContext(execution, configuration)
     if (context.acceptedPlacement?.hostRef.kind !== 'main') return
-    await this.attachSession(context, session, { restartOwner: owner })
+    const resolved = this.resolveManager(context, owner)
+    // Detect a lost process before reserving another attachment lifetime.
+    if (context.harness === 'codex' && resolved.manager.originalEnvironment
+      && !await resolved.manager.originalEnvironment(session)) {
+      resolved.markFailed?.()
+      await resolved.manager.dispose()
+      this.managers.release?.(context, this.rawManagers.get(resolved.manager) ?? resolved.manager, 'failed')
+      await this.restartInterrupted(owner, execution)
+      throw new HarnessExecutionError('EXECUTION_INTERRUPTED',
+        'The original workflow native process is no longer available.', true)
+    }
+    try {
+      await this.attachSession(context, session, { restartOwner: owner })
+    } catch (error) {
+      if (error instanceof HarnessExecutionError && error.result.error?.code === 'EXECUTION_INTERRUPTED') {
+        await this.restartInterrupted(owner, execution)
+      }
+      throw error
+    }
     owner.assertOwned()
   }
 
@@ -2976,7 +2994,8 @@ export class ApprovalExecutionCoordinator {
     const sessionWithoutTurn = observation.repeatLaunch && observation.ownedSession?.session && !observation.nativeTurnOffered
     const activeTimeout = error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT'
     // A persisted budget check can detect expiry before the deadline timer fires.
-    if (!observation.signal.aborted && !activeTimeout && !(rawError instanceof HarnessExecutionError) && !sessionWithoutTurn) {
+    if (!observation.signal.aborted && !activeTimeout && !(rawError instanceof HarnessExecutionError)
+      && !sessionWithoutTurn && !isTransientExecutionError(error)) {
       input.owner.assertOwned()
       if (repeatPhysicalSettlementPending(error)) await this.budgets.beginWait(observation.execution.id)
       input.owner.assertOwned()
@@ -3031,7 +3050,7 @@ export class ApprovalExecutionCoordinator {
         await persist(() => this.failIntervalCheck(input.owner, observation.execution, failure))
         throw error
       }
-      if (!observation.signal.aborted && !activeTimeout && observation.execution.state !== 'waiting'
+      if (!input.signal.aborted && !activeTimeout && observation.execution.state !== 'waiting'
         && isTransientExecutionError(error)) {
         // Infrastructure failure: close this attempt alone; its node starts a fresh one.
         observation.resolved?.markFailed?.()

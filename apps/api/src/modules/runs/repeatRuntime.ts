@@ -377,7 +377,8 @@ export interface RepeatRuntimeLifecycle {
 const preparationFailureCodes = new Set(['SOURCE_MATERIALIZATION_UNCERTAIN', 'HARNESS_PROFILE_UNAVAILABLE'])
 
 function isRuntimeFailure(error: unknown): boolean {
-  if (repeatSettlementPending(error) || isGraphInterrupt(error)) return false
+  if (error instanceof WorkExecutionFailure) return true
+  if (repeatSettlementPending(error) || isGraphInterrupt(error) || isTransientExecutionError(error)) return false
   if (error instanceof ZodError || (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT')) return true
   if (typeof error !== 'object' || !error || !('code' in error)) return false
   const code = String(error.code)
