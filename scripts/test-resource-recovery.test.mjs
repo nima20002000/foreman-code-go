@@ -254,3 +254,30 @@ test('recovery retains a root when a visible process cannot be inspected', async
   assert.deepEqual(recovered.retained, [{ directory: resource.directory, reason: 'Process environment unavailable' }])
   assert.equal(existsSync(resource.directory), true)
 })
+
+test('recovery ignores a process whose protected environment belongs to another user', async t => {
+  const parent = fixture(t)
+  const resource = abandonedRoot(parent)
+  const stat = fs.lstatSync
+  const read = fs.readFileSync
+  const environmentPath = `/proc/${process.pid}/environ`
+  t.mock.method(fs, 'lstatSync', (path, ...args) => {
+    const result = stat(path, ...args)
+    if (path === environmentPath) return { ...result, uid: process.getuid() + 1 }
+    return result
+  })
+  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+    if (path === environmentPath) {
+      throw Object.assign(new Error('Protected process environment'), { code: 'EACCES' })
+    }
+    return read(path, ...args)
+  })
+  syncBuiltinESMExports()
+
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), {
+    parent, containers: noContainers,
+  })
+  assert.deepEqual(recovered.retained, [])
+  assert.deepEqual(recovered.removed, [resource.directory])
+  assert.equal(existsSync(resource.directory), false)
+})
