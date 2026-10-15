@@ -4,6 +4,7 @@ import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { DomainError } from '../src/modules/errors.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 it('supersedes every queued and running part through MCP and preserves the replacement across retries', async () => {
   const oldCommit = 'a'.repeat(40)
@@ -103,10 +104,22 @@ it('retries superseded running cleanup before releasing its computer slot', asyn
   const f = await fixture({ supersession: { branch: () => 'feature', isAncestor: () => true } })
   f.computers.splice(1)
   const request = f.endpoint.request.bind(f.endpoint)
+  const unavailableCancellation = rejectableDeferred<void>()
+  const replacementStarted = rejectableDeferred<void>()
   let offline = false
   f.endpoint.request = async (computer, input) => {
-    if (offline && input.operation === 'cancel') throw new DomainError('CI_COMPUTER_OFFLINE', 'Offline.', 409)
-    return request(computer, input)
+    if (offline && input.operation === 'cancel') {
+      unavailableCancellation.resolve()
+      throw new DomainError('CI_COMPUTER_OFFLINE', 'Offline.', 409)
+    }
+    const reply = await request(computer, input)
+    if (input.operation === 'start' && input.commit === 'b'.repeat(40)) replacementStarted.resolve()
+    return reply
+  }
+  const read = async (ticketId: string) => {
+    const result = await f.operator.callTool({ name: 'ci_get', arguments: { workspaceId: f.workspaceId, ticketId } })
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+    return CiGetOutputSchema.parse(decodeMcpToolResult(result))
   }
   try {
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
@@ -117,16 +130,18 @@ it('retries superseded running cleanup before releasing its computer slot', asyn
     const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'b'.repeat(40), commandId: 'cleanup-next',
     }))
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId })).run)
+    await unavailableCancellation.promise
+    expect((await read(old.ticketId)).run)
       .toMatchObject({ state: 'running', supersededBy: next.ticketId })
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId })).run.state)
+    expect((await read(next.ticketId)).run.state)
       .toBe('queued')
     expect(f.started).toHaveLength(1)
     offline = false
+    await replacementStarted.promise
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId })).run)
+    expect((await read(old.ticketId)).run)
       .toMatchObject({ state: 'canceled', message: `superseded by ${next.ticketId}` })
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId })).run.state)
+    expect((await read(next.ticketId)).run.state)
       .toBe('running')
   } finally { await f.close() }
 })
