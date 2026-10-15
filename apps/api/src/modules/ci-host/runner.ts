@@ -341,11 +341,20 @@ export class HostCiRunner {
     return active
   }
 
-  /** One incomplete or damaged retained run must not abort status and admission for the rest of the computer. */
+  /** A damaged terminal record must not abort status for the rest of the computer; a live run keeps its slot. */
   private async refreshRetained(runId: string): Promise<CiHostRun | null> {
     try {
       return await this.refresh(runId)
     } catch (error) {
+      const meta = await this.readMeta(runId).catch((metaError: unknown) => {
+        log.warn({ err: metaError, runId }, 'The CI run metadata is unreadable')
+        return null
+      })
+      if (meta && ['starting', 'running'].includes(meta.state)) {
+        log.warn({ err: error, runId }, 'A live CI run could not be fully read; keeping its slot reserved')
+        return { runId, state: meta.state, step: null, exitCode: meta.exitCode, startedAt: meta.startedAt,
+          finishedAt: meta.finishedAt, logBytes: 0, message: this.runMessage(meta) }
+      }
       log.warn({ err: error, runId }, 'Skipping an incomplete or damaged CI run record')
       return null
     }

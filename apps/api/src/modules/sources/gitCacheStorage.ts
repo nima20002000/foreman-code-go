@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, readdir, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { SOURCE_GIT_CACHE_LIMITS, GitCacheStorageSchema, type GitCacheStorage }
   from '@foreman-code/contracts/source-materialization'
@@ -80,15 +80,41 @@ function boundedArgs(args: string[], index: number): string[] {
     ...args.slice(0, index + 1), ...flags, ...args.slice(index + 1)]
 }
 
-/** Transfer bytes reserved in this process by transfers that are still running, per storage directory. */
-const activeReservations = new Map<string, number>()
+/** Start time of a process, so a reused process id is not mistaken for the reservation's owner. */
+async function processStart(pid: number): Promise<string | null> {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return null
+    throw error
+  }
+}
+
+/** Counts the transfers still owned by a running process; the storage lock is held. Records of dead owners are removed. */
+async function liveReservations(root: FileHandle): Promise<number> {
+  let live = 0
+  for (const name of await readdir(anchored(root))) {
+    if (!/^transfer-.+\.reservation$/u.test(name)) continue
+    let owner: { pid?: unknown; started?: unknown } = {}
+    try { owner = JSON.parse(await readFile(anchored(root, name), 'utf8')) as typeof owner }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error
+      // An interrupted write left no owner; the record is reclaimed below.
+    }
+    if (typeof owner.pid === 'number' && await processStart(owner.pid) === owner.started) live++
+    else await rm(anchored(root, name), { force: true })
+  }
+  return live
+}
 
 /** Holds the storage lock only while measuring and reserving this transfer's footprint beside the running transfers. */
-async function reserveTransfer(root: FileHandle, storagePath: string, signal: AbortSignal): Promise<void> {
+async function reserveTransfer(root: FileHandle, signal: AbortSignal): Promise<string> {
+  const name = `transfer-${randomUUID()}.reservation`
   await withPrivateDirectoryLock(root, async () => {
     const measured = await measureStorage(root, signal)
-    const active = activeReservations.get(storagePath) ?? 0
     const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
+    const active = await liveReservations(root) * reservedBytes
     const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
     await writeStorage(root, { ...measured, reservedBytes: active })
     if (measured.retainedBytes + active + reservedBytes > measured.limitBytes
@@ -97,18 +123,19 @@ async function reserveTransfer(root: FileHandle, storagePath: string, signal: Ab
         'The Git cache has insufficient storage for this transfer. Free cache filesystem space, then retry.',
         409, { retryable: true, newCommandRequired: false, storage: measured, reservedBytes })
     }
+    await writeSourceClaim(root, name, JSON.stringify({ pid: process.pid, started: await processStart(process.pid) }))
     await writeStorage(root, { ...measured, reservedBytes: active + reservedBytes })
-    activeReservations.set(storagePath, active + reservedBytes)
   }, { signal })
+  return name
 }
 
-async function releaseTransfer(root: FileHandle, storagePath: string): Promise<void> {
-  const remaining = (activeReservations.get(storagePath) ?? 0) - SOURCE_GIT_CACHE_LIMITS.transferBytes
-  if (remaining > 0) activeReservations.set(storagePath, remaining)
-  else activeReservations.delete(storagePath)
+async function releaseTransfer(root: FileHandle, name: string): Promise<void> {
   const measured = await measureStorage(root)
-  await withPrivateDirectoryLock(root, () => writeStorage(root, { ...measured,
-    reservedBytes: activeReservations.get(storagePath) ?? 0 }))
+  await withPrivateDirectoryLock(root, async () => {
+    await rm(anchored(root, name), { force: true })
+    await writeStorage(root, { ...measured,
+      reservedBytes: await liveReservations(root) * SOURCE_GIT_CACHE_LIMITS.transferBytes })
+  })
 }
 
 /** Reserve each transfer's maximum footprint on the cache's actual filesystem; fetches into one repository take turns. */
@@ -138,7 +165,7 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
   }
   const root = await openPrivateRoot(storagePath, false)
   try {
-    await reserveTransfer(root, storagePath, options.signal)
+    const reservation = await reserveTransfer(root, options.signal)
     try {
       // Clones write a private staging directory; only fetches share a repository, so only they wait for each other.
       const transfer = async (lockFd?: number) => {
@@ -170,7 +197,7 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
         if (repository !== root) await repository.close()
       }
     } finally {
-      await releaseTransfer(root, storagePath)
+      await releaseTransfer(root, reservation)
     }
   } finally {
     await root.close()
