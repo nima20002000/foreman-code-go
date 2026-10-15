@@ -36,7 +36,6 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   }))
   let placement: Awaited<ReturnType<typeof mixedComputerPlacement>> | undefined
   let runId: string | undefined
-  const preparationErrors: string[] = []
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     approvalNodeIds: [], workerParallelism: 3,
     outputFor: handoffOutput,
@@ -60,14 +59,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
           return undefined
         }
       }
-      try {
-        return await prepareHandoffSource(owner, run, execution, placement)
-      } catch (error) {
-        if (!preparationErrors.length) {
-          preparationErrors.push(error instanceof Error ? error.stack ?? error.message : String(error))
-        }
-        throw error
-      }
+      return prepareHandoffSource(owner, run, execution, placement)
     },
   })
   const directory = join(base.db.directory, 'handoff-placement')
@@ -136,15 +128,6 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
         } })
         if (result.isError) throw new Error(JSON.stringify(result))
         return SavedRunDetailsSchema.parse(decodeMcpToolResult(result))
-      },
-      async diagnostics() {
-        const executions = await base.db.pool.query(`select record->>'workflowNodeId' as node_id,
-          record->>'state' as state,record->'result' as result,count(*)::int as attempts
-          from harness_executions where run_id=$1 group by 1,2,3`, [runId])
-        const connections = await base.db.pool.query(`select state,wait_event_type,wait_event,query
-          from pg_stat_activity where datname=current_database() and pid<>pg_backend_pid()`)
-        return { startedNodes: base.provider.startedNodes, dispatchErrors: base.dispatchErrors, preparationErrors,
-          executions: executions.rows, connections: connections.rows }
       },
       async close() {
         delete base.provider.beforeClose

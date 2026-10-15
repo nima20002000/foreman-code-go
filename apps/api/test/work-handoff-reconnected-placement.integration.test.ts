@@ -29,9 +29,6 @@ describe('handed-off node placement after a Worker reconnect', () => {
       await expectMcpAccessDenied(denied.callTool({ name: 'run_get', arguments: {
         workspaceId: f.startInput.workspaceId, runId: accepted.run.id,
       } }))
-    } catch (error) {
-      console.error('Handoff placement did not finish', JSON.stringify(await f.diagnostics()))
-      throw error
     } finally { await f.close() }
   }, 60_000)
 
@@ -54,9 +51,6 @@ describe('handed-off node placement after a Worker reconnect', () => {
       expect(f.base.provider.startedNodes).toEqual([f.coordinator.id])
       expect((await f.base.db.pool.query('select stop_requested_at from runs where id=$1', [accepted.run.id]))
         .rows[0]?.stop_requested_at).toBeNull()
-    } catch (error) {
-      console.error('Handoff profile failure did not settle', JSON.stringify(await f.diagnostics()))
-      throw error
     } finally { await f.close() }
   }, 60_000)
 })
