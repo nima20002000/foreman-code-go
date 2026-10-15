@@ -849,8 +849,12 @@ export class HostCiService {
         logError ??= new DomainError('CI_HOST_REPLY_INVALID', 'Expected a CI log tail.', 502)
       }
     }
+    const now = Date.now()
+    const lastSuccessAt = run.observation?.status === 'available' && run.observation.lastSuccessAt
+      && now - Date.parse(run.observation.lastSuccessAt) < 60_000
+      ? run.observation.lastSuccessAt : new Date(now).toISOString()
     const observation: CiRunRecord['observation'] = logError ? undefined : { status: 'available',
-      lastSuccessAt: new Date().toISOString(), lastError: null, consecutiveFailures: 0, nextAttemptAt: null }
+      lastSuccessAt, lastError: null, consecutiveFailures: 0, nextAttemptAt: null }
     if (computer.hostRef.kind === 'cloud' && reply.run.state === 'failed') {
       if (reply.run.testsStarted === false && !run.setupRetry && !run.cancellation && !run.supersededBy) {
         await this.settle(run, computer, reply.run, { logTail, observation })
