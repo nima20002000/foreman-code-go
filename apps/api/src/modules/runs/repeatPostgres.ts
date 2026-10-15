@@ -177,7 +177,8 @@ export class RepeatRunRepository {
   private async transaction<T>(work: (context: Context) => Promise<T>, options: { readOnly?: boolean } = {}): Promise<T> {
     return this.owner.oneShotConnection().transaction(async (sql) => {
       this.owner.assertOwned()
-      const lock = options.readOnly ? '' : 'for update of r'
+      // Serialize Run mutations without excluding CI activity's parent-key read.
+      const lock = options.readOnly ? '' : 'for no key update of r'
       const found = await sql.query<{ run: unknown; version: unknown; stopped: boolean; cleanup: boolean; state: string; now: string }>(
         `select r.record as run,v.record as version,r.stop_requested_at is not null as stopped,
           r.execution_state as state,exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup,transaction_timestamp()::text as now

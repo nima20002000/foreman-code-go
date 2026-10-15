@@ -82,6 +82,7 @@ export class HostCiService {
   private dispatching: Promise<void> | undefined
   private dispatchRequested = false
   private readonly observingRuns = new Map<string, Promise<void>>()
+  private observationOffset = 0
   private readonly observingComputers = new Map<string, Promise<void>>()
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
@@ -989,16 +990,26 @@ export class HostCiService {
       return Date.parse(run.startedAt) + run.expectedDurationMs
     }
     cloud.sort((left, right) => expectedEnd(left) - expectedEnd(right))
-    for (const [rows, limit] of [[cloud, 48], [local, 8]] as const) {
-      let pending = rows.filter(row => this.observingRuns.has(row.id)).length
-      for (const row of rows) {
-        if (pending >= limit) break
-        if (this.observingRuns.has(row.id)) continue
-        pending++
-        const observation = trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
-          () => refresh(row)).finally(() => { this.observingRuns.delete(row.id) })
-        this.observingRuns.set(row.id, observation)
-      }
+    // Every observation returns to this pool to collect and settle. Keep room
+    // for dispatch, authenticated reads and the Run writers they can wait on.
+    const limit = Math.max(1, Math.floor((this.pool.options?.max ?? 10) / 2))
+    const rows = Array.from({ length: Math.max(cloud.length, local.length) }, (_, index) =>
+      [cloud[index], local[index]].filter(row => row !== undefined)).flat()
+    const offset = this.observationOffset % Math.max(1, rows.length)
+    let pendingCloud = cloud.filter(row => this.observingRuns.has(row.id)).length
+    let pendingLocal = local.filter(row => this.observingRuns.has(row.id)).length
+    for (let visited = 0; visited < rows.length && this.observingRuns.size < limit; visited++) {
+      const index = (offset + visited) % rows.length
+      const row = rows[index]!
+      if (this.observingRuns.has(row.id)) continue
+      const isCloud = CiRunRecordSchema.parse(row.record).computer?.hostRef.kind === 'cloud'
+      if (isCloud ? pendingCloud >= 48 : pendingLocal >= 8) continue
+      if (isCloud) pendingCloud++
+      else pendingLocal++
+      const observation = trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
+        () => refresh(row)).finally(() => { this.observingRuns.delete(row.id) })
+      this.observingRuns.set(row.id, observation)
+      this.observationOffset = (index + 1) % rows.length
     }
   }
 
