@@ -25,7 +25,7 @@ function failedAttempt(attempt: number, code: string, elapsedMs = 0): HarnessExe
 function retryStore(attempts: HarnessExecution[], infrastructureIds = attempts.map(item => item.id)) {
   const execution = attempts.at(-1)!
   vi.spyOn(executions, 'readRepeatExecutionLocked').mockResolvedValue({
-    execution, ref: { nodeId: 'node', occurrence: null }, slotId: 'slot', input: {},
+    execution, ref: { nodeId: 'node', occurrence: null }, slotId: 'slot', input: {} as never,
     inputDigest: 'digest', accepted: false,
   })
   const query = vi.fn(async () => ({ rows: attempts.map(record => ({

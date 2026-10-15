@@ -114,7 +114,7 @@ function fixture() {
   const validateContinuation = vi.fn(async () => {})
   const coordinator = new ApprovalExecutionCoordinator(runs, interactions, budgets,
     new ExecutionScopedNativeSessionManagerResolver(() => manager), 3_600_000, credentials,
-    validateContinuation, closures as WorkflowClosureStore, undefined, captures.capture)
+    validateContinuation, closures as unknown as WorkflowClosureStore, undefined, captures.capture)
   const controller = new AbortController()
   const pending = coordinator.observeExact({ execution, store, owner, signal: controller.signal,
     workflowId: 'workflow', graphThreadId: execution.runId,
