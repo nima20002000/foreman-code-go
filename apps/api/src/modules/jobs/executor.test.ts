@@ -1,3 +1,4 @@
+import { DomainError } from '../errors.js'
 import { readBoundedJobFile } from './executorOutputs.js'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, type VerifiedJobGitMounts } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
@@ -19,6 +20,8 @@ import type { JobDispatchPort } from './ports.js'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
 import {
   executeJob,
+  executeVerificationJob,
+  type VerificationJobExecutorPorts,
   jobSpecDigests,
   jobSupervisorIdentity,
   type JobExecutorPorts,
@@ -216,7 +219,7 @@ describe('real main admission to worker executor contract (SQL/source/supervisor
     expect(p.supervisor.launch).not.toHaveBeenCalled()
   })
   it('denies refused immutable input delivery before native claim',async()=>{
-    const job=execution(),p=ports();p.inputs.prepare=vi.fn(async()=>{throw new Error('Exact file scope denied')})
+    const job=execution(),p=ports();p.inputs.prepare=vi.fn(async()=>{throw new DomainError('ACCESS_DENIED', 'Exact file scope denied', 403)})
     expect((await executeJob(job,p,new AbortController().signal)).outcome).toBe('preparation_failed')
     expect(p.authority.claim).not.toHaveBeenCalled();expect(p.supervisor.launch).not.toHaveBeenCalled()
   })
@@ -258,7 +261,7 @@ describe('real main admission to worker executor contract (SQL/source/supervisor
   })
   it('still requires source authority for the accepted immutable inputs', async () => {
     const { job } = await admit({ request: 'accepted' }), p = ports()
-    p.source.verify = vi.fn(async () => { throw new Error('Pinned input bytes unavailable') })
+    p.source.verify = vi.fn(async () => { throw new DomainError('SOURCE_IDENTITY_MISMATCH', 'Pinned input bytes unavailable', 409) })
     expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
     expect(p.source.verify).toHaveBeenCalledOnce()
     expect(p.authority.claim).not.toHaveBeenCalled()
@@ -318,7 +321,7 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     const p = ports(); const job = execution(); job.acceptedSpec.argv.push('changed')
     expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
     expect(p.supervisor.launch).not.toHaveBeenCalled()
-    const denied = ports(); denied.authority.recheck = async () => { throw Error('stale owner') }
+    const denied = ports(); denied.authority.recheck = async () => { throw new DomainError('AUTH_REVOKED', 'stale owner', 401) }
     expect((await executeJob(execution(), denied, new AbortController().signal)).outcome).toBe('preparation_failed')
     expect(denied.authority.claim).not.toHaveBeenCalled()
   })
@@ -461,3 +464,58 @@ function mountFixture(execution:JobExecution,filesystem={device:'1',inode:'2',mo
   return {version:1,layout:JOB_PRIVATE_GIT_LAYOUT,workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,specDigest:spec.specDigest,bindingHash:spec.bindingHash,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest,
     git:{directory:join(parent,'repository'),filesystem,generatedCommit:'4'.repeat(40),sourceCommit:spec.source.commit,repositoryReceiptDigest:digest,configDigest:digest,indexDigest:digest,mountpoint:filesystem},scheduler:{directory:join(parent,'job-heavy-jobs'),filesystem},receiptDigest:digest}
 }
+
+describe('Job preparation infrastructure retries', () => {
+  it.each(['authority', 'source', 'inputs', 'outputs'] as const)(
+    'retries transient %s preparation before native entry with the original Job', async stage => {
+      const job = execution()
+      const p = ports()
+      p.prepareOutputs = vi.fn(async () => undefined)
+      const failure = new DomainError('DEVICE_TRANSPORT_ERROR', 'Main is reconnecting', 503, { retryable: true })
+      if (stage === 'authority') vi.mocked(p.authority.recheck).mockRejectedValueOnce(failure)
+      if (stage === 'source') vi.mocked(p.source.verify).mockRejectedValueOnce(failure)
+      if (stage === 'inputs') vi.mocked(p.inputs.prepare).mockRejectedValueOnce(failure)
+      if (stage === 'outputs') vi.mocked(p.prepareOutputs).mockRejectedValueOnce(failure)
+      const accepted = structuredClone(job)
+      expect(await executeJob(job, p, new AbortController().signal)).toMatchObject({ outcome: 'succeeded' })
+      expect(p.authority.claim).toHaveBeenCalledOnce()
+      expect(p.supervisor.launch).toHaveBeenCalledOnce()
+      expect(vi.mocked(p.supervisor.launch).mock.calls[0]![0].execution).toEqual(accepted)
+    },
+  )
+
+  it('keeps an exhausted transient preparation cause retryable without native entry', async () => {
+    const job = execution()
+    const p = ports()
+    const failure = new DomainError('DEVICE_TRANSPORT_ERROR', 'Main is unavailable', 503, { retryable: true })
+    vi.mocked(p.authority.recheck).mockRejectedValue(failure)
+    vi.useFakeTimers()
+    try {
+      const result = executeJob(job, p, new AbortController().signal)
+        .then(value => ({ value }), error => ({ error }))
+      await vi.advanceTimersByTimeAsync(job.acceptedSpec.policy.preparationTimeoutMs + 1)
+      expect(await result).toEqual({ error: failure })
+      expect(p.authority.claim).not.toHaveBeenCalled()
+      expect(p.supervisor.launch).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('retries verification authority and spec reads before returning a confirmed denial', async () => {
+    const f = verificationFixture()
+    const job = VerificationJobExecutionSchema.parse({ ...execution(), schemaVersion: 2, acceptedSpec: {
+      ...f.acceptedBuild, ...f.spec, schemaVersion: 2, source: f.acceptedBuild.source,
+      profile: f.profile, reservationId: id, lifecycle: f.lifecycle, resourcePolicyRevision: 1,
+      resourcePolicyDigest: digest, runtimeApprovalId: id, runtimeApprovalRevision: 1,
+    } })
+    const failure = new DomainError('DEVICE_TRANSPORT_ERROR', 'Main is reconnecting', 503, { retryable: true })
+    const recheck = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined)
+    const verifyAcceptedSpec = vi.fn().mockRejectedValueOnce(failure)
+      .mockRejectedValue(new DomainError('ACCESS_DENIED', 'Spec authorization revoked', 403))
+    const p = { ...ports(), authority: { ...ports().authority, recheck },
+      verifyAcceptedSpec } as unknown as VerificationJobExecutorPorts
+    expect(await executeVerificationJob(job, p, new AbortController().signal)).toMatchObject({ outcome: 'preparation_failed' })
+    expect(recheck).toHaveBeenCalledTimes(2)
+    expect(verifyAcceptedSpec).toHaveBeenCalledTimes(2)
+    expect(p.authority.claim).not.toHaveBeenCalled()
+  })
+})

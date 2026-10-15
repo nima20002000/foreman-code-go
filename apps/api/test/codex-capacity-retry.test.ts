@@ -62,7 +62,7 @@ describe('Codex capacity retry', () => {
     expect(starts[1]!.params).toEqual(starts[0]!.params)
   })
 
-  it('exhausts five attempts after five minutes of exponential waits and keeps CODEX_TURN_FAILED', async () => {
+  it('exhausts local capacity retries and preserves a retryable failure for workflow recovery', async () => {
     const { manager, waits } = setup()
     const session = await manager.createSession(source)
     const result = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'capacity' }))
@@ -77,7 +77,7 @@ describe('Codex capacity retry', () => {
     expect(waits.map(wait => wait.milliseconds)).toEqual([20_000, 40_000, 80_000, 160_000])
     expect(events.filter(event => event.type === 'turn.capacity_wait')).toHaveLength(4)
     expect((await manager.history(session)).terminalResult).toMatchObject({
-      outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', retryable: false },
+      outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', retryable: true },
     })
   })
 

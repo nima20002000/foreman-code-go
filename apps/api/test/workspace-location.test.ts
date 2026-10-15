@@ -6,6 +6,8 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DomainError } from '../src/modules/errors.js'
+import { isTransientExecutionError } from '../src/modules/runs/executionRetryPolicy.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 
@@ -120,5 +122,29 @@ describe('local runner workspace location validation', () => {
     const client = { query: async () => ({ rows: [{ archived_at: new Date() }] }) } as unknown as pg.PoolClient
     await expect(locations.snapshotAssigned(client, 'workspace-1', 1))
       .rejects.toMatchObject({ code: 'PARENT_ARCHIVED' })
+  })
+})
+
+describe('Run authorization revalidation', () => {
+  it.each(['57014', '55P03', '08006'])('preserves a database %s failure for retry', async code => {
+    const failure = Object.assign(new Error('Authority read unavailable'), { code })
+    const client = { query: vi.fn().mockRejectedValue(failure) } as unknown as pg.PoolClient
+    const { locations } = service()
+    await expect(locations.revalidateRunAuthorization('owner', 'workspace', 'workflow', client)).rejects.toBe(failure)
+    expect(isTransientExecutionError(failure)).toBe(true)
+  })
+
+  it('preserves a retryable domain database failure and its cause', async () => {
+    const failure = new DomainError('DATABASE_READ_TIMEOUT', 'Authority read timed out', 503, { retryable: true })
+    failure.cause = new Error('Query read timeout')
+    const client = { query: vi.fn().mockRejectedValue(failure) } as unknown as pg.PoolClient
+    await expect(service().locations.revalidateRunAuthorization('owner', 'workspace', 'workflow', client))
+      .rejects.toBe(failure)
+  })
+
+  it('still rejects a confirmed missing authority', async () => {
+    const client = { query: vi.fn().mockResolvedValue({ rows: [] }) } as unknown as pg.PoolClient
+    await expect(service().locations.revalidateRunAuthorization('owner', 'workspace', 'workflow', client))
+      .rejects.toMatchObject({ code: 'RUN_AUTHORIZATION_REVOKED', status: 403 })
   })
 })
