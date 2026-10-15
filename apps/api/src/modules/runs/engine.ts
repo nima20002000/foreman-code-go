@@ -335,7 +335,10 @@ export class LangGraphWorkflowEngine {
       const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
       if (!snapshot.stopRequested && !snapshot.cleanupPending && snapshot.run.executionState !== 'completed') throw new DomainError(
         'GRAPH_STOP_CONFLICT', 'Cleanup requires the committed negative or terminal fence.', 409)
-      await this.runs.requestCleanup(owner.runId, owner)
+      // A queued resume can outlive successful cleanup; do not reopen its intent.
+      if (snapshot.cleanupPending || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
+        await this.runs.requestCleanup(owner.runId, owner)
+      }
       try {
         if (snapshot.run.executionState !== 'completed' || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
           await this.nativeExecutions.cancelRun(owner.runId, owner)
