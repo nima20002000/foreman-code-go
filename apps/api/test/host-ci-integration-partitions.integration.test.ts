@@ -4,6 +4,43 @@ import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
+it('waits for computer capacity before saving an immutable partition plan', async () => {
+  const f = await fixture()
+  let release!: () => void
+  const pendingStatus = new Promise<void>(resolve => { release = resolve })
+  const request = f.endpoint.request.bind(f.endpoint)
+  f.endpoint.request = async (computer, input) => {
+    if (input.operation === 'status') await pendingStatus
+    return request(computer, input)
+  }
+  try {
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', scope: 'full', partitions: 2,
+    }))
+    await f.ci.dispatch()
+    const pending = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(pending.partitions).toHaveLength(2)
+    for (const run of pending.partitions!) {
+      expect(run).toMatchObject({ state: 'queued', computer: null })
+      expect(run.partition?.weights).toBeUndefined()
+      expect((await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record).toEqual(run)
+    }
+    expect(f.started).toEqual([])
+    release()
+    await f.value(f.operator, 'ci_computers_list', {})
+    await f.ci.dispatch()
+    const ready = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const shards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 14 * 2 ** 30 })
+    for (const run of ready.partitions!) {
+      expect(run).toMatchObject({ state: 'running', partition: { weights: [shards, shards] } })
+      expect((await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record).toEqual(run)
+    }
+  } finally {
+    release()
+    await f.close()
+  }
+})
+
 it('splits integration over two build computers, reports progress and logs, and replays a retried command', async () => {
   const f = await fixture()
   try {
