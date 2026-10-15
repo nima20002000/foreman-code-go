@@ -6,6 +6,10 @@ export const rsyncWriterEntrypoint = 'apps/api/src/modules/byte-transfer/rsyncWr
 export const schemaWorkerEntrypoint = 'apps/api/src/modules/harnesses/compatibility/schemaWorker.ts'
 
 export const verificationScripts = [
+  'scripts/ci-watchdog.mjs',
+  'scripts/ci-progress-reporter.mjs',
+  'scripts/ci-test-results.mjs',
+  'scripts/dense-resources.mjs',
   'scripts/verification-runner.mjs',
   'scripts/verify-repository.mjs',
   'scripts/verification-reports.mjs',

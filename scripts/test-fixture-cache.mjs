@@ -19,6 +19,8 @@ export async function workerFixtureInputs(repository, commit) {
     'apps/api/src', 'apps/worker/src', 'apps/worker/artifacts', 'packages/contracts/src',
     'apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs',
     'scripts/quota-helper-abi.mjs', 'scripts/graphql-mcp.mjs',
+    'scripts/worker-snapshot-policy.mjs', 'scripts/ci-watchdog.mjs', 'scripts/ci-progress-reporter.mjs',
+    'scripts/ci-test-results.mjs', 'scripts/dense-resources.mjs',
     'scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs',
     'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs',
     'packages/contracts/package.json', 'apps/worker/package.json', 'package.json',

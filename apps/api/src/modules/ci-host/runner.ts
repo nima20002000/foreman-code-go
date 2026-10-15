@@ -109,11 +109,15 @@ export class HostCiRunner {
   private cacheSweepAt = -Infinity
   private cacheSweepPending: Promise<void> | undefined
   private startingRepository: string | undefined
+  private readonly watchdog = fileURLToPath(new URL(import.meta.url.endsWith('.mjs')
+    ? '../artifacts/verification/ci-watchdog.mjs' : '../../../../../scripts/ci-watchdog.mjs', import.meta.url))
 
   constructor(private readonly root = hostCiDirectory(),
     private readonly ports: HostCiPorts = systemHostCiPorts(),
     private readonly environment: NodeJS.ProcessEnv = process.env,
-    private readonly startupSmokePending: () => boolean | Promise<boolean> = () => false) {}
+    private readonly startupSmokePending: () => boolean | Promise<boolean> = () => false) {
+    if (!existsSync(this.watchdog)) throw new Error(`CI watchdog is missing: ${this.watchdog}`)
+  }
 
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
@@ -740,7 +744,7 @@ export class HostCiRunner {
       || meta.suite === 'integration' && capabilities.integrationPartitions)
     const sourceWatchdog = join(source, 'scripts/ci-watchdog.mjs')
     const watchdog = existsSync(sourceWatchdog) ? sourceWatchdog
-      : fileURLToPath(new URL('../../../../../scripts/ci-watchdog.mjs', import.meta.url))
+      : this.watchdog
     const watchedCommand = `CI_EXPECTED_DURATION_MS=${meta.expectedDurationMs ?? 0}`
         + ` CI_WATCHDOG_DIRECTORY=${quote(run)} CI_WATCHDOG_MESSAGE_FILE=${quote(join(run, 'watchdog-message.json'))}`
         // Only test suites report per-test progress; typecheck, lint and build can stay silent for minutes.
