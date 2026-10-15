@@ -91,8 +91,9 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
     expect(host).toMatchObject({ state: 'queued', computer: null,
       message: expect.stringContaining('all CI slots in use (1/1)') })
     expect(sibling).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud' } } })
-    expect(integrationPartition(host.files, {}, host.partition!).sort()).toEqual([...systemd].sort())
-    expect(integrationPartition(sibling.files, {}, sibling.partition!).sort()).toEqual([...ordinary].sort())
+    // Systemd files stay on the host; ordinary files still balance across every slice.
+    expect(integrationPartition(host.files, {}, host.partition!).sort()).toEqual([...systemd, ordinary[0]!].sort())
+    expect(integrationPartition(sibling.files, {}, sibling.partition!).sort()).toEqual(ordinary.slice(1).sort())
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(host)
     const computers = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
     expect(computers.computers.find(computer => computer.hostRef.kind === 'cloud')?.userSystemd)
