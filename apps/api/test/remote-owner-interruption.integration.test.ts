@@ -50,7 +50,7 @@ it('closes an unbound attempt after owner restarts, records interruption, and ad
     }, value => value.run.executionState === 'completed', 'interrupted Run after native owner restarts')
     expect(detail.run.outcome).toBe('failed')
     expect(detail.executions.find(execution => execution.id === requester.id)).toMatchObject({
-      state: 'completed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false } },
+      state: 'completed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: true } },
     })
     expect(detail.run.workflowVersionId).toBe(started.run.workflowVersionId)
     expect(detail.run.input).toEqual(started.run.input)
