@@ -11,27 +11,18 @@ export async function latestEvidence(fixture: Fixture) {
   return rows.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
 }
 
-export async function refreshedEvidence(fixture: Fixture, previousGeneration: string) {
+export async function refreshedEvidence(fixture: Fixture, before: Awaited<ReturnType<typeof latestEvidence>>) {
   return waitForRemoteReview(async () => {
     const evidence = await latestEvidence(fixture)
-    const failed = evidence.find(proof => proof.connectionGeneration !== previousGeneration && !proof.qualified)
+    const failed = evidence.find((proof, index) => proof.checkedAt !== before[index]?.checkedAt && !proof.qualified)
     if (failed) throw new Error(`Automatic profile qualification failed: ${failed.failure?.code}`)
     const audit = await fixture.db.pool.query<{ details: { code: string } }>(`select details from management_audit
       where source='system' and action='harness.instance.check' and outcome='failed' order by sequence desc limit 1`)
     if (audit.rows[0]) throw new Error(`Automatic profile check failed: ${audit.rows[0].details.code}`)
     return evidence
   }, evidence =>
-    evidence.length === fixture.profiles.length && evidence.every(proof =>
-      proof.connectionGeneration !== previousGeneration && proof.qualified), 'fresh automatic profile evidence')
-}
-
-export async function startWhenReady(fixture: Fixture) {
-  return waitForRemoteReview(async () => {
-    try { return await fixture.start() } catch (error) {
-      if (error instanceof Error && error.message.includes('HARNESS_PROFILE_CHECK_PENDING')) return undefined
-      throw error
-    }
-  }, result => result !== undefined, 'Run admission after automatic profile checks')
+    evidence.length === fixture.profiles.length && evidence.every((proof, index) =>
+      proof.checkedAt !== before[index]?.checkedAt && proof.qualified), 'fresh automatic profile evidence')
 }
 
 export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<ReturnType<typeof latestEvidence>>) {

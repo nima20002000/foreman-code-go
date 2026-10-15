@@ -10,7 +10,7 @@ describe('handed-off node placement after a Worker reconnect', () => {
       const accepted = await f.start()
       const finished = await readUntil(f.details, details => details.run.executionState === 'completed',
         { timeoutMs: 30_000, description: 'all three handed-off Agents finish' })
-      expect(finished.run).toMatchObject({ outcome: 'succeeded' })
+      expect(finished.run, JSON.stringify(finished.run.result)).toMatchObject({ outcome: 'succeeded' })
       expect(finished.executions).toHaveLength(4)
       expect(finished.executions.every(execution => execution.result?.outcome === 'succeeded')).toBe(true)
       expect(new Set(f.base.provider.startedNodes)).toEqual(new Set([f.coordinator.id, ...f.workers.map(node => node.id)]))
@@ -32,12 +32,12 @@ describe('handed-off node placement after a Worker reconnect', () => {
     } finally { await f.close() }
   }, 60_000)
 
-  it('records the real profile error on its node and cancels siblings without invented interruption errors', async () => {
+  it('records the real profile error on its node while healthy sibling Agents finish', async () => {
     const f = await handoffPlacementFixture({ checkOutcome: 'failed' })
     try {
       const accepted = await f.start()
       const finished = await readUntil(f.details, details => details.run.executionState === 'completed',
-        { timeoutMs: 30_000, description: 'profile failure and sibling cleanup' })
+        { timeoutMs: 30_000, description: 'profile failure and healthy sibling completion' })
       expect(finished.executions).toHaveLength(4)
       const failed = finished.executions.find(execution => execution.workflowNodeId === f.workers[1]!.id)
       expect(failed).toMatchObject({ state: 'completed', result: { outcome: 'failed', error: {
@@ -47,8 +47,12 @@ describe('handed-off node placement after a Worker reconnect', () => {
       const siblings = finished.executions.filter(execution => execution.workflowNodeId !== f.coordinator.id
         && execution.workflowNodeId !== f.workers[1]!.id)
       expect(siblings).toHaveLength(2)
-      expect(siblings.map(execution => execution.result)).toEqual([{ outcome: 'canceled' }, { outcome: 'canceled' }])
-      expect(f.base.provider.startedNodes).toEqual([f.coordinator.id])
+      expect(siblings.every(execution => execution.state === 'completed'
+        && execution.result?.outcome === 'succeeded')).toBe(true)
+      expect(f.base.provider.startedNodes).toHaveLength(3)
+      expect(new Set(f.base.provider.startedNodes)).toEqual(new Set([
+        f.coordinator.id, f.workers[0]!.id, f.workers[2]!.id,
+      ]))
       expect((await f.base.db.pool.query('select stop_requested_at from runs where id=$1', [accepted.run.id]))
         .rows[0]?.stop_requested_at).toBeNull()
     } finally { await f.close() }

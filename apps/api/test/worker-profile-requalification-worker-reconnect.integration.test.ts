@@ -2,43 +2,35 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
-import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, refreshedEvidence, startWhenReady, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
+import { latestEvidence, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
-  it('retries Start during a reconnect check and then starts with fresh evidence through authenticated MCP', async () => {
+  it('retains same-boot qualification through MCP while refusing an unpublished Worker bundle', async () => {
     const fixture = await remoteReviewProduction({
       workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
     })
-    let blocked = false
     try {
       const before = await latestEvidence(fixture)
       expect(before).toHaveLength(fixture.profiles.length)
       expect(before.every(proof => proof.qualified)).toBe(true)
       const checksBefore = (await fixture.provider.calls()).filter(call => call.qualificationSuite).length
-      // Keep inventory discovery responsive while the native profile check is pending.
-      await fixture.provider.blockQualification()
-      blocked = true
+      const systemChecks = () => fixture.db.pool.query<{ source: string; principal_id: string | null; details: unknown }>(
+        "select source,principal_id,details from management_audit where action='harness.instance.check' and source='system' order by sequence")
+      const auditBefore = (await systemChecks()).rows
+      const inventoryBefore = await fixture.inventory()
       await fixture.restartWorker()
-      await waitForRemoteReview(() => fixture.provider.calls(), calls =>
-        calls.filter(call => call.qualificationSuite).length > checksBefore, 'automatic native profile check')
-      await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
+      const inventoryAfter = await waitForReplacementReviewInventory(fixture, inventoryBefore)
+      expect(inventoryAfter.hostMetadata!.connection!.binding.bootId)
+        .toBe(inventoryBefore.hostMetadata!.connection!.binding.bootId)
       expect(await latestEvidence(fixture)).toEqual(before)
-      const checkingProfiles = HostHarnessOverrideListSchema.parse(await fixture.value('harness_instances_list', {
-        hostRef: fixture.hostRef, applicationInstallationId: fixture.profiles[0]!.target.applicationInstallationId,
-      }))
-      expect(checkingProfiles.overrides).toHaveLength(fixture.profiles.length)
-      expect(checkingProfiles.overrides.map(profile => profile.qualification)).toEqual(
-        fixture.profiles.map(() => 'qualifying'))
-      await fixture.provider.releaseQualification()
-      blocked = false
-      const evidence = await refreshedEvidence(fixture, before[0]!.connectionGeneration)
-      await assertMcpReadback(fixture, evidence)
-      const started = (await startWhenReady(fixture))!
-      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
-      const audit = await fixture.db.pool.query<{ source: string; principal_id: string | null; details: unknown }>(
-        "select source,principal_id,details from management_audit where action='harness.instance.check' and source='system'")
-      expect(audit.rows).toHaveLength(fixture.profiles.length)
+      await assertMcpReadback(fixture, before)
+      await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
+      expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
+      expect((await fixture.provider.calls()).filter(call => call.qualificationSuite)).toHaveLength(checksBefore)
+      const audit = await systemChecks()
+      expect(audit.rows).toEqual(auditBefore)
       expect(audit.rows.every(row => row.principal_id === null)).toBe(true)
 
       const reader = await fixture.access.issue({ name: 'profile reader', audience: 'operator',
@@ -57,7 +49,6 @@ describe('automatic Worker profile qualification', () => {
           hostRef: fixture.hostRef, applicationInstallationId: profile.target.applicationInstallationId,
         })))
     } finally {
-      if (blocked) await fixture.provider.releaseQualification()
       await fixture.close()
     }
   }, 240_000)

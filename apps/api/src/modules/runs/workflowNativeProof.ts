@@ -37,6 +37,7 @@ import { appendNormalizedNativeEvents } from './nativeEventBatch.js'
 import { assertWorkflowCorrelation } from './workResultRepair.js'
 import { retainNativeTranscriptSources } from './nativeTranscriptReceipts.js'
 import { prefetchNativeFrames } from '../run-graph/nativeIngestion.js'
+import { readWorkResultContextLocked } from './workReturnValidation.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
  * graph feed: G1 publishes only its immutable digest and ordinary graph facts. */
@@ -572,9 +573,12 @@ export class WorkflowNativeProofServices {
         ? capture.source.history.correlationId ?? `execution:${incoming.id}` : `execution:${incoming.id}`
       await assertWorkflowCorrelation(sql, incoming.id, command)
       this.validateObservation(capture, previous, incoming, command)
+      const executionContext = snapshot.version.definition.handoffs && stored.workActivationId
+        && incoming.result?.outcome === 'succeeded'
+        ? await readWorkResultContextLocked({ sql, scope }, stored.workActivationId, stored.execution.input) : undefined
       const expected = prepareRepeatNativeUpdate(snapshot.version, scope, ref, previous, incoming,
         { workResultRepair: command !== `execution:${incoming.id}`,
-          deliverableFailure: await workflowDeliverableFailure(sql, snapshot.version, incoming) })
+          deliverableFailure: await workflowDeliverableFailure(sql, snapshot.version, incoming), executionContext })
       const source = await this.persistCapturedOriginalLocked(sql, run, evidence, owner, capture, current)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history

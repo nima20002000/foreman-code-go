@@ -38,7 +38,8 @@ export function workHandoffNodeAction(input: {
       } catch (error) {
         input.signal.throwIfAborted()
         if (!(error instanceof DomainError)
-          || !['APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT'].includes(error.code)) throw error
+          || !['APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT', 'HARNESS_PROFILE_UNAVAILABLE']
+            .includes(error.code)) throw error
         const failure = new WorkExecutionFailure({ outcome: 'failed', error: {
           code: error.code, message: error.message, retryable: false,
         } }, execution.id)

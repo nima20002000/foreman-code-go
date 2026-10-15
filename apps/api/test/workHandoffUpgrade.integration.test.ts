@@ -31,19 +31,20 @@ async function databaseBeforeContinuationUpgrade() {
   }
 }
 
-function nativeReturnFromPrompt(prompt: string) {
+function nativeReturnFromPrompt(prompt: string, includeRequestId: boolean) {
   const contextLine = /^TRUSTED WORKFLOW EXECUTION CONTEXT\n(.+)$/m.exec(prompt)?.[1]
   assert.ok(contextLine, 'The native continuation needs its saved caller in execution context')
   const context = HarnessExecutionContextSchema.parse(JSON.parse(contextLine))
   assert.ok(context.parentRequest)
   return {
-    routing: { kind: 'return' as const, requestId: context.parentRequest.requestId, outcome: 'accepted' as const },
+    routing: { kind: 'return' as const, outcome: 'accepted' as const,
+      ...(includeRequestId ? { requestId: context.parentRequest.requestId } : {}) },
     data: { latestDeliverable: { revision: 2 }, remainingFindings: [] },
   }
 }
 
 describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade', () => {
-  it('reuses a populated pre-parent-request continuation and returns to its original caller', async () => {
+  it.each([false, true])('reuses a populated pre-parent-request continuation and returns to its original caller (explicit request: %s)', async includeRequestId => {
     const db = await databaseBeforeContinuationUpgrade()
     const t = await workHandoffFixture(db.pool, 'continuation-upgrade', (version) => ({ ...version,
       definition: { ...version.definition, handoffs: { contractVersion: 1 },
@@ -142,7 +143,7 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
         workingDirectory: db.directory, runtimeDirectory: db.directory, configuration: configuration.record,
         input: replay.execution.input, executionContext,
         initialPrompt: currentInitialPrompt(node, false, true) })
-      const nativeResult = nativeReturnFromPrompt(buildHarnessPrompt(request))
+      const nativeResult = nativeReturnFromPrompt(buildHarnessPrompt(request), includeRequestId)
       expect(request.input).toEqual(input)
       expect(request.input).not.toHaveProperty('parentRequest')
       const final = await t.accept(activationId, nativeResult)

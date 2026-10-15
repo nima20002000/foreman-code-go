@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import pg from 'pg'
 import { ExecutionResultSchema, HarnessExecutionSchema, type HarnessExecution, type ExecutionResult } from '@foreman-code/contracts'
 import {
-  WorkflowVersionV3Schema, makeCurrentWorkflowFixture, canonicalGraphJson, type WorkHandoffResult,
+  WorkActivationInputSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, canonicalGraphJson, type WorkHandoffResult,
 } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -86,9 +86,13 @@ export async function acceptedReview(pool: pg.Pool, output: WorkHandoffResult,
         cause_kind,cause_id,state,record) values($1,$2,$3,$4,$5,$6,'completed',$7::jsonb)`,
         [activationId, run.id, version.id, node.id, cause.kind, index ? requestId : run.id, text(activation)])
       const result = index ? ExecutionResultSchema.parse({ outcome: 'succeeded', output }) : sourceResult
+      const input = WorkActivationInputSchema.parse({ executionSemanticsVersion: 3, runInput: run.input,
+        occurrence: null, entry: null, predecessors: [], work: index
+          ? { kind: 'work_request', activation, request, acceptedSourceResult: sourceResult }
+          : { kind: 'entry', activation } })
       const execution = HarnessExecutionSchema.parse({ id: executionId, runId: run.id, workflowNodeId: node.id,
         agentId: node.agentId, agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
-        attempt: 1, input: {}, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
+        attempt: 1, input, state: 'completed', result, createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
       await sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,accepted,record,work_activation_id)
         values($1,$2,$3,$4,1,$5,$6::jsonb,$7)`,
         [executionId, run.id, node.id, node.agentId, index ? options.reviewAccepted : true, text(execution), activationId])

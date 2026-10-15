@@ -32,7 +32,7 @@ export async function ready(child: ChildProcess, port: number): Promise<void> {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/health/ready`, { signal: AbortSignal.timeout(1000) })
       if (response.ok) return
-    } catch { /* Startup may not have opened the listener yet. */ }
+    } catch { /* ignore: startup may not have opened the listener yet. */ }
     await delay(25)
   }
   throw new Error('Test API did not become ready')
@@ -66,11 +66,17 @@ export async function rejectsUnownedStartup(variable: string): Promise<void> {
       cwd: root, env: { ...resources.environment, HOST: '127.0.0.1', PORT: String(port) },
       detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     })
-    restarted.stdout?.resume()
-    restarted.stderr?.resume()
-    await ready(restarted, port)
+    let output = ''
+    restarted.stdout?.on('data', chunk => { output += String(chunk) })
+    restarted.stderr?.on('data', chunk => { output += String(chunk) })
+    try {
+      await ready(restarted, port)
+    } catch (error) {
+      throw new Error(`Valid API restart failed: ${output}`, { cause: error })
+    }
     await assertOwnedTestApi(new URL(`http://127.0.0.1:${port}`), pool, resources.environment)
     expect((await pool.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
+    expect(await readFile(sentinel, 'utf8')).toBe('outside application state')
   } finally {
     await stopGroup(restarted?.pid, { signal: 'SIGTERM' })
     await stopGroup(child.pid, { signal: 'SIGTERM' })

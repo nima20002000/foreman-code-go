@@ -1,4 +1,4 @@
-import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
 import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1,
   type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
@@ -36,6 +36,7 @@ export interface RepeatGraphState {
 }
 
 export interface RepeatTerminalOptions {
+  executionContext?: HarnessExecutionContext | undefined
   workResultRepair?: boolean
   /** Precomputed by workflowDeliverableFailure on the same transaction. */
   deliverableFailure?: ExecutionResult | undefined
@@ -61,7 +62,7 @@ export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: Repea
   const deliverable = (accepted: HarnessExecution) => options.deliverableFailure
     ? HarnessExecutionSchema.parse({ ...accepted, result: options.deliverableFailure }) : accepted
   if (version.definition.handoffs) {
-    try { parseWorkResultForInput(execution.result, execution.input) }
+    try { parseWorkResultForInput(execution.result, execution.input, options.executionContext) }
     catch {
       return invalidWorkResult(execution)
     }

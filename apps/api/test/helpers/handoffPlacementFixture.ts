@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdir, rm } from 'node:fs/promises'
+import { vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import {
@@ -11,6 +12,12 @@ import { RunManagementService } from '../../src/modules/runs/management.js'
 import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
 import { createCurrentNativeProductionFactory } from '../../src/modules/runs/workflowProduction.js'
 import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecution.js'
+import { placedContinuationValidator } from '../../src/modules/placement/continuation.js'
+import { readDispatchIntent, readExecutionPlacement, readNativePlacement } from '../../src/modules/placement/persistence.js'
+import { readLiveManagementPrincipal } from '../../src/modules/access/liveManagementPrincipal.js'
+import { interactionConnection } from '../../src/modules/interactions/connection.js'
+import { credentialAuthority } from '../../src/modules/interactions/wave25/credentialAuthority.js'
+import * as continuation from '../../src/modules/runs/continuation.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './mixedComputerPlacement.js'
 import { readUntil } from './observableCondition.js'
@@ -36,36 +43,59 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   }))
   let placement: Awaited<ReturnType<typeof mixedComputerPlacement>> | undefined
   let runId: string | undefined
-  const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
-    approvalNodeIds: [], workerParallelism: 3,
-    outputFor: handoffOutput,
-    admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, digest) => {
-      if (!placement) throw new Error('Placement fixture is not ready.')
-      await placement.producer.admitExecution(sql, owner, execution, ref, digest, run.authorizationPrincipalId)
-    },
-    preparePlacementExecution: async (owner, run, execution) => {
-      if (!placement) throw new Error('Placement fixture is not ready.')
-      if (failedCheck && execution.workflowNodeId !== coordinator.id) {
-        if (execution.workflowNodeId === workers[1]!.id) {
+  let validatePlacement: ReturnType<typeof placedContinuationValidator>
+  const continuationSpy = vi.spyOn(continuation, 'continuationValidator').mockImplementation(
+    () => (executionId, signal) => validatePlacement(executionId, signal))
+  let base: Awaited<ReturnType<typeof currentOperatorIntegration>>
+  try {
+    base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
+      approvalNodeIds: [], workerParallelism: 3,
+      outputFor: handoffOutput,
+      admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, digest) => {
+        if (!placement) throw new Error('Placement fixture is not ready.')
+        await placement.producer.admitExecution(sql, owner, execution, ref, digest, run.authorizationPrincipalId)
+      },
+      preparePlacementExecution: async (owner, run, execution) => {
+        if (!placement) throw new Error('Placement fixture is not ready.')
+        if (failedCheck && execution.workflowNodeId === workers[1]!.id) {
           await readUntil(() => owner.oneShotConnection().transaction(async sql => (await sql.query(
             'select count(*)::integer as total from harness_executions where run_id=$1', [run.id])).rows[0]?.total),
-            total => total === 4,
-            { timeoutMs: 10_000, description: 'all handed-off node reservations' })
-        } else {
-          await readUntil(() => owner.oneShotConnection().transaction(async sql => (await sql.query(
-            'select pending from run_cleanup_intents where run_id=$1', [run.id])).rows[0]?.pending),
-          pending => pending === true,
-          { timeoutMs: 10_000, description: 'cleanup after the failed profile check' })
-          return undefined
+          total => total === 4,
+          { timeoutMs: 10_000, description: 'all handed-off node reservations' })
         }
-      }
-      return prepareHandoffSource(owner, run, execution, placement)
-    },
-  })
+        return prepareHandoffSource(owner, run, execution, placement)
+      },
+    })
+  } finally {
+    continuationSpy.mockRestore()
+  }
   const directory = join(base.db.directory, 'handoff-placement')
   try {
     await mkdir(directory, { mode: 0o700 })
     placement = await mixedComputerPlacement(base, directory, { deviceCount: 2 })
+    const producer = placement.producer
+    validatePlacement = placedContinuationValidator(base.db.pool, base.locations, {
+      async prepare(executionId) {
+        const sql = interactionConnection.getStore() ?? base.db.pool
+        const accepted = await readExecutionPlacement(sql, executionId)
+        if (!accepted) return null
+        const intent = await readDispatchIntent(sql, executionId)
+        const executionPlacement = await readNativePlacement(sql, executionId)
+        if (!intent || !executionPlacement) throw new Error('Placed native work requires its prepared source and dispatch.')
+        return { placement: accepted, intent, executionPlacement }
+      },
+    }, {
+      async assertCurrent(binding, signal) {
+        const sql = interactionConnection.getStore() ?? base.db.pool
+        const run = await base.runs.get(binding.intent.runId)
+        if (!run) throw new Error('Placed native work requires its saved Run.')
+        const current = await credentialAuthority(sql, binding.intent.executionId, 'workflow')
+        await producer.assertPinsCurrent(sql, binding.placement,
+          await readLiveManagementPrincipal(sql, run.authorizationPrincipalId), run.workspaceId,
+          current.nativeSessionId ? { purpose: 'resident' } : undefined)
+        signal?.throwIfAborted()
+      },
+    })
     base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
       worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },
     })
