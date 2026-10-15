@@ -66,8 +66,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (option === '--files-from') files = JSON.parse(readFileSync(value, 'utf8'))
   else if (option === '--indexes') files = selectByIndexes(repositoryFileList(process.cwd()), value ?? '')
   else throw new Error('Pass --files-from or --indexes for affected CI.')
-  if (!Array.isArray(files) || files.some(file => typeof file !== 'string' || !lstatSync(file).isFile())) {
+  if (!Array.isArray(files) || files.some(file => typeof file !== 'string')) {
     throw new Error('CI selection must contain existing repository files.')
+  }
+  const missingFiles = files.filter(file => !lstatSync(file, { throwIfNoEntry: false })?.isFile())
+  if (missingFiles.length) {
+    throw new Error(`CI selection must contain existing repository files: ${missingFiles.join(', ')}`)
   }
   const commands = affectedCommands(suite, files)
   if (commands.length) {
