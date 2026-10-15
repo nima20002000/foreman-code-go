@@ -10,6 +10,7 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import { assertSameRepeatExecution } from '../interactions/repeatObservation.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { openRepeatCanonicalPublicationLocked } from '../run-graph/repeatPublication.js'
+import { withNativeGraphProjectionBatch } from '../run-graph/nativeIngestion.js'
 import { RunOwnership } from './ownership.js'
 import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, RepositoryWorkflowRun, RunStateUpdate } from './port.js'
 import { runStartSemantics } from './repeatStartDispatch.js'
@@ -191,7 +192,7 @@ export class PostgresRunRepository {
     await owner.oneShotConnection().transaction(async (sql) => {
       if (await this.nativeProof.tryAppendTranscriptsLocked(sql, frames, owner, lease)) return
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
-      await this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease)
+      await withNativeGraphProjectionBatch(sql, owner.runId, () => this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease))
     })
     for (const { evidence } of frames) await this.nativeCommitted?.(evidence)
   }

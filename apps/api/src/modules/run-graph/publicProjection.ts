@@ -22,6 +22,16 @@ export interface PublicProjectionOverlay extends PublicAttentionOverlay {
   cleanupPending?: boolean
 }
 
+/** Current non-native inputs of the node projection. Native ingestion reads them
+ * once per transaction and composes every frame's before/after state in memory. */
+export interface PublicNodeInputs {
+  readonly nodeIds: readonly string[]
+  readonly closed: boolean
+  readonly executions: ReadonlyMap<string, PublicExecution>
+  readonly resolutions: ReadonlyMap<string, NonNullable<PublicNode['resolution']>>
+  readonly counts: ReadonlyMap<string, PublicAttentionCount>
+}
+
 /** One authoritative bounded node projection for both compact snapshots and
  * lifecycle publication. It reads current records only, never event history.
  * Overlays let a producer compute its post-mutation facts without writing before
@@ -29,6 +39,12 @@ export interface PublicProjectionOverlay extends PublicAttentionOverlay {
 export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: RunGraphScope,
   nodeIds: readonly string[], overlay: PublicProjectionOverlay = {},
   attention?: ReadonlyMap<string, PublicAttentionCount>): Promise<PublicNode[]> {
+  return composePublicNodes(sql, scope, await readPublicNodeInputs(sql, scope, nodeIds, overlay, attention), overlay)
+}
+
+export async function readPublicNodeInputs(sql: GraphTransactionSql, scope: RunGraphScope,
+  nodeIds: readonly string[], overlay: PublicProjectionOverlay = {},
+  attention?: ReadonlyMap<string, PublicAttentionCount>): Promise<PublicNodeInputs> {
   assertGraphTransaction(sql)
   if (nodeIds.length > 1000 || new Set(nodeIds).size !== nodeIds.length) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
   const row = (await sql.query<{ closed: boolean; cleanup_pending: boolean }>(`select r.stop_requested_at is not null
@@ -147,6 +163,16 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
     const value = NodeResolutionSchema.parse(row.record.value)
     if (!resolutions.has(value.workflowNodeId)) resolutions.set(value.workflowNodeId, value)
   }
+  const counts = attention ?? await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
+  return { nodeIds, closed, executions, resolutions, counts }
+}
+
+/** Composes node state from read-once inputs and the caller's native rows. Only a
+ * review filter reads current review jobs; history is never loaded here. */
+export async function composePublicNodes(sql: GraphTransactionSql, scope: RunGraphScope,
+  inputs: PublicNodeInputs, overlay: PublicProjectionOverlay = {}): Promise<PublicNode[]> {
+  assertGraphTransaction(sql)
+  const { nodeIds, closed, executions, resolutions, counts } = inputs
   // Domain closure suppresses stale retained native rows without treating a
   // projection clear as proof that the native process or credentials are closed.
   let native: readonly CurrentNativeActivity[] = closed ? [] : overlay.native
@@ -167,7 +193,6 @@ export async function readPublicNodeProjection(sql: GraphTransactionSql, scope: 
   native = native.filter((item) => executions.get(item.key.execution.workflowNodeId)?.execution.kind !== 'job'
     && (item.key.workKind === 'review'
       || executions.get(item.key.execution.workflowNodeId)?.execution.executionId === item.key.execution.executionId))
-  const counts = attention ?? await readPublicAttentionCounts(sql, scope.runId, nodeIds, overlay)
   return nodeIds.map((id) => {
     const execution = executions.get(id), resolution = resolutions.get(id), count = counts.get(id)!
     if (resolution?.execution && (!execution || canonicalGraphJson(resolution.execution) !== canonicalGraphJson(execution.execution))) {

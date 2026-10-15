@@ -10,7 +10,10 @@ import { appendNormalizedNativeEvent, readPersistedNativeSequence } from './nati
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from '../run-graph/records.js'
 import { PostgresNativeGraphProjectionWriter } from '../run-graph/nativeWriter.js'
 import { DomainError } from '../errors.js'
-import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
+import { activeNativeBatch, forgetNativeRow, memoizeNativeRead, nativeCommitCheck, prefetchedNativeAppend } from '../run-graph/nativeBatch.js'
+import { flushNativeGraphRows } from '../run-graph/nativeWriter.js'
+import { stagedNativeRecordId } from '../run-graph/records.js'
 import { type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeHistory } from '../harnesses/port.js'
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
@@ -74,21 +77,25 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     workKind: 'workflow', workId: execution.id }
     const approvalRecord = approval ? DurableInteractionSchema.parse((await sql.query<{ record: unknown }>(
       'select record from durable_interactions where id=$1 for update', [approval.interaction.id])).rows[0]?.record) : undefined
-    const raw = context?.appended ?? await appendNormalizedNativeEvent(sql, normalized)
+    const raw = context?.appended ?? prefetchedNativeAppend(sql, normalized.event) ?? await appendNormalizedNativeEvent(sql, normalized)
     if (raw.rejected || !lease || execution.state === 'completed' || !execution.nativeSessionId) return
-    const nativeSequence = context?.appended?.sequence ?? await readPersistedNativeSequence(sql, normalized.event)
-    const lane = (await sql.query<{ record: { leaseToken?: string; leaseExpiresAt?: string; connectionGeneration: number;
-      correlationId?: string;
-      currentTurnOrMessageId?: string }; live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
+    const nativeSequence = context?.appended?.sequence ?? prefetchedNativeAppend(sql, normalized.event)?.sequence
+      ?? await readPersistedNativeSequence(sql, normalized.event)
+    const lane = await memoizeNativeRead(sql, `lane-row:${lease.id}`, async () => (await sql.query<{ record: { leaseToken?: string;
+      leaseExpiresAt?: string; connectionGeneration: number; correlationId?: string; currentTurnOrMessageId?: string };
+      live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
       `select record,harness,native_session_id,owner_agent_id,
         coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as live
-        from native_session_lanes where id=$1 for update`, [lease.id])).rows[0]
+        from native_session_lanes where id=$1 for update`, [lease.id])).rows[0])
     if (!lane || lane.record.leaseToken !== lease.token || !lane.record.leaseExpiresAt
       || lane.live !== true || lane.owner_agent_id !== execution.agentId
       || lane.native_session_id !== execution.nativeSessionId) throw new DomainError('SESSION_LANE_LEASE_LOST',
       'The native writer is no longer the current workflow owner.', 409)
     const generation = String(lane.record.connectionGeneration)
     const turnCorrelation = lane.record.correlationId ?? `execution:${execution.id}`
+    // The newest-turn lookup reads the table, so staged correlations of this batch reach it first.
+    const latestBatch = activeNativeBatch(sql)
+    if (latestBatch) await flushNativeGraphRows(latestBatch, ['correlation'])
     const latest = await sql.query<{ correlation_key: string }>(
       `select correlation_key from run_native_correlations
        where run_id=$1 and execution_id=$2 and work_kind='workflow' and work_id=$2
@@ -108,7 +115,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     const ownerFence = await owner.readOneShotFence(sql)
     const guard: NativeGraphProjectionGuard = { expected: { scope, key, ownerId: lease.token,
       fence: ownerFence.fence, connectionGeneration: generation },
-    readCurrentLocked: async (transaction) => {
+    readCurrentLocked: (transaction) => memoizeNativeRead(transaction, `guard-current:${lease.id}:${execution.id}`, async () => {
       await renewWorkflowNativePublicationLease(transaction, owner, lease.id)
       const currentFence = await owner.readOneShotFence(transaction)
       const currentExecution = (await transaction.query<{ record: unknown }>(
@@ -130,8 +137,8 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       return { scope, key: currentKey, ownerId: currentLane?.record.leaseToken ?? 'lost', fence: currentFence.fence,
         connectionGeneration: String(currentLane?.record.connectionGeneration ?? 0), ownership: held ? 'held' : 'lost',
         access: held ? 'project' : 'observe' }
-    } }
-    beforeGraphCommit(sql, async () => {
+    }) }
+    nativeCommitCheck(sql, `graph-lane:${lease.id}`, async () => {
       await renewWorkflowNativePublicationLease(sql, owner, lease.id)
       await owner.readOneShotFence(sql)
       const held = await sql.query(`select 1 from native_session_lanes where id=$1
@@ -165,8 +172,12 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
         ...activity, projectionRevision: String(BigInt(activity.projectionRevision) + 1n),
         activity: { workflowNodeId: execution.workflowNodeId, execution: key.execution, status: 'none' },
       }, guard)
+      // A direct delete must see the staged batch rows and must not leave a stale staged checkpoint behind.
+      const batch = activeNativeBatch(sql)
+      if (batch) await flushNativeGraphRows(batch, ['correlation', 'activity', 'checkpoint'])
       await sql.query(`delete from run_native_projection_checkpoints
         where run_id=$1 and execution_id=$2 and work_kind='workflow' and work_id=$2`, [scope.runId, execution.id])
+      if (batch) forgetNativeRow(batch, stagedNativeRecordId('checkpoint', key))
     }
     if (prior && !prior.nativeTurnId && lease.providerId) {
       await new PostgresNativeGraphProjectionWriter().persistCorrelation(sql, scope, prior.metadataRevision, {

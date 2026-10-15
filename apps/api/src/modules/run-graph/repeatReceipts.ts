@@ -6,9 +6,10 @@ import {
 
 import { DomainError, databaseReadFailure } from '../errors.js'
 import {
-  assertGraphTransaction, beforeGraphCommitChecks, isReadOnlyGraphTransaction, poisonGraphTransaction,
+  assertGraphTransaction, isReadOnlyGraphTransaction, poisonGraphTransaction,
   type GraphSqlClient, type GraphTransactionSql,
 } from './connection.js'
+import { nativeCommitCollect } from './nativeBatch.js'
 import type { RepeatScope } from '../runs/repeatResolution.js'
 
 /** A private assertion about the EXISTING canonical source/effect tables. This
@@ -182,5 +183,5 @@ export function requireRepeatCanonicalReceiptBeforeCommit(sql: GraphTransactionS
     verify = receipts => assertRepeatCanonicalReceiptsLocked(sql, receipts)
     receiptChecks.set(sql, verify)
   }
-  beforeGraphCommitChecks(sql, receiptCheckKey, receipt, verify)
+  nativeCommitCollect(sql, receiptCheckKey, receipt, verify)
 }
