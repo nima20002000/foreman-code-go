@@ -374,7 +374,7 @@ export class HostCiService {
       && (input.suite === 'unit' || input.suite === 'integration')) {
       const testTree = this.commits.testTree.bind(this.commits)
       cache = await planCachedSelection(this.pool, { workspaceId: scope.workspaceId, repository, commit,
-        suite: input.suite, files: input.files, tree: () => testTree(repository, commit),
+        suite: input.suite, files: input.files, tree: signal => testTree(repository, commit, signal),
         partOf: file => input.suite === 'unit' && capabilities.parts ? unitPartOf(file, inventory?.heavy ?? []) : input.suite })
       selection.files = cache.files
     }

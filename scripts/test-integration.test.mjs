@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { integrationProcessProgress, waitForIntegrationProcess } from './integration-process.mjs'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities,
   supportsInstalledWorkerHost } from './integration-capabilities.mjs'
 import { readVerificationEnvironment } from '../packages/contracts/src/verificationEnvironment.mjs'
@@ -533,10 +535,13 @@ test('unavailable database settings fail discovery without exposing connection e
   })
 })
 
-test('an integration file fails after three minutes and overrides cannot disable the deadlines', () => {
+test('integration deadlines allow four-minute cases plus hooks and scale with pressure', () => {
   const limits = integrationTimeouts({})
-  assert.equal(limits.idleTimeoutMs, 180_000)
-  assert.equal(limits.fileTimeoutMs, 180_000)
+  assert.equal(limits.idleTimeoutMs, 300_000)
+  assert.equal(limits.fileTimeoutMs, 900_000)
+  const pressured = integrationTimeouts({}, 2)
+  assert.equal(pressured.idleTimeoutMs, 2 * limits.idleTimeoutMs)
+  assert.equal(pressured.fileTimeoutMs, 2 * limits.fileTimeoutMs)
   assert.equal(integrationTimeouts({ FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS: '5000' }).idleTimeoutMs, 5000)
   for (const value of ['0', '-1', 'Infinity', 'NaN', '3600001', '1.5']) {
     assert.throws(() => integrationTimeouts({ FOREMAN_CODE_INTEGRATION_FILE_TIMEOUT_MS: value }), /integer/)
@@ -1384,4 +1389,24 @@ test('database benchmarks and cold qualification restarts run without competing 
   const plan = partitionIntegrationFiles([...measured, ordinary])
   assert.deepEqual(new Set(plan.exclusive), new Set(measured))
   assert.deepEqual(plan.parallel, [ordinary])
+})
+
+
+test('a silent four-minute case survives the default outer watchdog', async t => {
+  const resource = createTestRoot()
+  const log = join(resource.directory, 'case.log')
+  writeFileSync(log, '')
+  const child = new EventEmitter()
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'] })
+  try {
+    const pending = waitForIntegrationProcess(child, {
+      log, progress: integrationProcessProgress(), ...integrationTimeouts({}),
+    })
+    t.mock.timers.tick(240_000)
+    child.emit('exit', 0, null)
+    assert.deepEqual(await pending, { code: 0, timedOut: false })
+  } finally {
+    t.mock.timers.reset()
+    removeTestRoot(resource)
+  }
 })

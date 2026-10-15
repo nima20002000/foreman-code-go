@@ -469,7 +469,7 @@ export async function scheduleIntegrationQueue(files, slots, {
   })
 }
 
-export function integrationTimeouts(environment) {
+export function integrationTimeouts(environment, timeoutScale = 1) {
   const timeouts = { ...integrationProcessLimits }
   for (const [setting, variable] of [
     ['idleTimeoutMs', 'FOREMAN_CODE_INTEGRATION_IDLE_TIMEOUT_MS'],
@@ -483,6 +483,8 @@ export function integrationTimeouts(environment) {
     }
     timeouts[setting] = value
   }
+  timeouts.idleTimeoutMs = Math.ceil(timeouts.idleTimeoutMs * Math.max(1, timeoutScale))
+  timeouts.fileTimeoutMs = Math.ceil(timeouts.fileTimeoutMs * Math.max(1, timeoutScale))
   return timeouts
 }
 
@@ -793,12 +795,13 @@ export async function runIntegration(argv = [], {
       const metricsTracker = child.pid ? startProcessMetrics(child.pid) : null
       let metrics
       let result
-      const fileTimeoutMs = timeouts.fileTimeoutMs
+      const scaledTimeouts = integrationTimeouts(env, timeoutScale)
+      const fileTimeoutMs = scaledTimeouts.fileTimeoutMs
       const expectedMs = expectedDurations[file]
       const deadlineMs = adaptiveDeadlineMs(expectedMs, fileTimeoutMs, timeoutScale)
       try {
-        result = await superviseIntegrationProcess(child, { log, progress, ...timeouts,
-          idleTimeoutMs: Math.min(fileTimeoutMs, Math.ceil(timeouts.idleTimeoutMs * timeoutScale)),
+        result = await superviseIntegrationProcess(child, { log, progress, ...scaledTimeouts,
+          idleTimeoutMs: Math.min(fileTimeoutMs, scaledTimeouts.idleTimeoutMs),
           fileTimeoutMs, deadlineMs,
           onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
           cleanupAfterExit: () => settleTestResources(admin, slot),

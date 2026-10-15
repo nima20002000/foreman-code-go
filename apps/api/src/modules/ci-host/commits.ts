@@ -82,8 +82,7 @@ export class GitCiCommits implements CiCommits {
     durations: {} }
   }
 
-  async testTree(repository: string, commit: string): Promise<CiTestTree> {
-    const signal = AbortSignal.timeout(30_000)
+  async testTree(repository: string, commit: string, signal = AbortSignal.timeout(30_000)): Promise<CiTestTree> {
     const clone = await ensureCommit(this.git, repository, commit, signal)
     const tree = await this.git.git(['ls-tree', '-r', '-z', commit], { cwd: clone, signal })
     if (tree.code !== 0) throw new Error('Could not read the CI commit tree.')
@@ -94,10 +93,11 @@ export class GitCiCommits implements CiCommits {
       // Submodules have no blob; a test reaching one has no key.
       if (type === 'blob') blobs.set(entry.slice(tab + 1), `${mode}:${id}`)
     }
-    return { blobs, read: async path => {
+    return { blobs, read: async (path, readSignal) => {
       const id = blobs.get(path)?.split(':')[1]
       if (!id) throw new Error(`The CI commit has no file ${path}.`)
-      const blob = await this.git.git(['cat-file', 'blob', id], { cwd: clone, signal: AbortSignal.timeout(30_000) })
+      const blob = await this.git.git(['cat-file', 'blob', id], { cwd: clone,
+        signal: AbortSignal.any([readSignal, AbortSignal.timeout(30_000)]) })
       if (blob.code !== 0) throw new Error(`Could not read ${path} from the CI commit.`)
       return blob.stdout
     } }
