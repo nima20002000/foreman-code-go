@@ -15,6 +15,7 @@ import { persistVerifiedRemoteReceipt } from '../../src/modules/runs/remote/pers
 import type { DispatchIntent, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import type { NativeManagerResolutionContext } from '../../src/modules/interactions/runtimePorts.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
+import { readOperationalFailures } from '../../src/modules/diagnostics/operationalFailures.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { providerAppEndpoint } from './wave25Br1003Runtime.js'
 import { faultWorkflowWorker } from './faultWorkflowWorker.js'
@@ -162,7 +163,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       if (preparationFailure) throw preparationFailure.error
       const details = await read()
       const failed = details.executions.find(execution => execution.result?.outcome === 'failed')
-      expect(failed?.result, canonicalGraphJson(failed?.result ?? null)).toBeUndefined()
+      expect(failed?.result, canonicalGraphJson({ result: failed?.result ?? null,
+        failures: readOperationalFailures(), nativeCalls: worker.replay.calls.slice(-10) })).toBeUndefined()
       return details
     }
     const completed = new Set<string>()
