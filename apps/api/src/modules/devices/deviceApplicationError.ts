@@ -142,7 +142,7 @@ export class DeviceApplicationError extends Error {
   readonly code: string
   readonly class: FailureClass
   readonly retryable: boolean
-  readonly details?: WorkerBundleReadiness
+  readonly details: WorkerBundleReadiness | undefined
   // Plain fields, not parameter properties: Worker code loads this file through Node's type stripping.
   constructor(code: string, details?: WorkerBundleReadiness, options?: ErrorOptions & { class?: FailureClass }) {
     super(code, options)
