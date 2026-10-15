@@ -16,7 +16,7 @@ import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePort
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import type { CiMirrorInput } from './serviceTypes.js'
-import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, validateProviderParameters,
+import { CLOUD_LOG_LIMIT, CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, validateProviderParameters,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
@@ -28,7 +28,6 @@ import { withProviderPoll } from './providerPoll.js'
 import { sweepCiRunDirectories } from './directoryRetention.js'
 import { readFleetIdentityInventory } from './fleetIdentityInventory.js'
 
-const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
 /** A running run asks its service at most this often; reads in between answer from the kept state and log. */
 const POLL_MS = 4_000
@@ -439,6 +438,7 @@ export class CloudCi {
     const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
     const input: CloudDispatchInput = { mirror, branch, workflowRef, workflowCommit: snapshot, runId: request.runId, suite: request.part ?? request.suite, slice,
       expectedDurationMs: request.expectedDurationMs ?? 0,
+      ...(request.gate ? { gate: true } : {}),
       scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
       ...(defaultBranch ? { defaultBranch } : {}),
       ...(baseCommit ? { baseCommit } : {}),
@@ -1008,7 +1008,7 @@ export class CloudCi {
     }
     let chunk = Buffer.concat(chunks)
     // The provider's whole log is kept at the end, so the live copy stays within the same bound.
-    chunk = chunk.subarray(0, Math.max(0, LOG_LIMIT - bytes))
+    chunk = chunk.subarray(0, Math.max(0, CLOUD_LOG_LIMIT - bytes))
     if (!chunk.length && step === live.step && output?.bytes === live.output?.bytes && seen.size === live.seen.length) return run
     const text = sanitizeCiText(chunk.toString('utf8'))
     if (text.length) await writeFile(this.path(run.runId, 'log'), text, { flag: 'a', mode: 0o600 })
@@ -1091,7 +1091,7 @@ export class CloudCi {
     try {
       if (!collection.log) {
         try {
-          const full = Buffer.from(await this.provider.log(run)).subarray(-LOG_LIMIT)
+          const full = Buffer.from(await this.provider.log(run)).subarray(-CLOUD_LOG_LIMIT)
           let contents = full
           if (run.live?.bytes) {
             const live = (await readFile(this.path(run.runId, 'log'))).subarray(0, run.live.bytes)
@@ -1108,7 +1108,7 @@ export class CloudCi {
         try {
           const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', run.runId, 'artifact'))
           if (artifacts.suiteLog !== undefined) {
-            const contents = Buffer.from(artifacts.suiteLog).subarray(-LOG_LIMIT)
+            const contents = Buffer.from(artifacts.suiteLog).subarray(-CLOUD_LOG_LIMIT)
             await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
             collection.log = true
           }
