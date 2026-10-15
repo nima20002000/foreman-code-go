@@ -563,8 +563,9 @@ export class HostCiRunner {
     const history = (request.scope ?? 'affected') === 'affected' && request.files === undefined
     const missing = (await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`],
       { cwd: clone, env: this.environment })).code !== 0
-    if (missing || history) {
-      const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone)).trim() === 'true'
+    // A complete clone that already holds the commit has its history: parts of one commit fetch it once.
+    const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone)).trim() === 'true'
+    if (missing || shallow) {
       let depth = ['--depth=1']
       if (history) depth = shallow ? ['--unshallow'] : []
       await this.git(['fetch', '--quiet', '--no-tags', ...depth, 'origin', request.commit], clone)

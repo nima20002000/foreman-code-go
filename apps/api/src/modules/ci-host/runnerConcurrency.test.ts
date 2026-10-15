@@ -152,7 +152,7 @@ describe('host CI runner concurrent starts', () => {
 
   it('fetches the commit once for concurrent affected parts of the same commit', async () => {
     const { runner, request, ports } = await computer(undefined, 16, true)
-    const { scope: _scope, ...affected } = request
+    const affected = { ...request, scope: undefined }
     const command = ports.run
     let fetches = 0
     let present = false
