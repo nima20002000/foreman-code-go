@@ -3,7 +3,8 @@ import type pg from 'pg'
 import type { HarnessExecution } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
-import { workflowDeliverableFailure } from './workflowDeliverable.js'
+import { deliverableRepairPrompt, deliverableVerdict } from '../interactions/deliverable.js'
+import { referencesCreatedByExecution, workflowDeliverableContract, workflowDeliverableFailure } from './workflowDeliverable.js'
 
 const known = '7d1c9a52-3f0e-4c41-9a43-3c7a8f1f2b10'
 const foreign = '2f1c9a52-3f0e-4c41-9a43-3c7a8f1f2b11'
@@ -17,7 +18,7 @@ function fixture(tickets = [known, foreign, known, 'invalid-ticket']) {
     attempt: 1, input: {}, state: 'completed', createdAt: saved.version.createdAt,
     finishedAt: saved.version.createdAt, result: { outcome: 'succeeded', output: { text: JSON.stringify(tickets) } } }
   const lookup = vi.fn(async (_query: string, values: unknown[]) => {
-    const ids = Array.isArray(values[0]) ? values[0] : [values[0]]
+    const ids = Array.isArray(values[0]) ? values[0] : [values[0] ?? known]
     return { rows: ids.includes(known) && values[1] === saved.version.workspaceId && values[2] === execution.id
       ? [{ id: known }] : [] }
   })
@@ -25,6 +26,19 @@ function fixture(tickets = [known, foreign, known, 'invalid-ticket']) {
 }
 
 describe('workflow deliverable reference lookups', () => {
+  it('provides repair candidates from this execution even when every submitted ID is unknown', async () => {
+    const f = fixture([foreign, 'mistyped-ticket'])
+    const contract = workflowDeliverableContract(f.version, f.execution,
+      (kind, values) => referencesCreatedByExecution({ query: f.lookup }, kind, values, f.version.workspaceId, f.execution.id))!
+    const verdict = await deliverableVerdict(f.execution.result!, contract)
+    expect(verdict).toMatchObject({ code: 'OUTPUT_REFERENCE_UNKNOWN' })
+    const prompt = deliverableRepairPrompt(verdict!, contract.outputSchema)
+    expect(prompt).toContain(`Valid ciTicket IDs (closest match first): ${JSON.stringify([known])}`)
+    expect(prompt).not.toContain(`Valid ciTicket IDs (closest match first): ${JSON.stringify([foreign])}`)
+    expect(f.lookup.mock.calls.every(([, values]) =>
+      values[1] === f.version.workspaceId && values[2] === f.execution.id)).toBe(true)
+  })
+
   it('batches unique ticket IDs and reports every unknown reference path', async () => {
     const f = fixture()
     const failure = await workflowDeliverableFailure({ query: f.lookup }, f.version, f.execution)

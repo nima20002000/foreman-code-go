@@ -403,8 +403,11 @@ function workResultFixture(results: ExecutionResult[], outputSchema?: Record<str
       nodes: pinned.version.definition.nodes.map((item, index) => index === 0 && outputSchema ? { ...item, outputSchema } : item) } })
   const node = version.definition.nodes[0]!
   if (node.kind === 'job') throw new Error('The repair fixture requires an Agent node')
-  const ciRunsDb = { query: async (_text: string, values: unknown[]) =>
-    ({ rows: (values[0] as string[]).filter(id => ciRuns.has(id) && values[2] === f.candidate.id).map(id => ({ id })) }) }
+  const ciRunsDb = { query: async (_text: string, values: unknown[]) => {
+    const ids = values[0] === null ? [...ciRuns] : values[0] as string[]
+    return { rows: ids.filter(id => ciRuns.has(id) && values[1] === version.workspaceId
+      && values[2] === f.candidate.id).map(id => ({ id })) }
+  } }
   const pinnedExecution = (execution: HarnessExecution) => ({
     ...execution, runId: pinned.run.id, workflowNodeId: node.id, agentId: node.agentId,
     agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId]!,
@@ -1158,6 +1161,20 @@ describe('workflow Agent deliverable contract', () => {
   const answer = (value: unknown): ExecutionResult => ({ outcome: 'succeeded',
     output: { text: JSON.stringify({ routing: { kind: 'finish' }, data: { latestDeliverable: value, remainingFindings: [] } }) } })
   const valid = answer({ status: 'done', summary: 'Shipped.', ticket })
+
+  it('sends valid ticket IDs in the native repair turn and waits for an explicit corrected result', async () => {
+    const mistyped = ticket.replace('2b10', '2b01')
+    const wrong = answer({ status: 'done', summary: 'Shipped.', ticket: mistyped })
+    const f = workResultFixture([wrong, valid], outputSchema, new Set([ticket]))
+    expect(await f.coordinator.observeExact(f.input)).toMatchObject({ state: 'completed', result: valid })
+    expect(f.manager.turns).toHaveLength(2)
+    expect(f.manager.turns[1]!.session).toEqual(f.manager.turns[0]!.session)
+    expect(f.manager.turns[1]!.input.prompt)
+      .toContain(`Valid ciTicket IDs (closest match first): ${JSON.stringify([ticket])}`)
+    expect(f.manager.turns[1]!.input.prompt).toContain(mistyped)
+    expect(f.executions.get(f.candidate.id)?.result).toEqual(valid)
+    expect(wrong).toEqual(answer({ status: 'done', summary: 'Shipped.', ticket: mistyped }))
+  })
 
   it('sends one same-session repair turn listing the exact issues, then accepts the corrected deliverable', async () => {
     const f = workResultFixture([answer({ status: 'done' }), valid], outputSchema, new Set([ticket]))

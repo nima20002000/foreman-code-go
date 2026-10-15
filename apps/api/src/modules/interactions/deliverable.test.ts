@@ -63,6 +63,55 @@ describe('deliverable verdict', () => {
 })
 
 describe('deliverable repair and failure', () => {
+  it('lists capped execution references with the closest ticket first without accepting a mistyped ID', async () => {
+    const correct = '3a8c3e61-9ffc-4054-9f4e-ce7d71ff6898'
+    const mistyped = '3a8c3e61-9ffc-4054-9f4e-ce7d71f68698'
+    const tickets = Array.from({ length: 66 }, (_, index) =>
+      `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`)
+    const valid = new Set([...tickets, correct])
+    const outputSchema = {
+      type: 'object', properties: {
+        tickets: { type: 'array', items: {
+          type: 'object', properties: { ticketId: { type: 'string', 'x-foreman-reference': 'ciTicket' } },
+        } },
+      },
+    }
+    const answer = finalText(JSON.stringify({
+      tickets: [...tickets.slice(0, 10), mistyped].map(ticketId => ({ ticketId })),
+    }))
+    const original = structuredClone(answer)
+    const deliverableContract = contract({
+      outputSchema,
+      referencesExist: async (_kind, values) => values === undefined
+        ? valid : new Set(values.filter(value => valid.has(value))),
+    })
+
+    const verdict = await deliverableVerdict(answer, deliverableContract)
+    expect(verdict).toMatchObject({ code: 'OUTPUT_REFERENCE_UNKNOWN', issues: [{ path: '/tickets/10/ticketId' }] })
+    const prompt = deliverableRepairPrompt(verdict!, outputSchema)
+    const listed = /Valid ciTicket IDs \(closest match first\): (\[.*?\])/.exec(prompt)
+    expect(listed).not.toBeNull()
+    const ids = JSON.parse(listed![1]!) as string[]
+    expect(ids).toHaveLength(50)
+    expect(ids[0]).toBe(correct)
+    expect(ids.every(id => valid.has(id))).toBe(true)
+    expect(prompt).toContain(JSON.stringify(ids))
+    expect(prompt).toContain('17 more omitted')
+    expect(prompt).toContain(mistyped)
+    expect(answer).toEqual(original)
+    expect(await deliverableVerdict(answer, deliverableContract)).toMatchObject({ code: 'OUTPUT_REFERENCE_UNKNOWN' })
+    const corrected = finalText(JSON.stringify({ tickets: [{ ticketId: correct }] }))
+    expect(await deliverableVerdict(corrected, deliverableContract)).toBeUndefined()
+  })
+
+  it.each([{ ids: [] }, { ids: ['only-ticket'] }])('lists all available references when there are few: $ids', async ({ ids }) => {
+    const verdict = await deliverableVerdict(finalText(JSON.stringify({
+      status: 'done', summary: 'ok', ticket: 'unknown-ticket',
+    })), contract({ outputSchema: schema, referencesExist: async () => new Set(ids) }))
+    expect(deliverableRepairPrompt(verdict!, schema))
+      .toContain(`Valid ciTicket IDs (closest match first): ${JSON.stringify(ids)}`)
+  })
+
   it('lists every validation issue exactly in the corrective turn', async () => {
     const verdict = await deliverableVerdict(finalText('{}'), contract({ outputSchema: schema }))
     const prompt = deliverableRepairPrompt(verdict!, schema)
