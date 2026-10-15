@@ -30,6 +30,7 @@ import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.
 import { createInstalledJobOutputRsync } from '../runs/remote/installedJobOutputRsync.js'
 import { createInstalledJobInputRsync } from '../runs/remote/installedJobInputRsync.js'
 import { DeviceConnectionError } from './deviceWire.js'
+import { sameDeviceInstallation } from './deviceReconnect.js'
 import type { RemoteJobExecutionHost, RemoteJobExecutionHostPorts } from '../runs/remote/jobExecutionHost.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
@@ -340,7 +341,12 @@ async function configureWorkerSources(composition: InstalledWorkerComposition) {
       accepted: rsync.kind === 'configured' ? input.rsync!.accepted : sourceTransfersOnMain(request, current),
       ...(rsync.kind === 'configured' ? { receiver: input.rsync!.receiver } : {}) })
     const sources = new SourceOperationWorkerService({
-      authenticate: async context => { if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not on the actual original worker generation.', 409) },
+      authenticate: async context => {
+        if (!sameDeviceInstallation(current(), context.binding)) {
+          throw new DomainError('SOURCE_CONNECTION_CONFLICT',
+            'Source operation belongs to a different Worker boot or installation.', 409)
+        }
+      },
       approvedRoots: roots,
       async quotaPoolFor(binding) {
         const pool = await installedSourceQuotaPool(input.jobConfiguration ?? null, binding)
