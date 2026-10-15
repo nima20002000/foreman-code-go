@@ -12,8 +12,10 @@ const SETUP_MS = 90_000
 export const SLOW_TEST_MS = 60_000
 
 /** Keep systemd files on capable slices, then size ordinary work to four minutes per eligible slot.
- * Slow files have separate parts that can start alongside fast parts. */
-export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots) {
+ * Slow files have separate parts that can start alongside fast parts. Idle ordinary slots split smaller work
+ * while each part still carries at least one setup time of tests. */
+export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots,
+  idleOrdinary = 0) {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
   const files = [...new Set(affected ? input.files : inventory.files)].sort()
   if (!files.length) return [{ part: null, partition: null, files: [], expectedDurationMs: 0, requiresBuildComputer: false }]
@@ -30,7 +32,9 @@ export function planIntegrationParts(input: CiRunInput, inventory: CiIntegration
     const ordinary = tierFiles.filter(file => !requiresUserSystemd(file))
     const heavy = ordinary.filter(file => duration(file) >= TARGET_TEST_MS)
     const light = ordinary.filter(file => duration(file) < TARGET_TEST_MS)
-    const wanted = heavy.length + Math.ceil(light.reduce((sum, file) => sum + duration(file), 0) / TARGET_TEST_MS)
+    const lightMs = light.reduce((sum, file) => sum + duration(file), 0)
+    const wanted = heavy.length + Math.max(Math.ceil(lightMs / TARGET_TEST_MS),
+      Math.min(Math.max(0, idleOrdinary), Math.floor(lightMs / SETUP_MS)))
     const hostCount = hostFiles.length ? Math.min(hostFiles.length, Math.max(1, slots.host)) : 0
     // Slow files each get their own part when slots allow, so the tier lasts as long as its slowest file.
     const ordinaryCount = ordinary.length ? Math.min(ordinary.length, Math.max(1, slots.ordinary - hostCount),

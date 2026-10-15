@@ -16,6 +16,8 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
   private fleet: { at: number; computers: HostCiComputer[] } | undefined
   private fleetPending: Promise<HostCiComputer[]> | undefined
   private readonly statuses = new Map<string, StatusSnapshot>()
+  /** The latest ready answer per computer, however old; planning sizes from it while a fresh read runs. */
+  private readonly lastKnown = new Map<string, CiHostStatus>()
 
   constructor(private readonly endpoint: HostCiEndpoint) {}
 
@@ -25,11 +27,15 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
     for (const key of this.statuses.keys()) {
       if (!keys.has(key)) this.statuses.delete(key)
     }
+    for (const key of this.lastKnown.keys()) {
+      if (!keys.has(key)) this.lastKnown.delete(key)
+    }
   }
 
   observeStatus(computer: HostCiComputer, reply: CiHostReply) {
     if (reply.operation === 'status') {
       this.statuses.set(canonicalJson(computer), { at: Date.now(), status: reply })
+      this.lastKnown.set(canonicalJson(computer), reply)
     } else if (reply.run.state === 'failed' || reply.run.state === 'lost') {
       this.invalidate(computer)
     }
@@ -37,6 +43,12 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
 
   invalidate(computer: HostCiComputer) {
     this.statuses.delete(canonicalJson(computer))
+    this.lastKnown.delete(canonicalJson(computer))
+  }
+
+  /** The newest status read for planning, fresh or not. Dispatch still validates readiness itself. */
+  lastStatus(computer: HostCiComputer): CiHostStatus | undefined {
+    return this.lastKnown.get(canonicalJson(computer))
   }
 
   status(computer: HostCiComputer): CiHostStatus | undefined {
@@ -70,6 +82,7 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
         && error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield') {
         // Yielding preserves the answer, but its age still requires a refresh on the next read.
         this.statuses.set(key, { at: previous.at, status: previous.status })
+        this.lastKnown.set(key, previous.status)
         return previous.status
       }
       throw error
