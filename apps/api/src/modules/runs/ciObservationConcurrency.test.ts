@@ -6,12 +6,13 @@ import { observationFixture } from '../ci-host/observationConcurrency.testSuppor
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import { inactiveRepeatResolution } from './repeatNode.js'
 import { RepeatRunRepository, type RepeatLockedHooks } from './repeatPostgres.js'
+import { rejectableDeferred } from '../../../test/helpers/deferred.js'
 
 it('allows a CI observation to persist while a Run mutation validates its unchanged parent identity', async () => {
   const fixture = makeCurrentWorkflowFixture('ci-concurrency', 'repeat')
-  const entered = Promise.withResolvers<void>()
-  const finish = Promise.withResolvers<void>()
-  const committed = Promise.withResolvers<void>()
+  const entered = rejectableDeferred<void>()
+  const finish = rejectableDeferred<void>()
+  const committed = rejectableDeferred<void>()
   let excludesKeyShare = false
   const exit = fixture.version.definition.repeat!.blocks[0]!.exitNodeId
   // Model PostgreSQL row-lock compatibility at the database boundary. The Run
@@ -35,7 +36,7 @@ it('allows a CI observation to persist while a Run mutation validates its unchan
   const repository = new RepeatRunRepository(owner, { openLocked: async () => {
     entered.resolve()
     await finish.promise
-    return { run: fixture.run } as RepeatLockedHooks
+    return { run: fixture.run } as unknown as RepeatLockedHooks
   } }, fixture.version)
   const ci = observationFixture({ cloud: 1, local: 0, poolSize: 4, beforeWrite: async () => {
     if (excludesKeyShare) await committed.promise

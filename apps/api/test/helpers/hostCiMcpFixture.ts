@@ -28,7 +28,6 @@ import { withExclusiveGraphConnection } from '../../src/modules/run-graph/connec
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
-import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { migratedDatabase } from './migratedDatabase.js'
 import { ciReadWhen } from './ciReadWhen.js'
 import { onlyCiInfrastructure } from '../../src/modules/ci-host/priority.js'

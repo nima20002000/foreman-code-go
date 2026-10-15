@@ -8,6 +8,7 @@ import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnes
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { claudeDiscoveryDeclaration } from '../src/modules/harnesses/claudeDiscovery.js'
 import { DomainError } from '../src/modules/errors.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 function fixture() {
   const target = { hostRef: { kind: 'main' as const, mainId: 'main' }, applicationInstallationId: 'main', harnessInstallationId: 'cli', installationFingerprint: 'hash' }
@@ -34,8 +35,8 @@ function fixture() {
 
 it('allows concurrent profile admission while another reader waits for its Run owner', async () => {
   const f = fixture()
-  const reading = Promise.withResolvers<void>()
-  const resume = Promise.withResolvers<void>()
+  const reading = rejectableDeferred<void>()
+  const resume = rejectableDeferred<void>()
   let writer = false
   let readers = 0
   const waiters = new Set<() => void>()
