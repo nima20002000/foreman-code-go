@@ -1,5 +1,6 @@
 import { errorMessage } from '../../shared/errorMessage.js'
 import { readOperationalFailures } from '../diagnostics/logger.js'
+import { readServiceHealth } from '../diagnostics/serviceHealth.js'
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmStaging.js'
 import { syncFingerprint } from './syncFingerprint.js'
@@ -30,6 +31,8 @@ const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', cl
 const LABELS: Record<MaintainedHarness, string> = { codex: 'Codex', claude: 'Claude' }
 const LATEST_MS = 60 * 60_000
 const LONG_MS = 20 * 60_000
+/** Steps stop after LONG_MS and a Worker update attempt after 45 minutes; a task never stays running longer. */
+const TASK_DEADLINE_MS = 60 * 60_000
 const APT = ['env', 'LC_ALL=C', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get', '-y', '-q',
   '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confold']
 
@@ -106,6 +109,21 @@ export class ComputerMaintenance {
     }
   }
 
+  /** Fails tasks past their maximum age; the step or update they wait for is not reported as stopped. */
+  private async expireOverdueTasks(tasks: readonly MaintenanceTask[] = this.tasks): Promise<void> {
+    const now = this.ports.now().getTime()
+    for (const task of tasks.filter(task => task.state === 'running')) {
+      const age = now - Date.parse(task.startedAt)
+      if (age <= TASK_DEADLINE_MS) continue
+      let phase = 'running'
+      if (task.workerTargetVersion !== undefined) phase = 'worker-restart'
+      else if (task.summary.startsWith('Waiting')) phase = 'waiting'
+      await this.finish(task, 'failed', `MAINTENANCE_TASK_DEADLINE_EXCEEDED: phase ${phase}, age ${Math.round(age / 60_000)} min, `
+        + `over the ${TASK_DEADLINE_MS / 60_000} min limit. Cause: ${task.summary} Its work was not confirmed stopped; `
+        + 'check this computer before retrying.')
+    }
+  }
+
   private async observe(signal: AbortSignal): Promise<MaintenanceStatus> {
     const worker = await this.ports.workerUpdate?.status()
     if (worker) {
@@ -116,6 +134,7 @@ export class ComputerMaintenance {
           outcome.lastError ?? `Worker ${outcome.currentVersion} is current.`)
       }
     }
+    await this.expireOverdueTasks()
     const home = this.ports.environment.HOME ?? homedir()
     const [versions, latest, packageUpdates, rebootRequired, sudo, disk] = await Promise.all([
       Promise.all((['codex', 'claude'] as const).map(harness => this.installedVersion(harness, signal))),
@@ -127,6 +146,7 @@ export class ComputerMaintenance {
     ])
     return MaintenanceStatusSchema.parse({
       operationalFailures: readOperationalFailures(),
+      services: readServiceHealth(),
       harnesses: (['codex', 'claude'] as const).map((harness, index) => ({ harness, installed: versions[index] !== undefined,
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
       system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
@@ -137,8 +157,10 @@ export class ComputerMaintenance {
 
   private async workerTaskOutcome(task: MaintenanceTask, worker: WorkerUpdateStatus) {
     if (task.workerTargetVersion === undefined) return null
-    const retained = await this.ports.workerUpdate?.outcome?.(task)
+    const deadline = Date.parse(task.startedAt) + TASK_DEADLINE_MS
+    const retained = await this.ports.workerUpdate?.outcome?.(task, new Date(deadline).toISOString())
     if (retained) return retained
+    if (this.ports.now().getTime() > deadline) return null
     const matching = worker.state === 'current' ? worker.currentVersion === task.workerTargetVersion
       : worker.targetVersion === task.workerTargetVersion
     return matching && ['current', 'failed', 'rolled-back'].includes(worker.state) ? worker : null
@@ -209,14 +231,15 @@ export class ComputerMaintenance {
       return structuredClone(retained)
     }
     this.assertOpen()
-    const previous = this.tasks.findLast(task => task.state === 'running' && task.kind === request.kind)
-    if (previous && this.activeTasks.get(previous.id)?.requestHash === requestHash) {
+    const previous = this.tasks.findLast(task => task.kind === request.kind
+      && (task.state === 'running' || this.activeTasks.has(task.id)))
+    if (previous?.state === 'running' && this.activeTasks.get(previous.id)?.requestHash === requestHash) {
       await this.taskStore.flushed()
       await this.bindCommand(commandId, requestHash, previous)
       return structuredClone(previous)
     }
     if (this.tasks.length === 20) {
-      const oldestFinished = this.tasks.findIndex(task => task.state !== 'running')
+      const oldestFinished = this.tasks.findIndex(task => task.state !== 'running' && !this.activeTasks.has(task.id))
       if (oldestFinished < 0) throw new Error('The maintenance queue is full. Wait for a task to finish before retrying.')
       this.tasks.splice(oldestFinished, 1)
     }
@@ -231,9 +254,12 @@ export class ComputerMaintenance {
     const predecessor = previous ? this.activeTasks.get(previous.id)?.completion : undefined
     const completion = saved.then(async () => {
       await predecessor
+      await this.expireOverdueTasks([task])
+      if (task.state !== 'running') return
       task.summary = 'Running…'
       return this.perform(request, task)
     }).then(async summary => {
+      if (summary === undefined || task.state !== 'running') return
       if (request.kind === 'update-worker') {
         const worker = await this.ports.workerUpdate?.status()
         if (worker?.state === 'restarting' && worker.targetVersion) {
@@ -252,6 +278,7 @@ export class ComputerMaintenance {
     },
       (error: unknown) => this.finish(task, 'failed', maintenanceError(error, 'Maintenance failed.')))
       .catch((error: unknown) => { this.storageFailure = new Error(maintenanceError(error, 'Maintenance storage failed.')) })
+      .finally(() => { this.activeTasks.delete(task.id) })
     this.activeTasks.set(task.id, { requestHash, completion })
     await saved
     return MaintenanceTaskSchema.parse(structuredClone(task))
@@ -294,6 +321,8 @@ export class ComputerMaintenance {
   }
 
   private async finish(task: MaintenanceTask, state: 'succeeded' | 'failed', summary: string) {
+    // A task failed by its deadline keeps that result when its work ends later.
+    if (task.state !== 'running') return
     task.state = state
     task.summary = summary.slice(0, 2000)
     task.finishedAt = this.ports.now().toISOString()
@@ -303,7 +332,6 @@ export class ComputerMaintenance {
       await this.commandStore.save(commandId, requestHash, task)
     }
     this.taskCommands.delete(task.id)
-    this.activeTasks.delete(task.id)
   }
 
   private async perform(request: MaintenanceTaskStart, task: MaintenanceTask): Promise<string> {

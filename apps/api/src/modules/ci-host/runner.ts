@@ -179,7 +179,9 @@ export class HostCiRunner {
       }
       const expired = run.finishedAt !== null
         && this.ports.now().getTime() - Date.parse(run.finishedAt) >= REPORT_COLLECTION_WINDOW_MS
-      run.collection = collection === 'pending' && expired ? 'unsupported' : collection
+      // After the window, a report this run should have written is a failed collection, not absent reporting.
+      if (collection === 'pending' && expired) collection = expected ? 'failed' : 'unsupported'
+      run.collection = collection
     }
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
       ...(measured?.state === 'complete' ? { durations: measured.data } : {}),

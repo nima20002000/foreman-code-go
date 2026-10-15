@@ -4,7 +4,7 @@ import { lstat, open, realpath } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { workerArtifactContentSha256 } from '@foreman-code/contracts/worker-artifact-content-node'
 import {
-  WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION,
+  WORKER_PUBLICATION_DEADLINE_MS, WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION,
   WorkerArtifactIndexSchema, WorkerArtifactManifestSchema, WorkerArtifactRequestSchema, WorkerCiSmokeSchema,
   type WorkerArtifactManifest, type WorkerArtifactTarget, type WorkerReleasePublication, type WorkerBundleIdentity,
 } from '@foreman-code/contracts/computer-maintenance'
@@ -116,10 +116,22 @@ export async function readWorkerBundleIdentity(options: { directory: string; ver
 }
 
 export async function readWorkerReleasePublication(options: {
-  directory: string; version: string
+  directory: string; version: string; now?: number
 }): Promise<WorkerReleasePublication> {
   const { index } = await artifactIndex(options.directory, options.version)
-  return { version: index.version, ...(index.publication ?? { state: 'pending', lastError: null }) }
+  const publication = index.publication ?? { state: 'pending' as const, lastError: null }
+  const startedAt = publication.startedAt ? Date.parse(publication.startedAt) : null
+  const deadline = publication.deadlineAt ? Date.parse(publication.deadlineAt)
+    : startedAt === null ? null : startedAt + WORKER_PUBLICATION_DEADLINE_MS
+  const now = options.now ?? Date.now()
+  if (publication.state !== 'pending' || deadline === null || startedAt === null || now <= deadline) {
+    return { version: index.version, ...publication }
+  }
+  // The publication unit records its own failures; a pending record past its deadline means it stopped reporting.
+  return { version: index.version, ...publication, state: 'failed',
+    lastError: `WORKER_PUBLICATION_DEADLINE_EXCEEDED: phase publishing, age ${Math.round((now - startedAt) / 60_000)} min, `
+      + `over the ${Math.round((deadline - startedAt) / 60_000)} min limit. Cause: the publication unit stopped reporting `
+      + 'progress; check the foreman-worker-publish service.' }
 }
 
 export function createWorkerArtifactExtension(options: {

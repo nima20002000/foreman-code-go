@@ -13,6 +13,7 @@ import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { reportServiceFailure, trackService } from '../diagnostics/serviceHealth.js'
 import { planCiParts, runsOnCircleCi, unitPartOf } from './parts.js'
 import { planIntegrationParts } from './integrationParts.js'
 import { readCiSlots } from './planningCapacity.js'
@@ -35,6 +36,7 @@ import { expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
 import { ciExecutionRunId } from './executionAttempt.js'
+import { CI_BUSY_TICKET, expireOverdueCiRuns } from './deadlines.js'
 import { ciCachedNotice, planCachedSelection, recordCiResultCache, type CachedSelection } from './resultCacheStore.js'
 import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
@@ -730,7 +732,8 @@ export class HostCiService {
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
       finishedAt: state.finishedAt, ...messages, dispatchRequest: undefined,
-      dispatchedAt: undefined, dispatchHostKey: undefined,
+      dispatchedAt: state.state === 'starting' ? run.dispatchedAt ?? run.startedAt ?? run.queuedAt : undefined,
+      dispatchHostKey: undefined,
       setupRetry,
       ...(options.observation ? { observation: options.observation } : {}),
       ...(state.transport ? { transport: state.transport } : {}),
@@ -771,7 +774,8 @@ export class HostCiService {
     this.dispatching ??= (async () => {
       while (this.dispatchRequested && !this.stoppingRuns) {
         this.dispatchRequested = false
-        await withProviderPoll(() => this.dispatchOnce())
+        await trackService('ci-dispatch', { cadenceMs: 1000, deadlineMs: 10 * 60_000 },
+          () => withProviderPoll(() => this.dispatchOnce()))
       }
     })().catch(error => log.warn({ err: error }, 'CI dispatch failed'))
       .finally(() => { this.dispatching = undefined })
@@ -795,9 +799,21 @@ export class HostCiService {
     return reconcileCiHostStart(this.dispatchServices(), run, computer, status)
   }
 
-  private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[]) {
+  expireOverdueRuns(now = new Date()): Promise<number> {
+    return expireOverdueCiRuns(this.pool, now, async (run, hostKey) => {
+      try {
+        await this.refreshRun({ record: run, host_key: hostKey }, await this.endpoint.computers(), { observeOnly: true })
+      } catch (error) {
+        await this.recordObservationFailure(run.id, run.workspaceId, error)
+      }
+      return this.read(run.id, run.workspaceId)
+    })
+  }
+
+  private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[],
+    options: { observeOnly?: boolean } = {}) {
     const run = CiRunRecordSchema.parse(row.record)
-    if (!run.cancellation && run.observation?.nextAttemptAt
+    if (!options.observeOnly && !run.cancellation && run.observation?.nextAttemptAt
       && Date.now() < Date.parse(run.observation.nextAttemptAt)) return
     let computer = computers.find(value => value.key === row.host_key)
       ?? computers.find(value => run.collection === 'pending' && run.computer
@@ -807,15 +823,20 @@ export class HostCiService {
       ?? (run.computer ? await this.computer(run.computer.hostRef) : null)
     if (!computer) throw new DomainError('CI_COMPUTER_OFFLINE', 'The CI executor is unavailable.', 503)
     if (row.host_key) computer = { ...computer, key: row.host_key }
+    if (run.deadlineExceeded?.executor === 'retained') {
+      await this.releaseRetainedExecutor(run, computer)
+      return
+    }
     if (run.cancellation) {
       await this.cancelTicket(run.workspaceId, run.id, run.cancellation)
       return
     }
-    if (computer.hostRef.kind !== 'cloud' && run.state === 'starting' && !run.startedAt) {
+    if (!options.observeOnly && computer.hostRef.kind !== 'cloud' && run.state === 'starting' && !run.startedAt) {
       await readCiComputerStatus(this.endpoint, computer)
       return
     }
-    if (run.dispatchRequest || computer.hostRef.kind === 'cloud' && run.state === 'starting' && !run.startedAt) {
+    if (!options.observeOnly
+      && (run.dispatchRequest || computer.hostRef.kind === 'cloud' && run.state === 'starting' && !run.startedAt)) {
       await this.sendDispatch(run, computer)
       return
     }
@@ -899,6 +920,23 @@ export class HostCiService {
     if (observationError) throw observationError
   }
 
+  /** A ticket failed by its deadline keeps its slot until the executor confirms the run stopped or never existed. */
+  private async releaseRetainedExecutor(run: CiRunRecord, computer: HostCiComputer) {
+    try {
+      const reply = await this.endpoint.request(computer, { operation: 'cancel', runId: ciExecutionRunId(run) })
+      if (reply.operation !== 'cancel' || ['queued', 'starting', 'running'].includes(reply.run.state)) {
+        throw new DomainError('CI_EXECUTOR_CLEANUP_PENDING', 'The executor has not confirmed the run stopped.', 503)
+      }
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN')) throw error
+    }
+    const next = CiRunRecordSchema.parse({ ...run, deadlineExceeded: { ...run.deadlineExceeded!, executor: 'released' },
+      observation: { status: 'available', lastSuccessAt: new Date().toISOString(), lastError: null,
+        consecutiveFailures: 0, nextAttemptAt: null } })
+    await this.pool.query(`update ci_runs set host_key=null, record=$2::jsonb where id=$1 and record=$3::jsonb`,
+      [run.id, serializeCiJson(next), JSON.stringify(run)])
+  }
+
   private async recordObservationFailure(id: string, workspaceId: string, error: unknown) {
     const run = await this.read(id, workspaceId)
     const consecutiveFailures = (run.observation?.consecutiveFailures ?? 0) + 1
@@ -909,8 +947,9 @@ export class HostCiService {
     const observation: CiRunRecord['observation'] = { status: 'unavailable',
       lastSuccessAt: run.observation?.lastSuccessAt ?? null, lastError, consecutiveFailures,
       nextAttemptAt: new Date(Date.now() + delayMs).toISOString() }
+    // A deadline failure keeps its explanation; the observation carries the retry state.
     const next = CiRunRecordSchema.parse({ ...run, observation,
-      message: lastError })
+      message: run.deadlineExceeded ? run.message : lastError })
     log.warn({ err: error, runId: id, observation }, 'CI observation unavailable; retry scheduled')
     await this.pool.query(`update ci_runs set record=$4::jsonb
       where id=$1 and state=$2 and workspace_id=$3 and record=$5::jsonb`,
@@ -919,10 +958,12 @@ export class HostCiService {
 
   private async refreshActiveRuns(active: { id: string; record: unknown; host_key: string | null }[],
     computers: HostCiComputer[]) {
+    let failure: unknown
     const refresh = async (row: typeof active[number]) => {
       try {
         await this.refreshRun(row, computers)
       } catch (error) {
+        failure ??= error
         try {
           await this.recordObservationFailure(row.id, CiRunRecordSchema.parse(row.record).workspaceId, error)
         } catch {
@@ -939,7 +980,9 @@ export class HostCiService {
     }
     cloud.sort((left, right) => expectedEnd(left) - expectedEnd(right))
     // Provider reads cover the cloud fleet together; local host reads retain their bounded batch.
-    await Promise.all([inBatches(cloud, 48, refresh), inBatches(local, 8, refresh)])
+    await trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
+      () => Promise.all([inBatches(cloud, 48, refresh), inBatches(local, 8, refresh)]))
+    if (failure) reportServiceFailure('ci-observation', failure)
   }
 
   private async dispatchOnce() {
@@ -950,7 +993,7 @@ export class HostCiService {
         or (state in ('passed','failed','canceled','lost') and record#>>'{observation,status}'='unavailable')`)).rows
     await this.refreshActiveRuns(active, computers)
     const busyRows = (await this.pool.query<{ host_key: string; record: unknown }>(
-      `select host_key,record from ci_runs where state in ('starting','running')`)).rows
+      `select host_key,record from ci_runs where ${CI_BUSY_TICKET}`)).rows
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
     const { gate, reservedHosts } = await readCiGateReservation(this.pool)

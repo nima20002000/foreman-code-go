@@ -3,6 +3,7 @@ import {
 } from '@foreman-code/contracts/resource-telemetry'
 import { newCollectorGeneration } from './collector/lifecycle.js'
 import { createLinuxResourceCollector } from './collector/ports.js'
+import { trackService } from '../diagnostics/serviceHealth.js'
 import { passiveRegistryOwnershipReader, type PassiveNativeRegistry, type TrustedNativeScopes } from './collector/registryAdapter.js'
 import { ResourceTelemetryService, TelemetryRejected } from './ingestion/service.js'
 import type { TelemetryClock, TelemetryOwnershipReader, TelemetryReadAuthority, TelemetrySessionReader } from './ingestion/ports.js'
@@ -79,9 +80,11 @@ export async function createResourceTelemetryRuntime(input: ResourceTelemetryRun
   })
   const cadence = run(async () => {
     while (!controller.signal.aborted) {
-      const challenge = await service.challenge(input.localContext, controller.signal)
-      // A full bounded collector queue leaves this challenge unsampled; a later cadence retries.
-      if (challenge) activeCollector.offer(challenge)
+      await trackService('telemetry-collector', { cadenceMs: TELEMETRY_LIMITS.intervalMs, deadlineMs: 60_000 }, async () => {
+        const challenge = await service.challenge(input.localContext, controller.signal)
+        // A full bounded collector queue leaves this challenge unsampled; a later cadence retries.
+        if (challenge) activeCollector.offer(challenge)
+      })
       await wait()
     }
   })

@@ -10,6 +10,16 @@ import { artifactFiles, validateWorkerTarget, workerReleaseVersion, assertWorker
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const PUBLICATION_COMMAND_TIMEOUT_MS = 5 * 60_000
 const PUBLICATION_RETRY_MS = 60_000
+// WORKER_PUBLICATION_DEADLINE_MS in packages/contracts/src/workerUpdate.ts; installed scripts cannot import contracts.
+const PUBLICATION_DEADLINE_MS = 2 * 60 * 60_000
+
+/** Retries keep the pending publication's start and deadline until it succeeds. */
+function publicationWindow(previous, now = Date.now()) {
+  if (previous && previous.state !== 'published' && previous.startedAt && previous.deadlineAt) {
+    return { startedAt: previous.startedAt, deadlineAt: previous.deadlineAt }
+  }
+  return { startedAt: new Date(now).toISOString(), deadlineAt: new Date(now + PUBLICATION_DEADLINE_MS).toISOString() }
+}
 
 export function runWorkerPublicationCommand(command, args, { timeoutMs = PUBLICATION_COMMAND_TIMEOUT_MS,
   killGraceMs = 5000, ...options } = {}) {
@@ -215,7 +225,8 @@ export async function buildWorkerReleaseArtifacts({
     const artifacts = builds.map(build => build.value)
     const github = publish ? await publish({ repository, directory, commit, artifacts, run }) : undefined
     const index = { format: 1, version, ...(github ? { github } : {}), artifacts,
-      publication: { state: github ? 'published' : 'pending', lastError: null } }
+      publication: { state: github ? 'published' : 'pending', lastError: null,
+        ...(!github ? publicationWindow() : {}) } }
     await writeFile(join(directory, 'index.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     await writeFile(productManifestPath, productManifest, { flag: 'wx', mode: 0o600 })
     return index
@@ -234,7 +245,14 @@ async function writeArtifactIndex(directory, index) {
 export async function recordWorkerPublicationFailure(directory, error) {
   const index = JSON.parse(await readFile(join(directory, 'index.json'), 'utf8'))
   const reason = error instanceof Error ? error.message : String(error)
-  const publication = { state: 'failed', lastError: `WORKER_RELEASE_ASSET_UNAVAILABLE: ${reason}`.slice(0, 2000) }
+  const { startedAt, deadlineAt } = index.publication ?? {}
+  const overdue = deadlineAt && Date.now() > Date.parse(deadlineAt)
+  const lastError = overdue
+    ? `WORKER_PUBLICATION_DEADLINE_EXCEEDED: phase publishing, age ${Math.round((Date.now() - Date.parse(startedAt)) / 60_000)} min, `
+      + `over the ${PUBLICATION_DEADLINE_MS / 60_000} min limit. Cause: ${reason}`
+    : `WORKER_RELEASE_ASSET_UNAVAILABLE: ${reason}`
+  const publication = { state: 'failed', lastError: lastError.slice(0, 2000),
+    ...(startedAt && deadlineAt ? { startedAt, deadlineAt } : {}) }
   if (reason.includes('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED')) {
     publication.nextRetryAt = new Date(Date.now() + PUBLICATION_RETRY_MS).toISOString()
   }
@@ -249,7 +267,7 @@ export async function publishInstalledWorkerArtifacts({ directory, repositoryNam
   if (index.github && index.publication?.state === 'published') return index
   try {
     await writeArtifactIndex(directory, { ...index,
-      publication: { state: 'pending', lastError: null, startedAt: new Date().toISOString() } })
+      publication: { state: 'pending', lastError: null, ...publicationWindow(index.publication) } })
     const github = await publish({ name: repositoryName, directory, commit, artifacts: index.artifacts,
       run: run ?? runWorkerPublicationCommand })
     const published = { ...index, github, publication: { state: 'published', lastError: null } }

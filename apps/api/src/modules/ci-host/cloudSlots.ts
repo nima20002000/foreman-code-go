@@ -3,6 +3,7 @@ import type { CiHostRequest, CiRunRecord } from '@foreman-code/contracts'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { claimCiDispatch } from './dispatch.js'
+import { CI_BUSY_TICKET } from './deadlines.js'
 import type { HostCiComputer } from './serviceTypes.js'
 
 const log = componentLogger('jobs')
@@ -60,7 +61,7 @@ export async function claimCiSlot(pool: pg.Pool, run: CiRunRecord, computer: Hos
   return withTransaction(pool, async client => {
     await client.query('select pg_advisory_xact_lock(hashtextextended($1,0))', [`ci-cloud-slot:${computer.key}`])
     const assigned = (await client.query<{ host_key: string | null }>(`select host_key from ci_runs
-      where host_key=$1 and state in ('starting','running') limit 1`, [computer.key])).rows
+      where host_key=$1 and (${CI_BUSY_TICKET}) limit 1`, [computer.key])).rows
     if (assigned.some(row => row.host_key === computer.key)) return 'busy' as const
     return claimCiDispatch(client, run, computer, request)
   })
