@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, startWhenReady, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { latestEvidence, refreshedEvidence, assertMcpReadback } from './helpers/workerProfileRequalification.js'
 import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
-  it('retains qualified Worker profiles across a Main restart in the same Worker boot', async () => {
+  it('rechecks Worker profiles after Main restarts while preserving their boot generation', async () => {
     const fixture = await remoteReviewProduction({ workflow: 'sequential', parallelProfileChecks: true,
       parallelSetup: true })
     try {
@@ -18,8 +18,11 @@ describe('automatic Worker profile qualification', () => {
       expect(before.every(proof => proof.qualified)).toBe(true)
       await fixture.restartMain()
       const inventoryAfter = await waitForReplacementReviewInventory(fixture, inventoryBefore)
-      await assertMcpReadback(fixture, before)
-      expect(await latestEvidence(fixture)).toEqual(before)
+      const evidence = await refreshedEvidence(fixture, before)
+      await assertMcpReadback(fixture, evidence)
+      expect(evidence.map(proof => proof.connectionGeneration)).toEqual(before.map(proof => proof.connectionGeneration))
+      expect(evidence.map(proof => proof.completedNativeQualification!.checkId))
+        .not.toEqual(before.map(proof => proof.completedNativeQualification!.checkId))
       const connectionAfter = inventoryAfter.hostMetadata!.connection!
       expect(fixture.workerPid()).toBe(workerPid)
       expect(connectionAfter.phase).toBe('ready')
@@ -32,8 +35,8 @@ describe('automatic Worker profile qualification', () => {
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in denied) expect(denied.error).toMatchObject({ code: -32602 })
       else expect(denied.result.isError).toBe(true)
-      const started = (await startWhenReady(fixture))!
-      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
+      await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
+      expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
     } catch (error) {
       const audit = await fixture.db.pool.query(`select outcome,details from management_audit
         where source='system' and action='harness.instance.check' order by sequence`)

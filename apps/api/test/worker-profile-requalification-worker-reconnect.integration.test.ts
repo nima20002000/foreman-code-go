@@ -3,11 +3,11 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, startWhenReady, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { latestEvidence, assertMcpReadback } from './helpers/workerProfileRequalification.js'
 import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
-  it('starts through authenticated MCP with retained qualification after a same-boot Worker reconnect', async () => {
+  it('retains same-boot qualification through MCP while refusing an unpublished Worker bundle', async () => {
     const fixture = await remoteReviewProduction({
       workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
     })
@@ -23,13 +23,12 @@ describe('automatic Worker profile qualification', () => {
         .toBe(inventoryBefore.hostMetadata!.connection!.binding.bootId)
       expect(await latestEvidence(fixture)).toEqual(before)
       await assertMcpReadback(fixture, before)
-      const started = (await startWhenReady(fixture))!
-      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
+      await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
+      expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
       expect((await fixture.provider.calls()).filter(call => call.qualificationSuite)).toHaveLength(checksBefore)
       const audit = await fixture.db.pool.query<{ source: string; principal_id: string | null; details: unknown }>(
         "select source,principal_id,details from management_audit where action='harness.instance.check' and source='system'")
       expect(audit.rows).toHaveLength(0)
-      expect(audit.rows.every(row => row.principal_id === null)).toBe(true)
 
       const reader = await fixture.access.issue({ name: 'profile reader', audience: 'operator',
         grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
