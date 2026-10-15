@@ -102,6 +102,8 @@ export async function faultWorkflowFixture(options: {
   const worker = await faultWorkflowWorker(directory, { mcpUnavailable: options.mcpUnavailable })
   const { definition, entry, affected, sibling } = faultWorkflowDefinition(options)
   const intents = new Map<string, DispatchIntent>()
+  const entryFinished = deferred()
+  let entryComplete = false
   const contexts = new Map<string, NativeManagerResolutionContext>()
   let placements: Awaited<ReturnType<typeof mixedComputerPlacement>>
   let validatePlacement: ReturnType<typeof placedContinuationValidator>
@@ -110,6 +112,16 @@ export async function faultWorkflowFixture(options: {
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
     statementTimeoutMs: options.statementTimeoutMs,
     approvalNodeIds: [], workerParallelism: 3,
+    nativeCommitted: async () => {
+      if (entryComplete) return
+      const intent = [...intents.values()].find(value => value.nodeId === entry.id)
+      if (!intent) return
+      const execution = await base.runs.getExecution(intent.executionId)
+      if (execution?.state === 'completed' && execution.result?.outcome === 'succeeded') {
+        entryComplete = true
+        entryFinished.resolve()
+      }
+    },
     validateContinuation: (executionId, signal) => validatePlacement(executionId, signal),
     admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
       await placements.producer.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId)
@@ -222,7 +234,6 @@ export async function faultWorkflowFixture(options: {
       return details
     }
     const completed = new Set<string>()
-    const entryFinished = deferred()
     let releaseAffected = false
     let releaseSibling = !options.loop
     const pump = setInterval(() => {
@@ -240,7 +251,6 @@ export async function faultWorkflowFixture(options: {
         completed.add(turn.correlationId)
         if (context.agentId === entry.agentId) {
           completed.add(`agent:${entry.agentId}`)
-          entryFinished.resolve()
         }
       }
     }, 10)
