@@ -105,7 +105,8 @@ export type SourceReservationReclamation = z.infer<typeof SourceReservationRecla
 export const SourceReservationReclamationAuthorityResponseSchema = z.object({ version: z.literal(1),
   operation: z.literal('sources.reclamation-authorize'), grant: SourceReservationReclamationSchema }).strict()
 export const RetainedSourceFootprintSchema = z.object({
-  worktree: z.object({ state: z.enum(['removed', 'retained']), message: z.string().optional() }).strict().optional(),
+  worktree: z.object({ state: z.enum(['removed', 'retained']), message: z.string().optional(),
+    nextAttemptAt: z.string().datetime().optional() }).strict().optional(),
   retainedBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   sharedTree: z.object({
     id: z.uuid(),

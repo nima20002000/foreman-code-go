@@ -38,12 +38,17 @@ export class RemoteJobCarrierDispatch implements RemoteJobDispatchRecordPort {
     return { status: 'known', receipt }
   }
   async deliver(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord) { return this.send(intent, execution, { method: 'job-dispatch', intent, execution }) }
-  async reconcile(intent: RemoteJobDispatchIntent) { return this.send(intent, await this.execution(intent), { method: 'job-status', intent }) }
+  async reconcile(intent: RemoteJobDispatchIntent) {
+    const execution = await this.execution(intent)
+    const status = await this.send(intent, execution, { method: 'job-status', intent })
+    return status.status === 'unknown' ? this.deliver(intent, execution) : status
+  }
   async control(command: RemoteJobOwnerControl) {
     const sql = await this.pool.connect()
     let intent: RemoteJobDispatchIntent
     try { const row = (await sql.query<{ intent: RemoteJobDispatchIntent }>('select intent from job_dispatch_intents where execution_id=$1', [command.executionId])).rows[0]; if (!row) throw new Error('Job dispatch missing'); intent = row.intent }
     finally { sql.release() }
-    return this.send(intent, await this.execution(intent), { method: 'job-control', intent, command })
+    const execution = await this.execution(intent)
+    return this.send(intent, execution, { method: 'job-control', intent, execution, command })
   }
 }

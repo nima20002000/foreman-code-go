@@ -1,4 +1,4 @@
-import type { SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
+import type { RetainedSourceFootprint, SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { createHash, randomUUID } from 'node:crypto'
@@ -623,6 +623,15 @@ export class PostgresSourceService implements SourceAdmissionPort {
   async confirmClosed(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<void> {
     record = SourceMaterializationRecordSchema.parse(record)
     options?.signal?.throwIfAborted()
+    if (record.receipt.worktree) {
+      const previous = (await this.pool.query<{ state: string; record: unknown;
+        worktree_cleanup: RetainedSourceFootprint['worktree'] | null }>(
+        'select state,record,worktree_cleanup from source_execution_materializations where materialization_id=$1',
+        [record.receipt.materializationId])).rows[0]
+      if (previous?.state === 'closed' && isDeepStrictEqual(previous.record, record)
+        && previous.worktree_cleanup?.state === 'retained'
+        && Date.parse(previous.worktree_cleanup.nextAttemptAt ?? '') > Date.now()) return
+    }
     if (!await this.closure.confirmedClosed(record)) throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Original execution physical closure is not confirmed.', 409)
     if (record.receipt.quota) {
       const binding = record.receipt.binding
@@ -648,7 +657,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
       const row = (await sql.query<{ record: unknown }>('select record from source_execution_materializations where materialization_id=$1 for update', [record.receipt.materializationId])).rows[0]
       if (!row || !isDeepStrictEqual(row.record, record)) throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'Closure does not match the original materialization.', 409)
       await sql.query(`update source_execution_materializations set state='closed',worktree_cleanup=$2::jsonb where materialization_id=$1`,
-        [record.receipt.materializationId, JSON.stringify(footprint.worktree ?? null)])
+        [record.receipt.materializationId, JSON.stringify(footprint.worktree ? { ...footprint.worktree,
+          ...(footprint.worktree.state === 'retained'
+            ? { nextAttemptAt: new Date(Date.now() + 300_000).toISOString() } : {}) } : null)])
       if (record.receipt.quota) {
         await this.reservations.reclaimed(sql, reservation, async () => quotaReclaimed
           && await this.closure.confirmedClosed(record))

@@ -318,6 +318,7 @@ Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifact
 Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
 ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health
+ExecStartPost=/usr/bin/systemctl --user --no-block restart foreman-worker-publish.service
 Restart=always
 RestartSec=3
 TimeoutStartSec=120

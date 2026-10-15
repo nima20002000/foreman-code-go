@@ -11,7 +11,7 @@ import { readMigrationSchema } from './production-schema.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { buildWorkerReleaseArtifacts, recordWorkerPublicationFailure } from './worker-release-artifacts.mjs'
+import { buildWorkerReleaseArtifacts, workerPublicationServiceTemplate } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   pruneApiDependencies, pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
@@ -150,6 +150,7 @@ UMask=0077
 WantedBy=default.target
 `))
   await publish(join(directory, units.api), service(apiServiceTemplate(units.database)))
+  await publish(join(directory, 'foreman-worker-publish.service'), service(workerPublicationServiceTemplate()))
 }
 
 async function installDesktop(firstInstall, buildSource) {
@@ -297,7 +298,6 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
       })
     } else await cutover()
     await recordStartupConfiguration(startupFile)
-    await publishWorkerArtifactsLater(release)
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
     const kept = (await readdir(join(app, 'releases'))).filter(name => name.startsWith('release-')).map(name => join(app, 'releases', name))
@@ -311,23 +311,6 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
     console.log(`API logs: ${state}/logs (and journalctl --user -u ${units.api})`)
   } finally {
     if (!cutoverBegan) await removeUninstalledRelease(release, current)
-  }
-}
-
-// Publication success atomically exposes the GitHub target; failures remain visible in maintenance status.
-async function publishWorkerArtifactsLater(release) {
-  const { commit, repository } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
-  const logFile = join(state, 'logs', 'worker-artifact-publish.log')
-  try {
-    await run('/usr/bin/systemd-run', ['--user', '--collect', '--quiet',
-      `--unit=foreman-worker-publish-${randomBytes(8).toString('hex')}`, `--setenv=PATH=${process.env.PATH}`,
-      `--property=StandardOutput=append:${logFile}`, `--property=StandardError=append:${logFile}`,
-      join(release, 'node'), join(release, 'scripts/worker-release-artifacts.mjs'),
-      'publish', join(release, 'worker-artifacts'), repository, commit])
-    console.log(`Worker target waits for GitHub publication and verification (log: ${logFile}).`)
-  } catch (error) {
-    await recordWorkerPublicationFailure(join(release, 'worker-artifacts'), error)
-    throw error
   }
 }
 

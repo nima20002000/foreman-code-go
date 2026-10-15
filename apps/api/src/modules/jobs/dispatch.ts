@@ -9,6 +9,7 @@ import {
   RemoteJobOperationReceiptRecordSchema,
   type RemoteJobDispatchRecordPort,
   type RemoteJobOperationReceiptRecord,
+  type RemoteJobOperationStatusRecord,
 } from '@foreman-code/contracts/remote-job-execution'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { JobExecutionRecordSchema, type JobAcceptedSpecRecord, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
@@ -175,8 +176,17 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
       })
       if(prepared.action==='none') {await this.settle(executionId);return}
       abort.signal.throwIfAborted();owner.assertOwned()
-      let status=prepared.action==='deliver'?await this.remote.deliver(prepared.intent,prepared.execution):await this.remote.reconcile(prepared.intent)
-      if(prepared.cancelCommandId&&prepared.execution.process.phase!=='terminal') status=await this.remote.control({schemaVersion:1,protocolVersion:1,commandId:prepared.cancelCommandId,operationId:prepared.intent.operationId,attemptId:prepared.intent.attemptId,executionId,subject:prepared.intent.subject,bindingHash:prepared.intent.bindingHash,owner:prepared.intent.owner,action:{kind:'stop'}})
+      let status: RemoteJobOperationStatusRecord
+      if (prepared.cancelCommandId && prepared.execution.process.phase !== 'terminal') {
+        status = await this.remote.control({ schemaVersion: 1, protocolVersion: 1,
+          commandId: prepared.cancelCommandId, operationId: prepared.intent.operationId,
+          attemptId: prepared.intent.attemptId, executionId, subject: prepared.intent.subject,
+          bindingHash: prepared.intent.bindingHash, owner: prepared.intent.owner, action: { kind: 'stop' } })
+      } else {
+        status = prepared.action === 'deliver'
+          ? await this.remote.deliver(prepared.intent, prepared.execution)
+          : await this.remote.reconcile(prepared.intent)
+      }
       owner.assertOwned()
       const finished=await owner.connection.transaction(async sql=>{
         const execution=await this.readExecutionLocked(sql,prepared.execution.workspaceId,executionId)

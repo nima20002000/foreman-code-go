@@ -198,7 +198,8 @@ export async function publishInstalledWorkerArtifacts({ directory, repositoryNam
   const index = JSON.parse(await readFile(path, 'utf8'))
   if (index.github && index.publication?.state === 'published') return index
   try {
-    await writeArtifactIndex(directory, { ...index, publication: { state: 'pending', lastError: null } })
+    await writeArtifactIndex(directory, { ...index,
+      publication: { state: 'pending', lastError: null, startedAt: new Date().toISOString() } })
     const github = await publish({ name: repositoryName, directory, commit, artifacts: index.artifacts, run })
     const published = { ...index, github, publication: { state: 'published', lastError: null } }
     await writeArtifactIndex(directory, published)
@@ -209,7 +210,36 @@ export async function publishInstalledWorkerArtifacts({ directory, repositoryNam
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === 'publish') {
+export async function recoverInstalledWorkerArtifacts({ release, run, publish }) {
+  const directory = join(release, 'worker-artifacts')
+  const index = JSON.parse(await readFile(join(directory, 'index.json'), 'utf8'))
+  if (index.github && index.publication?.state === 'published') return index
+  if (index.publication?.state === 'pending' && index.publication.startedAt) {
+    await writeArtifactIndex(directory, { ...index, publicationRecovery: {
+      abandonedAttempts: (index.publicationRecovery?.abandonedAttempts ?? 0) + 1,
+      lastAbandonedAt: new Date().toISOString(),
+    } })
+  }
+  const { repository, commit } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
+  return publishInstalledWorkerArtifacts({ directory, repositoryName: repository, commit, run, publish })
+}
+
+export function workerPublicationServiceTemplate() {
+  return `[Unit]
+Description=Foreman Code Worker artifact publication
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+Environment=PATH=@PATH@
+ExecStart=@NODE@ @APP@/current/scripts/worker-release-artifacts.mjs recover @APP@/current
+Restart=on-failure
+RestartSec=60
+UMask=0077
+`
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url) && ['publish', 'recover'].includes(process.argv[2])) {
   const [directory, repositoryName, commit] = process.argv.slice(3)
   const run = (command, args, options = {}) => new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ['ignore', 'inherit', 'pipe'] })
@@ -223,8 +253,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === 'p
       : reject(new Error(`${command} failed (${code}): ${stderr.trim()}`)))
   })
   try {
-    await publishInstalledWorkerArtifacts({ directory, repositoryName, commit, run })
-    console.log(`Worker artifacts published and verified on GitHub for ${commit}.`)
+    if (process.argv[2] === 'recover') await recoverInstalledWorkerArtifacts({ release: directory, run })
+    else await publishInstalledWorkerArtifacts({ directory, repositoryName, commit, run })
+    console.log('Worker artifacts published and verified on GitHub.')
   } catch (error) {
     console.error(`WORKER_RELEASE_ASSET_UNAVAILABLE: Worker publication failed: ${error.message}`)
     process.exitCode = 1

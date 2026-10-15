@@ -288,6 +288,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     } })
     const pollSignal = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])])
     let sequence: number | undefined
+    let pollDelayMs = 100
     try {
       if (this.session && !initial) {
         const history = await this.history(this.session, pollSignal)
@@ -304,12 +305,14 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         }
         const value = z.object({ history: WorkerConversationHistorySchema, context: ContextSnapshotSchema.nullable(),
           receipt: WorkerConversationReceiptSchema }).parse(await this.request({ method: 'conversation.history',
-          session: this.session, correlationId: input.clientCorrelationId }, pollSignal))
+          session: this.session, correlationId: input.clientCorrelationId,
+          afterSequence: sequence ?? -1 }, pollSignal))
         this.adopt(value)
         this.checkRejection(input.clientCorrelationId)
         this.context = value.context
         if (sequence !== undefined && value.history.firstRetainedSequence !== undefined
           && sequence < value.history.firstRetainedSequence - 1) conflict('The worker event window has advanced; recover persisted history.')
+        const previousSequence = sequence
         for (const event of value.history.events) {
           if (sequence !== undefined && event.sequence <= sequence) continue
           sequence = event.sequence
@@ -318,7 +321,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         const turn = value.receipt.turns.find(turn => turn.correlationId === input.clientCorrelationId)
         if (turn?.status === 'completed') return
         if (turn?.status === 'uncertain') conflict('The original worker turn needs native recovery; input was not replayed.')
-        await delay(100, undefined, { signal: pollSignal })
+        pollDelayMs = sequence === previousSequence ? Math.min(2000, pollDelayMs * 2) : 100
+        await delay(pollDelayMs, undefined, { signal: pollSignal })
       }
     } finally { await this.release(lease) }
   }
