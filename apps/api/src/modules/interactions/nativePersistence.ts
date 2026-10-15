@@ -43,9 +43,10 @@ export function nativePersistenceRedactor(secrets: readonly string[]) {
     if (input instanceof Error) {
       const sanitized = input.cause === undefined ? new Error(text(input.message))
         : new Error(text(input.message), { cause: error(input.cause) })
-      const code = (input as Error & { code?: unknown }).code
+      const { code, retryable } = input as Error & { code?: unknown; retryable?: unknown }
       if (typeof code === 'string') Object.assign(sanitized, { code: text(code) })
       else if (typeof code === 'number') Object.assign(sanitized, { code })
+      if (typeof retryable === 'boolean') Object.assign(sanitized, { retryable })
       return sanitized
     }
     return value(input)

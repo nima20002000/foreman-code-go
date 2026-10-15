@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import type { HarnessExecution } from '@foreman-code/contracts'
+import type { ExecutionResult, HarnessExecution } from '@foreman-code/contracts'
 import { DeviceApplicationError } from '../src/modules/devices/deviceApplicationError.js'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 import { transientExecutionFailure } from '../src/modules/runs/executionRetryPolicy.js'
@@ -28,7 +28,7 @@ it.each([
     readExecution: async (id: string) => nativeStored(rows.get(id)!, f),
     settleNativeExecution: async (id: string) => { settled.add(id) },
   }
-  const abandonAttempt = vi.fn(async (id: string, result: HarnessExecution['result']) => {
+  const abandonAttempt = vi.fn(async (id: string, result: ExecutionResult) => {
     rows.set(id, { ...rows.get(id)!, state: 'completed', finishedAt: new Date().toISOString(), result })
   })
   const driver = repeatExecutionDriver({ scope: f.scope, version: f.version, store,

@@ -50,8 +50,11 @@ export function isTransientExecutionError(error: unknown): boolean {
     seen.add(error)
     if (error instanceof ZodError || error instanceof AggregateError) return false
     if (isDatabaseTimeout(error) || isDatabasePoolTimeout(error)) return true
-    const wrapped = error as { result?: ExecutionResult; details?: { retryable?: boolean }; cause?: unknown }
-    if (wrapped.result?.error?.retryable === true || wrapped.details?.retryable === true) return true
+    const wrapped = error as {
+      result?: ExecutionResult; details?: { retryable?: boolean }; retryable?: boolean; cause?: unknown
+    }
+    if (wrapped.retryable === true || wrapped.result?.error?.retryable === true
+      || wrapped.details?.retryable === true) return true
     const code = errorCode(error)
     if (code !== undefined && isTransientExecutionCode(code)) return true
     if (typeof wrapped.cause !== 'object' || wrapped.cause === null) {
