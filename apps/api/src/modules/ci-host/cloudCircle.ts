@@ -49,7 +49,7 @@ export class CircleRest {
         : `CircleCI did not accept circleci ${args[0]} ${args[1]}: ${detail}`)
     } catch (error) {
       if (lookupDenied && error instanceof DomainError && error.code === 'CI_CLOUD_FAILED') {
-        throw new DomainError('CI_CLOUD_RUN_UNREADABLE', error.message, error.status)
+        throw new DomainError('CI_CLOUD_RUN_UNREADABLE', error.message, error.status, undefined, { cause: error })
       }
       throw error
     }

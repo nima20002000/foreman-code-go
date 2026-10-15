@@ -1,4 +1,5 @@
 import { optionalCommandId } from './management/commands.js'
+import { FailureClassSchema } from './failure.js'
 import { ExecutionQueueReasonSchema } from './executionQueue.js';
 import { TextTruncationSchema } from './activityText.js';
 import { NativeToolsSchema } from './nativeTools.js';
@@ -1221,6 +1222,8 @@ export const ApiErrorSchema = z
     code: z.string().trim().min(1),
     message: z.string().trim().min(1),
     details: z.record(z.string(), z.unknown()).optional(),
+    /** Present when the reply has no other explicit classification (`details.retryable`) and is not permanent. */
+    class: FailureClassSchema.optional(),
     requestId: IdSchema.optional(),
   })
   .strict();

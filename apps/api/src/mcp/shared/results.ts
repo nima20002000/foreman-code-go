@@ -1,7 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/server'
 import { ZodError } from 'zod'
 
-import { DomainError } from '../../modules/errors.js'
+import { DomainError, publicFailureClass } from '../../modules/errors.js'
 import { FileTransferError } from '../../modules/files/tools/transfers.js'
 import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
 
@@ -30,9 +30,11 @@ export function toolFailure(error: unknown, internalMessage = 'The Operator serv
     })
   }
   if (error instanceof FileTransferError) error = new DomainError(error.code, error.message, 409)
+  const failureClass = publicFailureClass(error)
+  const classified = failureClass ? { class: failureClass } : {}
   const body = error instanceof DomainError
-    ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } }
-    : { error: { code: 'INTERNAL_ERROR', message: internalMessage } }
+    ? { error: { code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}), ...classified } }
+    : { error: { code: 'INTERNAL_ERROR', message: internalMessage, ...classified } }
   // No structuredContent: it must match the tool's success outputSchema, and
   // Clients may validate it even on isError, masking the error.
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(body) }] }

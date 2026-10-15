@@ -174,7 +174,7 @@ export class FoundationSettingsManagementService {
             if (configuration.harness === 'codex') CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
           }
           try { await this.harnesses.qualifyConfiguration(configuration) } catch (error) {
-            throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${errorMessage(error, 'Native qualification failed.')}`, 409)
+            throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${errorMessage(error, 'Native qualification failed.')}`, 409, undefined, { cause: error })
           }
         }
         const operators = this.operators

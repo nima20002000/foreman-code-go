@@ -74,7 +74,7 @@ export class OwnedRepositoryPreparation {
       origin = (await qualifiedGit(clone, ['config', '--local', '--get-all', 'remote.origin.url'])).toString().trim()
     } catch (error) {
       if ((error as { code?: unknown }).code !== 1) throw error
-      throw new DomainError('REPOSITORY_ORIGIN_CHANGED', 'The import clone no longer has its GitHub origin.', 409)
+      throw new DomainError('REPOSITORY_ORIGIN_CHANGED', 'The import clone no longer has its GitHub origin.', 409, undefined, { cause: error })
     }
     const root = (await qualifiedGit(clone, ['rev-parse', '--show-toplevel'])).toString().trim()
     if (origin !== `https://github.com/${repository}.git` || root !== clone) {

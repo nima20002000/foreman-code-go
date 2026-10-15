@@ -47,7 +47,7 @@ export function retainRetentionCommand(key: string, command: RetentionCommand) {
     if (ApiError.is(error)) throw error
     update(key, { error: 'Save recovery is unavailable.' })
     // No HTTP request was made; this local failure is definitive.
-    throw new ApiError({ code: 'INVALID_REQUEST', message: 'Save recovery is unavailable.' })
+    throw new ApiError({ code: 'INVALID_REQUEST', message: 'Save recovery is unavailable.' }, undefined, { cause: error })
   }
 }
 export function settleRetentionCommand(key: string, commandId: string) {

@@ -107,7 +107,7 @@ export function createWorkerResourceTelemetryExtension(input: {
       live = input.currentBinding()
     } catch (error) {
       if (error instanceof DomainError && error.code === 'WORKER_DOMAIN_UNAVAILABLE') {
-        throw new TelemetryRejected('session-generation')
+        throw new TelemetryRejected('session-generation', { cause: error })
       }
       throw error
     }

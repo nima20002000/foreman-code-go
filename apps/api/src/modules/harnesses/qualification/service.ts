@@ -181,14 +181,14 @@ export class HarnessQualificationService {
         if (!(error instanceof CompatibilityCheckError && error.code === 'CLI_VERSION_INVALID')) throw error
         if (!await eligible()) throw error
         if ((await this.registry.inspectBinary(binary)).sha256 !== sha256) {
-          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.')
+          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.', { cause: error })
         }
         const milliseconds = VERSION_RETRY_DELAYS[attempt]
         if (milliseconds === undefined) throw error
         await delay(milliseconds, undefined, { signal: this.cancellation.signal, ref: false })
         this.assertRunning(harness)
         if ((await this.registry.inspectBinary(binary)).sha256 !== sha256) {
-          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.')
+          throw new CompatibilityCheckError('CLI_CHANGED', 'The CLI changed during qualification. Retry after the installation has finished.', { cause: error })
         }
       }
     }

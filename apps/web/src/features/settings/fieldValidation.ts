@@ -2,8 +2,8 @@
 export interface FieldIssue { path: (string | number)[]; message: string }
 
 export class FieldValidationError extends Error {
-  constructor(readonly issues: FieldIssue[]) {
-    super(issues.map((issue) => issue.message).join(' '))
+  constructor(readonly issues: FieldIssue[], options?: ErrorOptions) {
+    super(issues.map((issue) => issue.message).join(' '), options)
     this.name = 'FieldValidationError'
   }
 }
@@ -22,7 +22,7 @@ export function validationIssues(error: unknown): FieldIssue[] {
 export function withValidationPath<T>(prefix: (string | number)[], prepare: () => T): T {
   try { return prepare() } catch (error) {
     const issues = validationIssues(error)
-    if (issues.length) throw new FieldValidationError(issues.map((issue) => ({ ...issue, path: [...prefix, ...issue.path] })))
+    if (issues.length) throw new FieldValidationError(issues.map((issue) => ({ ...issue, path: [...prefix, ...issue.path] })), { cause: error })
     throw error
   }
 }

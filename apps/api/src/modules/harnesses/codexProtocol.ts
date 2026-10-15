@@ -172,7 +172,7 @@ export async function qualifyCodex(
       if (error instanceof Error && error.name === 'TimeoutError') throw error
       if (error instanceof HarnessExecutionError && error.result.error?.code === 'CODEX_EXECUTABLE_CHANGED') throw error
       if (error instanceof CompatibilityCheckError) {
-        throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED', `Codex ${actual}: ${error.message}`)
+        throw new HarnessExecutionError('CODEX_CONTRACT_UNSUPPORTED', `Codex ${actual}: ${error.message}`, undefined, { cause: error })
       }
       const contract = error instanceof HarnessExecutionError ? error.message : 'generated app-server protocol schema'
       throw incompatible(contract)

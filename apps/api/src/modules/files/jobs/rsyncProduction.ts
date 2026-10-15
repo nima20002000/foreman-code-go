@@ -46,7 +46,7 @@ export function createMainJobOutputRsyncExtension(admission:Pick<PostgresJobOutp
         return {payload:receipt}
       }
       const artifact=await lifecycle.acknowledged(intent).catch(error=>{
-        if(error instanceof DomainError&&error.code==='JOB_PUBLICATION_PENDING')throw new DeviceApplicationError('job-publication-pending')
+        if(error instanceof DomainError&&error.code==='JOB_PUBLICATION_PENDING')throw new DeviceApplicationError('job-publication-pending', undefined, { cause: error })
         throw error
       })
       frame.signal.throwIfAborted();return {payload:artifact}

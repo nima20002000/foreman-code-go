@@ -126,7 +126,7 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
       } catch (error) {
         if (!(error instanceof LocalClientUnavailableError)) throw error
         reply.header('retry-after', '1')
-        throw new DomainError(error.code, error.message, 503, { retryable: true })
+        throw new DomainError(error.code, error.message, 503, { retryable: true }, { cause: error })
       }
     }
     const authenticate = () => headerToken ? access.authenticate(headerToken, 'operator')

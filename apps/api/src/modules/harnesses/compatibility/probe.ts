@@ -210,7 +210,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
           if (error instanceof CompatibilityCheckError && error.code === 'CLI_CHECK_REJECTED') {
             const contract = 'app-server generate-json-schema --experimental'
             throw new CompatibilityCheckError(error.code,
-              `${harness} ${installation.version} could not complete the required ${contract} schema export contract.`)
+              `${harness} ${installation.version} could not complete the required ${contract} schema export contract.`, { cause: error })
           }
           throw error
         }
@@ -232,7 +232,7 @@ export function nativeCompatibilityProbe(binaries: Record<CompatibilityHarness, 
           if (signal.aborted || (error instanceof CompatibilityCheckError
             && !['CLI_UNAVAILABLE', 'CLI_CHECK_REJECTED'].includes(error.code))) throw error
           throw new CompatibilityCheckError('CHECKER_UNAVAILABLE',
-            'The application schema checker could not finish. Rebuild the API and retry; do not switch harnesses to work around this error.')
+            'The application schema checker could not finish. Rebuild the API and retry; do not switch harnesses to work around this error.', { cause: error })
         }
         if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
           throw new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED',

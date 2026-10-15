@@ -74,8 +74,8 @@ export class ClaudeInputNotDeliveredError extends HarnessExecutionError {
   readonly certainty = 'definite'
   readonly uncertain = false
 
-  constructor(message: string) {
-    super('CLAUDE_INPUT_NOT_DELIVERED', message, true)
+  constructor(message: string, options?: ErrorOptions) {
+    super('CLAUDE_INPUT_NOT_DELIVERED', message, true, options)
     this.name = 'ClaudeInputNotDeliveredError'
   }
 }

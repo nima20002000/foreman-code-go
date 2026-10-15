@@ -67,15 +67,15 @@ export class CarrierRemoteSourceMaterializationHost implements RemoteSourceMater
     const timeoutMs = SOURCE_LIMITS.preparationMs + 30_000
     const response = await connection.request(SOURCE_OPERATION_EXTENSION.namespace, request, signal ? { signal, timeoutMs } : { timeoutMs }).catch((error: unknown) => {
       if (error instanceof DeviceApplicationError && ['SOURCE_CAPACITY', 'SOURCE_DISK_CAPACITY'].includes(error.code)) {
-        throw new DomainError(error.code, 'The selected computer is waiting for source storage capacity.', 409)
+        throw new DomainError(error.code, 'The selected computer is waiting for source storage capacity.', 409, undefined, { cause: error })
       }
       if (request.operation === 'sources.reconcile-preparation' && error instanceof DeviceApplicationError)
-        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409)
+        throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The worker did not positively confirm preparation closure. Retry the original reconciliation command.', 409, undefined, { cause: error })
       if (request.operation === 'sources.private-repository' && error instanceof DeviceApplicationError) {
         if (error.code === 'timeout' || error.code === 'source-repository-timeout')
-          throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true })
+          throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true }, { cause: error })
         if (error.code === 'source-repository-uncertain')
-          throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409)
+          throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409, undefined, { cause: error })
       }
       throw error
     })

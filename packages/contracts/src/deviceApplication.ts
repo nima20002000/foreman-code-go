@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { Failure } from './failure.js'
 import { AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE } from './sourceMaterialization.js'
 
 /** Application namespaces share the authenticated W07 socket, never workflow authority. */
@@ -40,9 +41,9 @@ export interface DeviceBusyDetails {
   retryable: true
   reason: string
 }
-export interface DeviceApplicationFailure {
-  code: string
-  /** Availability hint; operation retries still require their owner and idempotency checks. */
+export interface DeviceApplicationFailure extends Failure {
+  /** `class === 'transient'`, kept for peers that predate `class`. Operation retries still require their owner
+   * and idempotency checks. */
   retryable: boolean
   details?: import('./workerUpdate.js').WorkerBundleReadiness
 }

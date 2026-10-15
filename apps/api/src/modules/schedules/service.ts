@@ -29,7 +29,7 @@ function parseRequest<T>(work: () => T): T {
     if (error instanceof z.ZodError) {
       throw new DomainError('INVALID_REQUEST', 'The request does not match its schedule contract.', 400, {
         issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
-      })
+      }, { cause: error })
     }
     throw error
   }

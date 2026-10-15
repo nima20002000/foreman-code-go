@@ -15,6 +15,6 @@ it.each(['size', 'digest', 'offset'] as const)('codes a permanent JSON continuat
     failure = error
   }
   expect(deviceApplicationFailure(failure)).toEqual({
-    code: reason === 'size' ? 'payload-too-large' : 'conflict', retryable: false,
+    code: reason === 'size' ? 'payload-too-large' : 'conflict', class: 'permanent', retryable: false,
   })
 })

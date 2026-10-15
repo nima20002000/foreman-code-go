@@ -348,7 +348,7 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       }, signal)
     } catch (error) {
       // Codex enforces expectedTurnId. A definite RPC rejection accepted no input.
-      if (error instanceof CodexRpcError && !error.uncertain) throw new NativeTurnNotActiveError(`Codex rejected the steer: ${error.nativeMessage ?? error.message}`)
+      if (error instanceof CodexRpcError && !error.uncertain) throw new NativeTurnNotActiveError(`Codex rejected the steer: ${error.nativeMessage ?? error.message}`, { cause: error })
       throw error
     }
     const turnId = object(result, 'CODEX_TURN_STEER_INVALID').turnId

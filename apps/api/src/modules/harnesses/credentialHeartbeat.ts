@@ -2,26 +2,14 @@ import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 import { deviceApplicationFailure } from '../devices/deviceApplicationError.js'
+import { explicitFailureClass } from '@foreman-code/contracts/failure'
 
+/** A renewal may be retried after database, socket or device loss, unless the failure states otherwise. A non-503
+ * domain refusal is final. */
 export function isTransientRefreshFailure(error: unknown): boolean {
   if (isDatabaseTimeout(error)) return true
-  if (error instanceof DomainError) {
-    return error.status === 503 && (error.details?.retryable === true
-      || error.details?.retryable !== false && deviceApplicationFailure(error).retryable)
-  }
-  if (deviceApplicationFailure(error).retryable) return true
-  if (!error || typeof error !== 'object') return false
-  const code = 'code' in error ? error.code : undefined
-  if (typeof code === 'string' && (code.startsWith('08') || [
-    '40001', '40P01', '55P03', '53300', '57P01', '57P02', '57P03',
-    'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH',
-  ].includes(code))) return true
-  return error instanceof Error && [
-    'Query read timeout',
-    'timeout exceeded when trying to connect',
-    'Connection terminated unexpectedly',
-    'Connection terminated due to connection timeout',
-  ].includes(error.message)
+  if (error instanceof DomainError && error.status !== 503) return false
+  return (explicitFailureClass(error) ?? deviceApplicationFailure(error).class) === 'transient'
 }
 
 /** Renew even when a native event iterator is silent. No token leaves its owner. */

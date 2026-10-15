@@ -106,9 +106,9 @@ export class RunActivitiesService {
       })
     } catch (error) {
       if (error instanceof z.ZodError || error instanceof SyntaxError) throw new DomainError(
-        'ACTIVITIES_EVIDENCE_CONFLICT', 'Persisted Run activity evidence is invalid or unavailable.', 409)
+        'ACTIVITIES_EVIDENCE_CONFLICT', 'Persisted Run activity evidence is invalid or unavailable.', 409, undefined, { cause: error })
       if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new DomainError(
-        'ACTIVITIES_PAGE_TOO_LARGE', 'The Activities page exceeds its response bound.', 409)
+        'ACTIVITIES_PAGE_TOO_LARGE', 'The Activities page exceeds its response bound.', 409, undefined, { cause: error })
       throw error
     }
   }

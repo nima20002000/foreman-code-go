@@ -67,7 +67,7 @@ it.each(['expired', 'acknowledged', 'purged'] as const)(
       if (reason === 'acknowledged') await f.readouts.ack(f.selector)
       if (reason === 'purged') f.readouts.purge(f.intent.operationId)
       const failure = await f.readouts.read({ ...f.selector, metadata }).then(() => undefined, error => error)
-      expect(deviceApplicationFailure(failure)).toEqual({ code: 'transfer-expired', retryable: false })
+      expect(deviceApplicationFailure(failure)).toEqual({ code: 'transfer-expired', class: 'permanent', retryable: false })
     } finally {
       await f.close()
     }
@@ -98,7 +98,7 @@ it('codes an oversized physical readout as permanently too large', async () => {
     } catch (error) {
       failure = error
     }
-    expect(deviceApplicationFailure(failure)).toEqual({ code: 'payload-too-large', retryable: false })
+    expect(deviceApplicationFailure(failure)).toEqual({ code: 'payload-too-large', class: 'permanent', retryable: false })
   } finally {
     await f.sqlConnection.close()
   }

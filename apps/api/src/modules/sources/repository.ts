@@ -55,7 +55,7 @@ export async function createPrivateSourceRepository(input: {
   try { signal.throwIfAborted(); const result = await buildPrivateSourceRepository({ ...input, signal }); signal.throwIfAborted(); return result }
   catch (error) {
     if (deadline.aborted && signal.aborted && (error === signal.reason || (error as Error)?.name === 'AbortError'))
-      throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true })
+      throw new DomainError('SOURCE_REPOSITORY_TIMEOUT', 'Private source preparation timed out. Retry the original command to read its retained state; incomplete ownership requires reconciliation.', 503, { retryable: true }, { cause: error })
     throw error
   }
 }
@@ -84,7 +84,7 @@ async function buildPrivateSourceRepository(input: {
       }
       signal.throwIfAborted()
       await mkdir(anchored(reservation, 'repository'), { mode: 0o700 }).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409)
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('SOURCE_REPOSITORY_UNCERTAIN', 'The original private repository is incomplete; reconcile this exact attempt before retry.', 409, undefined, { cause: error })
         throw error
       })
     }

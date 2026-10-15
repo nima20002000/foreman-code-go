@@ -19,7 +19,7 @@ async function readConfig(path: string): Promise<CircleConfig | null> {
     return config
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw new DomainError('CI_CLOUD_CREDENTIALS_UNAVAILABLE', 'CircleCI credential configuration could not be read.', 503)
+    throw new DomainError('CI_CLOUD_CREDENTIALS_UNAVAILABLE', 'CircleCI credential configuration could not be read.', 503, undefined, { cause: error })
   }
 }
 

@@ -125,7 +125,7 @@ export class NativeAccountJournal {
       try { writeRecord(identityPath, operation.binding, true) } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         if (!isDeepStrictEqual(ProviderAccountBindingSchema.parse(readRecord(identityPath)), operation.binding)) {
-          throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'Another installation owns this account slot.', 409)
+          throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'Another installation owns this account slot.', 409, undefined, { cause: error })
         }
       }
     }
@@ -147,7 +147,7 @@ export class NativeAccountJournal {
     }
     try { writeRecord(slotPath, { operationId: operation.id }, true) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      throw new DomainError('PROVIDER_LOGIN_PENDING', 'Another account operation owns this slot.', 409)
+      throw new DomainError('PROVIDER_LOGIN_PENDING', 'Another account operation owns this slot.', 409, undefined, { cause: error })
     }
     const record: NativeAccountRecord = { operation, owner: this.owner(operation), dispatched: false,
       observation: { operationId: operation.id, binding: operation.binding, generation: operation.generation,

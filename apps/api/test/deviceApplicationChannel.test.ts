@@ -271,7 +271,7 @@ describe('authenticated namespace carrier mechanics', () => {
     ['AUTH_REVOKED', false],
     ['AUTH_RUN_ENDED', false],
     ['REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', true],
-    ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', false],
+    ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', true],
     ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
     ['NATIVE_ARTIFACT_AUTHORITY_DENIED', false],
     ['WORKER_WORKFLOW_UNAVAILABLE', false],
@@ -297,7 +297,7 @@ describe('authenticated namespace carrier mechanics', () => {
       const chunks = pair.rawWorker.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
         .filter(frame => frame.type === 'application-chunk')
       const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
-      expect(reply).toEqual({ code, retryable })
+      expect(reply).toEqual({ code, class: retryable ? 'transient' : 'permanent', retryable })
       expect(JSON.stringify(reply)).not.toContain(secret)
       expect(pair.rawMain.closed).toBe(false)
     } finally { await pair.close() }
@@ -313,23 +313,23 @@ describe('authenticated namespace carrier mechanics', () => {
       const chunks = pair.rawMain.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
         .filter(frame => frame.type === 'application-chunk')
       const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
-      expect(reply).toEqual({ code: 'SOURCE_RECLAMATION_UNCONFIRMED', retryable: false })
+      expect(reply).toEqual({ code: 'SOURCE_RECLAMATION_UNCONFIRMED', class: 'permanent', retryable: false })
     } finally { await pair.close() }
   })
   it.each([
-    { code: 'private_secret_token', message: 'secret', retryable: true },
-    { code: 'UNKNOWN_PROVIDER_FAILURE', details: { token: 'secret' } },
-    new Error('secret'),
-  ])('redacts unsupported exception codes and contents', async error => {
+    { error: { code: 'private_secret_token', message: 'secret', retryable: true },
+      reply: { code: 'unavailable', class: 'transient', retryable: true } },
+    { error: { code: 'UNKNOWN_PROVIDER_FAILURE', details: { token: 'secret' } },
+      reply: { code: 'extension-rejected', class: 'permanent', retryable: false } },
+    { error: new Error('secret'), reply: { code: 'extension-rejected', class: 'permanent', retryable: false } },
+  ])('redacts unsupported exception codes and contents but keeps their class %#', async ({ error, reply: expected }) => {
     const pair = setup(async () => { throw error })
     try {
-      await expect(pair.main.request('execution-v1', {})).rejects.toMatchObject({
-        code: 'extension-rejected', retryable: false,
-      })
+      await expect(pair.main.request('execution-v1', {})).rejects.toMatchObject(expected)
       const chunks = pair.rawWorker.frames.map(frame => JSON.parse(frame) as { type: string; data?: string })
         .filter(frame => frame.type === 'application-chunk')
       const reply = JSON.parse(Buffer.concat(chunks.map(frame => Buffer.from(frame.data!, 'base64'))).toString())
-      expect(reply).toEqual({ code: 'extension-rejected', retryable: false })
+      expect(reply).toEqual(expected)
     } finally { await pair.close() }
   })
   it('validates received error codes instead of trusting arbitrary worker error payloads', async () => {

@@ -843,7 +843,7 @@ export class AgentChatService {
       } catch (error) {
         if (error instanceof NativeTurnNotActiveError || definiteRejection(error)) {
           await this.repository.discard(row.id, input.requestId)
-          throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn finished before the steer arrived. Send it as the next turn instead.', 409)
+          throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn finished before the steer arrived. Send it as the next turn instead.', 409, undefined, { cause: error })
         }
         await this.repository.unknown(row.id, input.requestId, errorMessage(error, 'Steer delivery is unconfirmed.'))
         this.scheduleReconcile(row.id)

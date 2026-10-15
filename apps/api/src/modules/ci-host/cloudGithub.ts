@@ -61,7 +61,7 @@ export class GitHubRest {
       return await this.http.operation(120_000, () => this.downloadArtifacts(mirror, id, directory))
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
-      throw new DomainError('CI_CLOUD_FAILED', 'GitHub Actions artifacts could not be downloaded.', 502)
+      throw new DomainError('CI_CLOUD_FAILED', 'GitHub Actions artifacts could not be downloaded.', 502, undefined, { cause: error })
     }
   }
 

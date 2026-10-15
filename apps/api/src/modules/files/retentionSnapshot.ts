@@ -15,7 +15,7 @@ export async function lockFileRetentionOwner(client: Query, ownerPrincipalId: st
     await client.query('select pg_advisory_xact_lock(hashtextextended($1,273640))', [ownerPrincipalId])
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === '55P03') {
-      throw new DomainError('FILE_RETENTION_BUSY', 'Retention is being updated. Retry the same request.', 409)
+      throw new DomainError('FILE_RETENTION_BUSY', 'Retention is being updated. Retry the same request.', 409, undefined, { cause: error })
     }
     throw error
   }

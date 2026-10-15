@@ -9,7 +9,7 @@ import { qualificationError } from './qualificationErrors.js'
 it.each(['HARNESS_INVENTORY_STALE', 'HARNESS_QUALIFICATION_TARGET_CHANGED'])(
   'preserves the retryable Worker qualification failure %s across the application channel', code => {
     expect(deviceApplicationFailure(new DomainError(code, 'Installation changed.', 409)))
-      .toEqual({ code, retryable: true })
+      .toEqual({ code, class: 'transient', retryable: true })
   },
 )
 

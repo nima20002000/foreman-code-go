@@ -50,7 +50,7 @@ export function useOperatorSendMutation({ acceptState, invalidate, attachmentRec
           if (!ApiError.is(error) || error.code !== 'OPERATOR_RECEIPT_NOT_FOUND') throw error
           // A read-only miss is not an abandonment receipt. Reuse the original
           // command identity if new admission is still needed.
-          if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+          if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError({ cause: error })
           assertOperatorMessageReserved(id, command)
         }
       }
@@ -58,7 +58,7 @@ export function useOperatorSendMutation({ acceptState, invalidate, attachmentRec
         return confirmed(await sendOperatorMessage(id, command))
       } catch (error) {
         if (!ApiError.is(error) || error.code !== 'REQUEST_TIMEOUT') throw error
-        if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError()
+        if (!currentSession(generation) || epoch !== identityEpoch()) throw new SessionChangedError({ cause: error })
         assertOperatorMessageReserved(id, command)
         return confirmed(await sendOperatorMessage(id, { ...command, recovery: 'receipt' }))
       }

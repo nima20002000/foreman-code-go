@@ -21,7 +21,7 @@ interface DeviceState { context: TrustedTelemetryContext; identity: TelemetryIde
   challenges: Map<string, { monoMs: number; challenge: CollectionChallenge }>; lastIssued: number;
   sequence: bigint | null; digest: string | null; receipt: IngestReceipt | null; queued: number; tail: Promise<void>; abort: AbortController;
   rows: Map<string, RetainedRow> }
-export class TelemetryRejected extends Error { constructor(readonly reason: string) { super(`Telemetry rejected: ${reason}`) } }
+export class TelemetryRejected extends Error { constructor(readonly reason: string, options?: ErrorOptions) { super(`Telemetry rejected: ${reason}`, options) } }
 const contextKey = (context: TrustedTelemetryContext) => telemetryCanonical(context)
 const digest = (value: unknown) => createHash('sha256').update(telemetryCanonical(value)).digest('hex')
 const identityKey = (identity: TelemetryIdentity) => telemetryCanonical(identity)

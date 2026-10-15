@@ -1,7 +1,7 @@
 import type { HarnessCompatibility } from '@foreman-code/contracts'
 
 export class CompatibilityCheckError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = 'CompatibilityCheckError' }
+  constructor(readonly code: string, message: string, options?: ErrorOptions) { super(message, options); this.name = 'CompatibilityCheckError' }
 }
 /** Never expose CLI stderr, config contents, credentials, or filesystem paths. */
 export function compatibilityReason(error: unknown, aborted = false): NonNullable<HarnessCompatibility['reason']> {

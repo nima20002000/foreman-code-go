@@ -38,6 +38,23 @@ export type ClaudeProfileOwner = (ClaudeDomainBinding | OperatorProfileObservati
 
 /** The role's immutable configuration/placement supplies the selector; the
  * existing admission reads its exact profile and current native proof. */
+type ProductionClaudeInput = Parameters<typeof productionClaudeManager>[0]
+
+/** The role must match its actual domain owner; the caller's mutable settings are copied. */
+function ownedClaudeInput(input: ProductionClaudeInput): ProductionClaudeInput {
+  if (input.role === 'workflow' && input.binding.kind !== 'workflow'
+    || input.role === 'operator' && input.binding.kind !== 'operator'
+    || input.role === 'agent-chat' && input.binding.kind !== 'agent') throw new DomainError('CLAUDE_OWNER_MISMATCH',
+    'The Claude runtime role must match its actual domain owner.', 409)
+  return { ...input, configuration: structuredClone(input.configuration),
+    ...(input.accountBinding ? { accountBinding: structuredClone(input.accountBinding) } : {}),
+    ...(input.selector ? { selector: structuredClone(input.selector) } : {}) }
+}
+
+function setControlPrincipal(binding: ClaudeDomainBinding, principalId: string): void {
+  if (binding.kind === 'operator' || binding.kind === 'agent') binding.controlPrincipalId = principalId
+}
+
 export function productionClaudeManager(input: {
   pool: pg.Pool
   factories: NativeHarnessFactories
@@ -61,13 +78,7 @@ export function productionClaudeManager(input: {
   files?: { service(): AgentFileToolService; sdk?: () => Promise<ClaudeFileSdk> }
   loadClient?: (input: { profilePath: string; recovery: NativeProcessRecovery; binary: string }) => Promise<ClaudeSdkClient>
 }) {
-  if (input.role === 'workflow' && input.binding.kind !== 'workflow'
-    || input.role === 'operator' && input.binding.kind !== 'operator'
-    || input.role === 'agent-chat' && input.binding.kind !== 'agent') throw new DomainError('CLAUDE_OWNER_MISMATCH',
-    'The Claude runtime role must match its actual domain owner.', 409)
-  input = { ...input, configuration: structuredClone(input.configuration),
-    ...(input.accountBinding ? { accountBinding: structuredClone(input.accountBinding) } : {}),
-    ...(input.selector ? { selector: structuredClone(input.selector) } : {}) }
+  input = ownedClaudeInput(input)
   let actual: ClaudeNativeSessionManager | undefined
   let inspectedStart: NativeSessionStart | undefined
   const inspectionStart = async () => {
@@ -163,7 +174,7 @@ export function productionClaudeManager(input: {
             'The message requires its admitted native session context.', 409)
           attached = await attach(session, sessionStart, effectSignal)
         } catch (error) {
-          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.')
+          throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Claude could not prepare the next input.', { cause: error })
         }
         const acceptedMessage = { ...message, callbackAuthority }
         yield* turn(attached, acceptedMessage, effectSignal)
@@ -209,9 +220,7 @@ export function productionClaudeManager(input: {
         workingDirectory: input.workingDirectory, cliVersion: accepted.currentBinding.pin.cliVersion }),
     }
   }, result => allocated?.(result.manager))
-  result.manager.setSessionControlPrincipal = principalId => {
-    if (input.binding.kind === 'operator' || input.binding.kind === 'agent') input.binding.controlPrincipalId = principalId
-  }
+  result.manager.setSessionControlPrincipal = principalId => setControlPrincipal(input.binding, principalId)
   // Factory initialization remains lazy; the admitted allocator's exact instance
   // is captured in the construction callback rather than selected by harness ID.
   const refresh = result.manager.refreshInspectionCredentials.bind(result.manager)

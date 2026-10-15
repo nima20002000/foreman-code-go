@@ -107,7 +107,7 @@ export class ReadonlyJobInputDelivery {
       }
 
       // An accepted source tree cannot provide/overwrite the reserved input namespace.
-      try{await mkdir(path,{mode:0o700})}catch(error){if((error as {code?:string}).code==='EEXIST')throw new DomainError('JOB_INPUT_DIRECTORY_CONFLICT','The reserved input directory already exists; verify its original receipt before retry.',409);throw error}
+      try{await mkdir(path,{mode:0o700})}catch(error){if((error as {code?:string}).code==='EEXIST')throw new DomainError('JOB_INPUT_DIRECTORY_CONFLICT','The reserved input directory already exists; verify its original receipt before retry.',409, undefined, { cause: error });throw error}
       target=await directory(path);const destination=await identity(target),files:JobInputDeliveryReceipt['files']=[]
       const descriptors=[{relativePath:'manifest.json',sha256:admission.manifest.manifestSha256,byteSize:admission.manifest.manifestByteSize},
         {relativePath:'workflow-input.json',sha256:hash(Buffer.from(JSON.stringify(admission.manifest.workflowInput))),byteSize:Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))},

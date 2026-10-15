@@ -57,7 +57,7 @@ export async function appendNormalizedNativeEvent(client: GraphSqlClient,
       rejected: normalized.rejected || result.rows[0]!.previously_rejected }
   } catch (error) {
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'PNE01') {
-      throw new DomainError('NATIVE_EVENT_IDENTITY_CONFLICT', 'The native source identity is already bound to different history.', 409)
+      throw new DomainError('NATIVE_EVENT_IDENTITY_CONFLICT', 'The native source identity is already bound to different history.', 409, undefined, { cause: error })
     }
     throw error
   }

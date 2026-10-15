@@ -155,7 +155,7 @@ function useAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creation
         } catch (failure) {
           const harnessIssues = validationIssues(failure)
           if (harnessIssues.length) throw new FieldValidationError(harnessIssues.map((issue) => ({ ...issue,
-            path: ['harness', ...(issue.path[0] === 'configuration' ? issue.path.slice(1) : issue.path)] })))
+            path: ['harness', ...(issue.path[0] === 'configuration' ? issue.path.slice(1) : issue.path)] })), { cause: failure })
           throw failure
         }
       })()

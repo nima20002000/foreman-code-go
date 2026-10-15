@@ -31,7 +31,7 @@ describe('lost original remote replies', () => {
       expect(decoded.code).toBe(code)
       expect(isTransientExecutionError(decoded)).toBe(retryable)
       expect(decoded.retryable).toBe(retryable)
-      expect(deviceApplicationFailure(original)).toEqual({ code, retryable })
+      expect(deviceApplicationFailure(original)).toEqual({ code, retryable, class: retryable ? 'transient' : 'permanent' })
       if (retryable) {
         const failure = transientExecutionFailure(decoded)
         expect(failure).toMatchObject({ outcome: 'failed', error: { code, retryable: true } })

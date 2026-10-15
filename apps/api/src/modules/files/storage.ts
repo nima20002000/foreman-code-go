@@ -179,7 +179,7 @@ export class FileByteStorage {
     } else {
       let staged: FileHandle
       try { staged = await this.openRegular(this.verified(storageKey)) }
-      catch (error) { if (!missing(error)) throw error; throw new DomainError('FILE_UPLOAD_INCOMPLETE', 'Upload verified bytes before finalizing.', 409) }
+      catch (error) { if (!missing(error)) throw error; throw new DomainError('FILE_UPLOAD_INCOMPLETE', 'Upload verified bytes before finalizing.', 409, undefined, { cause: error }) }
       try { await this.verify(staged, expected) } finally { await staged.close() }
       try { await link(this.verified(storageKey), this.object(storageKey)) }
       catch (error) {
@@ -200,7 +200,7 @@ export class FileByteStorage {
     try { handle = await this.openRegular(this.object(storageKey)) }
     catch (error) {
       if (!missing(error)) throw error
-      throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410)
+      throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410, undefined, { cause: error })
     }
     try {
       const stamp = async () => {
@@ -247,7 +247,7 @@ export class FileByteStorage {
     await this.initialize()
     let handle: FileHandle
     try { handle = await this.openRegular(this.object(storageKey)) }
-    catch (error) { if (!missing(error)) throw error; throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410) }
+    catch (error) { if (!missing(error)) throw error; throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410, undefined, { cause: error }) }
     try { await this.verify(handle, expected, false); return handle.createReadStream({ start: 0, autoClose: true }) }
     catch (error) { await handle.close(); throw error }
   }

@@ -49,7 +49,7 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
   } catch (error) {
     log.warn({ runId: run.id }, 'Expired cloud dispatch cleanup remains pending; ownership retained')
     if (error instanceof DomainError && error.code === 'CI_CLOUD_CLEANUP_PENDING') throw error
-    throw new DomainError('CI_CLOUD_CLEANUP_PENDING', 'Cloud cancellation failed; ownership retained.', 503)
+    throw new DomainError('CI_CLOUD_CLEANUP_PENDING', 'Cloud cancellation failed; ownership retained.', 503, undefined, { cause: error })
   }
   return unstarted(run, 'lost', 'Cloud dispatch created no workflow after recovery attempts; the CI slot was released.')
 }

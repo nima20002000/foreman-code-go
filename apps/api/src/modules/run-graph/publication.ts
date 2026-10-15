@@ -312,8 +312,8 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       poisonGraphTransaction(this.sql)
       if (error instanceof RunGraphError || error instanceof DomainError) throw error
       if (typeof error === 'object' && error !== null && 'code' in error) {
-        if (error.code === 'PGR01') throw new RunGraphError('GRAPH_STOP_CONFLICT')
-        if (error.code === 'PGR02') throw new RunGraphError('GRAPH_TERMINAL_CONFLICT')
+        if (error.code === 'PGR01') throw new RunGraphError('GRAPH_STOP_CONFLICT', { cause: error })
+        if (error.code === 'PGR02') throw new RunGraphError('GRAPH_TERMINAL_CONFLICT', { cause: error })
       }
       const code = RunGraphErrorCodeSchema.safeParse(error instanceof Error ? error.message : undefined)
       if (code.success) throw new RunGraphError(code.data, { cause: error })

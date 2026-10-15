@@ -204,7 +204,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       }
       catch (error) {
         if (error instanceof SyntaxError || error instanceof DomainError && ['FILE_BYTES_UNAVAILABLE','FILE_SIZE_MISMATCH','FILE_HASH_MISMATCH','FILE_TYPE_INVALID'].includes(error.code)) {
-          throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT','Expected canonical artifact bytes are missing or corrupt.',410)
+          throw new DomainError('JOB_REQUIRED_OUTPUT_CORRUPT','Expected canonical artifact bytes are missing or corrupt.',410, undefined, { cause: error })
         }
         throw error
       }

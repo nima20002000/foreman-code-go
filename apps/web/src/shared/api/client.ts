@@ -103,8 +103,8 @@ export class ApiError extends Error {
   readonly details?: Record<string, unknown>
   readonly requestId?: string
 
-  constructor(payload: ApiErrorPayload, status = 0) {
-    super(payload.message)
+  constructor(payload: ApiErrorPayload, status = 0, options?: ErrorOptions) {
+    super(payload.message, options)
     this.name = 'ApiError'
     this.code = payload.code
     this.status = status
@@ -247,7 +247,7 @@ export class ApiClient {
         code: 'NETWORK_ERROR',
         message: 'Updating — reconnecting…',
         details: { cause: error instanceof Error ? error.message : String(error) },
-      })
+      }, undefined, { cause: error })
     }
 
     let payload: unknown = undefined

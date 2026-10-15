@@ -86,7 +86,7 @@ async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphSco
   } catch (error) {
     if (error instanceof RunGraphError) throw error
     // No parser fragments, private source records or paths cross this boundary.
-    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION', { cause: error })
   }
 }
 

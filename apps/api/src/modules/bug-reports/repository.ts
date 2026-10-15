@@ -107,7 +107,7 @@ export async function listBugReports(
       cursor = CursorSchema.parse(JSON.parse(Buffer.from(input.cursor, 'base64url').toString('utf8')))
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof z.ZodError) {
-        throw new DomainError('INVALID_CURSOR', 'The bug report cursor is invalid.', 400)
+        throw new DomainError('INVALID_CURSOR', 'The bug report cursor is invalid.', 400, undefined, { cause: error })
       }
       throw error
     }

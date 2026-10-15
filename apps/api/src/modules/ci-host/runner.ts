@@ -212,7 +212,7 @@ export class HostCiRunner {
     }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new DomainError('CI_RUN_UNKNOWN', 'This computer has no such CI run.', 404)
+        throw new DomainError('CI_RUN_UNKNOWN', 'This computer has no such CI run.', 404, undefined, { cause: error })
       }
       throw error
     }

@@ -248,7 +248,7 @@ export async function extractWorkerArchive(options) {
   } catch (error) {
     signal?.throwIfAborted();
     if (error instanceof WorkerError) throw error;
-    throw new WorkerError('artifact_archive_invalid');
+    throw new WorkerError('artifact_archive_invalid', undefined, { cause: error });
   } finally {
     source.destroy();
     expanded.destroy();

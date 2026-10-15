@@ -88,7 +88,7 @@ export class LocalProviderCredentials {
       await mkdir(userHome, { mode: 0o700 })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      throw new DomainError('ACCOUNT_HOME_REUSED', 'The account directory already belongs to another slot.', 409)
+      throw new DomainError('ACCOUNT_HOME_REUSED', 'The account directory already belongs to another slot.', 409, undefined, { cause: error })
     }
     await secureDirectory(userHome)
     await secureDirectory(homePath)
@@ -100,7 +100,7 @@ export class LocalProviderCredentials {
       let info
       try { info = await lstat(path) } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The selected account is unavailable on this computer.', 409)
+        throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The selected account is unavailable on this computer.', 409, undefined, { cause: error })
       }
       if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
         throw new DomainError('ACCOUNT_HOME_UNSAFE', 'The managed account directory is not private.', 409)
