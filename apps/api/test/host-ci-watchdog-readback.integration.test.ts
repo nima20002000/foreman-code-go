@@ -13,7 +13,10 @@ it('persists a CI watchdog failure for authenticated MCP status and log readback
     await f.ci.dispatch()
     const reason = 'CI hang watchdog: no test progress for 60000 ms; running: apps/api/test/loop.test.ts > planner never returns'
     f.finish(started.ticketId, 1, `[ci-watchdog] ${reason}\n`, undefined, reason)
-    const result = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const result = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+      ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 5,
+    }))
+    expect(result.wait?.status).toBe('settled')
     expect(result.run).toMatchObject({ state: 'failed', exitCode: 1, message: reason })
     expect(result.logTail).toContain(reason)
     const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', { ticketId: started.ticketId }))

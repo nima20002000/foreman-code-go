@@ -62,8 +62,11 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(retainedReleaseSchema.safeParse(stored).success).toBe(true)
       expect(CiRunRecordSchema.parse(stored).integrationShards).toBe(7)
       f.finish(started.ticketId, 0, 'one test passed')
-      expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
-        .toBe('passed')
+      const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+        ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 5,
+      }))
+      expect(finished.wait?.status).toBe('settled')
+      expect(finished.run.state).toBe('passed')
     }
     const token = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
     const response = await f.app.inject({ method: 'POST', url: `/api/management/workspaces/${f.workspaceId}/ci`,
