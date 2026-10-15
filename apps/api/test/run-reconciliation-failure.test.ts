@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { MemorySaver } from '@langchain/langgraph-checkpoint'
 import { afterEach, test, vi } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
+import { DeviceApplicationError } from '../src/modules/devices/deviceApplicationError.js'
+import { managedMcpChannelFixture } from './helpers/managedMcpChannel.js'
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -30,6 +33,27 @@ test('a Run whose recovery fails transiently stays eligible for recovery with ba
   assert.equal(start.mock.calls.length, 40)
   assert.equal(runs.requestCleanup.mock.calls.length, 0)
   assert.ok(reported.every(error => (error as DomainError).code === 'REMOTE_NATIVE_PHYSICAL_BACKPRESSURE'))
+})
+
+test('lost installed workflow authority stays recoverable after crossing the device link', async () => {
+  const channel = managedMcpChannelFixture({ mainId: randomUUID(), deviceId: randomUUID(),
+    workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+    connectionGeneration: 2, connectionEpoch: randomUUID() }, {
+    namespace: 'execution-v1', version: 1, role: 'server', maxJsonBytes: 4096, maxBinaryBytes: 0,
+    handle: async () => { throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE',
+      'The original installed workflow authority is unavailable.', 409) },
+  })
+  let failure: unknown
+  try {
+    failure = await channel.main.request('execution-v1', { method: 'status' }).catch(error => error)
+    assert.ok(failure instanceof DeviceApplicationError)
+  } finally {
+    await channel.close()
+  }
+  const { start, runs } = await sweep(failure, 40)
+  assert.equal(start.mock.calls.length, 40)
+  assert.equal(runs.requestCleanup.mock.calls.length, 0)
+  assert.equal((failure as DeviceApplicationError).retryable, true)
 })
 
 test('a Run whose recovery keeps failing permanently is failed with the real cause and settled by cleanup', async () => {
