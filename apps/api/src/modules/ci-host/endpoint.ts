@@ -15,6 +15,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
 import type { WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
 import { workerBundleErrorMessage } from '../computers/workerBundleReadiness.js'
+import { withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
 
 const log = componentLogger('jobs')
 
@@ -43,7 +44,10 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
   async computers(): Promise<HostCiComputer[]> {
     // Recovery sweeps make provider calls; planning and listing must not wait for them.
     for (const cloud of this.clouds) {
-      void cloud.reconcile().catch(error => { log.warn({ operation: 'recover cloud CI tickets', err: error, provider: cloud.provider.id }, 'Cloud CI recovery sweep failed') })
+      void withoutCiDatabasePriority(() => cloud.reconcile()).catch(error => {
+        log.warn({ operation: 'recover cloud CI tickets', err: error, provider: cloud.provider.id },
+          'Cloud CI recovery sweep failed')
+      })
     }
     const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
       build_enabled: boolean; build_priority: number; build_allowance_percent: number }>(
@@ -102,7 +106,7 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       }
     }
     if (reply.operation === 'status' && reply.cleanupSupported) {
-      void this.cleanDirectories(computer).catch(error => {
+      void withoutCiDatabasePriority(() => this.cleanDirectories(computer)).catch(error => {
         log.warn({ operation: 'clean retained CI directories', err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')
       })
     }

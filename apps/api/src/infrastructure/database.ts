@@ -16,7 +16,9 @@ export interface Database {
 }
 
 export function createDatabase(options: DatabaseOptions): Database {
-  const pool = createPool(options, 'graphql-api')
+  const dispatchPool = createPool({ ...options, maxConnections: 2,
+    connectionTimeoutMs: 250, queryTimeoutMs: 1000, lockTimeoutMs: 250 }, 'graphql-ci-dispatch')
+  const pool = createPool(options, 'graphql-api', dispatchPool)
   return {
     pool,
     async ping(signal) {
