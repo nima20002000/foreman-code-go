@@ -195,7 +195,12 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       get startupDescription() { return startupDescription },
       async mcpInspections() { await readStartup(); return unavailableInspections },
       makeMcpReady() { mcpReady = true },
-      launch() { started = Promise.allSettled([base.engine.start(base.f.run.id)]) },
+      launch() {
+        started = Promise.allSettled([base.engine.start(base.f.run.id)])
+        return readUntil(readStartup, details => details.executions.some(execution =>
+          execution.workflowNodeId === entry.id && execution.result?.outcome === 'succeeded'),
+        { timeoutMs: 4_000, description: 'the initial graph entry completion' })
+      },
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readUntil(readStartup, details => details.executions.some(execution =>
         execution.workflowNodeId === affected.id && execution.state === 'running')

@@ -11,7 +11,7 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   it('records a failed check while sibling work completes and the loop remains active', async () => {
-    fixture.launch()
+    await fixture.launch()
     const before = await fixture.active()
     const remote = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
     const checking = await readUntil(fixture.read, details => details.executions.some(execution =>

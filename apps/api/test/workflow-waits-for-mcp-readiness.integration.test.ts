@@ -10,7 +10,7 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
 
   // A temporarily unavailable Foreman Code MCP server must be retried before native turn entry.
   it('waits for Foreman Code MCP at turn start and then completes', async () => {
-    fixture.launch()
+    await fixture.launch()
     await readUntil(fixture.mcpInspections, count => count > 0,
       { timeoutMs: 4_000, get description() {
         return `the unavailable Foreman Code MCP inspection: ${fixture.startupDescription}`

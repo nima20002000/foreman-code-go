@@ -9,7 +9,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
     fixture = await faultWorkflowFixture()
-    fixture.launch()
+    await fixture.launch()
     await fixture.active()
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
