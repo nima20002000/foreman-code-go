@@ -28,6 +28,7 @@ import {
   type DeviceExtensionRegistration,
 } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
+import { DeviceApplicationAdmissionError } from '../../devices/deviceApplicationError.js'
 import { physicalFixture } from './__tests__/installedWorkflowHost.js'
 import { deferred } from '../../../../test/helpers/deferred.js'
 
@@ -659,6 +660,16 @@ describe('passive original remote telemetry precision, no native or database IO'
     expect(() => passive.assertCurrent()).toThrow()
     expect(f.request).toHaveBeenCalledOnce()
     expect(f.query).not.toHaveBeenCalled()
+    await f.sqlConnection.close()
+  })
+  it('keeps a retained original reply through a transient authorization failure so the retry reads it', async () => {
+    const f = await physicalFixture(), readouts = new InstalledWorkflowPhysicalReadouts(), assertCurrent = vi.fn(async () => {})
+    readouts.remember({ readout: f.readout, placement: f.placement, source: f.source, leaseExpiresAt: '2099-01-01T00:00:00.000Z',
+      assertOwnerCurrent: assertCurrent, assertCurrent, observe: () => matchingOriginalRegistryLaunch(f.registry, f.captured.launch), closure: () => null })
+    const selector = { intent: f.intent, placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(f.source) }
+    assertCurrent.mockRejectedValueOnce(new DeviceApplicationAdmissionError('backpressure'))
+    await expect(readouts.read(selector)).rejects.toMatchObject({ code: 'backpressure' })
+    expect(await readouts.read(selector)).toEqual(f.readout)
     await f.sqlConnection.close()
   })
 })
