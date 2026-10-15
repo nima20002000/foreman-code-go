@@ -350,6 +350,16 @@ it('cleans reconciled sessionless worktrees only after positive closure and retr
     git(dirty.workingDirectory, 'commit', '-qm', 'Retain result')
     const resultCommit = git(dirty.workingDirectory, 'rev-parse', 'HEAD')
     await closeCompletedWorkflowSources(f.pool, f.sources, error => { throw error })
+    expect(await stat(dirty.workingDirectory)).toBeDefined()
+    const nextAttemptAt = cleanupRows.find(row => row.execution_id === dirty.record.receipt.executionId)
+      .worktree_cleanup.nextAttemptAt as string
+    expect(Date.parse(nextAttemptAt)).toBeGreaterThan(Date.now())
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(nextAttemptAt))
+    try {
+      await closeCompletedWorkflowSources(f.pool, f.sources, error => { throw error })
+    } finally {
+      clock.mockRestore()
+    }
     await expect(stat(dirty.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(git(f.ports.cloneDirectory('fixture/project'), 'rev-parse', dirty.record.receipt.worktree!.branch))
       .toBe(resultCommit)
