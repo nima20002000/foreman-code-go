@@ -1,11 +1,11 @@
 import type { ExecutionResult } from '@foreman-code/contracts'
-import { parseWorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { ZodError } from 'zod'
+import { parseWorkResultForInput } from '../runs/workHandoffResult.js'
 
-export function workResultRepairPrompt(result: ExecutionResult, contract: string): string | undefined {
+export function workResultRepairPrompt(result: ExecutionResult, contract: string, input?: unknown): string | undefined {
   if (result.outcome !== 'succeeded') return undefined
   try {
-    parseWorkHandoffResult(result)
+    parseWorkResultForInput(result, input)
     return undefined
   } catch (error) {
     const issues = error instanceof ZodError ? JSON.stringify(error.issues) : String(error)

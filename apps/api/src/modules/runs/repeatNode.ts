@@ -1,11 +1,12 @@
 import { HarnessExecutionSchema, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
-import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1, parseWorkHandoffResult,
+import { AcceptedCurrentNodeResultSchema, NodeResolutionSchema, parseRepeatExitResultV1,
   type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 
 import { ExecutionLimiter } from './limiter.js'
 import { waitBeforeRetry } from './executionRetryPolicy.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
 import { parseCurrentChoiceResult } from './currentRouting.js'
+import { parseWorkResultForInput } from './workHandoffResult.js'
 import {
   assertRepeatExecution, blockForNode, repeatConflict, repeatDigest, repeatExecutionIdentity, repeatTickIndex,
   type RepeatNodeRef, type RepeatResolution, type RepeatScope,
@@ -60,7 +61,7 @@ export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: Repea
   const deliverable = (accepted: HarnessExecution) => options.deliverableFailure
     ? HarnessExecutionSchema.parse({ ...accepted, result: options.deliverableFailure }) : accepted
   if (version.definition.handoffs) {
-    try { parseWorkHandoffResult(execution.result) }
+    try { parseWorkResultForInput(execution.result, execution.input) }
     catch {
       return invalidWorkResult(execution)
     }

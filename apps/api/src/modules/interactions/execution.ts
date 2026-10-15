@@ -2902,7 +2902,8 @@ export class ApprovalExecutionCoordinator {
         if (waiting) return { waiting }
         if (exactTerminal) {
           const handoffPrompt = input.workHandoffContract
-            ? workResultRepairPrompt(observed.terminalTurn!.result, input.workHandoffContract) : undefined
+            ? workResultRepairPrompt(observed.terminalTurn!.result, input.workHandoffContract, observation.execution.input)
+            : undefined
           // The deliverable is judged once the handoff envelope itself is valid.
           const verdict = input.deliverable && !handoffPrompt
             ? await observation.bookkeeping(() => deliverableVerdict(observed.terminalTurn!.result, input.deliverable!)) : undefined
