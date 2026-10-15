@@ -1,6 +1,6 @@
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
@@ -20,6 +20,7 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
   const release = deferred()
   let timeout: NodeJS.Timeout | undefined
   let readPending = false
+  let schedule: ReturnType<typeof vi.spyOn> | undefined
   try {
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commit: 'a'.repeat(40) }))
     await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
@@ -35,6 +36,9 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
     }
     const dispatch = f.ci.dispatch()
     await entered.promise
+    await dispatch
+    // Keep the admitted gate queued while comparing its MCP and database snapshots.
+    schedule = vi.spyOn(f.ci, 'dispatch').mockResolvedValue(undefined)
     const input = { suite: 'integration', scope: 'full', gate: true, commit: 'b'.repeat(40),
       commandId: 'pending-dispatch-gate' }
     const denied = await f.connect(CI_GET_ACTIONS)
@@ -60,6 +64,7 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
   } finally {
     clearTimeout(timeout)
     release.resolve()
+    schedule?.mockRestore()
     await f.close()
   }
 })

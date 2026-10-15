@@ -325,7 +325,8 @@ it('persists large selections outside repository-specific roots through authenti
     }
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
-    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const read = await f.waitFor(reader, started.ticketId, output =>
+      output.run.state === 'running' && output.run.observation?.status === 'available')
     expect(read.run).toMatchObject({ scope: 'affected', files: [...files].sort() })
     const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
     expect(stored.rows[0]!.record).toEqual(read.run)
