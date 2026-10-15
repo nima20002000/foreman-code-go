@@ -1,12 +1,45 @@
+import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { DomainError } from '../errors.js'
+import { managedMcpChannelFixture } from '../../../test/helpers/managedMcpChannel.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
-import { isTransientExecutionCode, isTransientExecutionError } from './executionRetryPolicy.js'
+import {
+  isTransientExecutionCode, isTransientExecutionError, isTransientExecutionResult, transientExecutionFailure,
+} from './executionRetryPolicy.js'
 
 describe('lost original remote replies', () => {
-  it('start a fresh attempt for an unretained physical reply and stop for an uncaptured source', () => {
-    expect(isTransientExecutionError(new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply is no longer retained.', 409))).toBe(true)
-    expect(isTransientExecutionError(new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The original source is unavailable.', 409))).toBe(false)
+  it.each([
+    { code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', reason: 'not_retained', retryable: true },
+    { code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED', reason: 'not_captured', retryable: false },
+    { code: 'REMOTE_AUTHORITY_DENIED', reason: 'revoked', retryable: false },
+  ])('preserves execution retry classification through the device channel: $code', async ({ code, reason, retryable }) => {
+    const original = Object.assign(new Error('The original remote reply is unavailable.'), {
+      code, details: { reason },
+    })
+    const channel = managedMcpChannelFixture({
+      mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+      keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(),
+      connectionEpoch: randomUUID(), connectionGeneration: 1,
+    }, {
+      namespace: 'execution-v1', version: 1, role: 'server', maxJsonBytes: 4096, maxBinaryBytes: 0,
+      handle: async () => { throw original },
+    })
+    try {
+      const decoded = await channel.main.request('execution-v1', { method: 'physical-readout' }).catch(error => error)
+      expect(decoded).toBeInstanceOf(DeviceApplicationError)
+      expect(decoded).not.toBe(original)
+      expect(decoded.code).toBe(code)
+      expect(isTransientExecutionError(decoded)).toBe(retryable)
+      expect(decoded.retryable).toBe(retryable)
+      expect(deviceApplicationFailure(original)).toEqual({ code, retryable })
+      if (retryable) {
+        const failure = transientExecutionFailure(decoded)
+        expect(failure).toMatchObject({ outcome: 'failed', error: { code, retryable: true } })
+        expect(isTransientExecutionResult(failure)).toBe(true)
+      }
+    } finally {
+      await channel.close()
+    }
   })
 })
 
