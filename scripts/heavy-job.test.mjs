@@ -14,6 +14,8 @@ const legacySource = new URL('./fixtures/heavy-job-single-slot.mjs', import.meta
 const namespace = { boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), pid: readlinkSync('/proc/self/ns/pid') }
 const jobEnv = (cwd) => {
   const env = { ...process.env, GRAPHQL_HEAVY_BASE_TMPDIR: dirname(cwd) }
+  const hook = join(dirname(cwd), 'proc-hook.mjs')
+  if (existsSync(hook)) env.NODE_OPTIONS = `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(hook).href}`
   delete env.GRAPHQL_HEAVY_JOB_COMMON
   delete env.GRAPHQL_HEAVY_JOB_TOKEN
   delete env.FOREMAN_CODE_HEAVY_JOB_COMMON
@@ -99,10 +101,19 @@ test('temporary directories exclude other writers under a shared group umask', t
   assert.deepEqual(modes, [0o700, 0o700])
 })
 function mockProc(f, declarations) {
-  // Change only the disposable script's read functions to model visibility errors.
-  const path = join(f.first, 'scripts/heavy-job.mjs')
-  const script = readFileSync(path, 'utf8').replace('readFileSync,', 'readFileSync as actualReadFileSync,').replace('readdirSync,', 'readdirSync as actualReaddirSync,')
-  writeFileSync(path, `${script}\n${declarations}\n`)
+  writeFileSync(join(f.home, 'proc-hook.mjs'), `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const actualReadFileSync = fs.readFileSync
+const actualReaddirSync = fs.readdirSync
+const actualStatSync = fs.statSync
+${declarations}
+fs.readFileSync = readFileSync
+fs.readdirSync = readdirSync
+fs.statSync = (path, ...args) => /^\\/proc\\/999999\\d+\\/environ$/.test(String(path))
+  ? { uid: process.geteuid() } : actualStatSync(path, ...args)
+syncBuiltinESMExports()
+`)
 }
 const waitFile = async (path) => {
   if (existsSync(path)) return
@@ -241,7 +252,7 @@ for (const owner of ['absent', 'reused']) {
     })
 }
 
-test('an empty published group still retains its live detached token-bearing worker', { timeout: 6000 }, async () => {
+test('a dead running owner is reaped even with a live detached token-bearing worker', { timeout: 6000 }, async context => {
   const f = fixture()
   const token = randomUUID()
   const worker = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'],
@@ -259,9 +270,10 @@ test('an empty published group still retains its live detached token-bearing wor
       utimesSync(path, new Date(0), new Date(0))
     }
     utimesSync(join(f.state, 'active'), new Date(0), new Date(0))
-    const result = await probe(f)
-    assert.match(result.output, /queued .*waiting/)
-    assert.doesNotMatch(result.output, /\[heavy-job\] running /)
+    const result = await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'], { signal: context.signal })
+    assert.equal(result.code, 0, result.output)
+    assert.equal(existsSync(join(f.state, 'running', ticket)), false)
+    assert.equal(worker.exitCode, null)
   } finally {
     worker.kill('SIGTERM')
     await exited
@@ -274,7 +286,6 @@ for (const [name, phase, pid, pgid, identity] of [
   ['queued foreign ownership', 'queued', 99999999, null, { ...namespace, boot: 'foreign' }],
   ['queued unreadable owner', 'queued', 99999998, null, namespace],
   ['acquisition crash before the child PID is recorded', 'acquiring', 99999999, null, namespace],
-  ['running crash before the child PID is recorded', 'running', 99999999, null, namespace],
   ['unknown phase', 'unknown', 99999999, null, namespace],
   ['inconsistent queued process group', 'queued', 99999999, 99999998, namespace],
 ]) test(`${name} remains reserved with unreadable evidence`, { timeout: 6000 }, async () => {
@@ -348,17 +359,29 @@ test('a coordinator crash at spawn leaves acquiring provenance in every marker',
 test('marker publication failure stops the spawned group before releasing its slot', { timeout: 6000 }, async () => {
   const f = fixture()
   try {
-    const scriptPath = join(f.first, 'scripts/heavy-job.mjs')
     const pidPath = join(f.home, 'unpublished-pid')
-    const script = readFileSync(scriptPath, 'utf8').replace('writeFileSync }', 'writeFileSync as actualWriteFileSync }')
-    writeFileSync(scriptPath, `${script}\nfunction writeFileSync(path, data, ...args) { if (path.startsWith(queue + '/') && JSON.parse(data).phase === 'running') { actualWriteFileSync(${JSON.stringify(pidPath)}, String(JSON.parse(data).pgid)); throw new Error('fixture marker publication failure') } return actualWriteFileSync(path, data, ...args) }\n`)
+    const hook = join(f.home, 'proc-hook.mjs')
+    writeFileSync(hook, `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+const write = fs.writeFileSync
+fs.writeFileSync = (path, data, ...args) => {
+  if (String(path).startsWith(${JSON.stringify(f.state)}) && typeof data === 'string'
+    && data.startsWith('{') && JSON.parse(data).phase === 'running') {
+    write(${JSON.stringify(pidPath)}, String(JSON.parse(data).pgid))
+    throw new Error('fixture marker publication failure')
+  }
+  return write(path, data, ...args)
+}
+syncBuiltinESMExports()
+`)
     const result = await run(f.first, ['--stop-grace-ms', '100', '--', process.execPath, '-e', 'setInterval(()=>{},1000)'])
     assert.equal(result.code, 1, result.output)
     assert.match(result.output, /fixture marker publication failure/)
     assert.equal(pidRunning(Number(readFileSync(pidPath, 'utf8'))), false)
     assert.equal(existsSync(join(f.state, 'active')), false)
     assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
-    copyFileSync(source, scriptPath)
+    rmSync(hook)
     assert.equal((await run(f.first, ['--', process.execPath, '-e', 'process.exit(0)'])).code, 0)
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
@@ -816,11 +839,10 @@ test('multi-slot cleanup reclaims dead owners but preserves foreign and replacem
   } finally { rmSync(f.home, { recursive: true, force: true }) }
 })
 
-test('a crashed wrapper retains its slot while token-bearing descendants are live', { timeout: 10000 }, async () => {
+test('a crashed running wrapper releases its slot while its detached descendants remain alive', { timeout: 10000 }, async () => {
   const f = fixture(), jobs = []
   try {
-    // Model complete visibility of fixture processes; unrelated host processes
-    // may deny /proc reads, which correctly prevents production reclamation.
+    // Model fixture descendants independently of unrelated host processes.
     const visible = join(f.home, 'visible-pids')
     writeFileSync(visible, '[]')
     mockProc(f, `function readFileSync(...args) { return actualReadFileSync(...args) }\nfunction readdirSync(path, ...args) { return path === '/proc' ? JSON.parse(actualReadFileSync(${JSON.stringify(visible)}, 'utf8')) : actualReaddirSync(path, ...args) }`)
@@ -840,15 +862,11 @@ test('a crashed wrapper retains its slot while token-bearing descendants are liv
     // Publish descendant visibility before the next scheduler can inspect ownership.
     writeFileSync(visible, JSON.stringify([crashed.child.pid, crashedOwner.pgid].map(String)))
     const next = heldJob(f, 'next'); jobs.push(next)
-    await waitFor(() => readdirSync(join(f.state, 'queue')).length === 2)
-    await next.queued()
-    assert.equal(existsSync(recordPath), true)
-    assert.ok(pidRunning(crashedOwner.pgid))
-    assert.equal(existsSync(next.started), false)
-    crashed.release()
-    await waitFor(() => !pidRunning(crashedOwner.pgid) && !existsSync(recordPath))
     await waitFile(next.started)
     assert.equal(existsSync(recordPath), false)
+    assert.ok(pidRunning(crashedOwner.pgid))
+    crashed.release()
+    await waitFor(() => !pidRunning(crashedOwner.pgid))
     next.release()
     assert.equal((await next.exited).code, 0)
   } finally { for (const job of jobs) job.release(); await stopJobs(jobs); rmSync(f.home, { recursive: true, force: true }) }
