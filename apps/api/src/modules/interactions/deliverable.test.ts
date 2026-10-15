@@ -14,6 +14,13 @@ const schema = {
 }
 
 describe('deliverable verdict', () => {
+  it.each([{ $ref: '#/missing' }, { type: 'string', pattern: '[' }])(
+    'classifies a runtime schema error as non-retryable configuration: %j', async outputSchema => {
+      await expect(deliverableVerdict(finalText('"answer"'), contract({ outputSchema })))
+        .rejects.toMatchObject({ result: { outcome: 'failed',
+          error: { code: 'OUTPUT_SCHEMA_INVALID', retryable: false } } })
+    },
+  )
   it('passes a non-blank plain answer and rejects a blank one under the default rule', async () => {
     expect(await deliverableVerdict(finalText('Reviewed the diff.'), contract())).toBeUndefined()
     expect(await deliverableVerdict(finalText('  '), contract())).toMatchObject({ code: 'OUTPUT_SCHEMA_MISMATCH' })

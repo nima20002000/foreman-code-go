@@ -26,6 +26,58 @@ describe('workflow Agent output schema', () => {
     expect(OutputSchemaSchema.safeParse(oversized).success).toBe(false)
   })
 
+  it.each(['$defs', 'definitions', 'patternProperties', 'dependentSchemas'])(
+    'rejects reference markers hidden in %s', keyword => {
+      const schema = { [keyword]: { ticket: { type: 'string', 'x-foreman-reference': 'ciTicket' } } }
+      expect(OutputSchemaSchema.safeParse(schema).success).toBe(false)
+    },
+  )
+
+  it.each(['allOf', 'anyOf', 'oneOf', 'prefixItems'])(
+    'rejects reference markers hidden in %s branches', keyword => {
+      const schema = { [keyword]: [{ type: 'string', 'x-foreman-reference': 'ciTicket' }] }
+      expect(OutputSchemaSchema.safeParse(schema).success).toBe(false)
+    },
+  )
+
+  it.each(['not', 'if', 'then', 'else', 'contains', 'additionalProperties', 'unevaluatedItems'])(
+    'rejects reference markers hidden in %s schemas', keyword => {
+      const schema = { [keyword]: { type: 'string', 'x-foreman-reference': 'ciTicket' } }
+      expect(OutputSchemaSchema.safeParse(schema).success).toBe(false)
+    },
+  )
+
+  it('rejects refs that can reuse a marker outside its declared property', () => {
+    const schema = { type: 'object', properties: {
+      ticket: { type: 'string', 'x-foreman-reference': 'ciTicket' },
+      alias: { $ref: '#/properties/ticket' },
+    } }
+    expect(OutputSchemaSchema.safeParse(schema).success).toBe(false)
+  })
+
+  it.each([
+    { $ref: '#/$defs/missing' },
+    { type: 'string', pattern: '[' },
+    { type: 'object', patternProperties: { '[': { type: 'string' } } },
+    { type: 'invalid' },
+    { required: 'ticket' },
+    { properties: { ticket: 42 } },
+    { allOf: { type: 'string' } },
+    { minLength: -1 },
+  ])('rejects invalid schema configuration at authoring: %j', schema => {
+    expect(OutputSchemaSchema.safeParse(schema).success).toBe(false)
+  })
+
+  it('keeps local refs and composition available without reference markers', () => {
+    const schema = { $defs: { ticket: { type: 'string', pattern: '^ticket-' } },
+      allOf: [{ $ref: '#/$defs/ticket' }] }
+    expect(OutputSchemaSchema.parse(schema)).toEqual(schema)
+    expect(checkDeliverable('ticket-created', schema)).toEqual([])
+    expect(checkDeliverable('unknown', schema)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'OUTPUT_SCHEMA_MISMATCH' })]),
+    )
+  })
+
   it('accepts exact added skill versions and removed skill IDs, and rejects a skill named in both lists', () => {
     const override = { add: [{ skillId: 'skill-a', version: '3' }], remove: ['skill-b'] }
     expect(NodeSkillOverrideSchema.parse(override)).toEqual(override)
@@ -35,6 +87,11 @@ describe('workflow Agent output schema', () => {
 })
 
 describe('deliverable checks', () => {
+  it.each([{ $ref: '#/missing' }, { type: 'string', pattern: '[' }])(
+    'returns a configuration issue for an invalid saved schema: %j', schema => {
+      expect(checkDeliverable('answer', schema)).toMatchObject([{ code: 'OUTPUT_SCHEMA_INVALID' }])
+    },
+  )
   it('requires a present deliverable when no schema is declared', () => {
     expect(checkDeliverable('Finished the review.', undefined)).toEqual([])
     expect(checkDeliverable({}, undefined)).toEqual([])
