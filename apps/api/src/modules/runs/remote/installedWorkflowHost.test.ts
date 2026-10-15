@@ -252,6 +252,24 @@ describe('installed host resident execution continuity', () => {
     }
   })
 
+  it('answers Main status readback after Main refuses the MCP lease for good', async () => {
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const f = await runningInstalledFixture()
+    try {
+      clock.mockReturnValue(now + 13 * 60_000)
+      f.revokeMcpLease()
+      for (let index = 0; index < 2; index++) {
+        expect((await f.call('status')).payload).toMatchObject({ status: 'known' })
+      }
+    } finally {
+      clock.mockRestore()
+      f.cleanup()
+      await f.stop()
+      await f.host.close()
+    }
+  })
+
   it.each([-90_000, 50_000, 90_000])(
     'closes a retained reviewer at Main expiry through disconnect and a %s ms worker offset', async offset => {
       const mainTime = Date.now()

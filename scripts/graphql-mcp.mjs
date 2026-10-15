@@ -172,8 +172,15 @@ async function forwardGroupWait(message, controller, budgetMs) {
     let reply
     const error = await forwardAttempt(chunk, controller, 120_000, (value) => { reply = value })
     if (controller.signal.aborted) return
-    const retryable = error ? GROUP_WAIT_RETRYABLE.includes(error.data.kind) : isRetryableToolFailure(reply?.result)
-    if (error || reply?.result?.isError === true) {
+    let retryable
+    if (error) {
+      retryable = GROUP_WAIT_RETRYABLE.includes(error.data.kind)
+    } else if (reply?.error) {
+      retryable = reply.error.data?.retryable === true
+    } else {
+      retryable = isRetryableToolFailure(reply?.result)
+    }
+    if (error || reply?.error || reply?.result?.isError === true) {
       if (!retryable || Date.now() >= deadline) {
         const failureReply = error ? { jsonrpc: '2.0', id: message.id, error } : reply
         output(stillRunning && retryable ? stillRunning : failureReply)

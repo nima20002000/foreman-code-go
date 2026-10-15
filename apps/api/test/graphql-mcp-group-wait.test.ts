@@ -10,7 +10,9 @@ import { registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
 const cleanup: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
 
-type Reply = (call: { waitSeconds: number; index: number }) => { status: number; result?: unknown; delayMs?: number }
+type Reply = (call: { waitSeconds: number; index: number }) => {
+  status: number; result?: unknown; error?: unknown; delayMs?: number
+}
 const waitResult = (status: 'still-running' | 'settled') => ({ structuredContent: { run: {}, wait: {
   until: 'group-terminal', status, tickets: 2, settledTickets: status === 'settled' ? 2 : 1 } }, content: [] })
 
@@ -29,7 +31,7 @@ async function fakeEndpoint(reply: Reply) {
       setTimeout(() => {
         if (next.status !== 200) { response.writeHead(next.status).end(); return }
         response.writeHead(200, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: next.result }))
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: next.result, error: next.error }))
       }, next.delayMs ?? 0)
     })
   })
@@ -113,6 +115,75 @@ it('continues the same wait after a transient Main outage', async () => {
   expect(reply.result.structuredContent.wait.status).toBe('settled')
   expect(fake.calls).toHaveLength(2)
 }, 20_000)
+
+const relayError = (code: string, retryable?: boolean) => ({ code: -32000, message: 'Fixture relay failure',
+  data: { kind: retryable ? 'relay_unavailable' : 'relay_refused', code,
+    ...(retryable === undefined ? {} : { retryable }), delivery: 'indeterminate' } })
+
+it.each(['timeout', 'backpressure', 'transport'])(
+  'retries an HTTP-200 %s relay failure while the group-wait budget remains', async code => {
+    const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+      ...(index === 0 ? { error: relayError(code, true) } : { result: waitResult('settled') }) }))
+    const bridge = await startBridge(fake.endpoint)
+    const reply = await bridge.request(18, 'tools/call', groupWait('ticket', 30))
+    expect(reply).toMatchObject({ result: { structuredContent: { wait: { status: 'settled' } } } })
+    expect(fake.calls).toHaveLength(2)
+    expect(fake.calls[1]!.waitSeconds).toBeLessThan(fake.calls[0]!.waitSeconds)
+    expect(bridge.lines.filter(line => line.id === 18)).toHaveLength(1)
+  },
+)
+
+it.each([false, undefined])('returns a relay failure with retryable=%s once', async retryable => {
+  const failure = relayError('timeout', retryable)
+  const fake = await fakeEndpoint(() => ({ status: 200, error: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(19, 'tools/call', groupWait('ticket', 2))
+  expect(reply.error).toEqual(failure)
+  expect(fake.calls).toHaveLength(1)
+})
+
+it('does not retry a retryable relay failure for an ordinary ci_get', async () => {
+  const failure = relayError('transport', true)
+  const fake = await fakeEndpoint(() => ({ status: 200, error: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(20, 'tools/call', { name: 'ci_get', arguments: { ticketId: 'ticket' } })
+  expect(reply.error).toEqual(failure)
+  expect(fake.calls).toHaveLength(1)
+})
+
+it('returns the relay failure when retrying exhausts the budget without a successful wait', async () => {
+  const failure = relayError('backpressure', true)
+  const fake = await fakeEndpoint(() => ({ status: 200, error: failure }))
+  const bridge = await startBridge(fake.endpoint)
+  const started = Date.now()
+  const reply = await bridge.request(21, 'tools/call', groupWait('ticket', 1))
+  expect(reply.error).toEqual(failure)
+  expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+  expect(Date.now() - started).toBeLessThan(5_000)
+  expect(bridge.lines.filter(line => line.id === 21)).toHaveLength(1)
+})
+
+it('retains the last still-running result when relay failures exhaust the budget', async () => {
+  const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+    ...(index === 0 ? { result: waitResult('still-running') } : { error: relayError('transport', true) }) }))
+  const bridge = await startBridge(fake.endpoint)
+  const started = Date.now()
+  const reply = await bridge.request(22, 'tools/call', groupWait('ticket', 1))
+  expect(reply).toMatchObject({ result: { structuredContent: { wait: { status: 'still-running' } } } })
+  expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+  expect(fake.calls.length).toBeGreaterThan(1)
+  expect(bridge.lines.filter(line => line.id === 22)).toHaveLength(1)
+})
+
+it('returns a permanent relay failure even after a still-running result', async () => {
+  const failure = relayError('credential_revoked', false)
+  const fake = await fakeEndpoint(({ index }) => ({ status: 200,
+    ...(index === 0 ? { result: waitResult('still-running') } : { error: failure }) }))
+  const bridge = await startBridge(fake.endpoint)
+  const reply = await bridge.request(23, 'tools/call', groupWait('ticket', 30))
+  expect(reply.error).toEqual(failure)
+  expect(fake.calls).toHaveLength(2)
+})
 
 const toolError = (code: string, retryable?: boolean) => ({ isError: true,
   content: [{ type: 'text', text: JSON.stringify({ error: { code, message: 'Fixture tool failure',

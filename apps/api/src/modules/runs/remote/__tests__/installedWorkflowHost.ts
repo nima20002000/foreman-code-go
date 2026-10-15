@@ -71,6 +71,7 @@ import { VerifiedRemoteEvidence } from '../resultBridge.js'
 import { ExclusiveGraphConnection } from '../../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../../repeatResolution.js'
 import { DeviceApplicationChannel } from '../../../devices/deviceApplicationChannel.js'
+import { DeviceApplicationError } from '../../../devices/deviceApplicationError.js'
 import { deferred } from '../../../../../test/helpers/deferred.js'
 
 export const roots:string[]=[],journals:RemoteOperationJournal[]=[]
@@ -295,6 +296,7 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
   const retain = fixtureOptions.retainReviewer ?? false
   let retentionDenied = false
   let mcpDenied = false
+  let mcpLeaseRevoked = false
   const requests: Array<{ namespace: string; payload: unknown; binding: DeviceSessionBinding }> = []
   const options: InstalledWorkflowHostOptions = { stateDirectory: f.root, registry,
     pairing: { formatVersion: 1, mainId: f.context.binding.mainId, deviceId: f.context.binding.deviceId,
@@ -319,6 +321,8 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
             ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
         }
         if (mcpDenied) throw new Error('App binding requires recovery')
+        // Main's answer once it abandoned the attempt and revoked the Agent credential.
+        if (mcpLeaseRevoked && namespace === WORKER_MCP_EXTENSION.namespace) throw new DeviceApplicationError('AUTH_REVOKED')
         if (launchDenied) throw new Error('Original MCP lease revoked')
         if (fixtureOptions.mcp && namespace === WORKER_MCP_EXTENSION.namespace) {
           const request = WorkerMcpRelayRequestSchema.parse(payload)
@@ -401,6 +405,7 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
     disconnect: () => { live = undefined }, reconnect: (binding: DeviceSessionBinding) => { live = binding },
     cleanup: () => { cleanupOnly = true; launchDenied = true },
     renew: (expiry: string) => { expiresAt = expiry }, revoke: () => { launchDenied = true },
+    revokeMcpLease: () => { mcpLeaseRevoked = true },
     changeProcess: () => { observed = { ...launch, provider: { pid: 201, startTicks: 'changed' } } } }
 }
 

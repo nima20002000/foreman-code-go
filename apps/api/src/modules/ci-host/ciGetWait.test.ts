@@ -83,8 +83,8 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 it('accepts bounded waitSeconds and optional logTail for both MCP roles', () => {
   for (const schema of [CiGetInputSchema, OperatorCiGetInputSchema]) {
-    const input = { workspaceId: 'workspace', ticketId: 'ticket', waitSeconds: 300, logTail: false }
-    const scoped = schema === CiGetInputSchema ? { ticketId: input.ticketId, waitSeconds: 300, logTail: false } : input
+    const input = { workspaceId: 'workspace', ticketId: 'ticket', waitSeconds: 60, logTail: false }
+    const scoped = schema === CiGetInputSchema ? { ticketId: input.ticketId, waitSeconds: 60, logTail: false } : input
     expect(schema.safeParse(scoped).success).toBe(true)
     expect(schema.safeParse({ ...scoped, waitSeconds: 0 }).success).toBe(true)
     expect(schema.safeParse({ ...scoped, waitSeconds: 0.1 }).success).toBe(true)
@@ -150,7 +150,7 @@ it.each(['passed', 'failed', 'canceled', 'lost'] as const)('returns a terminal %
   try {
     f.persist({ state })
     const started = performance.now()
-    expect(value(await f.call({ waitSeconds: 300, logTail: false })).run.state).toBe(state)
+    expect(value(await f.call({ waitSeconds: 60, logTail: false })).run.state).toBe(state)
     expect(performance.now() - started).toBeLessThan(1000)
   } finally { await f.close() }
 })
@@ -158,7 +158,7 @@ it.each(['passed', 'failed', 'canceled', 'lost'] as const)('returns a terminal %
 it('cancels an authenticated MCP wait and releases its subscription', async () => {
   const f = fixture()
   try {
-    const pending = f.call({ waitSeconds: 300, logTail: false }, 'waiting')
+    const pending = f.call({ waitSeconds: 60, logTail: false }, 'waiting')
     await pause(100)
     const response = await f.rpc({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'waiting' } })
     expect(response.statusCode).toBe(202)
@@ -172,7 +172,7 @@ it('cancels an authenticated MCP wait and releases its subscription', async () =
 it('denies an ungranted MCP caller before opening a wait', async () => {
   const f = fixture()
   try {
-    const denied = await f.call({ waitSeconds: 300, logTail: false }, 1, 'denied')
+    const denied = await f.call({ waitSeconds: 60, logTail: false }, 1, 'denied')
     expect(JSON.stringify(denied)).toContain('ACCESS_DENIED')
     expect(f.pool.connect).not.toHaveBeenCalled()
     expect(f.services.commands.recordDenied).toHaveBeenCalledWith('denied', 'mcp', 'ci_get', 'mcp:ci_get')
@@ -218,7 +218,7 @@ it('releases the wait when the HTTP client aborts its MCP request', async () => 
         'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 'disconnect', method: 'tools/call',
         params: { name: 'ci_get', arguments: { workspaceId: 'workspace', ticketId: f.read().id,
-          waitSeconds: 300, logTail: false } } }),
+          waitSeconds: 60, logTail: false } } }),
     }).then(async response => response.text()).catch(error => error)
     await pause(100)
     expect(f.client.release).not.toHaveBeenCalled()

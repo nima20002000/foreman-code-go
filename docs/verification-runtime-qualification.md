@@ -93,7 +93,7 @@ The separate host CI tools run repository scripts directly on build computers:
 `ci_run` starts a suite, `ci_get` reads its state and optional log tail,
 `ci_computers_list` reads readiness, `ci_logs_read` pages log text, and
 `ci_cancel` stops a run. Workflow Agents use these tools within their Run workspace.
-While waiting, use `ci_get` with `waitSeconds: 300` and `logTail: false`. The server
+While waiting, use `ci_get` with `waitSeconds: 60` and `logTail: false`. The server
 waits for the ticket’s state or step to change, returns terminal tickets immediately,
 and otherwise returns at the deadline. Canceling the MCP request ends the wait.
 Omitting these inputs keeps immediate reads with the 32 KiB log tail. Read logs once

@@ -23,7 +23,7 @@ describe('cross-computer CI graph', () => {
     const { graph } = buildCrossComputerCiGraph(base, [assignment(0, null), assignment(1, 'build')])
     const node = graph.nodes[1]!
     if (node.kind === 'job') throw new Error('Expected a CI Agent')
-    expect(node.initialPrompt).toContain('waitSeconds 300 and logTail false')
+    expect(node.initialPrompt).toContain('waitSeconds 60 and logTail false')
     expect(node.initialPrompt).toContain('Once all are terminal, read ci_logs_read for EVERY ticket')
   })
 
