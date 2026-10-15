@@ -1,18 +1,26 @@
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
 
-interface Waiter {
-  workspaceId: string
-  ticketId: string
-  resolve(): void
-  reject(error: unknown): void
+export interface CiTicketChange { workspaceId: string; ticketId: string; groupId: string }
+interface Watch {
+  match(change: CiTicketChange): boolean
+  version: number
+  failure?: unknown
+  wake?: (() => void) | undefined
 }
 interface ListeningSession {
   ready: Promise<void>
-  waiters: Set<Waiter>
+  watches: Set<Watch>
   client: pg.PoolClient | undefined
   notification: (message: pg.Notification) => void
   error: (error: Error) => void
+}
+/** Counts matching changes; a waiter reads the version before its read and waits only for changes after it. */
+export interface CiTicketWatch {
+  ready: Promise<void>
+  version(): number
+  changedSince(version: number, ms: number): Promise<void>
+  close(): void
 }
 
 /** Concurrent waits share one LISTEN connection; PostgreSQL sends changes after commit. */
@@ -21,18 +29,27 @@ export class CiTicketChanges {
 
   constructor(private readonly pool: pg.Pool) {}
 
+  private fail(session: ListeningSession, error: unknown) {
+    for (const watch of session.watches) {
+      watch.failure = error
+      watch.wake?.()
+    }
+  }
+
   private open(): ListeningSession {
     const session: ListeningSession = {
-      ready: Promise.resolve(), waiters: new Set(), client: undefined,
+      ready: Promise.resolve(), watches: new Set(), client: undefined,
       notification: message => {
         if (message.channel !== 'ci_ticket_changed' || !message.payload) return
-        const change = JSON.parse(message.payload) as { workspaceId: string; ticketId: string }
-        for (const waiter of session.waiters) {
-          if (waiter.workspaceId === change.workspaceId && waiter.ticketId === change.ticketId) waiter.resolve()
+        const change = JSON.parse(message.payload) as CiTicketChange
+        for (const watch of session.watches) {
+          if (!watch.match(change)) continue
+          watch.version++
+          watch.wake?.()
         }
       },
       error: error => {
-        for (const waiter of session.waiters) waiter.reject(error)
+        this.fail(session, error)
         this.dispose(session)
       },
     }
@@ -51,32 +68,40 @@ export class CiTicketChanges {
       session.client = client
       if (this.session !== session) this.dispose(session)
     }).catch(error => {
-      for (const waiter of session.waiters) waiter.reject(error)
+      this.fail(session, error)
       this.dispose(session)
       throw error
     })
     return session
   }
 
-  subscribe(workspaceId: string, ticketId: string, waitSeconds: number, signal?: AbortSignal) {
+  subscribe(match: (change: CiTicketChange) => boolean, signal?: AbortSignal): CiTicketWatch {
     const session = this.session ?? this.open()
-    let resolve!: () => void
-    let reject!: (error: unknown) => void
-    const changed = new Promise<void>((done, fail) => { resolve = done; reject = fail })
-    const waiter = { workspaceId, ticketId, resolve, reject }
-    session.waiters.add(waiter)
-    const timer = setTimeout(resolve, waitSeconds * 1000)
-    const abort = () => reject(new DomainError('MCP_REQUEST_CANCELLED', 'The CI wait was canceled.', 409))
-    signal?.addEventListener('abort', abort, { once: true })
-    if (signal?.aborted) abort()
+    const watch: Watch = { match, version: 0 }
+    session.watches.add(watch)
+    const cancelled = () => new DomainError('MCP_REQUEST_CANCELLED', 'The CI wait was canceled.', 409)
     return {
-      ready: Promise.race([session.ready, changed]),
-      changed,
+      ready: session.ready,
+      version: () => watch.version,
+      changedSince: (version, ms) => new Promise<void>((resolve, reject) => {
+        if (watch.failure !== undefined) return reject(watch.failure)
+        if (watch.version !== version) return resolve()
+        if (signal?.aborted) return reject(cancelled())
+        const finish = (error?: unknown) => {
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          watch.wake = undefined
+          if (error !== undefined) reject(error)
+          else resolve()
+        }
+        const onAbort = () => finish(cancelled())
+        const timer = setTimeout(() => finish(), ms)
+        signal?.addEventListener('abort', onAbort, { once: true })
+        watch.wake = () => finish(watch.failure)
+      }),
       close: () => {
-        clearTimeout(timer)
-        signal?.removeEventListener('abort', abort)
-        session.waiters.delete(waiter)
-        if (!session.waiters.size) this.dispose(session)
+        session.watches.delete(watch)
+        if (!session.watches.size) this.dispose(session)
       },
     }
   }
@@ -95,9 +120,7 @@ export class CiTicketChanges {
   close() {
     const session = this.session
     if (!session) return
-    for (const waiter of session.waiters) {
-      waiter.reject(new DomainError('CI_SERVICE_CLOSED', 'The CI service is closing.', 503))
-    }
+    this.fail(session, new DomainError('CI_SERVICE_CLOSED', 'The CI service is closing.', 503))
     this.dispose(session)
   }
 }

@@ -57,6 +57,8 @@ export const buildComputerTools = [
       + 'Paired Workers also report current and target application versions, update state and the last update error, '
       + 'including rollback. '
       + 'workerPublication reports the matching Main release\'s GitHub publication state and failure reason, even for offline computers. '
+      + 'workerReadiness reports WORKER_VERSION_SKEW, WORKER_BUNDLE_UNPUBLISHED or WORKER_UPDATING, with expected/running '
+      + 'bundle identities, updatePhase and publicationError. New work requires the published bundle for that Worker target. '
       + 'Requires global settings:read. Supply target to read one current installation independently. '
       + 'Successful settled status is cached for 20 seconds unless refresh is true; pending probes are shared. '
       + 'Failed observations report null status with observation.status unavailable, lastError, failedAt, lastSuccess and '

@@ -132,7 +132,7 @@ it('keeps source cleanup available until native processes have closed', async ()
   }
 })
 
-it('allows reviews and continuation turns to finish existing workflows during an update drain', async () => {
+it('blocks new reviews and turns while preserving resident controls during an update drain', async () => {
   let finish!: () => void
   const closing = new Promise<void>(resolve => { finish = resolve })
   const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
@@ -140,11 +140,16 @@ it('allows reviews and continuation turns to finish existing workflows during an
     drainMaintenance: async () => {}, quiescent: async () => true })
   const updating = drain.run()
   try {
-    expect(() => drain.assertAdmission('execution-v1', { method: 'prepare-review' })).not.toThrow()
-    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn', review: {} })).not.toThrow()
-    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'prepare-review' })).toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn', review: {} })).toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn' })).toThrow()
     expect(() => drain.assertAdmission('execution-v1', { method: 'prepare' })).toThrow()
     expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow()
+    for (const method of ['renew-owner', 'status', 'physical-ack', 'control', 'conversation.compact-read']) {
+      expect(() => drain.assertAdmission('execution-v1', { method })).not.toThrow()
+    }
+    expect(() => drain.assertAdmission('execution-v1', { method: 'conversation.file-copy', copy: { phase: 'close' } }))
+      .not.toThrow()
   } finally {
     finish()
     await updating
@@ -156,7 +161,7 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'])(
     vi.useFakeTimers()
     const stalled = deferred()
     const active = stage === 'dispatches' ? [stalled.promise] : []
-    void stalled.promise.then(() => { active.splice(0) })
+    void stalled.promise.then(() => { void active.splice(0) })
     const stages: string[] = []
     const step = async (name: string) => {
       stages.push(name)
@@ -178,6 +183,7 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'])(
       await attempt
       await vi.advanceTimersByTimeAsync(1000)
       expect(stages).toEqual(visited)
+      expect(active).toEqual([])
       expect(() => drain.assertAdmission('source-operations-v1', { operation: 'sources.release' })).not.toThrow()
     } finally {
       stalled.resolve()

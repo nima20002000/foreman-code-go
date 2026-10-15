@@ -12,7 +12,7 @@ interface ProductionWorkerArtifactOptions {
   pool?: pg.Pool
 }
 
-function artifactLocation(options: ProductionWorkerArtifactOptions) {
+export function workerArtifactLocation(options: ProductionWorkerArtifactOptions) {
   return {
     directory: readProductEnvironment(options.environment, 'WORKER_ARTIFACT_DIRECTORY')
       ?? join(options.releaseDirectory, 'worker-artifacts'),
@@ -21,20 +21,20 @@ function artifactLocation(options: ProductionWorkerArtifactOptions) {
 }
 
 export function readProductionWorkerManifestSha256s(options: ProductionWorkerArtifactOptions) {
-  return readWorkerManifestSha256s(artifactLocation(options))
+  return readWorkerManifestSha256s(workerArtifactLocation(options))
 }
 
 export function readProductionWorkerContentSha256s(options: ProductionWorkerArtifactOptions) {
-  return readWorkerContentSha256s(artifactLocation(options))
+  return readWorkerContentSha256s(workerArtifactLocation(options))
 }
 
 export function readProductionWorkerReleasePublication(options: ProductionWorkerArtifactOptions) {
-  return readWorkerReleasePublication(artifactLocation(options))
+  return readWorkerReleasePublication(workerArtifactLocation(options))
 }
 
 export function createProductionWorkerArtifactExtension(options: ProductionWorkerArtifactOptions) {
   return createWorkerArtifactExtension({
-    ...artifactLocation(options),
+    ...workerArtifactLocation(options),
     ciSmoke: async () => {
       try {
         return JSON.parse(await readFile(join(options.releaseDirectory, 'ci-smoke.json'), 'utf8')) as unknown

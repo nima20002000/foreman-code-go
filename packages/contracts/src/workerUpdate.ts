@@ -7,18 +7,9 @@ export const WORKER_UPDATE_MAX_BINARY_BYTES = 0
 export const WORKER_UPDATE_DRAIN_TIMEOUT_MS = 30 * 60_000
 export const WORKER_UPDATE_ATTEMPT_TIMEOUT_MS = 45 * 60_000
 
-export const WorkerUpdateStatusSchema = z.object({
-  currentVersion: z.string().min(1).max(128),
-  /** Hash of the running release, independently of a pending or failed update target. */
-  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-  /** Identity of running bundle files, target facts and protocol versions, excluding build metadata. */
-  contentSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-  targetVersion: z.string().min(1).max(128).nullable(),
-  state: z.enum(['current', 'pending', 'draining', 'downloading', 'installing', 'restarting', 'rolled-back', 'failed']),
-  lastError: z.string().max(2000).nullable(),
-}).strict()
-export type WorkerUpdateStatus = z.infer<typeof WorkerUpdateStatusSchema>
-
+const WorkerUpdatePhaseSchema = z.enum([
+  'current', 'pending', 'draining', 'downloading', 'installing', 'restarting', 'rolled-back', 'failed',
+])
 const WorkerArtifactTargetSchema = z.object({
   os: z.string().min(1).max(100),
   osRelease: z.string().min(1).max(100),
@@ -27,6 +18,37 @@ const WorkerArtifactTargetSchema = z.object({
   node: z.string().min(1).max(100),
 }).strict()
 export type WorkerArtifactTarget = z.infer<typeof WorkerArtifactTargetSchema>
+
+export const WorkerUpdateStatusSchema = z.object({
+  currentVersion: z.string().min(1).max(128),
+  target: WorkerArtifactTargetSchema.optional(),
+  /** Hash of the running release, independently of a pending or failed update target. */
+  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  /** Identity of running bundle files, target facts and protocol versions, excluding build metadata. */
+  contentSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  targetVersion: z.string().min(1).max(128).nullable(),
+  state: WorkerUpdatePhaseSchema,
+  lastError: z.string().max(2000).nullable(),
+}).strict()
+export type WorkerUpdateStatus = z.infer<typeof WorkerUpdateStatusSchema>
+
+export const WorkerBundleIdentitySchema = z.object({
+  version: z.string().min(1).max(128),
+  target: WorkerArtifactTargetSchema.nullable(),
+  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  contentSha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+}).strict()
+export type WorkerBundleIdentity = z.infer<typeof WorkerBundleIdentitySchema>
+
+export const WorkerBundleReadinessSchema = z.object({
+  ready: z.boolean(),
+  code: z.enum(['WORKER_VERSION_SKEW', 'WORKER_BUNDLE_UNPUBLISHED', 'WORKER_UPDATING']).nullable(),
+  expected: WorkerBundleIdentitySchema.nullable(),
+  running: WorkerBundleIdentitySchema.nullable(),
+  updatePhase: WorkerUpdatePhaseSchema.nullable(),
+  publicationError: z.string().max(2000).nullable(),
+}).strict()
+export type WorkerBundleReadiness = z.infer<typeof WorkerBundleReadinessSchema>
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 const artifactPath = z.string().min(1).max(1024).regex(/^[a-zA-Z0-9_@./-]+$/u)

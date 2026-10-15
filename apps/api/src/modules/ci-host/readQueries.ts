@@ -29,6 +29,14 @@ export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Every server-side wait answers within this chunk, below the stdio bridge (120 s) and Worker relay (100 s) deadlines;
+ * the bridge continues a group wait with further chunks. */
+const CI_WAIT_CHUNK_SECONDS = 60
+/** A ticket is settled when terminal and its results are no longer being collected. */
+const ticketSettled = (run: CiRunRecord) => ['passed', 'failed', 'canceled', 'lost'].includes(run.state)
+  && run.collection !== 'pending'
+const chunkMs = (waitSeconds = 0) => Math.min(waitSeconds, CI_WAIT_CHUNK_SECONDS) * 1000
+
 type HostRef = HostCiComputer['hostRef']
 type TicketReadInput = CiGetInput & { workspaceId?: string | undefined }
 interface CiReadHost {
@@ -58,21 +66,53 @@ export class HostCiReads {
 
   async get(caller: ManagementPrincipal, input: TicketReadInput, signal?: AbortSignal) {
     signal?.throwIfAborted()
+    if (input.waitUntil) return this.waitGroup(caller, input, signal)
     const initial = await this.snapshot(caller, input)
     if (!input.waitSeconds || !['queued', 'starting', 'running'].includes(initial.run.state)) return initial
-    const subscription = this.changes.subscribe(initial.run.workspaceId, input.ticketId, input.waitSeconds, signal)
+    const watch = this.changes.subscribe(change => change.workspaceId === initial.run.workspaceId
+      && change.ticketId === input.ticketId, signal)
     try {
-      await subscription.ready
+      await watch.ready
+      const seen = watch.version()
       // Read again after LISTEN is active so changes during subscription setup cannot be missed.
       const subscribed = await this.snapshot(caller, input)
       signal?.throwIfAborted()
       if (subscribed.run.state !== initial.run.state || subscribed.run.step !== initial.run.step) return subscribed
-      await subscription.changed
-      signal?.throwIfAborted()
+      await watch.changedSince(seen, chunkMs(input.waitSeconds))
       return await this.snapshot(caller, input)
     } finally {
-      subscription.close()
+      watch.close()
     }
+  }
+
+  /** Waits up to one chunk for every ticket of the group to settle; each read re-authorizes and re-resolves the ticket. */
+  private async waitGroup(caller: ManagementPrincipal, input: TicketReadInput, signal?: AbortSignal) {
+    const first = await this.groupReadout(caller, input)
+    if (!input.waitSeconds || first.wait.status === 'settled') return first
+    const deadline = Date.now() + chunkMs(input.waitSeconds)
+    const { workspaceId, groupId } = first.run
+    const watch = this.changes.subscribe(change => change.workspaceId === workspaceId && change.groupId === groupId, signal)
+    try {
+      await watch.ready
+      for (;;) {
+        const seen = watch.version()
+        const current = await this.groupReadout(caller, input)
+        const remaining = deadline - Date.now()
+        if (current.wait.status === 'settled' || remaining <= 0) return current
+        await watch.changedSince(seen, remaining)
+      }
+    } finally {
+      watch.close()
+    }
+  }
+
+  private async groupReadout(caller: ManagementPrincipal, input: TicketReadInput) {
+    const snapshot = await this.snapshot(caller, input)
+    const members = snapshot.partitions ?? [snapshot.run]
+    const settledTickets = members.filter(ticketSettled).length
+    return { ...snapshot, wait: { until: 'group-terminal' as const,
+      status: settledTickets === members.length ? 'settled' as const : 'still-running' as const,
+      tickets: members.length, settledTickets } }
   }
 
   private async snapshot(caller: ManagementPrincipal, input: TicketReadInput) {

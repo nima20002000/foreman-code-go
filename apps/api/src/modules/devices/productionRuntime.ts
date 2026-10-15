@@ -17,6 +17,7 @@ import { ProductionDevicePresence } from './productionPresence.js'
 
 export interface DeviceDomainComposition {
   extensions: DeviceExtensionRegistration[]
+  workerArtifacts?: { directory: string; version: string }
   reconcile(binding: DeviceSessionBinding, signal: AbortSignal, endpoint: DeviceEndpoint): Promise<void>
   bindingLost?(binding: Readonly<DeviceSessionBinding>): void | Promise<void>
   bindingReady?(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal, endpoint: DeviceEndpoint): void | Promise<void>
@@ -98,6 +99,7 @@ export class ProductionDeviceRuntime {
       ...(extension.handle ? { handle: (payload, context) => this.track(() => extension.handle!(payload, context)) } : {}),
     } satisfies DeviceExtensionRegistration))
     const endpoint: DeviceEndpoint = new DeviceEndpoint({ mainId, appVersion: API_APPLICATION_VERSION,
+      ...(this.domains?.workerArtifacts ? { workerArtifacts: this.domains.workerArtifacts } : {}),
       auth: { authenticateDevice: (token, scope) => this.track(() => access.authenticateDevice(token, scope)),
         revalidateDevice: (principal, scope) => this.track(() => access.revalidateDevice(principal, scope)) },
       signMainIdentityProof: sign, extensions,

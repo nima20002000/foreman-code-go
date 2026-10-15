@@ -25,6 +25,10 @@ import { readUpdateRecord } from './updateSupervisor.mjs';
 import { WORKER_UPDATE_NAMESPACE } from '../../../packages/contracts/src/workerUpdate.ts';
 import { runWorkerStartupSmoke, workerCiStartupStatus, runCiInstallSmoke } from './ciInstallSmoke.mjs';
 import { HostCiRunner } from '../../../apps/api/src/modules/ci-host/runner.ts';
+import { isDeepStrictEqual } from 'node:util';
+import { WorkerArtifactReplySchema, WorkerArtifactManifestSchema } from '../../../packages/contracts/src/workerUpdate.ts';
+import { workerArtifactContentSha256 } from '../../../packages/contracts/src/workerArtifactContentNode.mjs';
+import { workerBundleReadiness, requireWorkerBundleReady } from '../../../apps/api/src/modules/computers/workerBundleReadiness.ts';
 
 export function runInstalledCiSmoke(input) {
   return runCiInstallSmoke(input, { runner: new HostCiRunner() });
@@ -150,6 +154,31 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       const jobConfigurationPath = join(stateDirectory, 'job-runtime.json');
       const jobSelection = await lstat(jobConfigurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       installed = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId, assertStateOwnership,
+        assertBundleReady: async context => {
+          const captured = connection?.captureRequest(WORKER_UPDATE_NAMESPACE);
+          if (!captured || !isDeepStrictEqual(captured.binding, context.binding)) {
+            throw new WorkerError('worker_update_channel_unavailable');
+          }
+          const status = await updater.status();
+          let response;
+          try {
+            response = await captured.request({ operation: 'release', target: status.target }, { signal: context.signal });
+          } catch (error) {
+            if (error.code !== 'WORKER_RELEASE_ASSET_UNAVAILABLE') throw error;
+            requireWorkerBundleReady(workerBundleReadiness(null, status, 'Worker release assets have not been published.'));
+          }
+          const reply = WorkerArtifactReplySchema.parse(response.payload);
+          const release = reply.operation === 'release' ? reply.release : null;
+          let expectedBundle = null;
+          if (release) {
+            const published = WorkerArtifactManifestSchema.parse(release.manifest);
+            expectedBundle = { version: published.version, target: published.target,
+              manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(published) };
+          }
+          const running = await updater.status();
+          context.signal.throwIfAborted();
+          requireWorkerBundleReady(workerBundleReadiness(expectedBundle, running));
+        },
         launcherSource: new URL('../artifacts/graphql-mcp.mjs', import.meta.url),
         ciStartupPending: async () => startupCi.pending || (await updater?.status())?.state === 'restarting',
         ...(updater ? { workerUpdate: { status: () => updater.status(), start: () => updater.start({ retry: true }),

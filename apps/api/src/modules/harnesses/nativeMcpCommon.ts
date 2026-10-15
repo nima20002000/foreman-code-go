@@ -54,7 +54,8 @@ export function appMcpNeedsMigration(snapshot: NativeMcpSnapshot): boolean {
   const name = configuredManagedName(snapshot, 'graphql')
   const entry = record(snapshot.user[name])
   return userOwnsMcpEntry(snapshot, name) && isAppLauncher(entry)
-    && (name !== APP_MCP_SERVER_NAME || appLauncherTokenName(entry) !== APP_MCP_TOKEN)
+    && (name !== APP_MCP_SERVER_NAME || appLauncherTokenName(entry) !== APP_MCP_TOKEN
+      || Object.entries(APP_MCP_TIMEOUTS).some(([key, value]) => entry[key] !== value))
 }
 function assertNoAppCollision(snapshot: NativeMcpSnapshot): void {
   const names = APP_MCP_SERVER_NAMES.filter((name) => Object.hasOwn(snapshot.user, name) || Object.hasOwn(snapshot.effective, name))

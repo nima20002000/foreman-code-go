@@ -57,7 +57,34 @@ function bridgeError(error, deliveryStage) {
     data: { kind: 'transport' } }
 }
 
-async function forwardAttempt(message, controller, timeoutMs) {
+// ci_get is a read, so a group wait retries every transient failure, including a Main restart, until its budget ends.
+const GROUP_WAIT_RETRYABLE = ['service_unavailable', 'transport', 'route_unavailable', 'timeout', 'indeterminate_delivery',
+  'invalid_response']
+
+function isRetryableToolFailure(result) {
+  if (result?.isError !== true) return false
+  const text = result.content?.find(block => block.type === 'text')?.text
+  if (typeof text !== 'string') return false
+  let failure
+  try {
+    failure = JSON.parse(text)?.error
+  } catch (error) {
+    if (error instanceof SyntaxError) return false
+    throw error
+  }
+  if (failure?.code === 'ACCESS_DENIED'
+    || typeof failure?.code === 'string' && failure.code.startsWith('AUTH_')) return false
+  return failure?.details?.retryable === true
+}
+
+/** The budget of a ci_get group wait, which keeps one Agent tool call open across bounded chunks. */
+function groupWaitBudgetMs(message) {
+  if (!Object.hasOwn(message, 'id') || message.method !== 'tools/call' || message.params?.name !== 'ci_get') return undefined
+  const args = message.params.arguments
+  return args?.waitUntil === 'group-terminal' && args.waitSeconds > 0 ? args.waitSeconds * 1000 : undefined
+}
+
+async function forwardAttempt(message, controller, timeoutMs, emit = output) {
   let requestSignal
   let deliveryStage = 'preflight'
   let terminalReceived = false
@@ -108,7 +135,7 @@ async function forwardAttempt(message, controller, timeoutMs) {
           'Foreman Code MCP tool discovery returned an invalid or empty catalog. Retry the activation.')
       }
       if (message.method === 'initialize' && value.result?.protocolVersion) protocolVersion = value.result.protocolVersion
-      output(value)
+      emit(value)
       if (terminal) terminalReceived = true
     }
     if (response.headers.get('content-type')?.includes('application/json')) publish(await response.json())
@@ -134,13 +161,47 @@ async function forwardAttempt(message, controller, timeoutMs) {
   }
 }
 
+/** Asks the owning app for bounded chunks with the remaining budget until the group settles or the budget ends. Each
+ * chunk re-resolves the original ticket, so the wait continues after a Main restart; the caller sees one result. */
+async function forwardGroupWait(message, controller, budgetMs) {
+  const deadline = Date.now() + budgetMs
+  let stillRunning
+  for (let failures = 0; ;) {
+    const waitSeconds = Math.max(0, deadline - Date.now()) / 1000
+    const chunk = { ...message, params: { ...message.params, arguments: { ...message.params.arguments, waitSeconds } } }
+    let reply
+    const error = await forwardAttempt(chunk, controller, 120_000, (value) => { reply = value })
+    if (controller.signal.aborted) return
+    const retryable = error ? GROUP_WAIT_RETRYABLE.includes(error.data.kind) : isRetryableToolFailure(reply?.result)
+    if (error || reply?.result?.isError === true) {
+      if (!retryable || Date.now() >= deadline) {
+        const failureReply = error ? { jsonrpc: '2.0', id: message.id, error } : reply
+        output(stillRunning && retryable ? stillRunning : failureReply)
+        return
+      }
+      failures++
+    } else {
+      if (reply?.result?.structuredContent?.wait?.status !== 'still-running' || Date.now() >= deadline) {
+        output(reply)
+        return
+      }
+      stillRunning = reply
+      failures = 0
+    }
+    if (failures) await wait(Math.min(1_000 * 2 ** (failures - 1), 15_000, Math.max(0, deadline - Date.now())),
+      undefined, { signal: controller.signal })
+  }
+}
+
 async function forward(message, controller) {
   const startup = message.method === 'initialize' || message.method === 'tools/list'
   // Leave time for a slow database read while staying below the native 60-second startup timeout.
   const signal = startup ? AbortSignal.any([AbortSignal.timeout(55_000),
     ...(controller ? [controller.signal] : [])]) : controller?.signal
   const attemptController = signal ? { signal } : undefined
+  const budgetMs = groupWaitBudgetMs(message)
   try {
+    if (budgetMs !== undefined) return await forwardGroupWait(message, controller, budgetMs)
     for (let attempt = 0; ; attempt++) {
       const error = await forwardAttempt(message, attemptController, startup ? 45_000 : 120_000)
       if (!error || controller?.signal.aborted) return

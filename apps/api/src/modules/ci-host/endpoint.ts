@@ -7,18 +7,21 @@ import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { CiMirrorInput } from './serviceTypes.js'
 import type { HostCiRunner } from './runner.js'
 import type { CloudCi } from './cloud.js'
-import { retainCiHostStatus } from './status.js'
 import { DomainError } from '../errors.js'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { assertBuildComputerTarget } from '../settings/buildComputers.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
+import type { WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
+import { workerBundleErrorMessage } from '../computers/workerBundleReadiness.js'
 
 const log = componentLogger('jobs')
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
+  assertWorkerBundleReady?(deviceId: string): Promise<void>
+  workerBundleReadiness?(deviceId: string): Promise<WorkerBundleReadiness>
   request(deviceId: string, namespace: string, payload: unknown,
     options?: { timeoutMs?: number; priority?: DeviceRequestPriority }): Promise<{ payload: unknown }>
 }
@@ -82,6 +85,7 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
     if (request.operation === 'start' && computer.hostRef.kind === 'device') {
+      await this.devices()?.assertWorkerBundleReady?.(computer.hostRef.deviceId!)
       const status = await this.sendRequest(computer,
         { operation: 'status', buildAllowancePercent: request.buildAllowancePercent }, { priority: 'foreground' })
       if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
@@ -90,7 +94,13 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       }
       if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
     }
-    const reply = await this.sendRequest(computer, request, options)
+    let reply = await this.sendRequest(computer, request, options)
+    if (reply.operation === 'status' && computer.hostRef.kind === 'device') {
+      const readiness = await this.devices()?.workerBundleReadiness?.(computer.hostRef.deviceId!)
+      if (readiness && !readiness.ready) {
+        reply = { ...reply, ready: false, reasons: [...reply.reasons, workerBundleErrorMessage(readiness)].slice(-10) }
+      }
+    }
     if (reply.operation === 'status' && reply.cleanupSupported) {
       void this.cleanDirectories(computer).catch(error => {
         log.warn({ operation: 'clean retained CI directories', err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')
@@ -135,20 +145,16 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     const deviceId = computer.hostRef.deviceId
     if (!devices || !deviceId) throw new Error('The build computer is offline.')
     const priority = options?.priority ?? (request.operation === 'status' ? 'background' : 'foreground')
-    const send = async (): Promise<CiHostReply> => {
-      const reply = await devices.request(deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000, priority })
-      const parsed = CiHostReplySchema.parse(reply.payload)
-      if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
-        return { ...parsed, ready: false, reasons: [...parsed.reasons,
-          'Worker CI start protocol is unsupported; update the Worker.'].slice(-10) }
-      }
-      return parsed
+    // Execution and cleanup need live replies; readiness caching belongs to CiPlanningSnapshot.
+    const reply = await devices.request(deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000, priority })
+    const parsed = CiHostReplySchema.parse(reply.payload)
+    if (request.operation === 'status' && parsed.operation !== 'status') {
+      throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
     }
-    if (request.operation !== 'status' || priority !== 'background') return send()
-    return retainCiHostStatus(computer.hostRef, async () => {
-      const reply = await send()
-      if (reply.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
-      return reply
-    })
+    if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
+      return { ...parsed, ready: false, reasons: [...parsed.reasons,
+        'Worker CI start protocol is unsupported; update the Worker.'].slice(-10) }
+    }
+    return parsed
   }
 }

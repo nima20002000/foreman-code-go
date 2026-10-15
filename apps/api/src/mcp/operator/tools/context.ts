@@ -53,6 +53,8 @@ export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'worker_updates', state: 'limited',
     detail: 'Paired Workers automatically match Main through the authenticated device connection. '
       + 'Worker targets advance only after GitHub assets are published and download-verified. Updates download only from GitHub '
+      + 'Placement and new Agent work, conversation turns, Jobs and host CI require a matching published target bundle; '
+      + 'computers_maintenance_status exposes workerReadiness with expected/running identities and update phase. '
       + 'with backoff, and fail visibly with WORKER_RELEASE_ASSET_UNAVAILABLE when the asset is unavailable. '
       + 'computers_maintenance_status includes workerPublication and its failure reason, plus observation '
       + 'with unavailable status, lastError, failedAt, lastSuccess and consecutiveFailures when a maintenance read fails. '

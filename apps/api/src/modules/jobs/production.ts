@@ -146,9 +146,7 @@ export function createReviewedBuildQueueConfiguration(
     },
   }
 }
-/** Concrete domain services are initialized after the original main identity.
- * Missing installer/host bytes remain unavailable, never a qualified default. */
-export async function createProductionJobs(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
+interface ProductionJobsInput { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; storageRoot: string;
   endpoint(): DeviceEndpoint; infrastructure?: ProductionJobInfrastructure;
   workerExecution?: WorkerExecutionPolicy;
@@ -158,52 +156,16 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   transferAcknowledged?: NonNullable<Parameters<typeof createProductionSources>[0]['transferAcknowledged']>;
   transferPreparationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferPreparationClosed']>;
   transferMaterializationClosed?: NonNullable<Parameters<typeof createProductionSources>[0]['transferMaterializationClosed']>;
-  outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService }) {
-  const reviewedQueue = input.infrastructure?.queueConfiguration
-    ?? await readBuildQueueConfiguration(join(input.runtimeRoot, 'job-queue.json'))
-  const queue = reviewedQueue ? createReviewedBuildQueueConfiguration(reviewedQueue, input.mainId) : undefined
-  const requestQueueWake = (): void => { if (queue) jobs.requestQueueWake() }
-  const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
-  const configured = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error })
-  const installedConfiguration = input.infrastructure?.installedConfiguration
-    ?? (configured ? { path: configurationPath, ownerUid: process.getuid!() } : null)
-  const source = await createProductionSources({ ...input, dispatch: () => dispatch,
-    ...(installedConfiguration ? { installedJobConfiguration: installedConfiguration } : {}),
-    ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
-  let qualificationJournal: Promise<RemoteOperationJournal> | undefined
-  const journalPath = join(input.runtimeRoot, 'job-runtime-operations.json')
-  if (installedConfiguration && input.nativeRegistry) {
-    qualificationJournal = openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
-      initialization: 'bootstrap' })
-    try {
-      const journal = await qualificationJournal
-      if (input.nativeRegistry) await recoverInstalledJobRuntimeQualifications({ journal, registry: input.nativeRegistry,
-        host: { hostRef: { kind: 'main', mainId: input.mainId }, registration: null,
-          mainInstallationId: input.mainId, bootId: bootIdentity() } })
-    }
-    catch (error) {
-      componentLogger('jobs').warn({ err: error }, 'Main Job journal requires recovery')
-    }
-  }
-  const getMainJournal = () => {
-    qualificationJournal ??= openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
-      initialization: 'existing-only' })
-    return qualificationJournal
-  }
-  const localExecution = input.infrastructure?.localExecution
-    ?? (installedConfiguration && input.nativeRegistry ? createMainJobExecutionHost({
-      pool: input.pool, mainId: input.mainId, runtimeRoot: input.runtimeRoot, storageRoot: input.storageRoot,
-      configuration: installedConfiguration, registry: input.nativeRegistry, journal: getMainJournal,
-      application: () => application, inputs: () => canonicalInputs.local, publication: () => publication,
-    }) : undefined)
-  const mainCiLifetime = new AbortController()
-  // Main prepares its own CI runtime once it has an installed one, like a paired build computer.
-  const mainCiRuntime = installedConfiguration && !input.infrastructure?.installedConfiguration
-    ? createMainCiRuntime({ runtimeRoot: input.runtimeRoot, journal: getMainJournal, signal: mainCiLifetime.signal,
-      sql: input.pool })
-    : undefined
-  const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
-  const localHost = createInstalledJobRuntimeHost({ identity: input.pool,
+  outputRsync?:MainJobOutputRsyncPorts; inputRsync?:MainJobInputRsyncPorts; transferReceiver?:ResumableByteTransferService
+}
+
+function createProductionQualificationHost(
+  input: Pick<ProductionJobsInput, 'pool' | 'nativeRegistry' | 'mainId' | 'endpoint' | 'infrastructure'>,
+  installedConfiguration: InstalledRuntimeHostDependencies['configuration'],
+  getMainJournal: () => Promise<RemoteOperationJournal>,
+  publishQualificationReport: ReturnType<typeof createQualificationReportPublisher>,
+) {
+  return createInstalledJobRuntimeHost({ identity: input.pool,
     reconcileQualification: async original => {
       if (!input.nativeRegistry || original.nativeAdmission.hostRef.kind !== 'main') {
         throw new DomainError('JOB_RUNTIME_OWNER_UNAVAILABLE','The original local qualification owner is unavailable.',409)
@@ -257,6 +219,58 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         },
       })
     } })
+}
+
+/** Concrete domain services are initialized after the original main identity.
+ * Missing installer/host bytes remain unavailable, never a qualified default. */
+export async function createProductionJobs(input: ProductionJobsInput) {
+  const reviewedQueue = input.infrastructure?.queueConfiguration
+    ?? await readBuildQueueConfiguration(join(input.runtimeRoot, 'job-queue.json'))
+  const queue = reviewedQueue ? createReviewedBuildQueueConfiguration(reviewedQueue, input.mainId) : undefined
+  const requestQueueWake = (): void => { if (queue) jobs.requestQueueWake() }
+  const configurationPath = join(input.runtimeRoot, 'job-runtime.json')
+  const configured = await lstat(configurationPath).catch(error => { if (error.code === 'ENOENT') return null; throw error })
+  const installedConfiguration = input.infrastructure?.installedConfiguration
+    ?? (configured ? { path: configurationPath, ownerUid: process.getuid!() } : null)
+  const source = await createProductionSources({ ...input, dispatch: () => dispatch,
+    ...(installedConfiguration ? { installedJobConfiguration: installedConfiguration } : {}),
+    ...(input.infrastructure?.sourceRemote ? { remote: input.infrastructure.sourceRemote } : {}) })
+  let qualificationJournal: Promise<RemoteOperationJournal> | undefined
+  const journalPath = join(input.runtimeRoot, 'job-runtime-operations.json')
+  if (installedConfiguration && input.nativeRegistry) {
+    qualificationJournal = openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
+      initialization: 'bootstrap' })
+    try {
+      const journal = await qualificationJournal
+      if (input.nativeRegistry) await recoverInstalledJobRuntimeQualifications({ journal, registry: input.nativeRegistry,
+        host: { hostRef: { kind: 'main', mainId: input.mainId }, registration: null,
+          mainInstallationId: input.mainId, bootId: bootIdentity() } })
+    }
+    catch (error) {
+      componentLogger('jobs').warn({ err: error }, 'Main Job journal requires recovery')
+    }
+  }
+  const getMainJournal = () => {
+    qualificationJournal ??= openMainJobJournal({ sql: input.pool, path: journalPath, mainId: input.mainId,
+      initialization: 'existing-only' })
+    return qualificationJournal
+  }
+  const localExecution = input.infrastructure?.localExecution
+    ?? (installedConfiguration && input.nativeRegistry ? createMainJobExecutionHost({
+      pool: input.pool, mainId: input.mainId, runtimeRoot: input.runtimeRoot, storageRoot: input.storageRoot,
+      configuration: installedConfiguration, registry: input.nativeRegistry, journal: getMainJournal,
+      application: () => application, inputs: () => canonicalInputs.local, publication: () => publication,
+    }) : undefined)
+  const mainCiLifetime = new AbortController()
+  // Main prepares its own CI runtime once it has an installed one, like a paired build computer.
+  const mainCiRuntime = installedConfiguration && !input.infrastructure?.installedConfiguration
+    ? createMainCiRuntime({ runtimeRoot: input.runtimeRoot, journal: getMainJournal, signal: mainCiLifetime.signal,
+      sql: input.pool })
+    : undefined
+  const publishQualificationReport = createQualificationReportPublisher({ pool: input.pool, storageRoot: input.storageRoot })
+  const localHost = createProductionQualificationHost(
+    input, installedConfiguration, getMainJournal, publishQualificationReport,
+  )
   const qualification = createJobQualificationCarrier({
     pool: input.pool,
     sources: source.sources,
@@ -355,7 +369,9 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
       })
       return { ...discovery, candidates }
     },
-  }, workerExecution, input.availableMemory)
+  }, workerExecution, input.availableMemory, async host => {
+    if (host.kind === 'device') await input.endpoint().assertWorkerBundleReady(host.deviceId)
+  })
   const publication = new JobPublicationAuthority(dispatch, preparation)
   const outputs = createAdmittedJobOutputs({pool:input.pool,storageRoot:input.storageRoot,stagingRoot:join(input.runtimeRoot,'job-output-transfer-staging'),
     endpoint:{currentBinding:(...args)=>input.endpoint().currentBinding(...args)},authority:publication,

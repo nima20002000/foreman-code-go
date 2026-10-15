@@ -7,6 +7,28 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { ciTestResults } from './ci-test-results.mjs'
 
+for (const files of [
+  ['scripts/missing.test.mjs'],
+  ['scripts/missing.test.mjs', 'apps/web/src/missing.test.tsx'],
+]) {
+  test(`affected unit selection reports missing files: ${files.join(', ')}`, t => {
+    const base = join(homedir(), '.cache', 'foreman-tmp')
+    mkdirSync(base, { recursive: true })
+    const root = mkdtempSync(join(base, 'affected-missing-files-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const selection = join(root, 'selected.json')
+    writeFileSync(selection, JSON.stringify(files))
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+      'unit', '--files-from', selection], { cwd: root, encoding: 'utf8' })
+
+    assert.equal(result.status, 1)
+    assert.ok(result.stderr.includes(`CI selection must contain existing repository files: ${files.join(', ')}`),
+      result.stderr)
+    assert.doesNotMatch(result.stderr, /ENOENT/)
+  })
+}
+
 for (const failing of [false, true]) {
   test(`affected Node tests retain reports and exit with the ${failing ? 'failing' : 'passing'} suite outcome`, t => {
     const base = join(homedir(), '.cache', 'foreman-tmp')

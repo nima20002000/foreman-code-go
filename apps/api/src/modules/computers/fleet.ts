@@ -12,6 +12,7 @@ import {
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
   type WorkerReleasePublication,
+  type WorkerBundleReadiness,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -29,6 +30,7 @@ import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
   request(deviceId: string, namespace: string, payload: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ payload: unknown }>
+  workerBundleReadiness?(deviceId: string): Promise<WorkerBundleReadiness>
 }
 /** What Main has installed; paired computers are brought to the same set. */
 export interface FleetSources {
@@ -124,7 +126,7 @@ export class FleetMaintenanceService {
     const targets = await this.targets(principal, 'settings:read')
     const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({ computers: await Promise.all(targets.map(async target =>
-      ({ target, ...await this.observeStatus(target, refresh), ...(workerPublication ? { workerPublication } : {}) }))) })
+      ({ target, ...await this.observeComputer(target, refresh), ...(workerPublication ? { workerPublication } : {}) }))) })
   }
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: ComputerMaintenanceStartInput): Promise<ComputerMaintenanceStartResult> {
@@ -186,7 +188,7 @@ export class FleetMaintenanceService {
     } finally { sql.release() }
     const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({
-      computers: [{ target: input.target, ...await this.observeStatus(input.target, input.refresh === true),
+      computers: [{ target: input.target, ...await this.observeComputer(input.target, input.refresh === true),
         ...(workerPublication ? { workerPublication } : {}) }],
     })
   }
@@ -281,6 +283,10 @@ export class FleetMaintenanceService {
       this.sources.workerManifestSha256s?.() ?? [],
       this.sources.workerContentSha256s?.() ?? [],
     ])
+    if (this.sources.workerManifestSha256s && !manifests.length
+      || this.sources.workerContentSha256s && !contents.length) {
+      throw new DomainError('WORKER_BUNDLE_UNPUBLISHED', 'No published Worker bundle identities are available.', 503)
+    }
     return { manifests, contents }
   }
 
@@ -482,6 +488,13 @@ export class FleetMaintenanceService {
 
   private async status(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceStatus | null> {
     return (await this.observeStatus(target, refresh)).status
+  }
+
+  private async observeComputer(target: DeviceProvisioningTarget, refresh: boolean) {
+    const observation = await this.observeStatus(target, refresh)
+    const endpoint = this.endpoint()
+    if (!observation.status || target.hostRef.kind !== 'device' || !endpoint?.workerBundleReadiness) return observation
+    return { ...observation, workerReadiness: await endpoint.workerBundleReadiness(target.hostRef.deviceId) }
   }
 
   private observeStatus(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceObservation> {

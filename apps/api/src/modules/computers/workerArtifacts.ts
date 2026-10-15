@@ -6,11 +6,12 @@ import { workerArtifactContentSha256 } from '@foreman-code/contracts/worker-arti
 import {
   WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION,
   WorkerArtifactIndexSchema, WorkerArtifactManifestSchema, WorkerArtifactRequestSchema, WorkerCiSmokeSchema,
-  type WorkerArtifactManifest, type WorkerArtifactTarget, type WorkerReleasePublication,
+  type WorkerArtifactManifest, type WorkerArtifactTarget, type WorkerReleasePublication, type WorkerBundleIdentity,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
+import { DomainError } from '../errors.js'
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 
@@ -69,16 +70,23 @@ async function artifactManifest(root: string, manifestSha256: string, version: s
   return { manifest }
 }
 
-/** Registered only on the paired, authenticated device channel. */
+async function publishedArtifactIndex(options: { directory: string; version: string }) {
+  const result = await artifactIndex(options.directory, options.version)
+  const { index } = result
+  if (!index.github || index.publication?.state !== 'published' || !index.artifacts.length) {
+    const publicationError = index.publication?.lastError ?? 'Worker release assets have not been published.'
+    throw new DomainError('WORKER_BUNDLE_UNPUBLISHED', publicationError, 503, { publicationError })
+  }
+  return result
+}
+
 export async function readWorkerManifestSha256s(options: { directory: string; version: string }): Promise<string[]> {
-  const { index } = await artifactIndex(options.directory, options.version)
-  if (!index.github || index.publication?.state !== 'published') return []
+  const { index } = await publishedArtifactIndex(options)
   return index.artifacts.map(artifact => artifact.manifestSha256)
 }
 
 export async function readWorkerContentSha256s(options: { directory: string; version: string }): Promise<string[]> {
-  const { root, index } = await artifactIndex(options.directory, options.version)
-  if (!index.github || index.publication?.state !== 'published') return []
+  const { root, index } = await publishedArtifactIndex(options)
   return Promise.all(index.artifacts.map(async artifact => {
     const { manifest } = await artifactManifest(root, artifact.manifestSha256, options.version)
     if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
@@ -88,6 +96,23 @@ export async function readWorkerContentSha256s(options: { directory: string; ver
     }
     return contentSha256
   }))
+}
+
+export async function readWorkerBundleIdentity(options: { directory: string; version: string },
+  target?: WorkerArtifactTarget): Promise<WorkerBundleIdentity> {
+  const { root, index } = await publishedArtifactIndex(options)
+  if (!target) return { version: options.version, target: null, manifestSha256: null, contentSha256: null }
+  const artifact = index.artifacts.find(entry => sameTarget(entry.target, target))
+  if (!artifact) {
+    throw new DomainError('WORKER_BUNDLE_UNPUBLISHED', 'No published Worker bundle matches this target.', 503,
+      { publicationError: 'No published Worker bundle matches this target.' })
+  }
+  const { manifest } = await artifactManifest(root, artifact.manifestSha256, options.version)
+  const contentSha256 = workerArtifactContentSha256(manifest)
+  if (!sameTarget(manifest.target, target) || artifact.contentSha256 && artifact.contentSha256 !== contentSha256) {
+    throw new DeviceApplicationError('extension-rejected')
+  }
+  return { version: manifest.version, target, manifestSha256: artifact.manifestSha256, contentSha256 }
 }
 
 export async function readWorkerReleasePublication(options: {

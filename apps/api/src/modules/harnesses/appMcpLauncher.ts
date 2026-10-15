@@ -7,11 +7,14 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { HarnessMcpConnection } from '@foreman-code/contracts/management'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES, PRODUCT_SLUG } from '@foreman-code/contracts/product'
+import { CI_WAIT_MAX_SECONDS } from '@foreman-code/contracts'
 
 /** One native entry serves every role; the credential decides Operator, Orchestrator or Coder. */
 export const APP_MCP_SERVER_NAME = PRODUCT_SLUG
 export const APP_MCP_TOKEN = 'FOREMAN_CODE_MCP_TOKEN'
-export const APP_MCP_TIMEOUTS = { startup_timeout_sec: 60, tool_timeout_sec: 120 } as const
+/** One native tool call may hold a whole ci_get group wait plus its final 120-second bridge attempt; ordinary calls
+ * still end at that bridge attempt deadline. */
+export const APP_MCP_TIMEOUTS = { startup_timeout_sec: 60, tool_timeout_sec: CI_WAIT_MAX_SECONDS + 180 } as const
 export const isSupportedAppMcpServerName = (name: string): name is (typeof APP_MCP_SERVER_NAMES)[number] =>
   APP_MCP_SERVER_NAMES.some((supported) => supported === name)
 export const isSupportedAppMcpTokenName = (name: string | undefined): name is (typeof APP_MCP_TOKEN_NAMES)[number] =>

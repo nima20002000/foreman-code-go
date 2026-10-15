@@ -118,7 +118,7 @@ it.each([
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const enabled = applyMcpEdits(snapshot.user, mcpEdits(snapshot, managedEnableChange('graphql', true), managed))
     expect(enabled).toEqual({ [serverName]: { ...entry, enabled: true,
-      startup_timeout_sec: 60, tool_timeout_sec: 120 } })
+      startup_timeout_sec: 60, tool_timeout_sec: 1980 } })
     expect(applyMcpEdits(snapshot.user, mcpEdits(snapshot, managedChange('graphql', false, managed.endpoint), managed)))
       .toEqual({})
     const inherited = { ...snapshot, ownership: { [serverName]: false } }
@@ -181,7 +181,7 @@ it.each(['codex'] as const)(
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const edits = mcpEdits(snapshot, managedEnableChange('graphql', true), managed)
     expect(applyMcpEdits(snapshot.user, edits)).toEqual({ 'foreman-code': { ...entry, enabled: true,
-      startup_timeout_sec: 60, tool_timeout_sec: 120 } })
+      startup_timeout_sec: 60, tool_timeout_sec: 1980 } })
     expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, entry })).toBe('true')
     await runLauncherProcess({ kind: 'older-install', launcher: shared })
     await runLauncherProcess({ kind: 'upgrade', home })

@@ -1,10 +1,14 @@
 import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-application'
 import { isTransientDatabaseOrSocketError } from '../../infrastructure/transientErrors.js'
+import { WorkerBundleReadinessSchema, type WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
 
 const retryability: Readonly<Record<string, boolean>> = {
   'extension-rejected': false,
   WORKER_UPDATE_SMOKE_UNAVAILABLE: true,
   WORKER_RELEASE_ASSET_UNAVAILABLE: true,
+  WORKER_VERSION_SKEW: true,
+  WORKER_BUNDLE_UNPUBLISHED: true,
+  WORKER_UPDATING: true,
   CI_HOST_BUSY: true,
   MCP_INSPECTION_CONTEXT_MISMATCH: false,
   MCP_PRESET_UNAVAILABLE: false,
@@ -113,6 +117,10 @@ export function deviceApplicationFailure(error: unknown): DeviceApplicationFailu
   }
   const proposed = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
   if (typeof proposed === 'string' && Object.hasOwn(retryability, proposed)) {
+    if (['WORKER_VERSION_SKEW', 'WORKER_BUNDLE_UNPUBLISHED', 'WORKER_UPDATING'].includes(proposed)) {
+      const details = WorkerBundleReadinessSchema.safeParse((error as { details?: unknown }).details)
+      if (details.success) return { code: proposed, retryable: retryability[proposed]!, details: details.data }
+    }
     return { code: proposed, retryable: retryability[proposed]! }
   }
   if (isTransientDatabaseOrSocketError(error)) return { code: 'unavailable', retryable: true }
@@ -122,7 +130,7 @@ export function deviceApplicationFailure(error: unknown): DeviceApplicationFailu
 export class DeviceApplicationError extends Error {
   readonly code: string
   readonly retryable: boolean
-  constructor(code: string) {
+  constructor(code: string, readonly details?: WorkerBundleReadiness) {
     super(code)
     this.code = code
     this.retryable = deviceApplicationFailure({ code }).retryable

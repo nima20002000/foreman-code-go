@@ -59,7 +59,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly assertProfileReady?: (profile: HostHarnessOverride) => void | Promise<void>,
     private readonly refreshProfileInventory?: (
       hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
-    ) => Promise<void>, private readonly accounts?: ProviderAccountResolver) {}
+    ) => Promise<void>, private readonly accounts?: ProviderAccountResolver,
+    private readonly assertBundleReady?: (host: CanonicalMachineReference) => Promise<void>) {}
   async prepare(input: RunStartV3Input, principal: ManagementPrincipal,
     signal?: AbortSignal, options: {
       source: 'http' | 'mcp'; sourcePreparationStarted?: () => void
@@ -72,6 +73,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     const hosts = savedVersion.definition.nodes.filter(node => node.kind !== 'job')
       .map(node => node.placement?.hostRef ?? initial.root?.selection.hostRef
         ?? { kind: 'main' as const, mainId: this.mainId })
+    for (const host of hosts) await this.assertBundleReady?.(host)
     if (hosts.length && this.refreshProfileInventory) {
       // Host discovery makes Worker round-trips, so it uses the preparation budget, not the quick Start deadline.
       options.sourcePreparationStarted?.()

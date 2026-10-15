@@ -29,7 +29,8 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'integration across every computer; one gate runs at a time. priority is normal or high. A newer descendant commit '
     + 'from the same requester on the same branch or Agent execution cancels its older active tickets of the same suite '
     + 'unless noSupersede=true; ci_get then reports supersededBy. commandId is optional; repeating it with the same input '
-    + 'returns the original tickets. Returns ticketId and, for multi-part runs, partitions: poll each with ci_get.',
+    + 'returns the original tickets. Returns ticketId and, for multi-part runs, partitions: wait for the group with one '
+    + 'ci_get waitUntil=group-terminal call on any ticket, not by polling.',
   ci_get: 'Read one CI ticket. reassignment retains its cause, previous host, time and cumulative count. '
     + 'mirrorPublication.repair retains clone repair cause, source, duration and count. '
     + 'observation reports whether live state is available, its last successful read, '
@@ -40,10 +41,14 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'reason while queued, expectedDurationMs, cachedFiles, and supersededBy (follow the replacement ticket and its '
     + 'partitions). Gate tickets add per-computer and per-suite expected and actual durations. testStatus (passed, failed, '
     + 'skipped) adds structured test results, each failure with its message and path:line:column. A background dispatcher '
-    + 'refreshes healthy state about every second; unavailable observations use bounded backoff. waitSeconds (0–60, default 0) waits server-side until this ticket’s state '
-    + 'or step changes, it is terminal, or the deadline; request cancellation ends the wait. Use waitSeconds=60 and '
-    + 'logTail=false while polling to omit the 32 KiB tail; read logs once at the end with ci_logs_read. '
-    + 'Without logTail=false the tail is included as before. A part fails after 180 seconds without output or after '
+    + 'refreshes healthy state about every second; unavailable observations use bounded backoff. To wait, make one call '
+    + 'with waitUntil=group-terminal, waitSeconds=1800 and logTail=false on any ticket of the group instead of polling: '
+    + 'it returns wait.status settled once every ticket of the group is terminal and its results are collected '
+    + '(partitions then lists each final ticket), or still-running with tickets and settledTickets when the budget ends; '
+    + 'call again to keep waiting. The managed bridge holds the call open across bounded chunks; a direct HTTP call '
+    + 'answers within 60 seconds. Read logs once at the end with ci_logs_read. Without waitUntil, waitSeconds waits at '
+    + 'most 60 seconds for this ticket’s state or step to change or a terminal state; request cancellation '
+    + 'ends any wait. A part fails after 180 seconds without output or after '
     + 'max(3 \u00d7 expectedDurationMs, 120 seconds); a cloud part that fails before its first test is retried once on another '
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
     + 'test also failed it, so a known flake is recognized. Agents with ci_get read every ticket of their workspace.',
