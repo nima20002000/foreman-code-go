@@ -17,7 +17,7 @@ afterEach(async () => { await Promise.all(endpoints.splice(0).map(endpoint => en
 afterEach(() => vi.restoreAllMocks())
 async function setup(tokenName = 'GRAPHQL_MCP_TOKEN') {
   const root = await temporaryDirectory('worker-private-mcp-'); roots.push(root)
-  const token = 'actual-test-scoped-worker-token', expiresAt = new Date(Date.now() + 60_000).toISOString()
+  const token = 'actual-test-scoped-worker-token', expiresAt = new Date(Date.now() + 30 * 60_000).toISOString()
   const request = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"result":"Main grant checked"}' }))
   const refresh = vi.fn(async () => expiresAt)
   const endpoint = await createWorkerMcpEndpoint({ launcher: join(root, 'graphql-mcp.mjs'), signal: new AbortController().signal,
