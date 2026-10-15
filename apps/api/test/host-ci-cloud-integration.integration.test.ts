@@ -3,7 +3,7 @@ import {
   CiComputersOutputSchema, CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema, integrationPartition,
 } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
@@ -34,13 +34,15 @@ it.each(['github', 'circleci'] as const)('runs user-systemd slices on capable %s
     const listed = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
     expect(listed.computers.every(computer => computer.userSystemd?.supported)).toBe(true)
     for (const run of read.partitions!) f.finish(run.id, 0, 'Systemd cloud slice completed.\n')
-    const completed = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const completed = await f.waitFor(reader, started.ticketId, output => output.group?.state === 'passed')
     expect(completed.partitions!.every(run => run.state === 'passed')).toBe(true)
   } finally { await f.close() }
 })
 
 it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s while ordinary files run on cloud, then clears the wait on start', async transport => {
   const readiness = { laptop: true }
+  const now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
   const f = await fixture({ github: readiness, cloud: true })
   f.computers.splice(1, 1)
   const systemd = [
@@ -64,7 +66,7 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
     }))
     expect(slices.partitions).toHaveLength(2)
     await f.ci.dispatch()
-    await f.ci.close()
+    await f.ci.dispatch()
     const credential = await f.credential(CI_GET_ACTIONS)
     const read = async () => {
       if (transport === 'http') {
@@ -104,9 +106,12 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
     await f.ci.dispatch()
     expect((await read()).partitions!.find(run => run.id === host.id)).toEqual(host)
     readiness.laptop = false
+    clock.mockReturnValue(now + 5001)
     f.finish(older.ticketId, 0, 'Older integration completed.\n')
     await f.ci.dispatch()
-    const unready = (await read()).partitions!.find(run => run.id === host.id)!
+    const unavailable = await f.waitFor(reader, slices.ticketId, output => output.partitions!.some(run =>
+      run.id === host.id && run.message?.includes('gh auth login')))
+    const unready = unavailable.partitions!.find(run => run.id === host.id)!
     expect(unready).toMatchObject({ state: 'queued',
       message: 'Waiting for a build computer: this integration slice needs one; laptop: Log in to GitHub on this computer (gh auth login).' })
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(unready)
@@ -114,11 +119,17 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
     expect((await read()).partitions!.find(run => run.id === host.id)).toEqual(unready)
 
     readiness.laptop = true
+    clock.mockReturnValue(now + 10_002)
     await f.ci.dispatch()
-    const running = (await read()).partitions!.find(run => run.id === host.id)!
+    const startedHost = await f.waitFor(reader, slices.ticketId, output =>
+      output.partitions!.find(run => run.id === host.id)?.state === 'running')
+    const running = startedHost.partitions!.find(run => run.id === host.id)!
     expect(running).toMatchObject({ state: 'running', computer: { label: 'laptop' }, message: null })
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(running)
-  } finally { await f.close() }
+  } finally {
+    await f.close()
+    clock.mockRestore()
+  }
 })
 
 it('uses every cloud slot for ordinary integration files and persists throughput weights through authenticated MCP', async () => {
@@ -186,7 +197,7 @@ it('uses every cloud slot for ordinary integration files and persists throughput
       f.finish(run.id, 0, 'Cloud integration completed.\n')
     }
     await f.ci.dispatch()
-    const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const finished = await f.waitFor(reader, started.ticketId, output => output.group?.state === 'passed')
     expect(finished.partitions!.every(run => run.state === 'passed')).toBe(true)
   } finally { await f.close() }
 })

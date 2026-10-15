@@ -5,7 +5,7 @@ import type { CiUnitInventory } from '../../src/modules/ci-host/parts.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
+import { CiGetOutputSchema, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from 'vitest'
 import { buildApp } from '../../src/app.js'
@@ -29,6 +29,7 @@ import { insertRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { migratedDatabase } from './migratedDatabase.js'
+import { ciReadWhen } from './ciReadWhen.js'
 import { onlyCiInfrastructure } from '../../src/modules/ci-host/priority.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
@@ -251,7 +252,11 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
     return decodeMcpToolResult(result)
   }
-  return { ...computers, ci, app, credential, workspaceId, operator, agent,
+  const waitFor = (client: Client, ticketId: string, matches: Parameters<typeof ciReadWhen>[2]) =>
+    ciReadWhen(db.pool, async () => CiGetOutputSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'ci_get', arguments: { workspaceId, ticketId },
+    }))), matches)
+  return { ...computers, ci, app, credential, workspaceId, operator, agent, waitFor,
     authorizationPrincipalId: runtime?.authorizationPrincipalId,
     connect, connectAgent, call, value, published, pool: db.pool, close }
 }

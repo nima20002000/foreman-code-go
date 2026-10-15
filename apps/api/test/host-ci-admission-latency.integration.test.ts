@@ -19,19 +19,21 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
   const entered = deferred()
   const release = deferred()
   let timeout: NodeJS.Timeout | undefined
+  let readPending = false
   try {
-    await f.value(f.operator, 'ci_run', { suite: 'install', commit: 'a'.repeat(40) })
-    await f.ci.close()
+    const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commit: 'a'.repeat(40) }))
+    await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       if (input.operation === 'read') {
+        readPending = true
         entered.resolve()
         await release.promise
+        readPending = false
       }
       return request(computer, input)
     }
-    let finished = false
-    const dispatch = f.ci.dispatch().then(() => { finished = true })
+    const dispatch = f.ci.dispatch()
     await entered.promise
     const input = { suite: 'integration', scope: 'full', gate: true, commit: 'b'.repeat(40),
       commandId: 'pending-dispatch-gate' }
@@ -43,7 +45,7 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
         timeout = setTimeout(() => reject(new Error('Gate admission waited for the executor read')), 3000)
       }),
     ]))
-    expect(finished).toBe(false)
+    expect(readPending).toBe(true)
     const result = await f.operator.callTool({ name: 'ci_get', arguments: {
       workspaceId: f.workspaceId, ticketId: admitted.ticketId,
     } })
@@ -72,7 +74,7 @@ it('returns replacement tickets before executor cancellation and retains cleanup
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'a'.repeat(40), commandId: 'cleanup-old',
     }))
-    await f.ci.close()
+    await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       if (input.operation === 'cancel') {

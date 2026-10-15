@@ -11,6 +11,7 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HostCiService, type CiCommits, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
+import { ciReadWhen } from './helpers/ciReadWhen.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
@@ -93,19 +94,24 @@ it.each([
     }))
     const started = CiRunOutputSchema.parse(await invoke('ci_run', { suite: 'unit', scope: 'full', commandId: randomUUID() }))
     await ci.dispatch()
+    await ciReadWhen(pool, async () => CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId })),
+      output => output.run.state === 'running')
     finished = true
     await ci.dispatch()
+    const pending = await ciReadWhen(pool, async () => CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId })),
+      output => output.run.state === 'passed' && output.run.collection === 'pending')
     expect(reads).toContainEqual({ operation: 'read', runId: started.ticketId,
       afterOffset: 0, maxBytes: 32_768, durations: true })
-    const pending = CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId }))
     expect(pending.run).toMatchObject({ state: 'passed', collection: 'pending', ...persistedPins })
     expect((await denied.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: started.ticketId } })).isError).toBe(true)
     const stored = await pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
     expect(stored.rows[0]!.record).toMatchObject({ state: 'passed', collection: 'pending', ...persistedPins })
     await ci.close()
     ci = create()
-    await ci.dispatch()
-    const complete = CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId, testStatus: ['passed'] }))
+    ci.start()
+    const complete = await ciReadWhen(pool, async () => CiGetOutputSchema.parse(await invoke('ci_get', {
+      ticketId: started.ticketId, testStatus: ['passed'],
+    })), output => output.run.collection === 'complete')
     expect(complete.run).toMatchObject({ state: 'passed', collection: 'complete', ...persistedPins })
     expect(complete.tests).toEqual(expectedTests)
     expect(starts).toBe(1)
