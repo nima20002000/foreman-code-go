@@ -20,7 +20,7 @@ import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execut
 import type { Wave25InteractionRepository as PostgresInteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import type { RepeatNativeObservationStore } from '../src/modules/interactions/repeatObservation.js'
-import type { WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
+import type { UnboundWorkflowClosure, WorkflowClosureStore } from '../src/modules/interactions/workflowClosure.js'
 import type { RepeatNativeEvidence } from '../src/modules/runs/repeatNativeRepository.js'
 import { nativeApprovalContext } from '../src/modules/interactions/nativeApprovalContext.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
@@ -45,6 +45,7 @@ class ScriptedManager implements NativeHarnessSessionManager {
   readonly observed: NativeSessionReference[] = []
   readonly closed: NativeSessionReference[] = []
   readonly canceled: NativeSessionReference[] = []
+  disposals = 0
   responses = 0
   createError: Error | undefined
   attachError: Error | undefined
@@ -98,6 +99,7 @@ class ScriptedManager implements NativeHarnessSessionManager {
     return { ...history, correlationId, nativeTurnId: 'workflow-turn', ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: 'workflow-turn', result: history.terminalResult } } : {}) }
   }
   async close(session: NativeSessionReference) { this.closed.push(session) }
+  async dispose() { this.disposals += 1 }
 }
 
 it('rejects unsupported Claude configuration before allocating the approval fixture', () => {
@@ -141,6 +143,7 @@ function fixture(harness: AgentHarness = 'codex') {
   let cancelPendingCalls = 0
   let stopRequested = false, cleanupPending = false
   const negativeSettlements: Array<{ id: string; canceled: boolean }> = []
+  const failures = new Map<string, ExecutionResult>()
   // The owner-only Stop pass now re-reads a physical receipt even after the
   // original resident manager closed. Model ONLY that exact persisted close;
   // no SQL arm fabricates recovery evidence from a missing manager.
@@ -159,6 +162,16 @@ function fixture(harness: AgentHarness = 'codex') {
     if (q === 'select record from harness_executions where id=$1 and run_id=$2 for update') {
       assert.deepEqual(values, [candidate.id, candidate.runId])
       return result([{ record: executions.get(candidate.id) }])
+    }
+    if (q.startsWith('select 1 from harness_executions e join approval_execution_state b')) {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      return result(failures.has(candidate.id) ? [{}] : [])
+    }
+    if (q === 'select phase from workflow_native_entries where execution_id=$1 and run_id=$2') {
+      assert.deepEqual(values, [candidate.id, candidate.runId])
+      assert.equal(manager.creates.length, 0)
+      assert.equal(manager.attaches.length, 0)
+      return result([{ phase: 'reserved' }])
     }
     if (q.startsWith('select generation::text,execution_identity,')) {
       assert.deepEqual(values, [candidate.id])
@@ -185,14 +198,34 @@ function fixture(harness: AgentHarness = 'codex') {
     async getRepeatSnapshot() { return { run: { executionState: 'running' }, stopRequested, cleanupPending } },
     async requestCleanup() { cleanupPending = true },
     async *executionPages() { yield [...executions.values()] },
-    async repeat() { return { async settleNegativeExecution(id: string, canceled: boolean) {
-      // This recording repository port models idempotent disposition receipts,
-      // not native evidence or the production execution/result SQL writer.
-      // A later caller cannot silently change an already recorded disposition.
-      const prior = negativeSettlements.find((receipt) => receipt.id === id)
-      if (prior) assert.deepEqual(prior, { id, canceled })
-      else negativeSettlements.push({ id, canceled })
-    } } },
+    async recordExecutionFailure(actualOwner: RunOwnership, id: string, failure: ExecutionResult) {
+      assert.equal(actualOwner, owner)
+      actualOwner.assertOwned()
+      assert.ok(executions.has(id))
+      failures.set(id, structuredClone(failure))
+    },
+    async repeat() {
+      return {
+        readExecution: (id: string) => store.readExecution(id),
+        async settleNegativeExecution(id: string, canceled: boolean) {
+          const failure = failures.get(id)
+          if (failure) {
+            assert.equal(canceled, false)
+            assert.ok(closed || unbound || !lifetimeStarted,
+              'an entered native lifetime must confirm closure before failure settlement')
+            if (!lifetimeStarted) {
+              assert.equal(manager.creates.length, 0)
+              assert.equal(manager.attaches.length, 0)
+            }
+            executions.set(id, { ...executions.get(id)!, state: 'completed', result: failure, finishedAt: now })
+          }
+          // Repeated cleanup cannot change an already recorded disposition.
+          const prior = negativeSettlements.find((receipt) => receipt.id === id)
+          if (prior) assert.deepEqual(prior, { id, canceled })
+          else negativeSettlements.push({ id, canceled })
+        },
+      }
+    },
     async ensureExecution(input: HarnessExecution) {
       const existing = [...executions.values()].find((item) => item.runId === input.runId
         && item.workflowNodeId === input.workflowNodeId && item.attempt === input.attempt)
@@ -283,14 +316,22 @@ function fixture(harness: AgentHarness = 'codex') {
   const manager = new ScriptedManager(harness)
   const resolver = new ExecutionScopedNativeSessionManagerResolver(() => manager)
   let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
+  let unbound: UnboundWorkflowClosure | undefined
+  let lifetimeStarted = false
   const closures: WorkflowClosureStore = {
     async recoverDetached() { return undefined },
-    async begin() { closed = undefined; return '1' },
+    async begin() { lifetimeStarted = true; closed = undefined; unbound = undefined; return '1' },
     async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
     async read() { return closed },
     async recordDetached(_execution, _session, _generation, check) { check() },
-    async recordUnbound(execution, durableGeneration, check) { check(); return { execution: { ...execution, workingDirectory: execution.workingDirectory!, runtimeDirectory: execution.runtimeDirectory! }, durableGeneration } },
-    async readUnbound() { return undefined },
+    async recordUnbound(execution, durableGeneration, check) {
+      check()
+      assert.ok(manager.disposals > 0, 'the original manager must confirm disposal')
+      unbound = { execution: { ...execution, workingDirectory: execution.workingDirectory!,
+        runtimeDirectory: execution.runtimeDirectory! }, durableGeneration }
+      return unbound
+    },
+    async readUnbound() { return unbound },
   }
   let launch = true
   const store: RepeatNativeObservationStore = {
