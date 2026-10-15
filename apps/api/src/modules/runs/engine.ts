@@ -287,7 +287,9 @@ export class LangGraphWorkflowEngine {
       if ((await this.runs.getRepeatSnapshot(runId, owner)).run.executionState === 'completed') await this.finishOwned(owner)
     } catch (error) {
       owner.assertOwned(); controller.signal.throwIfAborted()
-      if (runtimeEntered && error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') {
+      // A selected node that failed after its settlement is the Run's failed outcome, not a start error.
+      if (runtimeEntered && error instanceof DomainError
+        && ['GRAPH_STOP_CONFLICT', 'WORKFLOW_SELECTED_EXECUTION_FAILED'].includes(error.code)) {
         const current = await this.runs.getRepeatSnapshot(runId, owner)
         if (current.run.executionState === 'completed') {
           await this.cleanupOwned(owner)

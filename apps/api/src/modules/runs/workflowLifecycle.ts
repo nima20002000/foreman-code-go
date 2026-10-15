@@ -414,17 +414,20 @@ export async function settleWorkflowRun(owner: RunOwnership, interrupted = false
       'select failure_result from run_cleanup_intents where run_id=$1', [run.id])).rows[0]
     const failure = cleanup?.failure_result ? ExecutionResultSchema.parse(cleanup.failure_result) : undefined
     if (failure && failure.outcome !== 'failed') return fail('RUN_FAILURE_CAUSE_INVALID')
-    let interruptedResult: ExecutionResult | undefined
+    let executionFailure: ExecutionResult | undefined
     if (!snapshot.stopRequested && !failure) {
+      // An interrupted Run keeps its interruption cause. Otherwise the most recent
+      // failed selected execution is the cause, even when cleanup never received it
+      // (a restart reads a preparation failure that was already recorded).
       const execution = (await sql.query<{ result: unknown }>(`
         select record->'result' as result from harness_executions
         where run_id=$1 and tick_index is null and record->>'state'='completed'
           and record#>>'{result,outcome}'='failed'
-          and record#>>'{result,error,code}'='EXECUTION_INTERRUPTED'
-        order by created_at,id limit 1`, [run.id])).rows[0]
-      if (execution) interruptedResult = ExecutionResultSchema.parse(execution.result)
+          and ($2::boolean or record#>>'{result,error,code}'='EXECUTION_INTERRUPTED')
+        order by ${interrupted ? 'created_at,id' : 'created_at desc,id desc'} limit 1`, [run.id, !interrupted])).rows[0]
+      if (execution) executionFailure = ExecutionResultSchema.parse(execution.result)
     }
-    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? interruptedResult ?? { outcome: 'failed', error: {
+    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? executionFailure ?? { outcome: 'failed', error: {
       code: interrupted ? 'EXECUTION_INTERRUPTED' : 'WORKFLOW_SELECTED_EXECUTION_FAILED',
       message: interrupted ? 'The owned execution was interrupted and physically settled; native work was not replayed.'
         : 'A selected execution did not complete successfully.', retryable: false,
