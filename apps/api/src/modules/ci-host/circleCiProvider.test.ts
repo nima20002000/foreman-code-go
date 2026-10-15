@@ -24,6 +24,7 @@ it.each([undefined, 221366])('sends declared CircleCI pipeline parameters with c
     ...(duration === undefined ? {} : { expectedDurationMs: duration }),
     scope: 'affected', files: 's:3-4', defaultBranch: 'main', baseCommit: 'a'.repeat(40),
     partition: JSON.stringify({ index: 0, count: 2 }), durations: JSON.stringify({ 'sample.test.ts': 100 }),
+    gate: true,
   }
   await provider.dispatch(input)
   const parameters = Object.fromEntries(commands[0]!.flatMap((argument, index, args) => {
@@ -145,7 +146,7 @@ it('streams the running CircleCI step output into the log as it grows', async ()
   const first = await read()
   expect(first).toMatchObject({ run: { state: 'running', step: 'Suite' }, text: '==> Checkout code\n==> Suite\na.test passed\n' })
   f.circle.output += 'b.test passed\n'
-  f.advance(4_000)
+  f.advance(60_000)
   expect(await read(first.operation === 'read' ? first.nextOffset : 0)).toMatchObject({ text: 'b.test passed\n' })
 })
 

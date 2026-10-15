@@ -244,12 +244,67 @@ it('polls CircleCI status repeatedly and collects raw Suite output through REST'
   ], output: { key: 'job:2', text: 'progress 2\nfailure\n' } }
   expect(await provider.find(run)).toBe('42')
   expect(await provider.status(run)).toEqual(expected)
-  expect(await provider.status(run)).toEqual(expected)
+  expect(await provider.status(run)).toEqual({ done: false, steps: expected.steps })
   expect(cli.calls).not.toHaveBeenCalled()
   expect(await provider.log(run)).toBe(`Suite\n${stdout}${stderr}\n${stdout}${stderr}`)
   expect(server.requests.some(request => request.url === '/api/v3/jobs/job/stdout?filter%5Bexecution%5D=1&filter%5Bstep_num%5D=2'))
     .toBe(true)
   expect(cli.calls).not.toHaveBeenCalled()
+})
+
+it.each([true, false])('bounds live CircleCI log reads while continuing status polling, REST: %s', async rest => {
+  let now = Date.parse(finishedAt)
+  let step = 1
+  let ended = false
+  const server = await http((request, response) => {
+    if (request.url === '/api/v2/pipeline/42/workflow') return json(response, { items: [
+      { id: 'workflow', status: ended ? 'success' : 'running', stopped_at: finishedAt },
+    ] })
+    if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
+      phase: 'started', parallel_executions: [{ steps: [{ num: step, name: 'Suite', phase: 'started' }] }],
+    } } })
+    circleHandler(request, response)
+  })
+  const calls = vi.fn<HostCiPorts['run']>(async (_file, args) => {
+    let stdout = 'failure\ndetails\n'
+    if (args[0] === 'run') stdout = JSON.stringify({ workflows: [{ phase: ended ? 'ended' : 'started',
+      outcome: ended ? 'succeeded' : undefined, stopped_at: finishedAt, jobs: [{ id: 'job' }] }] })
+    else if (args[1] === 'get') stdout = JSON.stringify({ phase: 'started',
+      executions: [{ steps: [{ num: step, name: 'Suite', phase: 'started' }] }] })
+    return { code: 0, stdout, stderr: '' }
+  })
+  const provider = new CircleCiProvider({ run: calls, now: () => new Date(now), cpus: 4, memoryBytes: 2 ** 30 },
+    { ...server, circleToken: async () => rest ? 'fixture-token' : null })
+  const outputReads = () => rest
+    ? server.requests.filter(request => /\/std(out|err)/.test(request.url)).length / 2
+    : calls.mock.calls.filter(([, args]) => args[0] === 'job' && args[1] === 'output').length
+  const statusReads = () => rest
+    ? server.requests.filter(request => request.url === '/api/v2/pipeline/42').length
+    : calls.mock.calls.filter(([, args]) => args[0] === 'run').length
+  expect(await provider.status(run)).toMatchObject({ done: false, output: { key: 'job:1' } })
+  for (let poll = 1; poll < 15; poll++) {
+    now += 4_000
+    expect(await provider.status(run)).toEqual({ done: false,
+      steps: [{ key: 'job:1', name: 'Suite', state: 'running' }] })
+  }
+  expect(outputReads()).toBe(1)
+  expect(statusReads()).toBe(15)
+  now += 4_000
+  expect(await provider.status(run)).toMatchObject({ output: { key: 'job:1' } })
+  expect(outputReads()).toBe(2)
+  step = 2
+  now += 4_000
+  expect(await provider.status(run)).toMatchObject({ output: { key: 'job:2' } })
+  expect(outputReads()).toBe(3)
+  const retained = { ...run, live: { step: 'Suite', seen: [], bytes: 4 * 1024 * 1024 } }
+  now += 60_000
+  expect(await provider.status(retained)).toMatchObject({ done: false })
+  expect(outputReads()).toBe(3)
+  ended = true
+  expect(await provider.status(retained)).toMatchObject({ done: true, conclusion: 'success' })
+  expect(statusReads()).toBe(19)
+  expect(await provider.log(retained)).toContain('failure')
+  expect(outputReads()).toBe(4)
 })
 
 it('keeps the CircleCI Suite output CLI fallback when REST credentials are unavailable', async () => {
@@ -469,7 +524,9 @@ it('keeps full CircleCI log output, empty streams, progress redraws and report l
         { num: 2, name: 'Cleanup', phase: 'ended', outcome: 'succeeded' },
       ] }],
     } } })
-    if (request.url!.includes('step_num=2')) return json(response, { message: 'Not Found' }, 404)
+    if (new URL(request.url!, 'http://fixture').searchParams.get('filter[step_num]') === '2') {
+      return json(response, { message: 'Not Found' }, 404)
+    }
     if (request.url!.includes('/stdout')) {
       response.end('progress 1\r\u001b[2Kprogress 2\n' + 'line\n'.repeat(250) + 'failure\n')
       return
