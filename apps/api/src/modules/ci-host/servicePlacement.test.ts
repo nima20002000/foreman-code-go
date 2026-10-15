@@ -210,6 +210,38 @@ it('rechecks sibling placement before falling back after a busy start', async ()
   expect(records.find(run => run.id === retriedRunId)?.computer?.hostRef).toEqual(spare.hostRef)
 })
 
+it.each([false, true])('retains preparation capacity reasons and retries placement, alternate computer: %s', async alternate => {
+  const records = queuedRuns(1)
+  const occupied = new Set<string>()
+  const f = fleet(records, alternate ? [host, secondHost] : [host], new Map(), occupied)
+  const request = f.endpoint.request
+  const reason = 'All CI slots are in use (1/1); this commit needs exclusive database capacity.'
+  let busy = true
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+    if (input.operation === 'start' && computer.key === host.key && busy) {
+      occupied.add(computer.key)
+      throw new DomainError('CI_HOST_BUSY', reason, 409)
+    }
+    return request(computer, input)
+  })
+  await f.service.dispatch()
+  expect(records[0]).toMatchObject({ state: alternate ? 'running' : 'queued',
+    messageHistory: [reason], exitCode: null, finishedAt: null })
+  if (alternate) {
+    expect(records[0]!.computer?.hostRef).toEqual(secondHost.hostRef)
+  } else {
+    expect(records[0]).toMatchObject({ computer: null, startedAt: null })
+    expect(records[0]!.dispatchHostKey).toBeUndefined()
+    busy = false
+    occupied.clear()
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000)
+    await f.service.dispatch()
+    expect(records[0]).toMatchObject({ state: 'running', messageHistory: [reason],
+      computer: { hostRef: host.hostRef } })
+  }
+  await f.service.close()
+})
+
 it.each(['busy', 'not-ready', 'offline'])('uses a second slot when the other computer is %s', async reason => {
   const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
     partition: { ...run.partition, weights: [1, 1], tier: 'fast' },
