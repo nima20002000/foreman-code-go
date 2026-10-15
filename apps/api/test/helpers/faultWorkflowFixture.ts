@@ -15,7 +15,7 @@ import { persistVerifiedRemoteReceipt } from '../../src/modules/runs/remote/pers
 import type { DispatchIntent, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import type { NativeManagerResolutionContext } from '../../src/modules/interactions/runtimePorts.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../src/modules/access/workerCredentials.js'
-import { readOperationalFailures } from '../../src/modules/diagnostics/operationalFailures.js'
+import { componentLogger, readOperationalFailures } from '../../src/modules/diagnostics/logger.js'
 import { credentialAuthority } from '../../src/modules/interactions/wave25/credentialAuthority.js'
 import { readLiveManagementPrincipal } from '../../src/modules/access/liveManagementPrincipal.js'
 import { interactionConnection } from '../../src/modules/interactions/connection.js'
@@ -239,6 +239,12 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       }
     }, 10)
     let started: Promise<PromiseSettledResult<void>[]> | undefined
+    let reconciliation: Promise<unknown> | undefined
+    const report = (error: unknown) => componentLogger('engine').warn({ err: error }, 'Workflow fixture maintenance failed')
+    const maintenance = setInterval(() => {
+      if (!started || reconciliation) return
+      reconciliation = base.engine.reconcile(report).catch(report).finally(() => { reconciliation = undefined })
+    }, 500)
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
       get startupDescription() { return startupDescription },
@@ -271,6 +277,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       },
       async close() {
         clearInterval(pump)
+        clearInterval(maintenance)
         worker.reconnect()
         for (const turn of worker.replay.starts) {
           const thread = worker.replay.threads.get(turn.sessionId)
@@ -279,6 +286,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
           }
         }
         try {
+          await base.engine.shutdown()
+          await reconciliation
           await base.close()
           await started
         } finally {
@@ -325,6 +334,12 @@ export function expectBoundedNodeFault(details: ReturnType<typeof SavedRunDetail
 
 export function expectRecoveredFault(details: ReturnType<typeof SavedRunDetailsSchema.parse>,
   fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>, activity: RegExp) {
+  expectSuccessfulFaultRecovery(details, fixture)
+  expect(details.activity.some(item => activity.test(canonicalGraphJson(item.payload)))).toBe(true)
+}
+
+export function expectSuccessfulFaultRecovery(details: ReturnType<typeof SavedRunDetailsSchema.parse>,
+  fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>) {
   expect(details.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
   expect(details.cleanupPending).toBe(false)
   const sibling = details.executions.filter(execution => execution.workflowNodeId === fixture.sibling.id)
@@ -334,5 +349,4 @@ export function expectRecoveredFault(details: ReturnType<typeof SavedRunDetailsS
   expect(affected.length).toBeGreaterThan(0)
   expect(affected.length).toBeLessThanOrEqual(3)
   expect(affected.at(-1)).toMatchObject({ state: 'completed', result: { outcome: 'succeeded' } })
-  expect(details.activity.some(item => activity.test(canonicalGraphJson(item.payload)))).toBe(true)
 }
