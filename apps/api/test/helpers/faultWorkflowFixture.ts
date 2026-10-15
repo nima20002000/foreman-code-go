@@ -152,6 +152,12 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       expect(response.statusCode, response.body).toBe(200)
       return SavedRunDetailsSchema.parse(response.json())
     }
+    const readStartup = async () => {
+      const details = await read()
+      const failed = details.executions.find(execution => execution.result?.outcome === 'failed')
+      expect(failed?.result, canonicalGraphJson(details)).toBeUndefined()
+      return details
+    }
     const completed = new Set<string>()
     let releaseAffected = false
     let releaseSibling = !options.loop
@@ -171,11 +177,11 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     let started: Promise<PromiseSettledResult<void>[]> | undefined
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
-      get unavailableInspections() { return unavailableInspections },
+      async mcpInspections() { await readStartup(); return unavailableInspections },
       makeMcpReady() { mcpReady = true },
       launch() { started = Promise.allSettled([base.engine.start(base.f.run.id)]) },
       release() { releaseAffected = true; releaseSibling = true },
-      active: () => readUntil(read, details => details.executions.some(execution =>
+      active: () => readUntil(readStartup, details => details.executions.some(execution =>
         execution.workflowNodeId === affected.id && execution.state === 'running')
         && details.activity.some(activity => activity.payload.nativeEventType === 'turn.started'
           && details.executions.some(execution => execution.id === activity.harnessExecutionId
