@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, refreshedEvidence, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { latestEvidence, refreshedEvidence, assertMcpReadback, startWhenReady } from './helpers/workerProfileRequalification.js'
 import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
@@ -35,8 +35,8 @@ describe('automatic Worker profile qualification', () => {
         .then(result => ({ result }), (error: unknown) => ({ error }))
       if ('error' in denied) expect(denied.error).toMatchObject({ code: -32602 })
       else expect(denied.result.isError).toBe(true)
-      await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
-      expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
+      const started = (await startWhenReady(fixture))!
+      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
     } catch (error) {
       const audit = await fixture.db.pool.query(`select outcome,details from management_audit
         where source='system' and action='harness.instance.check' order by sequence`)

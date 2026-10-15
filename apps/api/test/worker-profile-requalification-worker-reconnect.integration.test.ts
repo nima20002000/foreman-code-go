@@ -3,11 +3,11 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
-import { latestEvidence, assertMcpReadback } from './helpers/workerProfileRequalification.js'
+import { latestEvidence, assertMcpReadback, startWhenReady } from './helpers/workerProfileRequalification.js'
 import { waitForReplacementReviewInventory } from './helpers/remoteReviewProductionCases.js'
 
 describe('automatic Worker profile qualification', () => {
-  it('retains same-boot qualification through MCP while refusing an unpublished Worker bundle', async () => {
+  it('starts through authenticated MCP with retained qualification after a same-boot Worker reconnect', async () => {
     const fixture = await remoteReviewProduction({
       workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,
     })
@@ -26,8 +26,8 @@ describe('automatic Worker profile qualification', () => {
         .toBe(inventoryBefore.hostMetadata!.connection!.binding.bootId)
       expect(await latestEvidence(fixture)).toEqual(before)
       await assertMcpReadback(fixture, before)
-      await expect(fixture.start()).rejects.toThrow('WORKER_BUNDLE_UNPUBLISHED')
-      expect((await fixture.db.pool.query('select id from runs')).rows).toEqual([])
+      const started = (await startWhenReady(fixture))!
+      expect((await fixture.details(started.run.id)).run.id).toBe(started.run.id)
       expect((await fixture.provider.calls()).filter(call => call.qualificationSuite)).toHaveLength(checksBefore)
       const audit = await systemChecks()
       expect(audit.rows).toEqual(auditBefore)

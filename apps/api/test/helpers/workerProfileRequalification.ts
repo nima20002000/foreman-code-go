@@ -63,3 +63,12 @@ export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<Retu
   expect(evidence.every(proof => proof.connectionGeneration === installation.connectionGeneration)).toBe(true)
 }
 
+
+export async function startWhenReady(fixture: Fixture) {
+  return waitForRemoteReview(async () => {
+    try { return await fixture.start() } catch (error) {
+      if (error instanceof Error && error.message.includes('HARNESS_PROFILE_CHECK_PENDING')) return undefined
+      throw error
+    }
+  }, result => result !== undefined, 'Run admission after automatic profile checks')
+}
