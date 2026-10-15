@@ -558,6 +558,7 @@ it('retries a CI read once after a statement timeout, then reports a retryable e
 it('retries an unknown start reply on the assigned executor without requeueing', async () => {
   const f = dispatchFixture()
   f.records.splice(0, 1)
+  f.keepRunning.add(f.queued.id)
   const request = vi.mocked(f.endpoint.request).getMockImplementation()!
   const starts: { computer: HostCiComputer; runId: string }[] = []
   vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
@@ -646,6 +647,7 @@ it('bounds a hanging start and retains its assignment while status is unavailabl
   vi.useFakeTimers()
   const f = dispatchFixture()
   f.records.splice(0, 1)
+  f.keepRunning.add(f.queued.id)
   const request = vi.mocked(f.endpoint.request).getMockImplementation()!
   let acknowledge!: () => void
   const delayed = new Promise<void>(resolve => { acknowledge = resolve })
