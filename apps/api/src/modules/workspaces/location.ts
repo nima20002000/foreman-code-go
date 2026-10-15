@@ -327,7 +327,12 @@ export class WorkspaceLocationService {
       const { principal } = await currentOperatorAuthority(client ?? this.pool, principalId, atCommit)
       requireAuthorization(principal, 'runs:start', { workspaceId, workflowId })
       requireAuthorization(principal, 'workspace_locations:read', { workspaceId })
-    } catch {
+    } catch (error) {
+      const denied = error instanceof DomainError && (error.status === 401 || error.status === 403)
+        && (error.code.startsWith('AUTH_') || error.code === 'ACCESS_DENIED')
+      if (!denied) {
+        throw error
+      }
       throw new DomainError('RUN_AUTHORIZATION_REVOKED', 'The authority that accepted this Run is no longer valid.', 403)
     }
   }

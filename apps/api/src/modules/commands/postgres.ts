@@ -10,6 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { commandIdentity, commandReceiptPrincipals } from './identity.js'
 
 function commitWasRejected(error: unknown): boolean {
   if (!(error instanceof pg.DatabaseError) || !error.code) return false
@@ -98,9 +99,11 @@ export class PostgresCommandCoordinator {
     let resourceLockRequested = false
     let committing = false
     let performing = false
-    const commandLock = `command:${input.principal.id}:${input.operation}:${commandId}`
+    let commandLock = `command:${input.principal.id}:${input.operation}:${commandId}`
     const resourceLock = input.preparedMutation?.resourceLock ?? input.resourceLock
     try {
+      const identity = await commandIdentity(client, input.principal)
+      commandLock = `command:${identity.key}:${input.operation}:${commandId}`
       if (dedicatedConnection || input.preparedMutation) {
         // Track requests before acquisition: a lost reply may leave a session lock held.
         lifecycleLock = true
@@ -120,10 +123,12 @@ export class PostgresCommandCoordinator {
         await acquireSessionLock(client, input.resourceLock)
       }
       await input.authorize?.(client)
-      const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
-        `select input_hash, target_key, result from management_command_receipts
-         where principal_id = $1 and operation = $2 and command_id = $3`,
-        [input.principal.id, input.operation, commandId],
+      const principals = await commandReceiptPrincipals(client, identity, input.principal.id)
+      const existing = await client.query<{ principal_id: string; input_hash: string; target_key: string; result: unknown }>(
+        `select principal_id, input_hash, target_key, result from management_command_receipts
+         where principal_id = any($1::text[]) and operation = $2 and command_id = $3
+         order by principal_id limit 1`,
+        [principals, input.operation, commandId],
       )
       const receipt = existing.rows[0]
       let resumingReceipt = false
@@ -178,7 +183,7 @@ export class PostgresCommandCoordinator {
         await client.query(
           `update management_command_receipts set result=$4::jsonb
            where principal_id=$1 and operation=$2 and command_id=$3`,
-          [input.principal.id, input.operation, commandId, JSON.stringify(value)],
+          [receipt!.principal_id, input.operation, commandId, JSON.stringify(value)],
         )
       } else {
         await client.query(

@@ -1,3 +1,4 @@
+import { JobPreparationRetryError, retryJobPreparation } from './preparationRetry.js'
 import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts } from './privateGitMounts.js'
 import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type VerifiedJobSource } from './inputs.js'
 import type { JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
@@ -213,7 +214,8 @@ async function prepareWithinBudget<T>(budgetMs: number, cancellation: AbortSigna
     })])
   } catch (error) {
     // Aborted preparation can still own input writers until its original promise settles.
-    await Promise.allSettled([preparation])
+    const [settled] = await Promise.allSettled([preparation])
+    if (settled.status === 'rejected' && settled.reason instanceof JobPreparationRetryError) throw settled.reason
     throw error
   } finally { clearTimeout(deadline); cancellation.removeEventListener('abort', onCancel) }
 }
@@ -238,9 +240,9 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
       for (const [key, digest] of Object.entries(jobSpecDigests(preparedSpec, spec.workflowInput))) {
         if (spec[key as keyof ReturnType<typeof jobSpecDigests>] !== digest) throw new Error('Accepted specification digest mismatch.')
       }
-      await ports.authority.recheck(execution)
+      await retryJobPreparation(signal, () => ports.authority.recheck(execution))
       const profile = requireProfile(spec, ports.supervisor.qualifiedProfile)
-      const source = await ports.source.verify(spec, signal)
+      const source = await retryJobPreparation(signal, () => ports.source.verify(spec, signal))
       if (signal.aborted) throw new Error('Preparation interrupted.')
       if (!source.privateGit || !Number.isFinite(source.diskQuotaBytes) || source.diskQuotaBytes <= 0 || source.diskQuotaBytes > profile.diskBytes ||
         source.directoryIdentityHash !== spec.target.destination.directoryIdentityHash ||
@@ -248,19 +250,20 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
         throw new Error('Accepted private source/root identity changed.')
       }
       requireJobGitMounts(execution,source)
-      const deliveredInputs = await ports.inputs.prepare(execution, source, signal)
+      const deliveredInputs = await retryJobPreparation(signal, () => ports.inputs.prepare(execution, source, signal))
       signal.throwIfAborted()
       const inputs = requireJobInputReceipt(execution, source, deliveredInputs)
-      await ports.prepareOutputs?.(execution, signal)
+      await retryJobPreparation(signal, () => ports.prepareOutputs?.(execution, signal))
       if(signal.aborted)throw new Error('Input delivery interrupted.')
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
       if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted working directory changed.')
       const prepared: JobLaunchPlan = { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource:{...source}, inputs, cwd, argv: spec.argv,
         environment: { HOME: '/tmp/job-home', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1',...JOB_GIT_ENVIRONMENT,FOREMAN_CODE_JOB_INPUT_MANIFEST:JOB_INPUT_MANIFEST_CONTAINER_PATH,GRAPHQL_JOB_INPUT_MANIFEST:JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
-      await ports.authority.recheck(execution)
+      await retryJobPreparation(signal, () => ports.authority.recheck(execution))
       return prepared
     })
   } catch (error) {
+    if (!cancellation.aborted && error instanceof JobPreparationRetryError) throw error.cause
     componentLogger('jobs').warn({ err: error, executionId: execution.id }, 'Job preparation failed before native entry')
     return { ...result, outcome: cancellation.aborted ? 'cancelled' : 'preparation_failed', processStopped: true }
   }
@@ -285,12 +288,12 @@ export async function executeVerificationJob(
   let plan: JobLaunchPlan<VerificationExecution>
   try {
     plan = await prepareWithinBudget(spec.policy.preparationTimeoutMs, cancellation, async signal => {
-      await ports.authority.recheck(execution)
-      await ports.verifyAcceptedSpec(spec)
+      await retryJobPreparation(signal, () => ports.authority.recheck(execution))
+      await retryJobPreparation(signal, () => ports.verifyAcceptedSpec(spec))
       const profile = ports.supervisor.qualifiedProfile
       requireVerificationRuntime(spec, ports.measurement, profile, Date.now(), ports.dispatchAt)
       if (!profile) throw new Error('Qualified verification runtime unavailable.')
-      const source = await ports.source.verify(spec, signal)
+      const source = await retryJobPreparation(signal, () => ports.source.verify(spec, signal))
       signal.throwIfAborted()
       if (!source.privateGit || source.privateRepositoryRoot !== spec.target.destination.canonicalProjectRoot
         || source.directoryIdentityHash !== spec.target.destination.directoryIdentityHash
@@ -298,15 +301,15 @@ export async function executeVerificationJob(
         throw new Error('Accepted verification source or quota changed.')
       }
       requireJobGitMounts(execution, source)
-      const inputs = await ports.inputs.prepare(execution, source, signal)
+      const inputs = await retryJobPreparation(signal, () => ports.inputs.prepare(execution, source, signal))
       signal.throwIfAborted()
-      await ports.inputs.verify(execution, source, inputs, signal)
+      await retryJobPreparation(signal, () => ports.inputs.verify(execution, source, inputs, signal))
       signal.throwIfAborted()
-      await ports.prepareOutputs(execution, signal)
+      await retryJobPreparation(signal, () => ports.prepareOutputs(execution, signal))
       signal.throwIfAborted()
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
       if (cwd !== spec.target.destination.canonicalCwd) throw new Error('Accepted verification working directory changed.')
-      await ports.authority.recheck(execution)
+      await retryJobPreparation(signal, () => ports.authority.recheck(execution))
       return { identity, execution, privateRepositoryRoot: source.privateRepositoryRoot, verifiedSource: source, inputs,
         cwd, argv: spec.argv, environment: { HOME: '/job-scratch/home', TMPDIR: '/job-scratch/tmp',
           PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', CI: '1', ...JOB_GIT_ENVIRONMENT,
@@ -314,6 +317,7 @@ export async function executeVerificationJob(
           GRAPHQL_JOB_INPUT_MANIFEST: JOB_INPUT_MANIFEST_CONTAINER_PATH }, stdin: 'closed', pty: false, profile }
     })
   } catch (error) {
+    if (!cancellation.aborted && error instanceof JobPreparationRetryError) throw error.cause
     componentLogger('jobs').warn({ err: error, executionId: execution.id }, 'Verification preparation failed before native entry')
     return { ...result, outcome: cancellation.aborted ? 'cancelled' : 'preparation_failed', processStopped: true }
   }

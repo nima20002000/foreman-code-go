@@ -1987,7 +1987,7 @@ export class ApprovalExecutionCoordinator {
       if (isRestartCancellation(error, signal)) throw safe.error(error)
       componentLogger('harness').warn({ err: safe.error(error), executionId: execution.id },
         'workflow approval attachment failed')
-      if (isTransientRefreshFailure(error) || isLeaseLost(error)
+      if (isTransientExecutionError(error) || isTransientRefreshFailure(error) || isLeaseLost(error)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw safe.error(error)
       resolved.markFailed?.()
       owned.failed = true
@@ -2048,7 +2048,7 @@ export class ApprovalExecutionCoordinator {
     } catch (error) {
       owner.assertOwned()
       signal?.throwIfAborted()
-      if (isTransientRefreshFailure(error)) {
+      if (isTransientExecutionError(error) || isTransientRefreshFailure(error)) {
         const owned = this.ownedSessions.get(execution.id)
         if (owned) {
           owned.pendingApprovalRestoration = true

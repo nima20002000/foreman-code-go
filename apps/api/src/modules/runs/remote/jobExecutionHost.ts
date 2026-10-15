@@ -5,7 +5,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { RemoteJobExecutionRpcRequestRecordSchema, type RemoteJobDispatchIntent, type RemoteJobConnectionIdentity,
-  type RemoteJobOwnerControl, type RemoteJobOperationReceiptRecord, type RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
+  type RemoteJobOwnerControl, type RemoteJobOperationReceiptRecord, type RemoteJobOperationStatusRecord,
+  type RemoteJobTerminalEvidence } from '@foreman-code/contracts/remote-job-execution'
 import { JobOutputCollectionError } from '../../jobs/executorOutputs.js'
 import { executeJob, executeVerificationJob, jobSupervisorIdentity, type JobExecutorPorts,
   type JobExecutorResult, type JobSupervisor, type VerificationExecution, type VerificationJobExecutorPorts } from '../../jobs/executor.js'
@@ -13,6 +14,7 @@ import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import { jobContainerNonEntryObserved } from '../../jobs/executorJournal.js'
 import { logIgnoredError } from '../../diagnostics/ignoredError.js'
+import { isTransientExecutionError } from '../executionRetryPolicy.js'
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
@@ -125,7 +127,7 @@ export class RemoteJobExecutionHost {
       return this.reconcile(status.receipt)
     })
   }
-  deliver(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord) {
+  deliver(intent: RemoteJobDispatchIntent, raw: JobExecutionRecord): Promise<RemoteJobOperationStatusRecord> {
     if (this.draining) return Promise.reject(new Error('Worker Job admissions are draining for runtime refresh.'))
     const task = this.accept(intent, raw)
     this.admissions.add(task)
@@ -152,7 +154,13 @@ export class RemoteJobExecutionHost {
     const controller = new AbortController()
     const task = this.useOperation(execution, () => this.execute(intent, execution, controller.signal)).catch(async error => {
       componentLogger('jobs').error({ err: error, operationId: intent.operationId }, 'Job execution or publication needs reconciliation')
-      try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch (journalError) { logIgnoredError('jobs', 'record uncertain job execution', journalError, { operationId: intent.operationId }) } // A faulted journal already blocks new entry.
+      try {
+        const latest = await this.ports.journal.jobStatus(intent.operationId)
+        if (latest.status === 'known' && !latest.receipt.entryAttempted && isTransientExecutionError(error)) return
+        await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation')
+      } catch (journalError) {
+        logIgnoredError('jobs', 'record uncertain job execution', journalError, { operationId: intent.operationId })
+      }
     })
     this.tasks.set(intent.operationId, { controller, task })
     void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
@@ -250,7 +258,11 @@ export class RemoteJobExecutionHost {
     const owner = receipt.execution.schemaVersion === 2 ? await this.ports.journal.jobNativeOwner(receipt.intent.operationId) : null
     if (receipt.entryAttempted && (receipt.native || owner?.nonEntryConfirmed && owner.verification)) {
       try { await this.ports.authorize(receipt.intent, receipt.execution, 'publish') }
-      catch { await this.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed')); return }
+      catch (error) {
+        if (isTransientExecutionError(error)) throw error
+        await this.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'failed'))
+        return
+      }
       if (receipt.publication !== 'collecting') receipt = await this.ports.journal.jobPublication(receipt.intent.operationId, 'collecting')
       await this.observeReceipt(receipt)
       // A collector may have published before losing its ACK. Keep collecting; W09's
@@ -301,6 +313,7 @@ export class RemoteJobExecutionHost {
       if (receipt.stopFence) await this.publish(await this.ports.journal.jobTerminal(receipt.intent.operationId, this.terminalEvidence({
         outcome: 'cancelled', exitCode: null, signal: null, processStopped: true, supervisorIdentity: jobSupervisorIdentity(receipt.execution),
         containerId: null, recoveryRequired: false, logError: false, logsTruncated: false, outputCollectionError: false }, false)))
+      else if (receipt.phase === 'received') return this.deliver(receipt.intent, receipt.execution)
       return this.ports.journal.jobStatus(receipt.intent.operationId)
     }
     await this.ports.authorize(receipt.intent, receipt.execution, 'read')
