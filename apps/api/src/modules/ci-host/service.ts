@@ -1123,6 +1123,7 @@ export class HostCiService {
     queued = await splitUnavailableGateParts(this.pool, queued, { computers, shards: gateShards, durations,
       reservedCloud, gate, freeSlots, canTake: canTakeGatePart,
       idle: computer => (used.get(computer.key) ?? 0) === 0 })
+    const gateHostsWaiting = new Set(queued.filter(run => run.gate).map(run => run.plannedHostKey))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await inBatches(queued, 8, async run => {
       const smokeTarget = smokeTargets.get(run.groupId)
@@ -1157,6 +1158,9 @@ export class HostCiService {
         .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
         .filter(computer => !run.gate || canTakeGatePart(run, computer))
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
+        // Full-run backfill never takes a build computer a queued gate part is still waiting to use exclusively.
+        .filter(computer => run.gate || run.scope === 'affected' || computer.hostRef.kind === 'cloud'
+          || !gateHostsWaiting.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
       while (order.length) {
