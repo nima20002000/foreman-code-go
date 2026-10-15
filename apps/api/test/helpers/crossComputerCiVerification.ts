@@ -95,9 +95,9 @@ function verifyWorkflowActivity(workflow: RunningCiWorkflow, observation: Scenar
   const items = [...observation.activities.get(workflow.runId)!.values()]
   for (const item of items) {
     if (item.refs.executionId) expect(agentIds.has(item.refs.executionId)).toBe(true)
-    if (item.refs.jobExecutionId) {
-      expect(ticketIds.has(item.refs.jobExecutionId), 'Run activity contains only its own CI tickets').toBe(true)
-      const ticket = observation.tickets.get(item.refs.jobExecutionId)!
+    if (item.refs.ciTicketId) {
+      expect(ticketIds.has(item.refs.ciTicketId), 'Run activity contains only its own CI tickets').toBe(true)
+      const ticket = observation.tickets.get(item.refs.ciTicketId)!
       expect(item.refs.executionId).toBe(ticket.initiatingExecutionId)
       expect(item.actor && 'agentId' in item.actor ? item.actor.agentId : undefined).toBe(ticket.agentId)
     }
@@ -106,9 +106,9 @@ function verifyWorkflowActivity(workflow: RunningCiWorkflow, observation: Scenar
     if (foreign.runId !== workflow.runId) expect(JSON.stringify(items)).not.toContain(foreign.ticketId)
   }
   requireCiWorkflowActivity(items, { runId: workflow.runId,
-    agentExecutionIds: [...agentIds], jobExecutionIds: [...ticketIds] })
+    agentExecutionIds: [...agentIds], ciTicketIds: [...ticketIds] })
   for (const ticket of own) {
-    const events = items.filter(item => item.kind === 'job_work' && item.refs.jobExecutionId === ticket.ticketId)
+    const events = items.filter(item => item.kind === 'job_work' && item.refs.ciTicketId === ticket.ticketId)
       .sort((left, right) => Number(BigInt(left.sequence) - BigInt(right.sequence)))
     expect(events.at(-1)?.status).toBe('completed')
     requireCiStateOrder(events.map(event => event.status === 'completed' ? 'passed' : event.status))

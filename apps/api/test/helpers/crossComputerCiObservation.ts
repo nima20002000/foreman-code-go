@@ -60,8 +60,8 @@ async function captureWorkflowActivity(client: Client, workflow: RunningCiWorkfl
     expect(page.scope.workflowVersionId).toBe(workflow.saved.version.id)
     for (const item of page.items) {
       items.set(item.id, item)
-      if (item.kind === 'job_work' && item.refs.jobExecutionId) {
-        candidate(observation, workflow.runId, item.refs.jobExecutionId)
+      if (item.kind === 'job_work' && item.refs.ciTicketId) {
+        candidate(observation, workflow.runId, item.refs.ciTicketId)
       }
     }
     observation.activities.set(workflow.runId, items)
