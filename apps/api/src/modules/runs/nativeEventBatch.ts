@@ -71,11 +71,19 @@ export async function appendNormalizedNativeEvents(sql: GraphTransactionSql,
   const ids = [...new Set(events.map(({ event }) => event.executionId))].sort()
   const allocators = await sql.query<ExecutionAllocator>(`select id,native_event_next_sequence::text as next_sequence
     from harness_executions where id=any($1::text[]) order by id for update`, [ids])
-  const rows = await sql.query<EventRow>(`select distinct n.execution_id,n.sequence,n.connection_id,n.source_sequence,n.record
-    from harness_native_events n join jsonb_to_recordset($1::jsonb)
-      as p(execution_id text,connection_id text,source_sequence integer) on n.execution_id=p.execution_id
-      and (p.connection_id is not null and n.connection_id=p.connection_id and n.source_sequence=p.source_sequence
-        or p.connection_id is null and n.sequence=p.source_sequence)`, [JSON.stringify(events.map(({ event }) => ({
+  // Keep each identity form on its unique index; an OR join scans the entire native journal.
+  const rows = await sql.query<EventRow>(`with replay_identities as materialized (
+      select distinct execution_id,connection_id,source_sequence from jsonb_to_recordset($1::jsonb)
+        as p(execution_id text,connection_id text,source_sequence integer)
+    ) select n.execution_id,n.sequence,n.connection_id,n.source_sequence,n.record
+      from harness_native_events n join replay_identities p on n.execution_id=p.execution_id
+        and n.connection_id=p.connection_id and n.source_sequence=p.source_sequence
+      where p.connection_id is not null
+    union all
+    select n.execution_id,n.sequence,n.connection_id,n.source_sequence,n.record
+      from harness_native_events n join replay_identities p on n.execution_id=p.execution_id
+        and n.sequence=p.source_sequence
+      where p.connection_id is null`, [JSON.stringify(events.map(({ event }) => ({
     execution_id: event.executionId, connection_id: event.connectionId ?? null, source_sequence: event.sequence,
   })))])
   const batch = allocateEvents(events, allocators.rows, rows.rows)

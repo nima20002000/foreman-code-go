@@ -122,11 +122,12 @@ export class WorkflowNativeProofServices {
     private readonly afterPersistOriginalLocked?: (sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord) => Promise<void>) {}
 
   private async current(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, executionId: string,
-    owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope; snapshot: AcceptedRepeatRunSnapshot }> {
+    owner: RunOwnership, lockedSnapshot?: AcceptedRepeatRunSnapshot
+  ): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope; snapshot: AcceptedRepeatRunSnapshot }> {
     assertGraphTransaction(sql); owner.assertOwned()
     if (owner.runId !== run.id) return fail('RUN_OWNERSHIP_LOST')
     return memoizeNativeRead(sql, `current:${run.id}:${executionId}`, async () => {
-      const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
+      const snapshot = lockedSnapshot ?? await readAcceptedRepeatRunLocked(sql, run.id)
       if (!sameRepeatValue(snapshot.run, run)) return fail('RUN_PIN_CONFLICT')
       const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
       return { stored, snapshot, scope: { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
@@ -444,20 +445,22 @@ export class WorkflowNativeProofServices {
     if (!await transcriptCorrelation(sql, capture, first.event)) return false
     // Keep parent/head/child order. Shared parents fence lifecycle changes while other executions can stream.
     const snapshot = await readAcceptedRepeatRunLocked(sql, owner.runId)
-    await sql.query('select run_id from run_graph_heads where run_id=$1 for share', [owner.runId])
-    await sql.query('select id from harness_executions where id=$1 and run_id=$2 for update',
+    await sql.query(`with locked_head as materialized (
+        select run_id from run_graph_heads where run_id=$2 for share
+      ) select id from harness_executions where id=$1 and run_id=$2
+        and exists(select 1 from locked_head) for update`,
       [capture.execution.id, owner.runId])
     if (!await transcriptCorrelation(sql, capture, first.event)) return fail('NATIVE_TURN_IDENTITY_CONFLICT')
-    await this.appendTranscriptsLocked(sql, snapshot.run, frames, owner)
+    await this.appendTranscriptsLocked(sql, snapshot.run, frames, owner, snapshot)
     return true
   }
 
   /** Locked physical rows are shared by a bounded group; every capture is checked again at commit. */
   private async appendTranscriptsLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     frames: readonly { event: HarnessNativeEvent; evidence: RepeatNativeEvidence; capture: WorkflowNativeCapture }[],
-    owner: RunOwnership): Promise<void> {
+    owner: RunOwnership, lockedSnapshot?: AcceptedRepeatRunSnapshot): Promise<void> {
     const capture = frames[0]!.capture
-    const { stored, scope } = await this.current(sql, run, capture.execution.id, owner)
+    const { stored, scope } = await this.current(sql, run, capture.execution.id, owner, lockedSnapshot)
     const captures = frames.map(frame => frame.capture)
     await this.physical(sql, scope, stored, capture, owner, captures)
     const fence = await owner.readOneShotFence(sql)
