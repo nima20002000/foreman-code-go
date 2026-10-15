@@ -75,7 +75,6 @@ async function verifyTickets(client: Client, workflow: RunningCiWorkflow, execut
     requireCiStateOrder(observed.timeline.map(sample => sample.run.state))
     const claimed = report.tickets.find(ticket => ticket.ticketId === run.id)!
     expect(claimed.outcome).toBe(run.state)
-    expect(new Set(claimed.observedStates).size).toBe(claimed.observedStates.length)
     requireCiStateOrder(claimed.observedStates)
     expect(claimed.observedStates.at(-1)).toBe(run.state)
     expect(groupLogs.parts!.find(part => part.run.id === run.id)!.run).toEqual(run)

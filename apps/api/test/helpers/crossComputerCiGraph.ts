@@ -75,7 +75,7 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Wait with ONE ci_get call on any ticket: waitUntil "group-terminal", waitSeconds 1800 and logTail false. '
     + 'Repeat that same call only while its wait.status is still-running; do not poll tickets one by one. '
     + 'When wait.status is settled, its partitions (or run, for a single ticket) hold every ticket’s final state. '
-    + 'Record each ticket’s distinct observed states in order from the ci_run and ci_get results you read. '
+    + 'Record each ticket’s observed state changes in order from the ci_run and ci_get results you read. '
     + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
     + '{"ticketId":"the ci_run top-level ticketId","groupId":"run.groupId","suite":"' + suite + '",'

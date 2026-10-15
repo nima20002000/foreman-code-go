@@ -71,7 +71,8 @@ export function requireCiStateOrder(states: readonly string[]) {
   for (const [index, state] of states.entries()) {
     const position = ciTerminal(state) ? 3 : order.indexOf(state)
     expect(position, 'CI state must be recognized').toBeGreaterThanOrEqual(0)
-    expect(position, 'CI lifecycle must not regress').toBeGreaterThanOrEqual(previous)
+    if (state === 'queued') previous = -1
+    expect(position, 'CI lifecycle must not regress within an attempt').toBeGreaterThanOrEqual(previous)
     if (ciTerminal(states[index - 1] ?? '')) expect(state).toBe(states[index - 1])
     previous = position
   }

@@ -8,7 +8,7 @@ import { RunActivitiesPageSchema, SavedRunDetailsSchema,
   type RunActivityPublic, type SavedRunDetails } from '@foreman-code/contracts/wave25'
 import { expect } from 'vitest'
 import { z } from 'zod'
-import { callCiTool, toolErrorCode, type PreparedCiWorkflow } from './crossComputerCiSetup.js'
+import { callCiTool, callCiToolResult, toolErrorCode, type PreparedCiWorkflow } from './crossComputerCiSetup.js'
 import { ciTerminal, readAgentCiReport, type AgentCiReport, type CiReadback } from './crossComputerCiReadback.js'
 
 export type RunningCiWorkflow = PreparedCiWorkflow & { runId: string }
@@ -170,9 +170,9 @@ async function observeWorkflow(client: Client, workflow: RunningCiWorkflow, obse
   for (const ticketId of ids) {
     const known = observation.tickets.get(ticketId)
     if (known && groups.has(known.latest.groupId)) continue
-    const result = await client.callTool({ name: 'ci_get', arguments: {
+    const result = await callCiToolResult(client, 'ci_get', {
       workspaceId: workflow.workspace.workspaceId, ticketId,
-    } }, { timeout: 180_000 })
+    })
     // Computer inventory includes other workspaces; a scoped CI read must reject those IDs.
     if (result.isError && toolErrorCode(result) === 'CI_RUN_NOT_FOUND') {
       expect(observation.candidates.get(workflow.runId)?.has(ticketId)).not.toBe(true)
