@@ -27,6 +27,8 @@ export const CrossComputerCiInputSchema = z.object({
   token: z.string().min(1),
   deniedToken: z.string().min(1),
   evidenceDirectory: z.string().startsWith('/').min(2),
+  /** Every Agent and CI ticket on Main only: the local scenario before the multi-computer one. */
+  localOnly: z.boolean().default(false),
   workspaces: z.array(z.object({
     workspaceId: z.string().min(1),
     project: z.enum(['graphql', 'demo']),
@@ -46,9 +48,10 @@ export const CrossComputerCiInputSchema = z.object({
     fail('Supply distinct graphql and demo workspaces.')
   }
   const graphql = value.workspaces.find(workspace => workspace.project === 'graphql')
-  if (!graphql || graphql.computers.length < 2
+  if (!graphql || graphql.computers.length < (value.localOnly ? 1 : 2)
     || graphql.computers.filter(computer => computer.hostRef.kind === 'main').length !== 1) {
-    fail('The graphql project needs Main and at least one distinct Worker Agent computer.')
+    fail(value.localOnly ? 'The local graphql project needs Main.'
+      : 'The graphql project needs Main and at least one distinct Worker Agent computer.')
   }
   for (const workspace of value.workspaces) {
     if (new Set(workspace.computers.map(computer => JSON.stringify(computer.hostRef))).size !== workspace.computers.length) {
