@@ -27,6 +27,7 @@ import { workflowOrderMigration } from './workflowOrderMigration.js'
 import { ciFileDurationsMigration } from './ciFileDurationsMigration.js'
 import { ciResultCacheMigration } from './ciResultCacheMigration.js'
 import { ciTicketChangesMigration } from './ciTicketChangesMigration.js'
+import { ciGroupWaitMigration } from './ciGroupWaitMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
 import { workDeliverySettlementMigration } from './workDeliverySettlementMigration.js'
@@ -948,6 +949,7 @@ export const migrations = [
   artifactTransferLookupMigration,
   ciActivityRunLockMigration,
   ciDispatchClaimsMigration,
+  ciGroupWaitMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
