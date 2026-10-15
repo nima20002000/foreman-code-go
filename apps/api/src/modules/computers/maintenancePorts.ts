@@ -18,6 +18,7 @@ export interface MaintenancePorts {
   workerUpdate?: {
     status(): Promise<WorkerUpdateStatus>
     start(): Promise<string>
-    outcome?(task: MaintenanceTask): Promise<WorkerUpdateStatus | null>
+    /** Returns a retained outcome only when it completed by the task's deadline. */
+    outcome?(task: MaintenanceTask, deadlineAt: string): Promise<WorkerUpdateStatus | null>
   }
 }

@@ -29,7 +29,7 @@ export const CI_BUSY_TICKET = `(state in ('starting','running') or record#>>'{de
 export function ciPhase(run: CiRunRecord): { phase: CiPhase; enteredAt: string } | null {
   if (run.deadlineExceeded) return null
   if (run.state === 'queued') return { phase: 'queued', enteredAt: run.queuedAt }
-  if (run.state === 'starting' && !run.startedAt) return { phase: 'starting', enteredAt: run.dispatchedAt ?? run.queuedAt }
+  if (run.state === 'starting') return { phase: 'starting', enteredAt: run.dispatchedAt ?? run.startedAt ?? run.queuedAt }
   if (ACTIVE.includes(run.state)) return { phase: 'running', enteredAt: run.startedAt ?? run.queuedAt }
   if (run.collection === 'pending' || run.observation?.status === 'unavailable') {
     return { phase: 'collection', enteredAt: run.finishedAt ?? run.queuedAt }
@@ -68,22 +68,29 @@ export function expireCiRun(run: CiRunRecord, now: Date): CiRunRecord | null {
       consecutiveFailures: 0, nextAttemptAt: null } } : {}) })
 }
 
-/** Fails every overdue ticket once. Each write replaces only the exact record it read, so a concurrent
+/** Reconciles assigned work before expiry. Each write replaces only the exact record it read, so a concurrent
  * dispatch or observation that changed the ticket first wins and the next sweep re-evaluates it. */
-export async function expireOverdueCiRuns(pool: pg.Pool, now = new Date()): Promise<number> {
-  const rows = (await pool.query<{ id: string; state: string; record: unknown }>(`select id,state,record from ci_runs
+export async function expireOverdueCiRuns(pool: pg.Pool, now = new Date(),
+  reconcile?: (run: CiRunRecord, hostKey: string | null) => Promise<CiRunRecord>): Promise<number> {
+  const rows = (await pool.query<{ id: string; state: string; record: unknown; host_key: string | null }>(
+    `select id,state,record,host_key from ci_runs
     where record->'deadlineExceeded' is null and (state in ('queued','starting','running')
       or record->>'collection'='pending' or record#>>'{observation,status}'='unavailable')`)).rows
   let expired = 0
   for (const row of rows) {
-    const run = CiRunRecordSchema.parse(row.record)
+    let run = CiRunRecordSchema.parse(row.record)
+    if (!expireCiRun(run, now)) continue
+    if (run.state === 'starting' || run.state === 'running') {
+      if (!reconcile) continue
+      run = await reconcile(run, row.host_key)
+    }
     const next = expireCiRun(run, now)
     if (!next) continue
     const saved = await pool.query(`update ci_runs set state=$2,
         host_key=case when $5 then host_key else null end, record=$3::jsonb
       where id=$1 and state=$4 and record=$6::jsonb`,
-    [run.id, next.state, serializeCiJson(next), row.state,
-      next.deadlineExceeded!.executor === 'retained' || !ACTIVE.includes(row.state), JSON.stringify(run)])
+    [run.id, next.state, serializeCiJson(next), run.state,
+      next.deadlineExceeded!.executor === 'retained' || !ACTIVE.includes(run.state), JSON.stringify(run)])
     if (!saved.rowCount) continue
     expired++
     componentLogger('jobs').error({ runId: run.id, deadline: next.deadlineExceeded }, next.message ?? 'CI ticket deadline exceeded')

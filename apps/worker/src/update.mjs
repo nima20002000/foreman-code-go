@@ -213,10 +213,11 @@ export class WorkerUpdater {
     });
   }
 
-  async maintenanceOutcome(task) {
+  async maintenanceOutcome(task, deadlineAt) {
     const record = await readUpdateRecord(this.options.stateDirectory);
     const outcome = (record?.outcomes ?? []).find(value => value.status.targetVersion === task.workerTargetVersion
-      && Date.parse(value.finishedAt) >= Date.parse(task.startedAt));
+      && Date.parse(value.finishedAt) >= Date.parse(task.startedAt)
+      && (deadlineAt === undefined || Date.parse(value.finishedAt) <= Date.parse(deadlineAt)));
     return outcome ? WorkerUpdateStatusSchema.parse(outcome.status) : null;
   }
 

@@ -36,7 +36,7 @@ import { expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
 import { ciExecutionRunId } from './executionAttempt.js'
-import { CI_BUSY_TICKET } from './deadlines.js'
+import { CI_BUSY_TICKET, expireOverdueCiRuns } from './deadlines.js'
 import { ciCachedNotice, planCachedSelection, recordCiResultCache, type CachedSelection } from './resultCacheStore.js'
 import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
@@ -732,7 +732,8 @@ export class HostCiService {
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
       finishedAt: state.finishedAt, ...messages, dispatchRequest: undefined,
-      dispatchedAt: undefined, dispatchHostKey: undefined,
+      dispatchedAt: state.state === 'starting' ? run.dispatchedAt ?? run.startedAt ?? run.queuedAt : undefined,
+      dispatchHostKey: undefined,
       setupRetry,
       ...(options.observation ? { observation: options.observation } : {}),
       ...(state.transport ? { transport: state.transport } : {}),
@@ -798,9 +799,21 @@ export class HostCiService {
     return reconcileCiHostStart(this.dispatchServices(), run, computer, status)
   }
 
-  private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[]) {
+  expireOverdueRuns(now = new Date()): Promise<number> {
+    return expireOverdueCiRuns(this.pool, now, async (run, hostKey) => {
+      try {
+        await this.refreshRun({ record: run, host_key: hostKey }, await this.endpoint.computers(), { observeOnly: true })
+      } catch (error) {
+        await this.recordObservationFailure(run.id, run.workspaceId, error)
+      }
+      return this.read(run.id, run.workspaceId)
+    })
+  }
+
+  private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[],
+    options: { observeOnly?: boolean } = {}) {
     const run = CiRunRecordSchema.parse(row.record)
-    if (!run.cancellation && run.observation?.nextAttemptAt
+    if (!options.observeOnly && !run.cancellation && run.observation?.nextAttemptAt
       && Date.now() < Date.parse(run.observation.nextAttemptAt)) return
     let computer = computers.find(value => value.key === row.host_key)
       ?? computers.find(value => run.collection === 'pending' && run.computer
@@ -818,11 +831,12 @@ export class HostCiService {
       await this.cancelTicket(run.workspaceId, run.id, run.cancellation)
       return
     }
-    if (computer.hostRef.kind !== 'cloud' && run.state === 'starting' && !run.startedAt) {
+    if (!options.observeOnly && computer.hostRef.kind !== 'cloud' && run.state === 'starting' && !run.startedAt) {
       await readCiComputerStatus(this.endpoint, computer)
       return
     }
-    if (run.dispatchRequest || computer.hostRef.kind === 'cloud' && run.state === 'starting' && !run.startedAt) {
+    if (!options.observeOnly
+      && (run.dispatchRequest || computer.hostRef.kind === 'cloud' && run.state === 'starting' && !run.startedAt)) {
       await this.sendDispatch(run, computer)
       return
     }

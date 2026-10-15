@@ -88,8 +88,8 @@ export function readServiceHealth(now = Date.now()): ServiceHealth[] {
     if (value.lastFailureAt !== null && value.lastFailureAt >= (value.lastSuccessAt ?? 0)) status = 'failing'
     if (overdue || missed) status = 'stalled'
     return { name, status, lastStartedAt: iso(value.lastStartedAt), lastSuccessAt: iso(value.lastSuccessAt),
-      lastError: overdue ? `In flight for ${Math.round((now - value.inFlightSince!) / 1000)} s, over its `
-        + `${Math.round(value.deadlineMs / 1000)} s deadline.${value.lastError ? ` Last error: ${value.lastError}` : ''}`.slice(0, 500)
+      lastError: overdue ? (`In flight for ${Math.round((now - value.inFlightSince!) / 1000)} s, over its `
+        + `${Math.round(value.deadlineMs / 1000)} s deadline.${value.lastError ? ` Last error: ${value.lastError}` : ''}`).slice(0, 500)
         : value.lastError,
       nextDueAt: iso(value.nextDueAt), inFlightSince: iso(value.inFlightSince) }
   })

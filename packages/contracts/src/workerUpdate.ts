@@ -6,7 +6,7 @@ export const WORKER_UPDATE_MAX_JSON_BYTES = 1_048_576
 export const WORKER_UPDATE_MAX_BINARY_BYTES = 0
 export const WORKER_UPDATE_DRAIN_TIMEOUT_MS = 30 * 60_000
 export const WORKER_UPDATE_ATTEMPT_TIMEOUT_MS = 45 * 60_000
-/** Publication retries share one deadline from the first attempt's start. */
+/** Publication retries share one deadline from when publication becomes pending. */
 export const WORKER_PUBLICATION_DEADLINE_MS = 2 * 60 * 60_000
 
 const WorkerUpdatePhaseSchema = z.enum([
@@ -81,7 +81,7 @@ const WorkerPublicationFieldsSchema = z.object({
   state: z.enum(['pending', 'published', 'failed']),
   lastError: z.string().max(2000).nullable(),
   startedAt: z.string().datetime().optional(),
-  /** The first attempt's start plus WORKER_PUBLICATION_DEADLINE_MS; retries keep it. */
+  /** The pending publication's start plus WORKER_PUBLICATION_DEADLINE_MS; retries keep it. */
   deadlineAt: z.string().datetime().optional(),
   nextRetryAt: z.string().datetime().optional(),
 }).strict()

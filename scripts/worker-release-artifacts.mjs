@@ -13,7 +13,7 @@ const PUBLICATION_RETRY_MS = 60_000
 // WORKER_PUBLICATION_DEADLINE_MS in packages/contracts/src/workerUpdate.ts; installed scripts cannot import contracts.
 const PUBLICATION_DEADLINE_MS = 2 * 60 * 60_000
 
-/** Retries keep the first attempt's start and deadline until a publication succeeds. */
+/** Retries keep the pending publication's start and deadline until it succeeds. */
 function publicationWindow(previous, now = Date.now()) {
   if (previous && previous.state !== 'published' && previous.startedAt && previous.deadlineAt) {
     return { startedAt: previous.startedAt, deadlineAt: previous.deadlineAt }
@@ -225,7 +225,8 @@ export async function buildWorkerReleaseArtifacts({
     const artifacts = builds.map(build => build.value)
     const github = publish ? await publish({ repository, directory, commit, artifacts, run }) : undefined
     const index = { format: 1, version, ...(github ? { github } : {}), artifacts,
-      publication: { state: github ? 'published' : 'pending', lastError: null } }
+      publication: { state: github ? 'published' : 'pending', lastError: null,
+        ...(!github ? publicationWindow() : {}) } }
     await writeFile(join(directory, 'index.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     await writeFile(productManifestPath, productManifest, { flag: 'wx', mode: 0o600 })
     return index

@@ -11,6 +11,7 @@ const SWEEP_INTERVAL_MS = 60_000
 const log = componentLogger('engine')
 
 export interface StateDeadlineSources {
+  ciRuns?: (now: Date) => Promise<number>
   workerPublication?: () => Promise<WorkerReleasePublication>
 }
 
@@ -73,7 +74,7 @@ function reportPublication(publication: WorkerReleasePublication, now: number) {
 }
 
 export async function sweepStateDeadlines(pool: pg.Pool, sources: StateDeadlineSources = {}, now = new Date()) {
-  const ci = await expireOverdueCiRuns(pool, now)
+  const ci = sources.ciRuns ? await sources.ciRuns(now) : await expireOverdueCiRuns(pool, now)
   const runCleanup = await expireRunCleanup(pool, now)
   const jobCleanup = await expireJobCleanup(pool, now)
   if (sources.workerPublication) {

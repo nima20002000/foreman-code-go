@@ -2905,6 +2905,7 @@ async function initializeCiServices(
   composition.hostCi.start()
   app.addHook('onClose', async () => { await composition.hostCi?.close() })
   const stopDeadlineSweeper = startStateDeadlineSweeper(database.pool, {
+    ciRuns: now => composition.hostCi!.expireOverdueRuns(now),
     workerPublication: () => readProductionWorkerReleasePublication({ environment: process.env,
       releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }) })
   app.addHook('onClose', async () => { stopDeadlineSweeper() })
