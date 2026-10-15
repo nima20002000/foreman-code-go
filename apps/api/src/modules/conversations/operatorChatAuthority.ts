@@ -141,6 +141,6 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
   }
   async revokeOrphanedCredentials(): Promise<void> {
     await this.pool.query(`update management_principals set revoked_at=coalesce(revoked_at,now())
-      where id in (select principal_id from operator_chat_credentials)`)
+      where revoked_at is null and id in (select principal_id from operator_chat_credentials)`)
   }
 }

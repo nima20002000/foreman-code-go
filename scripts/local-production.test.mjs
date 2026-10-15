@@ -970,7 +970,8 @@ test('production builds check the API separately from JavaScript emit and browse
     ['node', ['scripts/emit-production-api.mjs']],
     ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', '../../scripts/copy-api-runtime.mjs']],
     ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', 'dist/cli/harnessCompatibility.js']],
-    ['corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']],
+    ['node', ['scripts/heavy-job.mjs', '--build', 'web', '--',
+      'corepack', 'pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']],
   ])
 })
 

@@ -98,7 +98,8 @@ export async function withProductionSourceSnapshot(repository, directory, action
     const { stdout: changes } = await git(['diff', '--name-only', '-z', 'HEAD'], source)
     if (changes) await git(['reset', '--hard', '--quiet', 'HEAD'], source)
   }
-  await git(['clean', '-ffdxq', '-e', 'node_modules', '-e', 'dist', '-e', '*.tsbuildinfo'], source)
+  await git(['clean', '-ffdxq', '-e', 'node_modules', '-e', 'dist', '-e', '*.tsbuildinfo',
+    '-e', '.logs/heavy-build-web.json'], source)
   // Forced checkout rewrites unchanged files and invalidates incremental build timestamps.
   await git(['checkout', '--quiet', '--detach', commit], source)
   await git(['remote', 'set-url', 'origin', origin.trim()], source)
@@ -127,7 +128,8 @@ export async function buildProductionSource(run, { stage = async () => undefined
       await measureProductionStep('API emit', () => run('node', ['scripts/emit-production-api.mjs']))
       await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', '../../scripts/copy-api-runtime.mjs'])
       await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', 'dist/cli/harnessCompatibility.js'])
-      await measureProductionStep('web bundle', () => run('corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']))
+      await measureProductionStep('web bundle', () => run('node', ['scripts/heavy-job.mjs', '--build', 'web', '--',
+        'corepack', 'pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']))
       return stage()
     })(),
   ])

@@ -11,7 +11,8 @@ export async function recoverSubagentCommands(pool: pg.Pool): Promise<number> {
   const result = await pool.query(`update run_subagent_command_receipts set record=record || jsonb_build_object(
     'state','uncertain','reasonCode','MAIN_RESTART_DELIVERY_UNCERTAIN','updatedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
     where record->>'state' in ('accepted','dispatching')`)
-  await pool.query('update run_subagent_backfill_state set complete=false,child_cursor=null')
+  await pool.query(`update run_subagent_backfill_state set complete=false,child_cursor=null
+    where execution_id in (select id from harness_executions where record->>'state' <> 'completed')`)
   await pool.query(`update run_subagents set revision=revision+1,record=record || jsonb_build_object('revision',(revision+1)::text,'status','unknown','evidence','reconciling')
     where record->>'status' not in ('completed','failed','canceled')`)
   return result.rowCount ?? 0
