@@ -15,7 +15,7 @@ function fixture() {
   const workflow = makeCurrentWorkflowFixture('node-skills', 'sequential')
   const configuration = workflow.configurations[0]!
   const node = workflow.version.definition.nodes[0]!
-  if (node.kind === 'job') throw new Error('An Agent node is required')
+  if ('kind' in node && (node.kind as string) === 'job') throw new Error('An Agent node is required')
   const skill = { workspaceId: workflow.scope.workspaceId, skillId: 'review-guide', version: '1',
     name: 'Review guide', instructions: 'Check the result.', contentHash: hash('Check the result.'),
     createdAt: '2026-01-01T00:00:00Z' }

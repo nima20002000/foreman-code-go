@@ -28,6 +28,43 @@ export type ScenarioAgent = {
   placement?: SavedNodePlacement
 }
 
+const ciTicketId = { type: 'string', minLength: 1, 'x-foreman-reference': 'ciTicket' }
+const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
+
+/** The app enforces this report shape and checks that every ticket id was created by this Agent. */
+export function ciReportOutputSchema(suite: ScenarioSuite) {
+  return {
+    type: 'object',
+    required: ['ticketId', 'groupId', 'suite', 'outcome', 'repository', 'branch', 'tickets'],
+    properties: {
+      ticketId: ciTicketId,
+      groupId: { type: 'string', minLength: 1 },
+      suite: { const: suite },
+      outcome: terminalOutcome,
+      repository: { type: 'string', minLength: 1 },
+      branch: { type: 'string', minLength: 1 },
+      tickets: {
+        type: 'array', minItems: 1,
+        items: {
+          type: 'object',
+          required: ['ticketId', 'part', 'partition', 'computer', 'commit', 'outcome', 'exitCode', 'logLine', 'observedStates'],
+          properties: {
+            ticketId: ciTicketId,
+            part: { type: ['string', 'null'] },
+            partition: { type: ['object', 'null'] },
+            computer: { type: 'object', required: ['kind', 'mainId'] },
+            commit: { type: 'string', minLength: 1 },
+            outcome: terminalOutcome,
+            exitCode: { type: ['integer', 'null'] },
+            logLine: { type: 'string', minLength: 1 },
+            observedStates: { type: 'array', minItems: 1, items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  }
+}
+
 function agentPrompt(suite: ScenarioSuite | null): string {
   if (suite === null) {
     return 'Use context_get to read your own worktree and branch, then finish successfully with a short ready message. '
@@ -100,6 +137,7 @@ export function buildCrossComputerCiGraph(
       agentId: assignment.agentId,
       name: assignment.name,
       initialPrompt: agentPrompt(assignment.suite),
+      ...(assignment.suite ? { outputSchema: ciReportOutputSchema(assignment.suite) } : {}),
       position: { x: index === 0 ? 0 : 320, y: index * 180 },
       ...(assignment.placement ? { placement: assignment.placement } : {}),
     })),
