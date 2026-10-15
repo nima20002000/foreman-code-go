@@ -24,7 +24,8 @@ export async function weighCiPartitions(pool: pg.Pool, endpoint: HostCiEndpoint,
     if (run.suite === 'integration' && run.partition) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
   }
   if (!groups.size) return queued
-  const speed = await throughput(pool, endpoint, free)
+  const computers = [...new Map(free.map(computer => [computer.key, computer])).values()]
+  const speed = await throughput(pool, endpoint, computers)
   const replaced = new Map<string, CiRunRecord>()
   for (const group of groups.values()) {
     group.sort((left, right) => left.partition!.index - right.partition!.index)
@@ -35,7 +36,7 @@ export async function weighCiPartitions(pool: pg.Pool, endpoint: HostCiEndpoint,
       continue
     }
     const existing = group.find(run => run.partition!.weights)
-    const ordered = [...free].sort((left, right) =>
+    const ordered = [...computers].sort((left, right) =>
       Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
       || right.priority - left.priority
       || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0))

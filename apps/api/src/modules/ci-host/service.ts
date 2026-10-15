@@ -996,6 +996,10 @@ export class HostCiService {
       `select host_key,record from ci_runs where ${CI_BUSY_TICKET}`)).rows
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
+    const assignments = new Map(busyRows.map(row => {
+      const run = CiRunRecordSchema.parse(row.record)
+      return [run.id, { groupId: run.groupId, computerKey: row.host_key }]
+    }))
     const { gate, reservedHosts } = await readCiGateReservation(this.pool)
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
     const hasQueuedGate = parsed.some(run => run.gate)
@@ -1076,6 +1080,8 @@ export class HostCiService {
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, scope: 'full' as const, integrationShards: run.integrationShards!, files: run.files }
         : affectedFiles
+      const siblingComputers = new Set(run.partition ? [...assignments.values()]
+        .filter(assignment => assignment.groupId === run.groupId).map(assignment => assignment.computerKey) : [])
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
@@ -1086,7 +1092,8 @@ export class HostCiService {
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
-        .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+        .sort((left, right) => Number(siblingComputers.has(left.key)) - Number(siblingComputers.has(right.key))
+          || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
           || preferred(right) - preferred(left)
           || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)
@@ -1117,6 +1124,7 @@ export class HostCiService {
           continue
         }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
+        assignments.set(run.id, { groupId: run.groupId, computerKey: computer.key })
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
         const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
         const assigned = await claimCiSlot(this.pool, run, computer, {
@@ -1132,12 +1140,14 @@ export class HostCiService {
           ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}),
         })
         if (assigned === 'busy') {
+          assignments.delete(run.id)
           used.set(computer.key, totals.get(computer.key) ?? 1)
           if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
           reasons.push(`${computer.label}: slot is busy with another CI ticket`)
           continue
         }
         if (!assigned) {
+          assignments.delete(run.id)
           releaseSlot(computer)
           if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
           return
@@ -1146,6 +1156,7 @@ export class HostCiService {
         if (outcome === 'pending') return
         run = await this.read(run.id, run.workspaceId)
         if (run.state !== 'queued') return
+        assignments.delete(run.id)
         if (outcome === 'busy') used.set(computer.key, totals.get(computer.key) ?? 1)
         else releaseSlot(computer)
         if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
