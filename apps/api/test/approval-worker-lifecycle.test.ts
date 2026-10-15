@@ -229,7 +229,8 @@ it('rejects a cold requester before preflight and never allocates a replacement 
 for (const started of [false, true]) {
   it(`preserves uncertain credential preflight in observeExact (${started ? 'recovery' : 'first start'})`, async () => {
     const f = fixture('codex', started)
-    f.credentials.prepare.mockRejectedValueOnce(new Error('preflight failed'))
+    // An uncoded runtime error is transient and abandons the attempt; a rejected preflight is preserved.
+    f.credentials.prepare.mockRejectedValueOnce(new DomainError('CREDENTIAL_PREFLIGHT_REJECTED', 'preflight failed', 409))
     await expect(f.observe()).rejects.toThrow('preflight failed')
     expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
     const failed = f.managers[0]!
@@ -245,7 +246,7 @@ it('revokes resident credentials after attachment failure without preparing anot
   const f = fixture()
   await f.observeRequester()
   const resident = f.resolver.resolve(f.context)
-  f.managers[0]!.history.mockRejectedValueOnce(new Error('attachment failed'))
+  f.managers[0]!.history.mockRejectedValueOnce(new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'attachment failed', 409))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
@@ -282,7 +283,7 @@ it('fails closed when renewal is refused rather than replacing a paused native p
   const f = fixture()
   await f.observeRequester()
   vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) - 30_000)
-  f.credentials.renew.mockRejectedValueOnce(new Error('revoked credential'))
+  f.credentials.renew.mockRejectedValueOnce(new DomainError('WORKER_CREDENTIAL_NOT_RENEWABLE', 'revoked credential', 409))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('revoked credential')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.managers[0]!.attachSession).toHaveBeenCalledTimes(1)
@@ -299,7 +300,8 @@ it('rejects an expired resident credential even when same-token renewal is avail
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.managers[0]!.createSession).not.toHaveBeenCalled()
   expect(f.managers[0]!.startTurn).not.toHaveBeenCalled()
-  expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
+  // The uncoded refusal is transient: the paused process is left to the retry and Run recovery.
+  expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
 })
 
 it('never rotates a paused process when a provider has no same-token renewal support', async () => {
@@ -313,7 +315,7 @@ it('never rotates a paused process when a provider has no same-token renewal sup
   expect(f.managers).toHaveLength(1)
   expect(f.managers[0]!.createSession).not.toHaveBeenCalled()
   expect(f.managers[0]!.startTurn).not.toHaveBeenCalled()
-  expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
+  expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
 })
 
 it('cannot replace the captured native manager through a bare resolver release', async () => {
@@ -336,7 +338,7 @@ it('does not start a reviewer process with an expired prepared credential', asyn
   expect(f.prepared).toEqual(['reviewer'])
   expect(f.attaches).toEqual([])
   expect(f.starts).toEqual([])
-  expect(f.revoked).toContain(`execution:${f.execution.id}`)
+  expect(f.revoked).not.toContain(`execution:${f.execution.id}`)
 })
 
 it('a concurrent startup loser does not revoke the winning startup credentials', async () => {
@@ -398,7 +400,7 @@ it('fences reuse until failed resident cleanup finishes', async () => {
   let announce!: () => void
   const closing = new Promise<void>((resolve) => { announce = resolve })
   const gate = new Promise<void>((resolve) => { unblock = resolve })
-  f.managers[0]!.history.mockRejectedValueOnce(new Error('attachment failed'))
+  f.managers[0]!.history.mockRejectedValueOnce(new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'attachment failed', 409))
   f.managers[0]!.close.mockImplementationOnce(async () => { announce(); await gate })
   const failed = expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
   await closing

@@ -6,6 +6,7 @@ import type {
   ExecutionResult, HarnessExecution, HarnessExecutionRequest, HarnessNativeEvent, McpDetection,
   NativeHarnessCapabilities, NativeHarnessEvent, NativeSessionReference, PendingNativeInteraction,
 } from '@foreman-code/contracts'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
@@ -26,7 +27,7 @@ import { nativeApprovalContext } from '../src/modules/interactions/nativeApprova
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
-import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, WorkActivationInputSchema, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { referencesCreatedByExecution, workflowDeliverableContract, workflowDeliverableFailure } from '../src/modules/runs/workflowDeliverable.js'
 import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
 import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
@@ -107,7 +108,7 @@ it('rejects unsupported Claude configuration before allocating the approval fixt
   assert.throws(() => fixture('claude'), /supports only Codex/)
 })
 
-function fixture(harness: AgentHarness = 'codex', options: { remote?: boolean } = {}) {
+function fixture(harness: AgentHarness = 'codex', options: { remote?: boolean; input?: HarnessExecution['input'] } = {}) {
   if (harness === 'claude') throw new Error('Approval execution fixture supports only Codex')
   const configuration: AgentConfigurationVersion = {
     id: 'configuration-pinned', workspaceId: 'workspace-1', agentId: 'agent-1', version: 1,
@@ -118,7 +119,7 @@ function fixture(harness: AgentHarness = 'codex', options: { remote?: boolean } 
   }
   const candidate: HarnessExecution = {
     id: 'execution-durable', runId: 'run-1', workflowNodeId: 'node-1', agentId: configuration.agentId,
-    agentConfigurationVersionId: configuration.id, attempt: 1, input: { accepted: true },
+    agentConfigurationVersionId: configuration.id, attempt: 1, input: options.input ?? { accepted: true },
     workingDirectory: '/accepted/project', runtimeDirectory: '/accepted/runtime',
     state: 'starting', createdAt: now, startedAt: now,
   }
@@ -396,13 +397,18 @@ it('captures complete native history only when needed for a pending request or t
 
 /** ciRuns stands in for ci_runs rows this execution initiated, by run ID. */
 function workResultFixture(results: ExecutionResult[], outputSchema?: Record<string, unknown>, ciRuns = new Set<string>(), options: { remote?: boolean } = {}) {
-  const f = fixture('codex', options)
   const pinned = makeCurrentWorkflowFixture('result-repair')
   const version = WorkflowVersionV3Schema.parse({ ...pinned.version,
     definition: { ...pinned.version.definition, handoffs: { contractVersion: 1 },
       nodes: pinned.version.definition.nodes.map((item, index) => index === 0 && outputSchema ? { ...item, outputSchema } : item) } })
   const node = version.definition.nodes[0]!
   if (node.kind === 'job') throw new Error('The repair fixture requires an Agent node')
+  // A handoff Agent always runs from a frozen activation input.
+  const activationInput = HarnessExecutionSchema.shape.input.parse(WorkActivationInputSchema.parse({
+    executionSemanticsVersion: 3, runInput: {}, occurrence: null, entry: null, predecessors: [],
+    work: { kind: 'entry', activation: { scope: pinned.scope, activationId: 'repair-activation', workflowNodeId: node.id,
+      lineageId: 'repair-lineage', cause: { kind: 'entry' } } } }))
+  const f = fixture('codex', { ...options, input: activationInput })
   const ciRunsDb = { query: async (_text: string, values: unknown[]) => {
     const ids = values[0] === null ? [...ciRuns] : values[0] as string[]
     return { rows: ids.filter(id => ciRuns.has(id) && values[1] === version.workspaceId
@@ -777,7 +783,9 @@ for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as con
     await assert.rejects(f.coordinator.observeExact(f.input), error)
     expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
       state: 'completed', finishedAt: now, result: { outcome: 'failed', error: {
-        code: 'NATIVE_EXECUTION_FAILED', message: error.message, retryable: true,
+        // A failure before the native session is published is an interrupted start.
+        code: ['turn', 'activity'].includes(failure) ? 'NATIVE_EXECUTION_FAILED' : 'EXECUTION_START_INTERRUPTED',
+        message: error.message, retryable: true,
       } },
     })
     assert.deepEqual(f.negativeSettlements, [{ id: f.candidate.id, canceled: false }])
