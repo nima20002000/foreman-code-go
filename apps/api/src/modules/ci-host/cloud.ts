@@ -34,6 +34,7 @@ const MAX_DISPATCH_ATTEMPTS = 3
 const POLL_MS = 4_000
 const FINISH_POLL_MS = 2_000
 const FINISH_WINDOW_MS = 3_000
+const COLLECTION_RECOVERY_MS = 10 * 60_000
 const MAX_BACKOFF_MS = 10 * 60_000
 const MIN_STALL_MS = 15 * 60_000
 const EXPECTED_DURATION_MULTIPLIER = 3
@@ -41,6 +42,15 @@ const EXPECTED_DURATION_MULTIPLIER = 3
 const POLL_CONCURRENCY = 24
 const PRUNE_INTERVAL_MS = 5 * 60_000
 const log = componentLogger('jobs')
+
+function collectionPending(run: CloudRun): boolean {
+  return Boolean(run.collection && !run.collection.unavailableAt
+    && (!run.collection.log || !run.collection.artifacts))
+}
+
+function cancellationPending(run: CloudRun): boolean {
+  return Boolean(run.cancellation && !run.cancellation.completedAt)
+}
 
 export type { CloudRun }
 type Mirrors = (workspaceId: string) => Promise<string | null>
@@ -100,7 +110,7 @@ export class CloudCi {
   private reconciling: Promise<void> | undefined
   private readonly polled = new Map<string, number>()
   private reconcileCursor = 0
-  private backoff = { until: 0, ms: 0 }
+  private backoff = { until: 0, ms: 0, generation: 0 }
   private following = 0
   private readonly waiting: { run: CloudRun; resume: () => void }[] = []
   private readonly reading = new Map<string, number>()
@@ -193,7 +203,7 @@ export class CloudCi {
         run = await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.',
           cancellation: run.cancellation ?? { at: this.ports.now().toISOString(), canceledIds: [] } })
       }
-      const canceled = run.cancellation && run.mirrorPublication?.state !== 'pending'
+      const canceled = cancellationPending(run) && run.mirrorPublication?.state !== 'pending'
         ? await this.cancelAttempts(run) : run
       this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
@@ -281,6 +291,10 @@ export class CloudCi {
     if (run.state === 'running' && run.live?.step) step = run.live.step
     if (run.state === 'starting') step = run.mirrorPublication?.state === 'pending' ? 'publish mirror' : 'dispatch'
     if (run.state === 'queued') step = null
+    let collection: CiHostRun['collection']
+    if (run.state === 'failed' && !run.dispatch && !run.providerRunId) collection = 'unsupported'
+    else if (run.collection?.unavailableAt) collection = 'unsupported'
+    else if (run.collection) collection = run.collection.log && run.collection.artifacts ? 'complete' : 'pending'
     const transport = this.provider.transport ?? run.transport
     const message = transport?.source === 'cli'
       ? [`CLI transport: ${transport.reason} (fallback count ${transport.fallbackCount}).`, run.message]
@@ -291,7 +305,7 @@ export class CloudCi {
       ...(run.provenance ? { provenance: run.provenance } : {}),
       ...(run.mirrorPublication ? { mirrorPublication: run.mirrorPublication } : {}),
       ...(run.testsStarted !== undefined ? { testsStarted: run.testsStarted } : {}),
-      ...(run.collection ? { collection: run.collection.log && run.collection.artifacts ? 'complete' as const : 'pending' as const } : {}) }
+      ...(collection ? { collection } : {}) }
   }
 
   private async start(request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiHostRun> {
@@ -877,32 +891,38 @@ export class CloudCi {
       this.publishInBackground(run)
       return run
     }
-    const pendingCollection = run.collection && (!run.collection.log || !run.collection.artifacts)
-    if (!['starting', 'running'].includes(run.state) && !run.cancellation && !pendingCollection) return run
+    const pendingCollection = collectionPending(run)
+    const pendingCancellation = cancellationPending(run)
+    if (!['starting', 'running'].includes(run.state) && !pendingCancellation && !pendingCollection) return run
     const now = this.ports.now().getTime()
     if (run.reconciliation && now - Date.parse(run.reconciliation.at) < POLL_MS) return run
+    if (pendingCollection && !pendingCancellation && run.collection?.retry) {
+      if (now - Date.parse(run.collection.retry.since) >= COLLECTION_RECOVERY_MS) return this.collect(run)
+      if (now < Date.parse(run.collection.retry.nextAttemptAt)) return run
+    }
     if (now < this.backoff.until) return run
     const interval = this.expectedEnd(run) - now <= FINISH_WINDOW_MS ? FINISH_POLL_MS : POLL_MS
-    if ((run.cancellation || pendingCollection || run.state === 'running' && run.workflowStarted)
+    if ((pendingCancellation || pendingCollection || run.state === 'running' && run.workflowStarted)
       && now - (this.polled.get(runId) ?? -Infinity) < interval) return run
     if (this.following >= POLL_CONCURRENCY) await new Promise<void>(resume => { this.waiting.push({ run, resume }) })
     else this.following++
     try {
       // A poll that waited for its slot skips the service if a rate limit was hit meanwhile.
       if (this.ports.now().getTime() < this.backoff.until) return run
+      const generation = this.backoff.generation
       return await withProviderPoll(async () => {
         let next: CloudRun
-        if (run.cancellation) next = await this.cancelAttempts(run)
-        else if (pendingCollection) next = await this.collect(run)
+        if (pendingCancellation) next = await this.cancelAttempts(run)
+        else if (pendingCollection) next = run
         else next = await this.follow(run)
-        this.backoff = { until: 0, ms: 0 }
         if (next.reconciliation && next.state !== 'starting') {
           const recovered = { ...next,
             message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
           delete recovered.reconciliation
           next = await this.save(recovered)
         }
-        if (next.collection && (!next.collection.log || !next.collection.artifacts)) return this.collect(next)
+        if (collectionPending(next)) next = await this.collect(next)
+        if (this.backoff.generation === generation) this.backoff = { until: 0, ms: 0, generation }
         return next
       })
     } catch (error) {
@@ -914,9 +934,9 @@ export class CloudCi {
       }
       if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED')) throw error
       const ms = Math.min(MAX_BACKOFF_MS, Math.max(30_000, this.backoff.ms * 2))
-      this.backoff = { until: now + ms, ms }
+      this.backoff = { until: this.ports.now().getTime() + ms, ms, generation: this.backoff.generation + 1 }
       log.warn({ runId, provider: this.provider.id, backoffMs: ms }, 'Cloud CI rate limited; polling paused')
-      return run
+      return this.read(runId)
     } finally {
       // The slot passes straight to the next waiting poll.
       this.waiting.sort((left, right) => this.expectedEnd(left.run) - this.expectedEnd(right.run))
@@ -1023,7 +1043,7 @@ export class CloudCi {
         const run = await this.read(runId)
         if (run.publicationRequest && run.state === 'starting' || this.stalled(run)
           || run.reconciliation && ['starting', 'running'].includes(run.state)
-          || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
+          || cancellationPending(run) || collectionPending(run)) {
           await this.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         }
       } catch (error) {
@@ -1034,6 +1054,7 @@ export class CloudCi {
   }
 
   private async cancelAttempts(run: CloudRun): Promise<CloudRun> {
+    if (!cancellationPending(run)) return run
     const canceled = new Set(run.cancellation!.canceledIds)
     let discovered: string | null = null
     try {
@@ -1051,53 +1072,73 @@ export class CloudCi {
       canceled.add(providerRunId)
     }
     this.polled.set(run.runId, this.ports.now().getTime())
-    return this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled] } })
+    const completedAt = this.ports.now().getTime() - Date.parse(run.cancellation!.at) >= CLOUD_START_TIMEOUT_MS
+      ? this.ports.now().toISOString() : undefined
+    return this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled],
+      ...(completedAt ? { completedAt } : {}) } })
   }
 
   private async collect(run: CloudRun): Promise<CloudRun> {
-    const collection = { ...run.collection! }
-    if (!collection.log) {
-      try {
-        const full = Buffer.from(await this.provider.log(run)).subarray(-LOG_LIMIT)
-        let contents = full
-        if (run.live?.bytes) {
-          const live = (await readFile(this.path(run.runId, 'log'))).subarray(0, run.live.bytes)
-          contents = Buffer.concat([live, Buffer.from(`--- ${this.provider.label} log ---\n`), full])
-        }
-        await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
-        collection.log = true
-      } catch (error) {
-        log.warn({ err: error, runId: run.runId }, 'Final CI log remains pending')
-      }
+    const now = this.ports.now()
+    const since = run.collection!.retry?.since ?? now.toISOString()
+    if (now.getTime() - Date.parse(since) >= COLLECTION_RECOVERY_MS) {
+      return this.save({ ...run, collection: { ...run.collection!, unavailableAt: now.toISOString() } })
     }
-    if (!collection.artifacts) {
-      try {
-        const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', run.runId, 'artifact'))
-        if (artifacts.suiteLog !== undefined) {
-          const contents = Buffer.from(artifacts.suiteLog).subarray(-LOG_LIMIT)
+    if (run.collection!.retry && now.getTime() < Date.parse(run.collection!.retry.nextAttemptAt)) return run
+    const attempts = (run.collection!.retry?.attempts ?? 0) + 1
+    const delayMs = Math.min(60_000, POLL_MS * 2 ** Math.min(attempts - 1, 4))
+    const collection = { ...run.collection! }
+    try {
+      if (!collection.log) {
+        try {
+          const full = Buffer.from(await this.provider.log(run)).subarray(-LOG_LIMIT)
+          let contents = full
+          if (run.live?.bytes) {
+            const live = (await readFile(this.path(run.runId, 'log'))).subarray(0, run.live.bytes)
+            contents = Buffer.concat([live, Buffer.from(`--- ${this.provider.label} log ---\n`), full])
+          }
           await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
           collection.log = true
+        } catch (error) {
+          if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
+          log.warn({ err: error, runId: run.runId }, 'Final CI log remains pending')
         }
-        if (run.suite === 'integration' || run.suite === 'unit') {
-          const durations = CiDurationsSchema.safeParse(artifacts.durations)
-          if (durations.success && (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web')) {
-            run = { ...run, durations: durations.data }
-          }
-          const tests = CiTestResultsSchema.safeParse(artifacts.testResults)
-          if (tests.success) run = { ...run, testResults: tests.data }
-        }
-        const watchdog = CiWatchdogFailureSchema.safeParse(artifacts.watchdogFailure)
-        if (watchdog.success && run.state !== 'passed') {
-          run = { ...run, message: watchdog.data.message,
-            ...(watchdog.data.testsStarted !== undefined ? { testsStarted: watchdog.data.testsStarted } : {}) }
-        }
-        collection.artifacts = true
-      } catch (error) {
-        log.warn({ err: error, runId: run.runId }, 'Final CI artifacts remain pending')
       }
+      if (!collection.artifacts) {
+        try {
+          const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', run.runId, 'artifact'))
+          if (artifacts.suiteLog !== undefined) {
+            const contents = Buffer.from(artifacts.suiteLog).subarray(-LOG_LIMIT)
+            await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
+            collection.log = true
+          }
+          if (run.suite === 'integration' || run.suite === 'unit') {
+            const durations = CiDurationsSchema.safeParse(artifacts.durations)
+            if (durations.success && (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web')) {
+              run = { ...run, durations: durations.data }
+            }
+            const tests = CiTestResultsSchema.safeParse(artifacts.testResults)
+            if (tests.success) run = { ...run, testResults: tests.data }
+          }
+          const watchdog = CiWatchdogFailureSchema.safeParse(artifacts.watchdogFailure)
+          if (watchdog.success && run.state !== 'passed') {
+            run = { ...run, message: watchdog.data.message,
+              ...(watchdog.data.testsStarted !== undefined ? { testsStarted: watchdog.data.testsStarted } : {}) }
+          }
+          collection.artifacts = true
+        } catch (error) {
+          if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
+          log.warn({ err: error, runId: run.runId }, 'Final CI artifacts remain pending')
+        }
+      }
+    } finally {
+      this.polled.set(run.runId, this.ports.now().getTime())
+      if (collection.log && collection.artifacts) delete collection.retry
+      else collection.retry = { since, attempts,
+        nextAttemptAt: new Date(this.ports.now().getTime() + delayMs).toISOString() }
+      run = await this.save({ ...run, collection })
     }
-    this.polled.set(run.runId, this.ports.now().getTime())
-    return this.save({ ...run, collection })
+    return run
   }
 
   /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
