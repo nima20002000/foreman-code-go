@@ -281,29 +281,3 @@ test('recovery ignores a process whose protected environment belongs to another 
   assert.deepEqual(recovered.removed, [resource.directory])
   assert.equal(existsSync(resource.directory), false)
 })
-
-test('recovery checks process credentials when proc metadata is owned by the recovery user', async t => {
-  const parent = fixture(t)
-  const resource = abandonedRoot(parent)
-  const read = fs.readFileSync
-  const statusPath = `/proc/${process.pid}/status`
-  const environmentPath = `/proc/${process.pid}/environ`
-  t.mock.method(fs, 'readFileSync', (path, ...args) => {
-    if (path === statusPath) {
-      const uid = process.getuid() + 1
-      return read(path, ...args).replace(/^Uid:.*$/m, `Uid:\t${uid}\t${uid}\t${uid}\t${uid}`)
-    }
-    if (path === environmentPath) {
-      throw Object.assign(new Error('Protected foreign process environment'), { code: 'EACCES' })
-    }
-    return read(path, ...args)
-  })
-  syncBuiltinESMExports()
-
-  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), {
-    parent, containers: noContainers,
-  })
-  assert.deepEqual(recovered.retained, [])
-  assert.deepEqual(recovered.removed, [resource.directory])
-  assert.equal(existsSync(resource.directory), false)
-})

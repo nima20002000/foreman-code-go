@@ -60,11 +60,6 @@ export function testRootInUse(directory) {
       if (lstatSync(`/proc/${entry}`).uid !== process.getuid()) continue
       const identity = processIdentity(Number(entry))
       if (!identity || ['Z', 'X'].includes(identity.state)) continue
-      // Non-dumpable processes have root-owned proc metadata even when their credentials belong to another user.
-      const credentials = readFileSync(`/proc/${entry}/status`, 'utf8')
-        .match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m)
-      if (!credentials) throw new Error('Test process user is unconfirmed')
-      if (Number(credentials[4]) !== process.getuid()) continue
       // Protected processes can retain a user-owned /proc directory with a root-owned environment.
       if (lstatSync(`/proc/${entry}/environ`).uid !== process.getuid()) continue
       if (processUsesRoot(Number(entry), directory)) return true
