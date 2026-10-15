@@ -6,6 +6,8 @@ export type { DatabaseOptions } from './pool.js'
 
 import { applyApplicationMigrations } from './migrations.js'
 
+export const MIGRATION_QUERY_TIMEOUT_MS = 30 * 60_000
+
 export interface Database {
   readonly pool: pg.Pool
   ping(signal?: AbortSignal): Promise<void>
@@ -21,8 +23,9 @@ export function createDatabase(options: DatabaseOptions): Database {
       await queryForReadiness(pool, 'select 1', signal)
     },
     async migrate() {
+      // One-time DDL can rewrite whole history tables (minutes in production); bound it, but not by a request deadline.
       const migrationPool = createPool({ ...options, maxConnections: 1,
-        queryTimeoutMs: 60_000, lockTimeoutMs: 5_000 }, 'graphql-migrations')
+        queryTimeoutMs: MIGRATION_QUERY_TIMEOUT_MS, lockTimeoutMs: 5_000 }, 'graphql-migrations')
       try {
         await applyApplicationMigrations(migrationPool)
       } finally {

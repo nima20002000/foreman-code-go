@@ -1,11 +1,11 @@
 import { OperatorRuntimeOwner } from '../infrastructure/operatorRuntimeOwner.js'
 import { loadConfig } from '../config.js'
-import { createDatabase } from '../infrastructure/database.js'
+import { createDatabase, MIGRATION_QUERY_TIMEOUT_MS } from '../infrastructure/database.js'
 import { createCheckpointStore } from '../infrastructure/checkpoints.js'
 
 const config = loadConfig(process.env)
 // DDL batches have a separate bounded deadline from individual API requests.
-const migrationOptions = { ...config.database, maxConnections: 1, queryTimeoutMs: 60_000 }
+const migrationOptions = { ...config.database, maxConnections: 1, queryTimeoutMs: MIGRATION_QUERY_TIMEOUT_MS }
 const database = createDatabase(migrationOptions)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, migrationOptions)
 const lifetime = new AbortController()
