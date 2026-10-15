@@ -1,6 +1,15 @@
+import type { SpawnOptions } from 'node:child_process'
+
+type DependencyCommandRunner = (
+  command: string,
+  args: string[],
+  options?: Pick<SpawnOptions, 'timeout' | 'killSignal'>,
+) => Promise<unknown>
+
 export function apiServiceTemplate(databaseUnit: string): string
+export function installProductionDependencies(run: DependencyCommandRunner): Promise<void>
 export function deployProductionApi(
-  run: (command: string, args: string[]) => Promise<unknown>,
+  run: DependencyCommandRunner,
   destination: string,
   options?: { dependencies: { root: string; source: string } },
 ): Promise<void>

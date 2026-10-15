@@ -513,11 +513,25 @@ export async function pruneApiDependencies(root, releases, { removeInBackground 
   return removed
 }
 
+async function runDependencyCommand(run, args) {
+  const timeout = 5 * 60_000
+  try {
+    return await run('corepack', ['pnpm', ...args], { timeout, killSignal: 'SIGKILL' })
+  } catch (cause) {
+    throw new Error(`Production dependency command "corepack pnpm ${args.join(' ')}" failed `
+      + `(${timeout} ms timeout): ${cause.message}`, { cause })
+  }
+}
+
+export async function installProductionDependencies(run) {
+  await runDependencyCommand(run, ['install', '--frozen-lockfile'])
+}
+
 async function deployApiPackage(run, destination) {
   const failures = []
   try {
     // Shared-lockfile deployment keeps resolved versions and their supply-chain checks.
-    await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', destination])
+    await runDependencyCommand(run, ['--filter', '@foreman-code/api', 'deploy', '--prod', destination])
     // Freeze mutable workspace files; pnpm already isolates installed dependencies.
     const contracts = await realpath(join(destination, 'node_modules/@foreman-code/contracts'))
     for (const packageDirectory of [destination, contracts]) {
@@ -540,12 +554,15 @@ async function deployApiPackage(run, destination) {
   }
   // Subsequent build commands use the complete workspace, including development dependencies.
   try {
-    await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
+    await installProductionDependencies(run)
   } catch (error) {
     failures.push(error)
   }
   if (failures.length === 1) throw failures[0]
-  if (failures.length) throw new AggregateError(failures, 'Production deployment and workspace restoration failed.')
+  if (failures.length) {
+    throw new AggregateError(failures, 'Production deployment and workspace restoration failed: '
+      + failures.map(error => error.message).join('; '))
+  }
 }
 
 export async function removeUninstalledRelease(release, current) {

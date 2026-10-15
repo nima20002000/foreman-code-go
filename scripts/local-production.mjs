@@ -19,7 +19,7 @@ import {
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
   needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot, buildProductionSource,
   readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
-  measureProductionStep,
+  measureProductionStep, installProductionDependencies,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -253,7 +253,7 @@ async function install(timeoutMs) {
   const firstInstall = await needsStartupConfiguration(startupFile, { previousRelease })
   await withProductionSourceSnapshot(source, join(state, 'builds'), async snapshot => {
     const runBuild = (command, args, options = {}) => run(command, args, { cwd: snapshot.source, ...options })
-    await runBuild('corepack', ['pnpm', 'install', '--frozen-lockfile'])
+    await installProductionDependencies(runBuild)
     let release
     let environment
     try {
