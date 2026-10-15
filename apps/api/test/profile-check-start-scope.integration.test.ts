@@ -7,7 +7,7 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflo
   ManualRunStartResultSchema, type WorkflowDefinitionV3, type WorkflowVersionV3 }
   from '@foreman-code/contracts/wave25'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
-import { installationUpdateFixture, latestEvidence, pinnedPlacements, profileReader, profiles }
+import { completedRun, installationUpdateFixture, latestEvidence, pinnedPlacements, profileReader, profiles }
   from './helpers/harnessInstallationUpdate.js'
 
 describe('profile-scoped Start after a Worker harness installation update', () => {
@@ -156,6 +156,8 @@ describe('profile-scoped Start after a Worker harness installation update', () =
         ?.qualification).toBe('qualifying')
       const replay = ManualRunStartResultSchema.parse(await fixture.value('run_start', readyInput))
       expect(replay.run.id).toBe(started.run.id)
+      // The Run on the checked profile must finish before Main shuts down, or its source preparation races the shutdown.
+      await completedRun(fixture, started.run.id)
     } finally {
       if (modelsBlocked) await fixture.provider.releaseModels()
       if (turnsBlocked) await fixture.provider.releaseWorkflowTurns()

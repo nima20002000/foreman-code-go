@@ -39,7 +39,7 @@ describe('automatic Worker profile qualification', () => {
       await fixture.provider.updatePayload()
       const evidence = await waitForRemoteReview(() => latestEvidence(fixture), proofs =>
         proofs.length === fixture.profiles.length && proofs.every(proof =>
-          proof.connectionGeneration !== before[0]!.connectionGeneration && !proof.qualified),
+          proof.target.installationFingerprint !== before[0]!.target.installationFingerprint && !proof.qualified),
       'persisted failed automatic profile checks')
       expect(evidence.every(proof => proof.failure !== undefined)).toBe(true)
       // Drain independent readbacks before fixture cleanup can stop the Worker.
