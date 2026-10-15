@@ -22,7 +22,10 @@ state="${CI_STATE:-${TMPDIR:-/tmp}/foreman-ci-state}"
 # Private-root checks reject group-writable ancestors; cloud images create the home cache with umask 002.
 if [ "${CI_HOST_RUNNER:-0}" != 1 ]; then
   umask 022
-  for dir in "$HOME" "$HOME/.cache"; do if [ -d "$dir" ]; then chmod go-w "$dir"; fi; done
+  # Suite fixtures run with a minimal PATH that has no chmod; they have nothing to fix.
+  if command -v chmod > /dev/null; then
+    for dir in "$HOME" "$HOME/.cache"; do if [ -d "$dir" ]; then chmod go-w "$dir"; fi; done
+  fi
 fi
 
 # Cloud workflows cache this prefix, so the harness CLIs install once per cache key instead of once per part.
