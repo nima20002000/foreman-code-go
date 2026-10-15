@@ -83,7 +83,7 @@ export class CanonicalJobInputs {
     return this.transaction(async sql=>{
       const current=await this.authority.recipient(sql,execution)
       if(current.principal.id!==admission.principalId||inputHash(current.principal.grants)!==admission.principalGrantsDigest||inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Accepted input snapshot or actor grant changed.',403)
-      for(const entry of admission.manifest.entries)await this.authority.recheck(sql,execution,entry)
+      await this.authority.recheckEntries(sql,execution,current.principal,admission.manifest.entries)
       await this.device(sql,execution)
     })
   }
@@ -164,24 +164,29 @@ export class CanonicalJobInputs {
       const row=(await sql.query<{workspace_id:string}>('select workspace_id from job_executions where id=$1',[executionId])).rows[0]
       if(!row)throw new DomainError('JOB_INPUT_RECIPIENT_CONFLICT','Actual recipient is unavailable.',404)
       const execution=await new JobRepository().execution(sql,row.workspace_id,executionId)
-      const record=(await sql.query<{result:unknown}>(`select result from management_command_receipts where operation='job.inputs.bind' and command_id=$1`,[`job-input:${inputHash(recipient(execution))}`])).rows
+      const record=(await sql.query<{result:unknown}>(`select result from management_command_receipts
+        where operation='job.inputs.bind' and result #>> '{manifest,recipient,executionId}'=$1
+          and result #>> '{manifest,recipient,attemptId}'=$2 and command_id=$3`,
+      [execution.id,execution.attemptId,`job-input:${inputHash(recipient(execution))}`])).rows
       if(record.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','The original input binding has not been persisted.',403)
       return {execution,admission:JobInputAdmissionSchema.parse(record[0]!.result)}
     })
   }
   /** Resolve exactly one original bind receipt, never a caller execution/path hint. */
   async acceptedTransfer(transferId:string) {
-    const rows=(await this.pool.query<{result:unknown}>(`select result from management_command_receipts
-      where operation='job.inputs.bind' and exists(select 1 from jsonb_array_elements(result->'transfers') item
-        where item #>> '{intent,transferId}'=$1)`,[transferId])).rows
+    const rows=(await this.pool.query<{result:unknown;command_id:string}>(`select result,command_id
+      from management_command_receipts where operation='job.inputs.bind' and result->'transfers' @> $1::jsonb`,
+    [JSON.stringify([{intent:{transferId}}])])).rows
     if(rows.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','Exactly one original input binding is required.',403)
     const original=JobInputAdmissionSchema.parse(rows[0]!.result)
     const matches=original.transfers.filter(value=>value.intent.transferId===transferId)
     if(matches.length!==1)throw new DomainError('JOB_INPUT_NOT_ADMITTED','Exactly one original input transfer is required.',403)
-    const accepted=await this.accepted(original.manifest.recipient.executionId)
-    if(!isDeepStrictEqual(accepted.admission,original))throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input binding changed.',403)
-    await this.recheck(accepted.execution,original)
-    return {...accepted,transfer:matches[0]!}
+    const execution=await this.execution(original.manifest.recipient.executionId)
+    if(rows[0]!.command_id!==`job-input:${inputHash(recipient(execution))}`) {
+      throw new DomainError('JOB_INPUT_NOT_ADMITTED','The original input binding has not been persisted.',403)
+    }
+    await this.recheck(execution,original)
+    return {execution,admission:original,transfer:matches[0]!}
   }
   private deliveryReceipt(execution:JobExecutionRecord,admission:JobInputAdmission,raw:unknown):JobInputDeliveryReceipt {
     const receipt=JobInputDeliveryReceiptSchema.parse(raw)

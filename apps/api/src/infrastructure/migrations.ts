@@ -1,4 +1,5 @@
 import { artifactTransferLookupMigration } from './artifactTransferLookupMigration.js'
+import { jobInputTransferLookupMigration } from './jobInputTransferLookupMigration.js'
 import { deviceManagedMcpMigration } from './deviceManagedMcpMigration.js'
 import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
 import { ciGrantMigration } from './ciGrantMigration.js'
@@ -952,6 +953,7 @@ export const migrations = [
   ciDispatchClaimsMigration,
   ciGroupWaitMigration,
   ciRecoveryIndexesMigration,
+  jobInputTransferLookupMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
