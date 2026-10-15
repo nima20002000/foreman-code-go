@@ -105,6 +105,24 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     expect(malformed.status).toBe(400)
     expect(f.request).not.toHaveBeenCalled()
   })
+  it('renews a bound route inside its expiry window without waiting for a Main status frame', async () => {
+    const root = await temporaryDirectory('worker-lease-renewal-')
+    roots.push(root)
+    const token = 'lease-renewal-credential'
+    const renewedExpiry = new Date(Date.now() + 15 * 60_000).toISOString()
+    const refresh = vi.fn(async () => renewedExpiry)
+    const endpoint = await createWorkerMcpEndpoint({ launcher: join(root, 'graphql-mcp.mjs'),
+      signal: new AbortController().signal, relay: {
+        environment: { agentId: 'renewing-agent', variables: { GRAPHQL_MCP_TOKEN: token } },
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        request: vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{}' })),
+        refresh,
+      } })
+    endpoints.push(endpoint)
+    const route = join(root, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`)
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(route, 'utf8')).expiresAt).toBe(renewedExpiry))
+    expect(refresh).toHaveBeenCalled()
+  })
   it('refreshes the original private route expiry while keeping its token and endpoint', async () => {
     const f = await setup()
     const renewedExpiry = new Date(Date.now() + 30 * 60_000).toISOString()
