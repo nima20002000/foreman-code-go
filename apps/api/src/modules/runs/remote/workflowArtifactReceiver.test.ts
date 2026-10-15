@@ -9,6 +9,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { workflowArtifactTransferManifestDigest } from '@foreman-code/contracts/workflow-artifact-transfer-node'
 import type { AcceptedArtifactPublication, DistributedArtifactPublicationService } from '../../files/distributed/publication.js'
+import type { FileQuery } from '../../files/repository.js'
 import type { ArtifactEdgeService } from '../../files/distributed/edges.js'
 import { registerDistributedArtifacts } from '../../files/distributed/adapters.js'
 import { lockActiveWorkerPrincipal } from '../../access/workerLifecycle.js'
@@ -70,8 +71,12 @@ async function fixture() {
     else if (text === 'rollback' && backup) state.receipts = backup
     else if (text.includes('from management_principals')) rows = state.revoked ? [] : [{ id: worker.id }]
     else if (text.includes('from worker_credential_bindings b join harness_executions e')) rows = [row]
-    else if (text.includes('select input_hash, target_key')) {
-      const found = state.receipts.get(JSON.stringify(args)); if (found) rows = [found]
+    else if (text.startsWith('select principal_id, input_hash, target_key')) {
+      const principals = args[0] as string[]
+      rows = principals.flatMap(principal => {
+        const found = state.receipts.get(JSON.stringify([principal, args[1], args[2]]))
+        return found ? [found] : []
+      })
     } else if (text.startsWith('insert into management_command_receipts')) {
       state.receipts.set(JSON.stringify(args.slice(0, 3)), { principal_id: args[0] as string, target_key: args[3] as string,
         input_hash: args[4] as string, result: JSON.parse(args[5] as string) })
@@ -95,14 +100,19 @@ async function fixture() {
     if (token !== 'unit-workflow' || audience !== 'worker' || state.revoked) throw new DomainError('AUTH_INVALID', 'unit worker required', 401)
     return worker
   }) }
-  const authority = { resolveWorkflowContext: vi.fn(async (currentAttempt, context) => {
-    void currentAttempt
-    if (!state.contextAvailable) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'unit absent', 409)
-    return { ...structuredClone(accepted), transferContext: context }
-  }), authorize: vi.fn(async value => {
+  const authorize = vi.fn(async (value: AcceptedArtifactPublication, client: FileQuery) => {
+    await client.query('select 1')
     if (state.ownerRevoked) throw new DomainError('AUTH_REVOKED', 'unit owner revoked', 401)
     return { context: value.context, principal: { ...worker, id: 'original-run-owner', audience: 'operator' as const }, binding: 'unit-original' }
-  }) } satisfies Parameters<typeof createWorkflowArtifactReceiver>[0]['authority']
+  })
+  const resolve = async (_currentAttempt: typeof attempt, context: typeof accepted.transferContext, client?: FileQuery) => {
+    if (!client) throw new Error('Unit publication requires its transaction client')
+    if (!state.contextAvailable) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'unit absent', 409)
+    const publication = { ...structuredClone(accepted), transferContext: context }
+    return { accepted: publication, authorized: await authorize(publication, client) }
+  }
+  const authority = { resolveWorkflowContext: vi.fn(async (...args: Parameters<typeof resolve>) => (await resolve(...args)).accepted),
+    resolveAuthorizedWorkflowContext: vi.fn(resolve), authorize }
   const fence = { assertCurrent: vi.fn(async current => {
     if (!state.grantLive || !isSame(current, attempt) || state.ownerRevoked) throw new DomainError('FILE_EDGE_DENIED', 'unit grant revoked', 403)
   }) } satisfies Parameters<typeof createWorkflowArtifactReceiver>[0]['fence']
@@ -132,6 +142,25 @@ describe('accepted workflow artifact receiver', () => {
     expect(t.authority.authorize).toHaveBeenCalledTimes(3)
     t.state.revoked = true
     await expect(t.append(intent.transferId)).rejects.toThrow()
+  })
+
+  it('keeps transfer operations within statement ceilings while reauthorizing every write boundary', async () => {
+    const t = await fixture()
+    const measure = async <T>(work: () => Promise<T>, ceiling: number) => {
+      const before = t.state.calls.length
+      const value = await work()
+      expect(t.state.calls.length - before).toBeLessThanOrEqual(ceiling)
+      return value
+    }
+    const intent = await measure(() => t.receiver.admit(request(), t.declaration), 19)
+    await measure(() => t.send(intent.transferId, 'start'), 25)
+    await measure(() => t.append(intent.transferId), 19)
+    await measure(() => t.append(intent.transferId), 19)
+    const receipt = await measure(() => t.send(intent.transferId, 'finish'), 19)
+    expect((await measure(() => t.send(intent.transferId, 'finish'), 19)).payload).toEqual(receipt.payload)
+    expect(await measure(() => t.receiver.admit(request(), t.declaration), 17)).toEqual(intent)
+    expect(t.state.receipts.size).toBe(1)
+    expect(t.state.audits).toBe(1)
   })
 
   it('admits only derived original pins, immutable manifest and worker identity through the command ledger', async () => {

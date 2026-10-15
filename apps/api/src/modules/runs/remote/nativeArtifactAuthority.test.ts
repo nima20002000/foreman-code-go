@@ -54,9 +54,16 @@ function fixture() {
     allowMutation: true, allowedTools: codexChatFileTools(configuration.harness as typeof DEFAULT_HARNESS_DEFAULTS.codex) } }
   const state = { execution, configuration, receipt, principalId: 'run-owner', callerAllowed: false, conversationAvailable: true,
     conversationCount: 1, revoked: false, writeAllowed: true, grantLive: true, stopped: false, nativeSessionId: 'original-session',
-    messages: false, cleanup: false, queries: [] as { text: string; args: unknown[] }[] }
+    messages: false, cleanup: false, statements: 0, nativeReads: 0, conversationWrites: 0,
+    conversationLookup: [] as unknown[], callerChecks: [] as unknown[][], audits: [] as unknown[][] }
   const query = vi.fn(async (text: string, args: unknown[] = []) => {
-    state.queries.push({ text, args }); let rows: unknown[] = []
+    state.statements += 1
+    let rows: unknown[] = []
+    if (/execution_native_sessions|remote_execution_receipts|operator_conversations/.test(text)) state.nativeReads += 1
+    if (/insert|update operator_conversations/i.test(text)) state.conversationWrites += 1
+    if (text.includes('insert into management_audit')) state.audits.push(args)
+    if (text.includes('from operator_conversations') && args.length === 9) state.conversationLookup = args
+    if (text.includes('from run_authority_principals')) state.callerChecks.push(args)
     if (text.includes('from harness_executions e join runs')) rows = [{ execution: state.execution, configuration: state.configuration,
       workspace_id: 'workspace', workflow_id: 'workflow', authorization_principal_id: state.principalId, stopped: state.stopped }]
     else if (text.includes('from runs r join harness_executions')) rows = [{ workspace_id: 'workspace', workflow_id: 'workflow' }]
@@ -75,11 +82,14 @@ function fixture() {
     return { rows, rowCount: rows.length, command: '', oid: 0, fields: [] }
   })
   const sql = { query } as unknown as FileQuery
-  vi.mocked(readDispatchIntent).mockResolvedValue(intent); vi.mocked(readReconciledDispatchIntent).mockResolvedValue(intent)
-  vi.mocked(readAcceptedPlacement).mockResolvedValue(placement)
+  vi.mocked(readDispatchIntent).mockImplementation(async client => { await client.query('select 1'); return intent })
+  vi.mocked(readReconciledDispatchIntent).mockImplementation(async client => { await client.query('select 1'); return intent })
+  vi.mocked(readAcceptedPlacement).mockImplementation(async client => { await client.query('select 1'); return placement })
   vi.mocked(assertDeviceHostInstallation).mockResolvedValue({ keyRevision: 1, authorizationRevision: 1 } as NonNullable<Awaited<ReturnType<typeof assertDeviceHostInstallation>>>)
   vi.mocked(readNativePlacement).mockResolvedValue({ acceptedBindingHash: placement.bindingHash } as NativeExecutionPlacement)
-  const ports = { locations: { revalidateRunAuthorization: vi.fn(async () => {}) }, producer: { assertPinsCurrent: vi.fn(async () => {}) } }
+  const ports = { locations: { revalidateRunAuthorization: vi.fn(async (_principal: string, _workspace: string, _workflow: string, client: FileQuery) => {
+    await client.query('select 1')
+  }) }, producer: { assertPinsCurrent: vi.fn(async (client: FileQuery) => { await client.query('select 1') }) } }
   const authority = new PostgresArtifactPublicationAuthority(mainId, {} as pg.Pool, ports)
   const fence = new PostgresAcceptedArtifactAttemptFence(mainId, ports)
   const declarationsRequest = { version: 1 as const, operation: 'worker-mcp.authorize-native-output-declarations' as const, intent, placement,
@@ -99,10 +109,10 @@ describe('original accepted artifact authority', () => {
     expect(await t.authority.authorizeNativeOutputDeclarations(t.declarationsRequest, t.state.receipt.connection, t.sql)).toEqual({
       agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'],
     })
-    expect(t.state.queries.some(q => /execution_native_sessions|remote_execution_receipts|operator_conversations/.test(q.text))).toBe(false)
-    const audit = t.state.queries.find(q => q.text.includes('native_output.authorize_declarations'))!
-    expect(audit.args[0]).toBe('run-owner')
-    expect(JSON.parse(audit.args[2] as string)).toEqual({ operationId: t.intent.operationId, attemptId: t.intent.attemptId,
+    expect(t.state.nativeReads).toBe(0)
+    expect(t.state.audits).toHaveLength(1)
+    expect(t.state.audits[0]![0]).toBe('run-owner')
+    expect(JSON.parse(t.state.audits[0]![2] as string)).toEqual({ operationId: t.intent.operationId, attemptId: t.intent.attemptId,
       bindingHash: t.intent.bindingHash, agentConfigurationVersionId: 'configuration', outputOperations: ['create', 'append', 'seal', 'publish'] })
   })
   it.each(['readonly', 'read-grant', 'revoked', 'stopped', 'ended', 'cleanup', 'grant', 'configuration', 'origin-boot', 'origin-generation', 'foreign-intent', 'foreign-placement'] as const)(
@@ -121,7 +131,7 @@ describe('original accepted artifact authority', () => {
       if (reason === 'foreign-intent') request.intent.inputDigest = 'sha256:' + 'b'.repeat(64)
       if (reason === 'foreign-placement') request.placement.destination.canonicalCwd = '/foreign'
       await expect(t.authority.authorizeNativeOutputDeclarations(request, connection, t.sql)).rejects.toThrow()
-      expect(t.state.queries.some(q => q.text.includes('insert into management_audit'))).toBe(false)
+      expect(t.state.audits).toEqual([])
     })
   it('requires the original durable native ACK and connection for mutation, even after declaration authorization', async () => {
     const t = fixture(), request = { ...t.declarationsRequest, operation: 'worker-mcp.authorize-native-output' as const,
@@ -138,13 +148,22 @@ describe('original accepted artifact authority', () => {
     const t = fixture()
     expect(await t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).toEqual(t.accepted)
     expect((await t.authority.authorize(t.accepted, t.sql)).binding).toBe(bindingIdentity(t.accepted.context))
-    const conversation = t.state.queries.find(q => q.text.includes('native_session_id=$6'))!
-    expect(conversation.text).toContain("record #>> '{origin,sourceNativeSessionId}'=$6")
-    expect(conversation.args).toContain('/original/worktree'); expect(conversation.args).toContain('/original/runtime')
+    expect(t.state.conversationLookup.slice(5)).toEqual([
+      'original-session', 'configuration', '/original/worktree', '/original/runtime',
+    ])
     expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledWith(t.sql, t.placement,
       expect.objectContaining({ id: 'run-owner' }), 'workspace', { purpose: 'resident' })
-    expect(t.state.queries.some(q => /insert|update operator_conversations/i.test(q.text))).toBe(false)
+    expect(t.state.conversationWrites).toBe(0)
   })
+  it('resolves an authorized context within a bounded nested statement budget', async () => {
+    const t = fixture()
+    expect(await t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).toEqual(t.accepted)
+    expect(t.state.statements).toBeLessThanOrEqual(15)
+    expect(t.ports.producer.assertPinsCurrent).toHaveBeenCalledOnce()
+    t.state.revoked = true
+    await expect(t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).rejects.toMatchObject({ status: 403 })
+  })
+
   it.each([0, 2])('reports missing/ambiguous persisted workflow conversation (%i) without inventing one', async count => {
     const t = fixture(); t.state.conversationCount = count
     await expect(t.authority.resolveWorkflowContext(t.attempt, t.accepted.transferContext, t.sql)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE' })
@@ -182,7 +201,7 @@ describe('original accepted artifact authority', () => {
     await expect(t.authority.authorize(reconnect, t.sql)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' })
     t.state.callerAllowed = true
     expect((await t.authority.authorize(reconnect, t.sql)).principal.id).toBe('broad-reader')
-    expect(t.state.queries.find(q => q.text.includes('caller_principal_id'))?.args).toEqual(['run-owner', 'run', 'broad-reader'])
+    expect(t.state.callerChecks.at(-1)).toEqual(['run-owner', 'run', 'broad-reader'])
   })
   it('requires a genuine message receipt when provided and never equates a native message with a turn', async () => {
     const t = fixture(), accepted = structuredClone(t.accepted)
@@ -218,7 +237,7 @@ describe('original accepted artifact authority', () => {
   it('checks edge grants for accepted consumers without requiring their native launch, including original sender ownership', async () => {
     const t = fixture(), grant = { principalId: 'run-owner', grantId: 'grant', grantRevision: '1' }
     await t.fence.assertCurrent(t.attempt, grant, t.sql)
-    expect(t.state.queries.some(q => q.text.includes('execution_native_sessions'))).toBe(false)
+    expect(t.state.nativeReads).toBe(0)
     await expect(t.fence.assertCurrent(t.attempt, { ...grant, grantRevision: '2' }, t.sql)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' })
     await expect(t.fence.assertCurrent(t.attempt, { ...grant, principalId: 'reader' }, t.sql)).rejects.toMatchObject({ code: 'NATIVE_ARTIFACT_AUTHORITY_DENIED' })
   })
