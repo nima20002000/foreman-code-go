@@ -34,7 +34,7 @@ function fixture(failure: Error) {
     .mockRejectedValueOnce(failure).mockResolvedValue(undefined)
   coordination.recordSkippedEvents = record
   const writer = new SingleWriterSessionManager(provider, coordination, 'history-agent', 9_000)
-  const skipped = vi.fn(async (_gap: DeviceHistoryGap) => {})
+  const skipped = vi.fn<(gap: DeviceHistoryGap) => Promise<void>>(async () => {})
   const collect = async () => {
     await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
     const events: NativeHarnessEvent[] = []
