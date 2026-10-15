@@ -247,6 +247,11 @@ async function fixture(t) {
   const git = args => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] })
   await mkdir(join(repository, 'apps/worker/artifacts'), { recursive: true })
   await mkdir(join(repository, 'apps/api'), { recursive: true })
+  await mkdir(join(repository, 'apps/worker/src'), { recursive: true })
+  await mkdir(join(repository, 'scripts'), { recursive: true })
+  await writeFile(join(repository, 'apps/worker/src/cli.mjs'), 'export const worker = true\n')
+  await writeFile(join(repository, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+  await writeFile(join(repository, 'scripts/build-worker-artifact.mjs'), '// artifact builder\n')
   await writeFile(join(repository, 'package.json'), JSON.stringify({ version: '0.0.57', packageManager: 'pnpm@11.27.0' }))
   await writeFile(join(repository, 'apps/api/package.json'), JSON.stringify({ version: '0.1.0' }))
   const targets = [target, { ...target, node: 'v22.23.2' },
@@ -272,12 +277,72 @@ async function fixture(t) {
     const buildCommit = options.env.FOREMAN_CODE_WORKER_BUILD_COMMIT
     const manifest = { format: 1, version: '0.0.57', commit: buildCommit, lockfileSha256: 'b'.repeat(64),
       packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target: selected,
-      sourceSnapshot: { commit: buildCommit, files: [] },
+      sourceSnapshot: { commit: buildCommit, files: ['package.json', 'pnpm-lock.yaml',
+        'scripts/build-worker-artifact.mjs', 'apps/worker/src/cli.mjs', args[1]].map(path => ({ path,
+        gitBlobSha1: git(['rev-parse', `${buildCommit}:${path}`]).toString().trim(),
+        sha256: sha256(git(['show', `${buildCommit}:${path}`])) })) },
       files: [{ path: 'src/cli.mjs', sha256: sha256(bytes), size: bytes.length }] }
     await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   }
   return { repository, commit, directory, productManifestPath, run, calls }
 }
+
+function commitFixture(repository) {
+  execFileSync('git', ['add', '-u'], { cwd: repository })
+  execFileSync('git', ['add', 'apps/api'], { cwd: repository })
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '-qm', 'update build inputs'], { cwd: repository })
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim()
+}
+
+function laterBuild(f) {
+  return { ...f, previousDirectory: f.directory, directory: join(f.repository, 'later-artifacts'),
+    productManifestPath: join(f.repository, 'later-product.json') }
+}
+
+test('reuses verified Worker payloads across unrelated API changes with fresh commit provenance', async t => {
+  const f = await fixture(t)
+  const first = await buildWorkerReleaseArtifacts(f)
+  await writeFile(join(f.repository, 'apps/api/unrelated.ts'), 'export const api = true\n')
+  const commit = commitFixture(f.repository)
+  const next = laterBuild(f)
+  const second = await buildWorkerReleaseArtifacts({ ...next, expectedCommit: commit })
+  assert.equal(f.calls.length, 4, 'unchanged snapshots must not invoke the artifact builder')
+  for (const [index, artifact] of second.artifacts.entries()) {
+    assert.equal(artifact.contentSha256, first.artifacts[index].contentSha256)
+    const manifest = JSON.parse(await readFile(join(next.directory, artifact.manifestSha256, 'manifest.json')))
+    assert.equal(manifest.commit, commit)
+    assert.equal(manifest.sourceSnapshot.commit, commit)
+    assert.equal(sha256(await readFile(join(next.directory, artifact.manifestSha256, 'manifest.json'))), artifact.manifestSha256)
+  }
+  assert.equal(second.github, undefined)
+  assert.equal(second.publication.state, 'pending')
+})
+
+for (const input of ['apps/worker/src/cli.mjs', 'scripts/build-worker-artifact.mjs', 'pnpm-lock.yaml']) {
+  test(`rebuilds Worker artifacts when snapshotted input ${input} changes`, async t => {
+    const f = await fixture(t)
+    await buildWorkerReleaseArtifacts(f)
+    await writeFile(join(f.repository, input), 'changed input\n')
+    commitFixture(f.repository)
+    await buildWorkerReleaseArtifacts(laterBuild(f))
+    assert.equal(f.calls.length, 8)
+  })
+}
+
+test('a changed target rebuilds only that target and corrupted payloads are rebuilt', async t => {
+  const f = await fixture(t)
+  const first = await buildWorkerReleaseArtifacts(f)
+  await writeFile(join(f.repository, 'apps/worker/artifacts/ubuntu-0-target.json'),
+    JSON.stringify({ ...target, node: 'v22.23.4' }))
+  await writeFile(join(f.directory, first.artifacts[1].manifestSha256, 'src/cli.mjs'), 'corrupted')
+  commitFixture(f.repository)
+  const next = laterBuild(f)
+  const second = await buildWorkerReleaseArtifacts(next)
+  assert.equal(f.calls.length, 6)
+  assert.equal(second.artifacts[0].target.node, 'v22.23.4')
+  assert.equal(second.artifacts[1].contentSha256, first.artifacts[1].contentSha256)
+})
 
 test('two builds differing only by commit publish the same Worker content identity', async t => {
   const f = await fixture(t)

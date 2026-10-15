@@ -1098,14 +1098,80 @@ test('source snapshots keep unchanged source timestamps and API build info acros
   })
 })
 
-test('production builds compile contracts and API then bundle web without a web typecheck', async () => {
+test('production builds check the API separately from JavaScript emit and browser bundling', async () => {
   const calls = []
   await production.buildProductionSource(async (command, args) => { calls.push([command, args]) })
   assert.deepEqual(calls, [
     ['corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build']],
-    ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'build']],
+    ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'tsc', '-p', 'tsconfig.build.json',
+      '--noEmit', '--isolatedModules', '--tsBuildInfoFile', 'node_modules/.cache/tsc/production-check.tsbuildinfo']],
+    ['node', ['scripts/emit-production-api.mjs']],
+    ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', '../../scripts/copy-api-runtime.mjs']],
+    ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'exec', 'node', 'dist/cli/harnessCompatibility.js']],
     ['corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']],
   ])
+})
+
+test('production staging overlaps the full API check and cannot finish before it passes', async () => {
+  let passCheck
+  const checked = new Promise(resolve => { passCheck = resolve })
+  let staged = false
+  let finished = false
+  const build = production.buildProductionSource(async (_command, args) => {
+    if (args.includes('--noEmit')) await checked
+  }, { stage: async () => { staged = true; return 'staged release' } })
+    .then(value => { finished = true; return value })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(staged, true)
+  assert.equal(finished, false)
+  passCheck()
+  assert.equal(await build, 'staged release')
+})
+
+test('a failed API check settles staging before rejecting the installation', async () => {
+  let finishStaging
+  const staging = new Promise(resolve => { finishStaging = resolve })
+  let staged = false
+  let failed = false
+  const build = production.buildProductionSource(async (_command, args) => {
+    if (args.includes('--noEmit')) throw new Error('Invalid API types')
+  }, { stage: async () => { await staging; staged = true } })
+  const rejected = build.then(() => { failed = true; return undefined }, error => { failed = true; return error })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(failed, false)
+  finishStaging()
+  assert.match((await rejected).message, /Invalid API types/)
+  assert.equal(staged, true)
+})
+
+test('readiness polls while the service start command is waiting and smoke waits for both', async t => {
+  const expected = { installationId: 'installation', checkoutId: 'release', databaseId: 'database' }
+  let finishStart
+  const starting = new Promise(resolve => { finishStart = resolve })
+  let observed = false
+  let smoked = false
+  const server = createServer((request, response) => {
+    observed = true
+    if (request.url === '/health/identity') response.end(JSON.stringify(expected))
+    else if (request.url === '/health/ready') response.end(JSON.stringify({ service: 'graphql-api',
+      checks: { database: 'ok', checkpoints: 'ok' } }))
+    else response.end('<script src="/assets/dashboard.js"></script>')
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const ready = waitForProductionReady({ origin: `http://127.0.0.1:${server.address().port}`, expected,
+    timeoutMs: 1000, start: () => starting, smoke: async () => { smoked = true } })
+  // Release start even on assertion failure so no request or server survives the test.
+  try {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(observed, true)
+    assert.equal(smoked, false)
+  } finally {
+    finishStart()
+    await ready
+  }
+  assert.equal(smoked, true)
 })
 
 for (const input of ['pnpm-lock.yaml', 'apps/api/package.json', 'packages/contracts/package.json',
