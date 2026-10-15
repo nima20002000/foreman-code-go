@@ -26,6 +26,15 @@ function reports() {
   return vi.mocked(componentLogger('db').info).mock.calls.map(([fields]) => fields)
 }
 
+async function expectClientRestored(f: ReturnType<typeof fixture>) {
+  const response = Promise.resolve({ rows: [], rowCount: 0, command: '', oid: 0, fields: [] })
+  f.query.mockReturnValueOnce(response)
+  // Outside a transaction, queries return the driver's result without an instrumentation wrapper.
+  const result = f.client.query('select 1')
+  expect(result).toBe(response)
+  await result
+}
+
 it('reports short pooled transactions including transaction control and restores the client', async () => {
   const f = fixture()
   expect(await withTransaction(f.pool, async client => {
@@ -35,7 +44,7 @@ it('reports short pooled transactions including transaction control and restores
   expect(f.statements()).toBeLessThanOrEqual(3)
   expect(reports()).toEqual([{ metric: 'db_transaction_statements', operation: 'transaction',
     outcome: 'committed', statements: 3 }])
-  expect(f.client.query).toBe(f.query)
+  await expectClientRestored(f)
   expect(f.release).toHaveBeenCalledOnce()
 })
 
@@ -89,7 +98,7 @@ it('reports every conflict attempt including the failed statement and rollback',
     { metric: 'db_transaction_statements', operation: 'transaction', outcome: 'rolled_back', statements: 3 },
     { metric: 'db_transaction_statements', operation: 'transaction', outcome: 'committed', statements: 3 },
   ])
-  expect(f.client.query).toBe(f.query)
+  await expectClientRestored(f)
 })
 
 it('reports a graph transaction when closing prevents rollback recovery', async () => {
@@ -105,7 +114,7 @@ it('reports a graph transaction when closing prevents rollback recovery', async 
     })).rejects.toBe(failure)
     expect(reports()).toEqual([{ metric: 'db_transaction_statements', operation: 'graph.write',
       outcome: 'failed', statements: 2 }])
-    expect(f.client.query).toBe(f.query)
+    await expectClientRestored(f)
   } finally { await (closing ?? connection.close()) }
 })
 
@@ -120,5 +129,5 @@ it.each(['begin', 'commit', 'rollback'] as const)('reports a failed %s without r
   expect(reports()).toEqual([{ metric: 'db_transaction_statements', operation: 'transaction',
     outcome: stage === 'commit' ? 'rolled_back' : 'failed',
     statements: stage === 'begin' ? 1 : stage === 'commit' ? 4 : 3 }])
-  expect(f.client.query).toBe(f.query)
+  await expectClientRestored(f)
 })

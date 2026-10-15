@@ -1,3 +1,4 @@
+import { activityHistoryIndexesMigration } from './activityHistoryIndexesMigration.js'
 import { artifactTransferLookupMigration } from './artifactTransferLookupMigration.js'
 import { jobInputTransferLookupMigration } from './jobInputTransferLookupMigration.js'
 import { deviceManagedMcpMigration } from './deviceManagedMcpMigration.js'
@@ -953,6 +954,7 @@ export const migrations = [
   ciDispatchClaimsMigration,
   ciGroupWaitMigration,
   ciRecoveryIndexesMigration,
+  activityHistoryIndexesMigration,
   jobInputTransferLookupMigration,
 ] as const
 
