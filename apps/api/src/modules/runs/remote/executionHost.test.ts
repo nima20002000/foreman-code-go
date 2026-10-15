@@ -707,19 +707,29 @@ describe('actual worker native-port adapter', () => {
     expect(f.state.starts).toBe(1)
     expect(f.state.turns).toBe(1)
   })
-  it('does not repeat Stop after the native cancellation acknowledgement is lost', async () => {
+  it('retries Stop after a lost cancellation acknowledgement until physical closure is confirmed', async () => {
     const f = await setup()
     await f.host.prepare(f)
-    f.manager.cancel = async () => { f.state.cancels++; throw new Error('Lost acknowledgement') }
+    f.manager.cancel = async () => {
+      f.state.cancels++
+      if (f.state.cancels === 1) throw new Error('Lost acknowledgement')
+      return true
+    }
+    f.ports.settle = async () => f.state.cancels >= 2
+      ? { kind: 'cancelled', closureEvidenceDigest: 'a'.repeat(64) } : null
     const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
       operationId: f.intent.operationId, attemptId: f.intent.attemptId,
       executionId: f.intent.executionId, bindingHash: f.intent.bindingHash,
       owner: f.intent.owner, action: { kind: 'stop' } }
     await f.host.control(command)
-    await f.host.control(command)
-    expect(f.state.cancels).toBe(1)
     expect(await f.journal.status(f.intent.operationId)).toMatchObject({
       status: 'known', receipt: { phase: 'uncertain', stopFence: true },
+    })
+    await f.host.control(command)
+    await f.host.control(command)
+    expect(f.state.cancels).toBe(2)
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true },
     })
   })
   it.each(['reserved', 'entered'] as const)('recovers a %s approval through the Main proxy without duplicate delivery', async phase => {

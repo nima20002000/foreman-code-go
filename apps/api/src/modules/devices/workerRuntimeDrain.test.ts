@@ -131,3 +131,22 @@ it('keeps source cleanup available until native processes have closed', async ()
     await running
   }
 })
+
+it('allows reviews and continuation turns to finish existing workflows during an update drain', async () => {
+  let finish!: () => void
+  const closing = new Promise<void>(resolve => { finish = resolve })
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal, active: () => [],
+    drainJobs: async () => { await closing }, drainQualifications: async () => {},
+    drainMaintenance: async () => {}, quiescent: async () => true })
+  const updating = drain.run()
+  try {
+    expect(() => drain.assertAdmission('execution-v1', { method: 'prepare-review' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn', review: {} })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'start-turn' })).not.toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'prepare' })).toThrow()
+    expect(() => drain.assertAdmission('execution-v1', { method: 'job-dispatch' })).toThrow()
+  } finally {
+    finish()
+    await updating
+  }
+})

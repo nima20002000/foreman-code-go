@@ -134,6 +134,20 @@ function receipt(value: unknown) {
   return WorkerConversationReceiptSchema.parse((value as { receipt: unknown }).receipt)
 }
 
+it('returns only events after the requested sequence while preserving terminal metadata', async () => {
+  const f = await setup()
+  await f.request(f.open)
+  const history: NativeHistory = { events: [1, 2, 3].map(sequence => ({ sequence,
+    type: 'event', occurredAt: '2026-10-05T00:00:00.000Z', payload: {} })),
+    pendingInteractions: [], firstRetainedSequence: 1, nextSequence: 4,
+    terminalTurn: { correlationId: 'finished', providerId: 'finished-turn', result: { outcome: 'succeeded' } } }
+  vi.spyOn(f.manager, 'history').mockResolvedValue(history)
+  const result = await f.request({ method: 'conversation.history', session: f.session, afterSequence: 2 })
+  expect(result).toMatchObject({ history: { events: [history.events[2]],
+    firstRetainedSequence: 1, nextSequence: 4, terminalTurn: history.terminalTurn } })
+  expect(history.events).toHaveLength(3)
+})
+
 it.each(['first message', 'continuation'])('reads a %s before Worker reservation without changing native ownership', async phase => {
   const f = await setup()
   await f.request(f.open)
@@ -654,7 +668,9 @@ it('carries conversation operations on the paired channel and applies Main denia
     signal: lifetime.signal, extensions, registrations: [workerRegistration] })
   const readers = [main.run(mainSocket.messages[Symbol.asyncIterator](), 10_000),
     worker.run(workerSocket.messages[Symbol.asyncIterator](), 10_000)]
-  for (const task of readers) void task.catch(() => {})
+  for (const task of readers) void task.catch(() => {
+    // ignore: shutdown awaits both channel readers below.
+  })
   try {
     const result = await main.request('execution-v1', { ...f.open, binding: f.binding })
     expect(receipt(result.payload).session).toEqual(f.session)

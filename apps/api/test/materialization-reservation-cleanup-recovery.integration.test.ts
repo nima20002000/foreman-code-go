@@ -6,7 +6,12 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 
 let fixture: Awaited<ReturnType<typeof setupMaterializationReservationCleanup>> | undefined
-afterEach(async () => { await fixture?.close(); fixture = undefined })
+afterEach(async () => { vi.useRealTimers(); await fixture?.close(); fixture = undefined })
+
+function advanceCleanupRetry() {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.now() + 30_000)
+}
 
 it('keeps an offline uncertain reservation charged and retries automatically', async () => {
   fixture = await setupMaterializationReservationCleanup()
@@ -19,6 +24,8 @@ it('keeps an offline uncertain reservation charged and retries automatically', a
   expect((await f.pool.query('select state from source_storage_reservations where reservation_id=$1',
     [orphan.reservation.reservationId])).rows[0]!.state).toBe('uncertain')
   f.onlineWorker()
+  expect(await f.cleanup.reconcile()).toBe(0)
+  advanceCleanupRetry()
   expect(await f.cleanup.reconcile()).toBe(1)
 }, 60_000)
 
@@ -34,6 +41,8 @@ it('keeps a reservation charged until the Worker confirms native closure', async
     [orphan.reservation.reservationId])).rows[0]!.state).toBe('uncertain')
   expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
   f.nativeStopped()
+  expect(await f.cleanup.reconcile()).toBe(0)
+  advanceCleanupRetry()
   expect(await f.cleanup.reconcile()).toBe(1)
 }, 60_000)
 
