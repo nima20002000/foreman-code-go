@@ -626,8 +626,11 @@ export class CloudCi {
       const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
       const queuedAt = performance.now()
       const startedAt = this.ports.now().toISOString()
+      // Only the mirror clone and its refs are shared; the commit's source fetch need not wait behind another push.
+      const source = ensureCommit(this.git, repository, commit, AbortSignal.timeout(600_000))
+      source.catch(() => { /* ignore: the push awaits the source and reports its failure */ })
       const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit, durations,
-        { queuedAt, startedAt }))
+        { queuedAt, startedAt, source }))
       published = pushed
       mirrorPushes.set(mirror, pushed)
       void pushed.catch(() => { /* ignore: the push failure is reported to the caller awaiting it; this only clears the queue entry */ }).then(() => { if (mirrorPushes.get(mirror) === pushed) mirrorPushes.delete(mirror) })
@@ -646,12 +649,12 @@ export class CloudCi {
   }
 
   private async push(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
-    baseCommit: string | undefined, durations: CiDurations, queued: { queuedAt: number; startedAt: string }) {
+    baseCommit: string | undefined, durations: CiDurations, queued: { queuedAt: number; startedAt: string; source: Promise<string> }) {
     const startedAt = queued.startedAt
     const started = performance.now()
     const queueMs = started - queued.queuedAt
     const signal = AbortSignal.timeout(600_000)
-    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const clone = await queued.source
     const objects = await this.git.git(['rev-parse', '--git-path', 'objects'], { cwd: clone, signal })
     if (objects.code !== 0) throw new DomainError('CI_CLOUD_FAILED', 'Could not read source objects.', 502)
     const sourceMs = performance.now() - started

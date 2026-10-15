@@ -170,3 +170,18 @@ it('reserves host-only parts before sharing local capacity with ordinary files',
     expect(slice.some(file => hostFiles.includes(file))).toBe(index < 2)
   }
 })
+
+it('splits a small selection across idle executors when parallel work outweighs the setup cost', () => {
+  const selected = files.slice(0, 4)
+  const measured = Object.fromEntries(selected.map(file => [file, 50_000]))
+  const affected = { ...input, scope: 'affected' as const, files: selected }
+  const busy = planIntegrationParts(affected, { files: selected, durations: measured }, { host: 0, ordinary: 8 }, 0)
+  expect(busy).toHaveLength(1)
+  const idle = planIntegrationParts(affected, { files: selected, durations: measured }, { host: 0, ordinary: 8 }, 4)
+  expect(idle).toHaveLength(2)
+  const slices = idle.map(part => integrationPartition(selected, measured, part.partition!))
+  expect(slices.flat().sort()).toEqual([...selected].sort())
+  expect(idle.every(part => part.expectedDurationMs! < busy[0]!.expectedDurationMs!)).toBe(true)
+  const single = planIntegrationParts(affected, { files: selected, durations: measured }, { host: 0, ordinary: 8 }, 1)
+  expect(single).toHaveLength(1)
+})

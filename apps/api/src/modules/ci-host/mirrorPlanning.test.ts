@@ -56,6 +56,49 @@ it('starts mirror publication after resolving the commit while planning is block
   }
 })
 
+it('publishes the unit mirror snapshot with the learned durations the queued tickets carry', async () => {
+  const workspaceId = randomUUID()
+  const workspace = { id: workspaceId, name: 'CI fixture', repository: {
+    provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main',
+  }, ciMirror: { provider: 'github', owner: 'fixture', name: 'site-ci' } }
+  const caller: ManagementPrincipal = { id: 'fixture-operator', name: 'Operator', audience: 'operator',
+    grants: [], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
+  const queuedDurations: unknown[] = []
+  const pool = { query: vi.fn(async (sql: string, parameters?: unknown[]) => {
+    if (sql.startsWith('insert into ci_runs')) queuedDurations.push(JSON.parse(parameters![4] as string))
+    if (sql.includes('from ci_file_durations')) return { rows: [{ file: 'apps/api/src/a.test.ts', duration_ms: 70_000 }] }
+    return { rows: sql.includes('from workspaces') ? [{ record: workspace }] : [], rowCount: 1 }
+  }) } as unknown as pg.Pool
+  const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
+  const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
+    await input.prepare?.()
+    return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
+  } } as PostgresCommandCoordinator
+  const publishMirror = vi.fn(async () => undefined)
+  const endpoint: HostCiEndpoint = Object.assign({
+    computers: async () => [],
+    request: async () => { throw new Error('No executor request expected') },
+  }, { publishMirror })
+  const files = ['apps/api/src/a.test.ts', 'apps/api/src/b.test.ts']
+  const commits: CiCommits = {
+    resolve: async () => 'a'.repeat(40),
+    capabilities: async () => ({ parts: true, integrationPartitions: false, affected: true }),
+    unitInventory: async () => ({ files, durations: { 'apps/api/src/b.test.ts': 40_000 }, heavy: [] }),
+  }
+  const service = new HostCiService(pool, commands, authority, commits, endpoint)
+  vi.spyOn(service, 'dispatch').mockResolvedValue(undefined)
+  try {
+    await service.run(caller, { workspaceId, suite: 'unit', scope: 'full' })
+    await expect.poll(() => publishMirror.mock.calls.length).toBeGreaterThan(0)
+    const published = (publishMirror.mock.calls as unknown as { durations?: unknown }[][])
+      .map(([input]) => input!.durations)
+    expect(queuedDurations[0]).toEqual({ 'apps/api/src/a.test.ts': 70_000, 'apps/api/src/b.test.ts': 40_000 })
+    expect(published).toEqual([queuedDurations[0]])
+  } finally {
+    await service.close()
+  }
+})
+
 it('dispatch reuses a mirror push started during planning with the same learned durations', async () => {
   const f = await fixture()
   const workspaceId = randomUUID()

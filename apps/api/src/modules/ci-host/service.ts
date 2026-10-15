@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { waitForCiDispatch, withCiDatabasePriority, withoutCiDatabaseDeadline,
   withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
 import { CI_DISPATCH_PASS_MS, withCiDispatchDeadline } from './dispatchDeadline.js'
@@ -42,7 +43,7 @@ import { cancelAssignedCiTicket } from './assignedCancellation.js'
 import { ciExecutionRunId } from './executionAttempt.js'
 import { CI_BUSY_TICKET, expireOverdueCiRuns } from './deadlines.js'
 import { ciCachedNotice, planCachedSelection, recordCiResultCache, type CachedSelection } from './resultCacheStore.js'
-import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
+import type { AgentSnapshots, CiCommits, CiMirrorInput, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
 export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
@@ -89,6 +90,7 @@ export class HostCiService {
   private readonly observingRuns = new Map<string, Promise<void>>()
   private observationOffset = 0
   private readonly observingComputers = new Map<string, Promise<void>>()
+  private readonly mirrorPublications = new Map<string, { settled: boolean }>()
   private readonly dispatchRejections = new CiDispatchRejections()
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
@@ -343,19 +345,24 @@ export class HostCiService {
       ['unit', 'integration'].includes(input.suite) ? this.learnedDurations(repository) : null,
       input.suite === 'integration' ? this.commits.integrationInventory?.(repository, commit) : undefined,
     ])
-    if (workspace.ciMirror && this.endpoint.publishMirror) {
-      const publish = this.endpoint.publishMirror.bind(this.endpoint)
-      const mirror = `${workspace.ciMirror.owner}/${workspace.ciMirror.name}`
-      void inventories.then(async ([learned, integration]) => {
+    const mirror = workspace.ciMirror ? `${workspace.ciMirror.owner}/${workspace.ciMirror.name}` : undefined
+    // Unit and gate durations are only final once the unit inventory is read; they publish then, so dispatch reuses the push.
+    const publishLater = input.suite === 'unit' || input.gate === true
+    const publishEarly = (finalDurations: CiDurations, deriveFiles: boolean) => {
+      if (!mirror || !this.endpoint.publishMirror) return
+      this.publishMirror({ repository, mirror, commit,
+        ...(deriveFiles && !input.baseCommit ? { defaultBranch } : {}),
+        ...(deriveFiles && input.baseCommit ? { baseCommit: input.baseCommit } : {}),
+        durations: finalDurations })
+    }
+    if (!publishLater) {
+      void inventories.then(([learned, integration]) => {
         const merged = { ...integration?.durations, ...learned }
         const durations = input.suite === 'integration' && integration
           ? Object.fromEntries(integration.files.filter(file => merged[file] !== undefined)
             .map(file => [file, merged[file]!])) : learned ?? {}
-        const deriveFiles = !input.gate && (input.scope ?? 'affected') === 'affected' && input.files === undefined
-        await publish({ repository, mirror, commit,
-          ...(deriveFiles && !input.baseCommit ? { defaultBranch } : {}),
-          ...(deriveFiles && input.baseCommit ? { baseCommit: input.baseCommit } : {}),
-          durations: input.suite === 'integration' ? durations : {} })
+        publishEarly(input.suite === 'integration' ? durations : {},
+          (input.scope ?? 'affected') === 'affected' && input.files === undefined)
       }).catch(error => {
         log.warn({ err: error, commit, mirror }, 'Early CI mirror publication failed; dispatch will retry')
       })
@@ -449,10 +456,10 @@ export class HostCiService {
         speeds, this.reservedCloudSlots, slots.ordinary, slots.usedByComputer)
     } else if (integration) {
       const slots = await readCiSlots(this.pool, this.planningEndpoint)
-      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, slots.eligible)
+      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, slots.eligible, slots.ordinary)
     }
     if (!input.gate && input.suite === 'unit' && split) {
-      parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.planningEndpoint)).ordinary)
+      parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.planningEndpoint)).eligible.ordinary)
     }
     timing.mark('planMs')
     log.info({ gate: input.gate === true, suite: input.suite, ...timing.phases }, 'CI run preparation timing')
@@ -482,6 +489,7 @@ export class HostCiService {
     const measuredUnitDurations = Object.fromEntries((inventory?.files ?? []).filter(file => unitDurations[file] !== undefined)
       .map(file => [file, unitDurations[file]!]))
     if (Object.keys(measuredUnitDurations).length) durations = { ...durations, ...measuredUnitDurations }
+    if (publishLater) publishEarly(durations ?? {}, !input.gate && deriveFiles)
     return { repository: workspace.repository, runs, durations,
       ...(cache && !empty ? { cacheKeys: cache.keys } : {}),
       ...(empty && cachedFiles ? { logTail: ciCachedNotice(cachedFiles) } : {}) }
@@ -1052,6 +1060,50 @@ export class HostCiService {
     }
   }
 
+  /** Pushes a commit snapshot to the CI mirror once per distinct payload; dispatch runs again when the push settles. */
+  private publishMirror(input: CiMirrorInput): { settled: boolean } {
+    const key = canonicalJson(input)
+    const known = this.mirrorPublications.get(key)
+    if (known) return known
+    const publication = { settled: false }
+    this.mirrorPublications.set(key, publication)
+    if (this.mirrorPublications.size > 200) this.mirrorPublications.delete(this.mirrorPublications.keys().next().value!)
+    void this.endpoint.publishMirror!(input).catch(error => {
+      // A failed push is retried, and reported, by the ticket's own start.
+      log.warn({ err: error, commit: input.commit, mirror: input.mirror }, 'CI mirror publication failed; the start will retry')
+    }).finally(() => {
+      publication.settled = true
+      void this.dispatch()
+    })
+    return publication
+  }
+
+  /** The snapshot a cloud start publishes, matching its derivation of the published branch and timings. */
+  private mirrorPublished(start: Extract<CiHostRequest, { operation: 'start' }>): boolean {
+    if (!start.ciMirror || !this.endpoint.publishMirror) return true
+    const deriveFiles = (start.scope ?? 'affected') === 'affected' && start.files === undefined
+    return this.publishMirror({ repository: start.repository, mirror: start.ciMirror, commit: start.commit,
+      ...(deriveFiles && !start.baseCommit ? { defaultBranch: start.defaultBranch ?? 'main' } : {}),
+      ...(deriveFiles && start.baseCommit ? { baseCommit: start.baseCommit } : {}),
+      durations: start.durations ?? {} }).settled
+  }
+
+  private startRequest(run: CiRunRecord, selection: Partial<Extract<CiHostRequest, { operation: 'start' }>>,
+    durations: CiDurations | null | undefined): Extract<CiHostRequest, { operation: 'start' }> {
+    return {
+      operation: 'start', runId: ciExecutionRunId(run), workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
+      repository: run.repository, commit: run.commit, suite: run.suite,
+      ...(run.part ? { part: run.part } : {}),
+      ...(run.partition ? { partition: run.partition } : {}),
+      scope: run.scope, ...selection,
+      ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
+      ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
+      ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
+      ...(run.cachedFiles?.length ? { notice: ciCachedNotice(run.cachedFiles) } : {}),
+      ...(durations ? { durations } : {}),
+    }
+  }
+
   private async dispatchOnce() {
     this.superseding ??= withoutCiDatabasePriority(() => this.cancelSuperseded())
       .catch(error => log.warn({ err: error }, 'Superseded CI cleanup failed; retrying'))
@@ -1099,8 +1151,9 @@ export class HostCiService {
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
     const smokeTargets = await this.smokeTargets(parsed)
     let queued = parsed
-    // Reserve four GitHub slots while checks wait, including integration already using GitHub.
-    const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
+    // Reserve four GitHub slots while checks that can dispatch wait, including integration already using GitHub.
+    const dispatchableCheck = (run: CiRunRecord) => run.suite !== 'integration' && !gateQueueBlock(run, gate)
+    const githubIntegrationLimit = Math.max(0, github.length - (queued.some(dispatchableCheck) ? 4 : 0))
     queued = await weighCiPartitions(this.pool, this.endpoint, queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)), (id, workspaceId) => this.read(id, workspaceId))
     queued.sort((left, right) => (left.priority === right.priority
@@ -1136,7 +1189,7 @@ export class HostCiService {
       if (run.suite === 'integration' && run.partition && !run.partition.weights) return
       const hostRequired = needsSystemdExecutor(run)
       const integrationLimit = run.priority === 'high'
-        && !queued.some(check => check.suite !== 'integration' && compareCiQueue(check, run) < 0)
+        && !queued.some(check => dispatchableCheck(check) && compareCiQueue(check, run) < 0)
         ? github.length : githubIntegrationLimit
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => {
@@ -1203,22 +1256,17 @@ export class HostCiService {
           reasons.push(`${computer.label}: slots reserved for queued checks`)
           continue
         }
+        const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
+        const start = this.startRequest(run, { ...selection, ...shards }, durations.get(run.id))
+        // A cloud slot is claimed only once the shared mirror snapshot is on GitHub; build computers need no snapshot.
+        if (computer.hostRef.kind === 'cloud' && !this.mirrorPublished(start)) {
+          reasons.push(`${computer.label}: publishing the CI mirror snapshot`)
+          continue
+        }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         assignments.set(run.id, { groupId: run.groupId, computerKey: computer.key })
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
-        const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
-        const assigned = await claimCiSlot(this.pool, run, computer, {
-          operation: 'start', runId: ciExecutionRunId(run), workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
-          repository: run.repository, commit: run.commit, suite: run.suite,
-          ...(run.part ? { part: run.part } : {}),
-          ...(run.partition ? { partition: run.partition } : {}),
-          scope: run.scope, ...selection, ...shards,
-          ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
-          ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
-          ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
-          ...(run.cachedFiles?.length ? { notice: ciCachedNotice(run.cachedFiles) } : {}),
-          ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}),
-        })
+        const assigned = await claimCiSlot(this.pool, run, computer, start)
         if (assigned === 'busy') {
           assignments.delete(run.id)
           used.set(computer.key, totals.get(computer.key) ?? 1)
