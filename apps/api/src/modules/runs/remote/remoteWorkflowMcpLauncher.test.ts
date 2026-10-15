@@ -30,7 +30,7 @@ it('blocks the remote Codex session when its launcher route cannot be registered
   expect(await readFile(parent, 'utf8')).toBe(contents)
 })
 
-it('registers the native launcher route before remote Codex startup and renews it for tool calls', async () => {
+it('registers the native launcher route before remote Codex startup and renews it inside the renewal window', async () => {
   const root = await directory()
   const launcher = join(root, 'launcher.mjs')
   await copyFile(new URL('../../../../../../scripts/graphql-mcp.mjs', import.meta.url), launcher)
@@ -87,14 +87,20 @@ it('registers the native launcher route before remote Codex startup and renews i
         expect(result.structuredContent).toEqual(context)
       },
     } })
+    const routeKey = createHash('sha256').update('original-token').digest('hex')
+    const routePath = join(root, 'routes', `${routeKey}.json`)
+    const originalRoute = JSON.parse(await readFile(routePath, 'utf8'))
     const renewedExpiry = new Date(Date.now() + 45 * 60_000).toISOString()
     fixture.renew(renewedExpiry)
     await fixture.call('status')
-    const routeKey = createHash('sha256').update('original-token').digest('hex')
-    const persistedRoute = JSON.parse(await readFile(join(root, 'routes', `${routeKey}.json`), 'utf8'))
-    expect(persistedRoute.expiresAt).toBe(renewedExpiry)
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 20 * 60_000)
+    expect(JSON.parse(await readFile(routePath, 'utf8'))).toEqual(originalRoute)
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(originalRoute.expiresAt) - 2 * 60_000)
     try {
+      await fixture.call('status')
+      const persistedRoute = JSON.parse(await readFile(routePath, 'utf8'))
+      expect(persistedRoute.expiresAt).toBe(renewedExpiry)
+      expect(persistedRoute.endpoint).toBe(originalRoute.endpoint)
+      clock.mockReturnValue(Date.parse(originalRoute.expiresAt) + 5 * 60_000)
       const result = await client.callTool({ name: 'context_get', arguments: {} })
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toEqual(context)
