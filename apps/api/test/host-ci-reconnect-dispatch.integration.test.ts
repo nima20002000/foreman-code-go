@@ -71,6 +71,7 @@ it('dispatches a planned gate part when fresh Worker readiness is observed durin
     release()
     await Promise.all([dispatch, wake])
     expect(discoveries).toBeGreaterThan(beforeWake)
+    await f.ci.close()
 
     const recovered = (await read()).partitions!.find(run => run.id === planned.id)!
     expect(recovered).toMatchObject({ state: 'running', plannedHostKey: worker.key,

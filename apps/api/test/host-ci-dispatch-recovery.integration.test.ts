@@ -1,7 +1,7 @@
 import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRun } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
@@ -41,13 +41,22 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     await f.ci.dispatch()
     expect((CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))).run)
       .toMatchObject({ state: 'starting', step: 'dispatch', computer: { hostRef: { provider } } })
-    exhausted = true
-    const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
-    expect(queued.run).toMatchObject({ state: 'queued', computer: null, step: null, startedAt: null,
-      finishedAt: null, unstartedProviders: [provider],
-      message: 'Dispatch retries exhausted; queued for another computer.' })
-    expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
-      .toMatchObject({ host_key: null, record: queued.run })
+    const dispatch = f.ci.dispatch.bind(f.ci)
+    const automaticDispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
+    try {
+      exhausted = true
+      await dispatch()
+      const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+        ticketId: started.ticketId, waitSeconds: 1,
+      }))
+      expect(queued.run).toMatchObject({ state: 'queued', computer: null, step: null, startedAt: null,
+        finishedAt: null, unstartedProviders: [provider],
+        message: 'Dispatch retries exhausted; queued for another computer.' })
+      expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
+        .toEqual({ host_key: null, record: queued.run })
+    } finally {
+      automaticDispatch.mockRestore()
+    }
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(tickets)
     f.finish(tickets.ticketId, 0, 'Host slice completed.\n')
     const host = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
