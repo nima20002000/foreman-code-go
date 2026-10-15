@@ -218,7 +218,7 @@ describe('saved current Run read', () => {
 
   it('rejects oversized saved execution history before validating execution pins', async () => {
     const f = fixture()
-    f.execution.input = { payload: 'x'.repeat(RUN_GRAPH_LIMITS.snapshotBytes) }
+    f.execution.input = { ...f.execution.input, runInput: { payload: 'x'.repeat(RUN_GRAPH_LIMITS.snapshotBytes) } }
     vi.mocked(readRepeatExecutionLocked).mockRejectedValue(new Error('execution pin changed'))
     vi.mocked(readRepeatExecutionsLocked).mockRejectedValue(new Error('execution pin changed'))
 

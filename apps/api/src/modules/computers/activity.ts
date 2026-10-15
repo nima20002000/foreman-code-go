@@ -41,7 +41,7 @@ export class ComputerActivityService {
       await this.commands.recordDenied(principal.id, source, 'computer_activity_list', this.mainId)
       throw error
     }
-    const clouds = []
+    const clouds: Parameters<typeof readCloud>[2][number][] = []
     for (const cloud of this.clouds) {
       const ready = await cloud.ready()
       clouds.push({ provider: cloud.provider, ready, observation: cloud.readinessObservation })
