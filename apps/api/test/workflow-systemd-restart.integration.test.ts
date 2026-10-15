@@ -58,7 +58,10 @@ describe('queued workflow preparation across engine restart', () => {
       delete expectedRun.authorizationPrincipalId
       delete expectedRun.executionLocation
       expect(persisted.run).toEqual(expectedRun)
-      expect(persisted.executions).toEqual(finished!.executions)
+      // Each reader may order the attempts differently; compare them by attempt number.
+      const byAttempt = <T extends { attempt: number }>(executions: readonly T[]) =>
+        [...executions].sort((left, right) => left.attempt - right.attempt)
+      expect(byAttempt(persisted.executions)).toEqual(byAttempt(finished!.executions))
     } finally { await fixture.close() }
   }, 60_000)
 })
