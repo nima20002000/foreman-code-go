@@ -102,6 +102,11 @@ async function forwardAttempt(message, controller, timeoutMs) {
       if (controller?.signal.aborted || terminalReceived) return
       const terminal = expectsReply && value?.id === message.id
         && (Object.hasOwn(value, 'result') || Object.hasOwn(value, 'error'))
+      if (terminal && message.method === 'tools/list' && Object.hasOwn(value, 'result')
+        && (!Array.isArray(value.result?.tools) || value.result.tools.length === 0)) {
+        throw new BridgeFailure('invalid_response',
+          'Foreman Code MCP tool discovery returned an invalid or empty catalog. Retry the activation.')
+      }
       if (message.method === 'initialize' && value.result?.protocolVersion) protocolVersion = value.result.protocolVersion
       output(value)
       if (terminal) terminalReceived = true
@@ -131,12 +136,13 @@ async function forwardAttempt(message, controller, timeoutMs) {
 
 async function forward(message, controller) {
   const startup = message.method === 'initialize' || message.method === 'tools/list'
-  const signal = startup ? AbortSignal.any([AbortSignal.timeout(35_000),
+  // Leave time for a slow database read while staying below the native 60-second startup timeout.
+  const signal = startup ? AbortSignal.any([AbortSignal.timeout(55_000),
     ...(controller ? [controller.signal] : [])]) : controller?.signal
   const attemptController = signal ? { signal } : undefined
   try {
     for (let attempt = 0; ; attempt++) {
-      const error = await forwardAttempt(message, attemptController, startup ? 10_000 : 120_000)
+      const error = await forwardAttempt(message, attemptController, startup ? 45_000 : 120_000)
       if (!error || controller?.signal.aborted) return
       const retryable = startup && ['service_unavailable', 'timeout'].includes(error.data.kind)
       if (retryable) error.data.retryable = true

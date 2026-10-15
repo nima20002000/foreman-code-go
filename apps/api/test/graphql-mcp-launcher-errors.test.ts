@@ -22,8 +22,8 @@ describe('MCP launcher failure guidance', () => {
       globalThis.setTimeout = (callback, milliseconds, ...args) =>
         schedule(callback, [1000, 2000].includes(milliseconds) ? 1 : milliseconds, ...args);
       const timeout = AbortSignal.timeout;
-      AbortSignal.timeout = milliseconds => timeout(milliseconds === 10000 ? 30
-        : milliseconds === 45000 ? 300 : milliseconds === 55000 ? 800 : milliseconds);
+      const scaledTimeouts = new Map([[10000, 30], [45000, 300], [55000, 800]]);
+      AbortSignal.timeout = milliseconds => timeout(scaledTimeouts.get(milliseconds) ?? milliseconds);
     ` })
     try {
       f.send({ id: 'slow-discovery', method })
