@@ -94,6 +94,18 @@ export async function ensureCommit(ports: GitWorktreePorts, repository: string, 
   return clone
 }
 
+/** Shallow caches may lack the ancestry two commits share: deepen their histories in bounded steps until `connected`. */
+export async function deepenUntilConnected(ports: GitWorktreePorts, clone: string, commits: string[],
+  connected: () => Promise<boolean>, signal: AbortSignal): Promise<boolean> {
+  for (const depth of [100, 1_000, 10_000]) {
+    const fetched = await ports.git(['fetch', '--no-tags', '--no-write-fetch-head', '--recurse-submodules=no',
+      `--depth=${depth}`, 'origin', ...commits], { cwd: clone, signal })
+    if (fetched.code !== 0) return false
+    if (await connected()) return true
+  }
+  return false
+}
+
 export async function fetchMissingSourceObjects(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
   const objects = await runGit(ports, ['rev-list', '--objects', '--no-object-names', '--missing=print',
     `${commit}^{tree}`], clone, signal)
