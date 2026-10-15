@@ -69,6 +69,7 @@ describe('work-handoff routing guidance', () => {
     expect(prompt).toContain('To hand your deliverable to the next Agent ("Fixer"), use {"kind":"finish"}')
     expect(prompt).toContain('A return goes back to "Worker 0" only and never starts "Fixer".')
     expect(prompt).toContain('{"kind":"return","requestId":"work-request-handoff-guidance"}')
+    expect(prompt).toContain('requestId may be omitted when replying to the single open request you received.')
   })
 
   it('offers only the correlated return when the Agent has no downstream route', () => {
