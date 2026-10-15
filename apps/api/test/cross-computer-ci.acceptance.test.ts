@@ -36,13 +36,20 @@ async function verifyPrerequisites(client: Client, input: CrossComputerCiInput) 
     'harness_registry_get', 'harness_instance_save', 'harness_instance_check', 'harness_instances_list',
   ]))
   for (const workspace of input.workspaces) {
-    const listed = CiComputersOutputSchema.parse(await callCiTool(client, 'ci_computers_list', {
-      workspaceId: workspace.workspaceId,
-    }))
     // Agent computers need not build: the owner keeps Main out of the CI lane, so only listed CI computers are required.
-    // Laptops join once their Worker update lands; placement simply uses them when ready.
-    const configured = workspace.ciComputers.map(host =>
-      listed.computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(host)))
+    // Laptops join once their Worker update lands; placement simply uses them when ready. A round starts right after
+    // a deploy, so give the configured CI computers a bounded window to finish their own update first.
+    const deadline = Date.now() + 5 * 60_000
+    let configured
+    for (;;) {
+      const listed = CiComputersOutputSchema.parse(await callCiTool(client, 'ci_computers_list', {
+        workspaceId: workspace.workspaceId,
+      }))
+      configured = workspace.ciComputers.map(host =>
+        listed.computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(host)))
+      if (configured.some(computer => computer?.ready) || Date.now() > deadline) break
+      await new Promise(resolve => setTimeout(resolve, 5_000))
+    }
     expect(configured.every(Boolean), 'Every configured scenario CI computer is listed').toBe(true)
     expect(configured.some(computer => computer?.ready), 'A configured scenario CI computer is ready').toBe(true)
   }
