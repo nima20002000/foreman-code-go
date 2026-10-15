@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -46,4 +46,21 @@ test('invalid TypeScript syntax fails emission', async t => {
   const { repository, api } = await fixture(t)
   await writeFile(join(api, 'src/broken.ts'), 'export const = !!!')
   await assert.rejects(emitProductionApi(repository), /broken\.ts/)
+})
+
+test('API-only edits retain unchanged output and repair corrupted cached JavaScript', async t => {
+  const { repository, api } = await fixture(t)
+  await writeFile(join(api, 'src/kept.ts'), 'export const value = 1\n')
+  await writeFile(join(api, 'src/changed.ts'), 'export const value = 1\n')
+  await emitProductionApi(repository)
+  const kept = join(api, 'dist/kept.js')
+  await utimes(kept, 1_000_000, 1_000_000)
+  const timestamp = (await stat(kept)).mtimeMs
+  await writeFile(join(api, 'src/changed.ts'), 'export const value = 2\n')
+  await emitProductionApi(repository)
+  assert.equal((await stat(kept)).mtimeMs, timestamp)
+  assert.equal((await import(pathToFileURL(join(api, 'dist/changed.js')))).value, 2)
+  await writeFile(kept, 'export const value = 999\n')
+  await emitProductionApi(repository)
+  assert.equal((await import(pathToFileURL(kept))).value, 1)
 })
