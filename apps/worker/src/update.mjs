@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
   WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_BINARY_BYTES,
-  WORKER_UPDATE_MAX_JSON_BYTES } from '../../../packages/contracts/src/workerUpdate.ts';
+  WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_ATTEMPT_TIMEOUT_MS } from '../../../packages/contracts/src/workerUpdate.ts';
 import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
 import { workerArtifactContentSha256 } from '../../../packages/contracts/src/workerArtifactContentNode.mjs';
 import { WorkerError, workerUpdateErrorMessage } from './diagnostics.mjs';
@@ -21,7 +21,23 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { protocolVersion: 1, identityFormat: 1 };
 const automaticRetryErrors = new Set(['worker_update_interrupted', 'worker_updater_stopped',
   'worker_update_channel_unavailable', 'worker_update_download_timeout', 'WORKER_RELEASE_ASSET_UNAVAILABLE',
-  'worker_update_smoke_unavailable']);
+  'worker_update_smoke_unavailable', 'worker_update_deadline_exceeded', 'worker_update_drain_deadline_exceeded']);
+
+async function waitForUpdateOperation(operation, signal) {
+  signal.throwIfAborted();
+  let abort;
+  const aborted = new Promise((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    const result = await Promise.race([operation(), aborted]);
+    signal.throwIfAborted();
+    return result;
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+}
 
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
   role: 'client', maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES };
@@ -115,6 +131,7 @@ export class WorkerUpdater {
     this.closed = false;
     this.lifetime = new AbortController();
     this.recordOperation = Promise.resolve();
+    this.operations = new Set();
     this.statusValue = { currentVersion: options.version, manifestSha256: options.manifestSha256,
       targetVersion: null, state: 'current', lastError: null };
   }
@@ -238,9 +255,28 @@ export class WorkerUpdater {
   }
 
   async update(retry) {
+    const deadline = new AbortController();
+    const timeoutMs = this.options.attemptTimeoutMs ?? WORKER_UPDATE_ATTEMPT_TIMEOUT_MS;
+    const timer = setTimeout(() => deadline.abort(new WorkerError('worker_update_deadline_exceeded',
+      `Worker update attempt exceeded ${timeoutMs} ms.`)), timeoutMs);
+    const signal = AbortSignal.any([this.lifetime.signal, deadline.signal]);
+    try {
+      return await this.performUpdate(retry, signal, () => clearTimeout(timer));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async performUpdate(retry, signal, handoff) {
     const { stateDirectory, version, facts, connection, drain, resume, assertStateOwnership } = this.options;
+    const run = operation => waitForUpdateOperation(() => {
+      const pending = operation();
+      this.operations.add(pending);
+      void pending.then(() => this.operations.delete(pending), () => this.operations.delete(pending));
+      return pending;
+    }, signal);
     await this.status();
-    this.lifetime.signal.throwIfAborted();
+    signal.throwIfAborted();
     if (this.statusValue.state === 'restarting') throw new WorkerError('worker_update_restart_pending');
     if (this.statusValue.lastError === 'worker_update_recovery_required') {
       throw new WorkerError('worker_update_recovery_required');
@@ -252,11 +288,11 @@ export class WorkerUpdater {
     }
     const request = async (payload, options = {}) => {
       try {
-        const signal = options.signal ? AbortSignal.any([this.lifetime.signal, options.signal]) : this.lifetime.signal;
+        const requestSignal = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
         // Downloading can outlive a transport session; update requests use the live channel.
         const current = connection()?.captureRequest(WORKER_UPDATE_NAMESPACE);
         if (!current) throw new WorkerError('worker_update_channel_unavailable');
-        return await current.request(payload, { timeoutMs: 60_000, signal });
+        return await run(() => current.request(payload, { timeoutMs: 60_000, signal: requestSignal }));
       } catch (error) {
         if (error instanceof DeviceApplicationError && error.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') {
           throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',
@@ -311,7 +347,7 @@ export class WorkerUpdater {
       }
       targetFields = { targetVersion: release.version, manifestSha256: release.manifestSha256 };
       enter('release');
-      const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
+      const launch = await run(() => (this.options.locateLaunch ?? locateWorkerLaunch)(this.options));
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
         { manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
           downloadSource: null });
@@ -320,27 +356,29 @@ export class WorkerUpdater {
       enter('downloading');
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
-      await downloadWorkerArtifact({ release, directory: downloading, facts, signal: this.lifetime.signal,
+      await run(() => downloadWorkerArtifact({ release, directory: downloading, facts, signal,
         fetchAsset: this.options.fetchAsset,
         timeoutMs: this.options.downloadTimeoutMs, log: (msg, fields) => log(msg, { ...fields, ...targetFields }),
         onDownloadComplete: ({ source }) => this.save({}, { downloadSource: source }),
-      });
-      this.lifetime.signal.throwIfAborted();
+      }));
+      signal.throwIfAborted();
       enter('smoke configuration');
-      const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);
+      const ciSmoke = await run(() => readWorkerSmokeConfiguration(request, release.manifestSha256));
       enter('draining');
       await this.save({ state: 'draining' });
       drained = true;
-      await drain();
-      this.lifetime.signal.throwIfAborted();
+      await run(() => drain(signal));
+      signal.throwIfAborted();
       assertStateOwnership();
       enter('installing');
       await this.save({ state: 'installing' });
-      const installed = await (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
+      const installed = await run(() => (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
         artifact: downloading, approvedManifestSha256: release.manifestSha256, facts, expected,
-        assertStateOwnership, updatePolicy: async () => true });
-      this.lifetime.signal.throwIfAborted();
+        assertStateOwnership, updatePolicy: async () => true, signal }));
+      signal.throwIfAborted();
       assertStateOwnership();
+      // Restart supervision owns its own deadline once the pre-restart work has completed.
+      handoff();
       this.handoff = randomUUID();
       await this.save({ state: 'restarting' }, { restart: { ...launch, directory: installed.directory,
         ...(ciSmoke ? { ciSmoke } : {}),
@@ -350,13 +388,14 @@ export class WorkerUpdater {
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {
-      const failureCode = this.lifetime.signal.aborted ? 'worker_updater_stopped'
-        : error instanceof WorkerError ? error.code : 'worker_update_failed';
+      let failureCode = error instanceof WorkerError ? error.code : 'worker_update_failed';
+      if (error?.code === 'WORKER_UPDATE_DRAIN_DEADLINE_EXCEEDED') failureCode = 'worker_update_drain_deadline_exceeded';
+      if (this.lifetime.signal.aborted) failureCode = 'worker_updater_stopped';
       const lastError = error instanceof WorkerError && error.message === error.code ? failureCode
         : `${failureCode}: ${phase}: ${workerUpdateErrorMessage(error)}`.slice(0, 2000);
+      if (drained) resume();
       await this.save({ state: 'failed', lastError }, { failureCode });
       if (targetFields.targetVersion) log('Worker update failed', { phase, ...targetFields, error: lastError });
-      if (drained) resume();
       throw new WorkerError(failureCode, lastError, { cause: error });
     } finally {
       if (downloading) await rm(downloading, { recursive: true, force: true });
@@ -367,6 +406,11 @@ export class WorkerUpdater {
     this.closed = true;
     clearInterval(this.timer);
     this.lifetime.abort(new WorkerError('worker_updater_stopped'));
-    return this.active?.then(() => {}, error => this.options.reportError?.(error));
+    // Keep the state lock until physical staging and downloads have stopped using their private files.
+    return Promise.allSettled([this.active, ...this.operations]).then(results => {
+      for (const result of results) {
+        if (result.status === 'rejected') this.options.reportError?.(result.reason);
+      }
+    });
   }
 }

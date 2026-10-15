@@ -4,6 +4,8 @@ export const WORKER_UPDATE_NAMESPACE = 'worker-update-v1'
 export const WORKER_UPDATE_VERSION = 1
 export const WORKER_UPDATE_MAX_JSON_BYTES = 1_048_576
 export const WORKER_UPDATE_MAX_BINARY_BYTES = 0
+export const WORKER_UPDATE_DRAIN_TIMEOUT_MS = 30 * 60_000
+export const WORKER_UPDATE_ATTEMPT_TIMEOUT_MS = 45 * 60_000
 
 export const WorkerUpdateStatusSchema = z.object({
   currentVersion: z.string().min(1).max(128),
@@ -55,6 +57,7 @@ const WorkerPublicationFieldsSchema = z.object({
   state: z.enum(['pending', 'published', 'failed']),
   lastError: z.string().max(2000).nullable(),
   startedAt: z.string().datetime().optional(),
+  nextRetryAt: z.string().datetime().optional(),
 }).strict()
 export const WorkerReleasePublicationSchema = WorkerPublicationFieldsSchema.extend({
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),

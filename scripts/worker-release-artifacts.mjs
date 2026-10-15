@@ -8,6 +8,51 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { artifactFiles, validateWorkerTarget, workerReleaseVersion, assertWorkerUpdateToolchain } from './worker-artifact-files.mjs'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+const PUBLICATION_COMMAND_TIMEOUT_MS = 5 * 60_000
+const PUBLICATION_RETRY_MS = 60_000
+
+export function runWorkerPublicationCommand(command, args, { timeoutMs = PUBLICATION_COMMAND_TIMEOUT_MS,
+  killGraceMs = 5000, ...options } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, detached: true, stdio: ['ignore', 'inherit', 'pipe'] })
+    let stderr = ''
+    let expired = false
+    let closed = false
+    let forced = false
+    let escalation
+    const kill = signal => {
+      try { process.kill(-child.pid, signal) }
+      catch (error) { if (error.code !== 'ESRCH') throw error }
+    }
+    const failure = () => new Error(`WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED: ${command} exceeded ${timeoutMs} ms.`)
+    const timer = setTimeout(() => {
+      expired = true
+      kill('SIGTERM')
+      escalation = setTimeout(() => {
+        kill('SIGKILL')
+        forced = true
+        if (closed) reject(failure())
+      }, killGraceMs)
+    }, timeoutMs)
+    child.stderr.on('data', chunk => {
+      process.stderr.write(chunk)
+      stderr = (stderr + chunk.toString()).slice(-1500)
+    })
+    child.once('error', error => {
+      clearTimeout(timer)
+      clearTimeout(escalation)
+      reject(error)
+    })
+    child.once('close', code => {
+      closed = true
+      clearTimeout(timer)
+      if (expired) {
+        if (forced) reject(failure())
+      } else if (code === 0) resolve()
+      else reject(new Error(`${command} failed (${code}): ${stderr.trim()}`))
+    })
+  })
+}
 
 function committedBytes(repository, commit, path) {
   return execFileSync('git', ['show', `${commit}:${path}`], { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -61,6 +106,7 @@ const missingAsset = /no assets match the file pattern|no assets to download/iu
 
 function retryableGitHubError(error) {
   const reason = githubErrorReason(error)
+  if (reason.includes('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED')) return false
   return /HTTP (?:404|408|429|5\d\d)|release not found|release already exists|ReleaseAsset\.name already exists/iu.test(reason)
     || /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection reset|broken pipe|socket hang up|\bEOF\b|timed out/iu.test(reason)
     || /TLS handshake timeout|i\/o timeout|temporary failure in name resolution/iu.test(reason)
@@ -189,6 +235,9 @@ export async function recordWorkerPublicationFailure(directory, error) {
   const index = JSON.parse(await readFile(join(directory, 'index.json'), 'utf8'))
   const reason = error instanceof Error ? error.message : String(error)
   const publication = { state: 'failed', lastError: `WORKER_RELEASE_ASSET_UNAVAILABLE: ${reason}`.slice(0, 2000) }
+  if (reason.includes('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED')) {
+    publication.nextRetryAt = new Date(Date.now() + PUBLICATION_RETRY_MS).toISOString()
+  }
   await writeArtifactIndex(directory, { ...index, publication })
 }
 
@@ -201,7 +250,8 @@ export async function publishInstalledWorkerArtifacts({ directory, repositoryNam
   try {
     await writeArtifactIndex(directory, { ...index,
       publication: { state: 'pending', lastError: null, startedAt: new Date().toISOString() } })
-    const github = await publish({ name: repositoryName, directory, commit, artifacts: index.artifacts, run })
+    const github = await publish({ name: repositoryName, directory, commit, artifacts: index.artifacts,
+      run: run ?? runWorkerPublicationCommand })
     const published = { ...index, github, publication: { state: 'published', lastError: null } }
     await writeArtifactIndex(directory, published)
     return published
@@ -236,28 +286,30 @@ Environment=PATH=@PATH@
 ExecStart=@NODE@ @APP@/current/scripts/worker-release-artifacts.mjs recover @APP@/current
 Restart=on-failure
 RestartSec=60
+RuntimeMaxSec=1800
+TimeoutStopSec=15
+KillMode=control-group
+ExecStopPost=@NODE@ @APP@/current/scripts/worker-release-artifacts.mjs stopped @APP@/current
 UMask=0077
 `
 }
 
 // The publication service starts this script through the current-release symlink; Node reports the real path.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && ['publish', 'recover'].includes(process.argv[2])) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  && ['publish', 'recover', 'stopped'].includes(process.argv[2])) {
   const [directory, repositoryName, commit] = process.argv.slice(3)
-  const run = (command, args, options = {}) => new Promise((resolve, reject) => {
-    const child = spawn(command, args, { ...options, stdio: ['ignore', 'inherit', 'pipe'] })
-    let stderr = ''
-    child.stderr.on('data', chunk => {
-      process.stderr.write(chunk)
-      stderr = (stderr + chunk.toString()).slice(-1500)
-    })
-    child.once('error', reject)
-    child.once('close', code => code === 0 ? resolve()
-      : reject(new Error(`${command} failed (${code}): ${stderr.trim()}`)))
-  })
   try {
-    if (process.argv[2] === 'recover') await recoverInstalledWorkerArtifacts({ release: directory, run })
-    else await publishInstalledWorkerArtifacts({ directory, repositoryName, commit, run })
-    console.log('Worker artifacts published and verified on GitHub.')
+    if (process.argv[2] === 'stopped') {
+      if (process.env.SERVICE_RESULT === 'timeout') {
+        await recordWorkerPublicationFailure(join(directory, 'worker-artifacts'),
+          new Error('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED: publication unit exceeded 1800 seconds.'))
+      }
+    } else {
+      const run = runWorkerPublicationCommand
+      if (process.argv[2] === 'recover') await recoverInstalledWorkerArtifacts({ release: directory, run })
+      else await publishInstalledWorkerArtifacts({ directory, repositoryName, commit, run })
+      console.log('Worker artifacts published and verified on GitHub.')
+    }
   } catch (error) {
     console.error(`WORKER_RELEASE_ASSET_UNAVAILABLE: Worker publication failed: ${error.message}`)
     process.exitCode = 1

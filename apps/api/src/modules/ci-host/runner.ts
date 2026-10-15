@@ -15,7 +15,7 @@ import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnMissing, logIgnoredError } from '../diagnostics/ignoredError.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { pnpmInstall } from './warmSetup.js'
+import { pnpmInstall, shellQuote } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
 import { readCiReport } from './reports.js'
 import { withHostCiRunLock } from './runnerLock.js'
@@ -24,6 +24,7 @@ import { sweepHostCiCache } from './cacheCleanup.js'
 
 const log = componentLogger('jobs')
 const REPORT_COLLECTION_WINDOW_MS = 5 * 60_000
+const CI_UNIT_RUNTIME_SECONDS = 3 * 60 * 60
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -472,6 +473,8 @@ export class HostCiRunner {
     await this.selectFiles(meta, source)
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
+    const stoppedScript = join(this.runDirectory(meta.runId), 'stopped.sh')
+    await writeFile(stoppedScript, this.stoppedScript(meta), { mode: 0o700 })
     const current = await this.readMeta(meta.runId)
     if (current.state !== 'starting' || current.cancellationRequested) return
     const serviceUnit = `${unitName(meta.runId)}.service`
@@ -484,6 +487,9 @@ export class HostCiRunner {
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
     const started = await this.ports.run('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unitName(meta.runId)}`,
       `--property=MemoryMax=${resources.memoryBytes}`, `--property=CPUQuota=${resources.cpuCount * 100}%`,
+      `--property=RuntimeMaxSec=${CI_UNIT_RUNTIME_SECONDS}`, '--property=TimeoutStopSec=30',
+      '--property=KillMode=control-group',
+      `--property=ExecStopPost=/bin/bash ${JSON.stringify(stoppedScript).replaceAll('%', '%%')}`,
       '--property=UMask=0022', `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
     { env: this.environment, timeoutMs: 30_000 })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
@@ -766,7 +772,8 @@ export class HostCiRunner {
       `exec {cache_usage}<${quote(cache)}`,
       'flock -s "$cache_usage" || finish $?',
       'step install',
-      ...(existsSync(join(source, 'pnpm-lock.yaml')) ? pnpmInstall(cache) : [`${pm} install || finish $?`]),
+      ...(existsSync(join(source, 'pnpm-lock.yaml')) ? pnpmInstall(cache, join(run, 'watchdog-message.json'))
+        : [`${pm} install || finish $?`]),
       // pnpm script commands can reinstall dependencies, so preparation must wait for installation.
       ...(prerequisites ? [`SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare`
         + ` >${quote(join(run, 'preparation.log'))} 2>&1 & preparation_pid=$!`] : []),
@@ -779,6 +786,16 @@ export class HostCiRunner {
           '  export FOREMAN_CODE_CI_TEST_ADMIN_URL="$(cat "$TMPDIR/test-database-url")"', 'fi'] : []),
         `${watchedCommand} || finish $?`] : []),
       'finish 0', ''].join('\n')
+  }
+
+  private stoppedScript(meta: RunMeta): string {
+    const run = this.runDirectory(meta.runId)
+    const message = `CI_UNIT_DEADLINE_EXCEEDED: CI setup, execution or cleanup exceeded ${CI_UNIT_RUNTIME_SECONDS} seconds.`
+    return ['#!/bin/bash', '[ "${SERVICE_RESULT:-}" = timeout ] || exit 0',
+      `printf '%s\\n' ${shellQuote(message)} >> ${shellQuote(join(run, 'log'))}`,
+      `printf '%s\\n' ${shellQuote(JSON.stringify({ message }))} > ${shellQuote(join(run, 'watchdog-message.json'))}`,
+      `echo 124 > ${shellQuote(join(run, 'exit.tmp'))}`,
+      `mv -- ${shellQuote(join(run, 'exit.tmp'))} ${shellQuote(join(run, 'exit'))}`, ''].join('\n')
   }
 
   private packageManager(source: string): string {

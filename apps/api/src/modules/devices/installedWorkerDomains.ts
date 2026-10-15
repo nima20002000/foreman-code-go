@@ -86,6 +86,7 @@ import { createWorkerResourceTelemetryExtension } from '../resource-telemetry/in
 import { createLinuxResourceCollector } from '../resource-telemetry/collector/ports.js'
 import { createInstalledWorkerConversations } from '../conversations/installedWorkerConversations.js'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { WORKER_UPDATE_DRAIN_TIMEOUT_MS } from '@foreman-code/contracts/worker-update'
 
 interface InstalledWorkerInput {
   stateDirectory: string
@@ -171,8 +172,8 @@ export async function createInstalledWorkerDomains(input: InstalledWorkerInput) 
     extensions: composition.tracked,
     rsyncAvailable: composition.rsync.kind === 'configured',
     rsyncMissing: composition.rsync.missing,
-    async drainForUpdate() {
-      await composition.updateDrain.run()
+    async drainForUpdate(signal?: AbortSignal) {
+      await composition.updateDrain.run(signal)
     },
     resumeAfterUpdate() {
       composition.updateDrain.resume()
@@ -750,19 +751,26 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
       .filter(namespace => namespace !== COMPUTER_MAINTENANCE_NAMESPACE))],
     active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE)
       .map(([task]) => task),
-    drainJobs: async () => {
+    drainJobs: async signal => {
       await Promise.all([
         drainStage('host-ci-preparation', () => hostCi.beginDrain()),
         drainStage('ci-runtime-preparation', () => ciRuntime.beginDrain()),
       ])
+      signal.throwIfAborted()
       if (composition.jobOpening) {
         const opening = composition.jobOpening
-        await drainStage('jobs', async () => { await (await opening).beginDrain() })
+        await drainStage('jobs', async () => {
+          const jobs = await opening
+          signal.throwIfAborted()
+          await jobs.beginDrain()
+        })
       }
+      signal.throwIfAborted()
       if (composition.native?.kind === 'configured') {
         const workflow = composition.native
         await drainStage('workflow-turns', () => workflow.drainForUpdate())
       }
+      signal.throwIfAborted()
       if (composition.conversations) {
         const conversationHost = composition.conversations
         await drainStage('conversation-tasks', () => conversationHost.drainForUpdate())
@@ -770,7 +778,7 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
     },
     drainQualifications: async () => { await composition.qualification?.drain() },
     drainMaintenance: async () => { if (composition.maintenance) await (await composition.maintenance).drainForWorkerUpdate() },
-    quiescent: async () => {
+    quiescent: async signal => {
       updateWaits.clear()
       if (!hostCi.isUpdateIdle()) {
         updateWaits.add('host-ci-preparation')
@@ -805,7 +813,7 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
       if (rsync.kind === 'configured') {
         updateWaits.add('rsync-writers')
         const transfers = await Promise.allSettled(rsync.ownership.inventory().map(intent =>
-          rsync.ownership.quiescent(intent, lifetime.signal)))
+          rsync.ownership.quiescent(intent, signal)))
         if (transfers.some(result => result.status === 'rejected')) return false
         updateWaits.delete('rsync-writers')
       }
@@ -834,16 +842,20 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
 export function createWorkerRuntimeDrain(ports: {
   signal: AbortSignal
   active(): Promise<unknown>[]
-  drainJobs(): Promise<void>
+  drainJobs(signal: AbortSignal): Promise<void>
   drainQualifications(): Promise<void>
   drainMaintenance(): Promise<void>
-  quiescent(): Promise<boolean>
+  quiescent(signal: AbortSignal): Promise<boolean>
   waitingOn?(): string[]
 }) {
   let draining = false
   let cleanupPaused = false
+  let attempt: AbortController | undefined
   return {
-    async run() {
+    async run(requestSignal?: AbortSignal) {
+      const controller = new AbortController()
+      attempt = controller
+      const signal = AbortSignal.any([ports.signal, controller.signal, ...(requestSignal ? [requestSignal] : [])])
       draining = true
       const startedAt = Date.now()
       let stage = 'dispatches'
@@ -852,27 +864,51 @@ export function createWorkerRuntimeDrain(ports: {
           waitingOn: ports.waitingOn?.() ?? [] }, 'Worker runtime update is still draining')
       }, 30_000)
       diagnostics.unref()
+      const deadline = setTimeout(() => controller.abort(new DomainError('WORKER_UPDATE_DRAIN_DEADLINE_EXCEEDED',
+        `Worker update drain exceeded ${WORKER_UPDATE_DRAIN_TIMEOUT_MS} ms while waiting for ${stage}.`, 503)),
+      WORKER_UPDATE_DRAIN_TIMEOUT_MS)
+      let abort!: () => void
+      const aborted = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+      })
+      const runStage = async <T>(operation: () => Promise<T>): Promise<T> => {
+        signal.throwIfAborted()
+        const result = await Promise.race([operation(), aborted])
+        signal.throwIfAborted()
+        return result
+      }
       try {
         // In-flight dispatches finish admission before the Job host stops accepting work.
-        await Promise.allSettled(ports.active())
+        await runStage(() => Promise.allSettled(ports.active()))
         stage = 'jobs'
-        await ports.drainJobs()
+        await runStage(() => ports.drainJobs(signal))
         stage = 'qualifications'
-        await ports.drainQualifications()
+        await runStage(() => ports.drainQualifications())
         stage = 'maintenance'
-        await ports.drainMaintenance()
+        await runStage(() => ports.drainMaintenance())
         stage = 'quiescence'
         while (true) {
-          const idle = await ports.quiescent()
+          const idle = await runStage(() => ports.quiescent(signal))
           // Keep cleanup available until it has closed native processes and transfers.
           if (idle) cleanupPaused = true
           if (idle && ports.active().length === 0) break
-          await wait(100, undefined, { signal: ports.signal })
+          await runStage(() => wait(100, undefined, { signal }))
         }
-        ports.signal.throwIfAborted()
-      } finally { clearInterval(diagnostics) }
+        signal.throwIfAborted()
+      } catch (error) {
+        draining = false
+        cleanupPaused = false
+        throw error
+      } finally {
+        clearInterval(diagnostics)
+        clearTimeout(deadline)
+        signal.removeEventListener('abort', abort)
+        if (attempt === controller) attempt = undefined
+      }
     },
     resume() {
+      attempt?.abort(new DomainError('WORKER_UPDATE_DRAIN_ABANDONED', 'Worker update drain was abandoned.', 409))
       draining = false
       cleanupPaused = false
     },
