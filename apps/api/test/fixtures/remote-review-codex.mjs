@@ -195,8 +195,15 @@ async function started(turn, prompt) {
     const block = join(root, 'block-workflow-turns')
     const position = readFileSync(join(root, 'calls.jsonl'), 'utf8').split('\n')
       .filter(line => line && JSON.parse(line).workflowTurn).length
-    while (existsSync(block)) {
-      const contents = readFileSync(block, 'utf8')
+    for (;;) {
+      let contents
+      try {
+        contents = readFileSync(block, 'utf8')
+      } catch (error) {
+        // Unlinking this file releases turns, including between a check and an open.
+        if (error.code === 'ENOENT') break
+        throw error
+      }
       if (contents && position <= JSON.parse(contents).allowFirst) break
       await new Promise(resolve => setTimeout(resolve, 20))
     }
