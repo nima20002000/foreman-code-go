@@ -45,8 +45,6 @@
     "zod": "4.6.3"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.9",
-    "@electric-sql/pglite-socket": "0.2.12",
     "@eslint/js": "10.0.1",
     "@types/node": "26.5.1",
     "@types/pg": "8.20.0",

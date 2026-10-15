@@ -1,44 +1,6 @@
 # Disposable test resources
 
-## Lightweight database tests for coding agents
-
-Sequential database tests can use `apps/api/test/helpers/lightweightDatabase.ts`
-and the `*.light.test.ts` suffix. One PGlite engine serves the selected files over
-a private Unix socket through the real `pg` client. Both the socket server and
-each fixture pool allow one connection. Every fixture owns an isolated schema;
-the helper applies the production migration registry without rewriting SQL.
-`beforeMigration` supports upgrade tests using the same registered SQL.
-The engine, socket and database files are removed when the command finishes.
-WebAssembly compilation is limited to one task in the test coordinator.
-
-Agents may run only explicitly named `*.light.test.ts` files, one worker and one
-database command per machine at a time. Use this shared lock across all checkouts:
-
-```sh
-mkdir -p "$HOME/.cache/foreman-tmp"
-export TMPDIR="$HOME/.cache/foreman-tmp"
-flock "$HOME/.cache/foreman-tmp/foreman-light-db.lock" \
-  corepack pnpm --dir apps/api exec vitest run --config vitest.light.config.mjs \
-  test/build-computer-priority-migration.light.test.ts \
-  test/operator-terminal-history-migration.light.test.ts
-```
-
-Agents must not start PostgreSQL, containers, `db:up`, full suites, or integration
-runners. PGlite still consumes memory and CPU; the machine-wide lock also applies
-to different agents running different files. The ordinary API Vitest configuration
-includes these cases in a separate project, preserving their normal unit-suite
-coverage without provisioning PostgreSQL for a focused light-file selection.
-
-Good candidates are sequential SQL/repository tests, constraints and triggers,
-transaction commit/rollback, migrations and command replay on one session.
-Keep connection races, lock contention, deadlocks, isolation between sessions,
-LISTEN/NOTIFY delivery, backend termination, recovery/restart processes, native
-harnesses and PostgreSQL-version/extension qualification on real PostgreSQL.
-A serialized pool cannot establish concurrent-connection behavior.
-
-## PostgreSQL tests
-
-Run `corepack pnpm db:up` before tests that need a PostgreSQL server. It starts only
+Run `corepack pnpm db:up` before database-backed tests. It starts only
 `compose.test.yaml`, with the fixed Compose project `graphql-tests`, volume
 `graphql-tests_graphql-test-data`, loopback port 55439, and test-only credentials.
 The application Compose file and its database are independent. `db:down` checks

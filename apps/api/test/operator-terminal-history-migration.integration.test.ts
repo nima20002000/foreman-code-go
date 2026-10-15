@@ -5,12 +5,12 @@ import { operatorTerminalHistoryMigration } from '../src/infrastructure/operator
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
-import { lightweightDatabase } from './helpers/lightweightDatabase.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
-let db: Awaited<ReturnType<typeof lightweightDatabase>>
+let db: Awaited<ReturnType<typeof currentDatabase>>
 beforeAll(async () => {
-  db = await lightweightDatabase({ beforeMigration: operatorTerminalHistoryMigration.version })
-}, 30_000)
+  db = await currentDatabase({ beforeMigration: operatorTerminalHistoryMigration.version })
+}, 60_000)
 afterAll(async () => { await db?.close() })
 
 it('upgrades cached terminal history without changing accepted input or permitting early settlement', async () => {

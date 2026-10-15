@@ -92,12 +92,6 @@ importers:
         specifier: 4.6.3
         version: 4.6.3
     devDependencies:
-      '@electric-sql/pglite':
-        specifier: 0.5.9
-        version: 0.5.9
-      '@electric-sql/pglite-socket':
-        specifier: 0.2.12
-        version: 0.2.12(@electric-sql/pglite@0.5.9)
       '@eslint/js':
         specifier: 10.0.1
         version: 10.0.1(eslint@10.10.0(jiti@2.7.0))
@@ -484,22 +478,6 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
-
-  '@electric-sql/pglite-socket@0.2.12':
-    resolution: {integrity: sha512-+xRn8M6rrGVbk5fa4jt5OSBJrpf8zuSQox3tofhiOklalp+RoQq2vLP7e/KVc2qFumTm3c+wlXn7pKq7A05kpA==}
-    hasBin: true
-    peerDependencies:
-      '@electric-sql/pglite': 0.5.9
-      '@electric-sql/pglite-age': 0.0.10
-      '@electric-sql/pglite-pg_hashids': 0.0.10
-      '@electric-sql/pglite-pg_ivm': 0.0.10
-      '@electric-sql/pglite-pg_textsearch': 0.0.11
-      '@electric-sql/pglite-pg_uuidv7': 0.0.10
-      '@electric-sql/pglite-pgtap': 0.0.10
-      '@electric-sql/pglite-pgvector': 0.0.10
-
-  '@electric-sql/pglite@0.5.9':
-    resolution: {integrity: sha512-GoQTRMZ/o4J3sMW4mLDtDFGNOm1xy5oH+iHDALWll3uERY6OF4BSnL1t7FZH2Mlw+RPceDBlFJgSaecO73c4EA==}
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -3935,12 +3913,6 @@ snapshots:
       css-tree: 3.2.1
 
   '@csstools/css-tokenizer@4.0.0': {}
-
-  '@electric-sql/pglite-socket@0.2.12(@electric-sql/pglite@0.5.9)':
-    dependencies:
-      '@electric-sql/pglite': 0.5.9
-
-  '@electric-sql/pglite@0.5.9': {}
 
   '@emnapi/runtime@1.11.3':
     dependencies:

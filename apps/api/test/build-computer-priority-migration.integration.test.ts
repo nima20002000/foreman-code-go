@@ -1,15 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { buildComputerPriorityMigration } from '../src/infrastructure/buildComputerPriorityMigration.js'
-import { lightweightDatabase } from './helpers/lightweightDatabase.js'
-import { migrations } from '../src/infrastructure/migrations.js'
-import { withTransaction } from '../src/infrastructure/transaction.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 const mainA = '11111111-1111-4111-8111-111111111111'
 const mainB = '22222222-2222-4222-8222-222222222222'
 
-describe('build computer priority migration', () => {
-  let database: Awaited<ReturnType<typeof lightweightDatabase>>
-  beforeAll(async () => { database = await lightweightDatabase() })
+describe.skipIf(!postgresEnabled)('build computer priority migration', () => {
+  let database: Awaited<ReturnType<typeof agent3Database>>
+  beforeAll(async () => { database = await agent3Database() })
   afterAll(async () => { await database?.close() })
 
   it('folds Primary/Backup into one priority order per Main and drops the role', async () => {
@@ -41,32 +39,4 @@ describe('build computer priority migration', () => {
       "select column_name from information_schema.columns where table_name='build_computer_preferences' and table_schema=current_schema()")).rows
     expect(columns.map(column => column.column_name)).not.toContain('build_role')
   })
-})
-
-
-it('applies every registered migration and preserves pg result types and transaction rollback', async () => {
-  const database = await lightweightDatabase()
-  try {
-    const applied = await database.pool.query<{ version: number }>(
-      'select version from application_migrations order by version',
-    )
-    expect(applied.rows.map(row => row.version))
-      .toEqual(migrations.map(migration => migration.version).sort((a, b) => a - b))
-    const value = { nested: ['kept', 1], enabled: true }
-    const result = await database.pool.query(
-      'select $1::jsonb as record, $2::text[] as names, $3::bigint as count, $4::bytea as bytes',
-      [value, ['a', 'b'], '9007199254740993', Buffer.from([0, 255])],
-    )
-    expect(result.rows).toEqual([{
-      record: value, names: ['a', 'b'], count: '9007199254740993', bytes: Buffer.from([0, 255]),
-    }])
-    await expect(withTransaction(database.pool, async client => {
-      await client.query('insert into workspaces(id,record) values($1,$2::jsonb)', ['rolled-back', {}])
-      throw new Error('cancel test write')
-    })).rejects.toThrow('cancel test write')
-    expect((await database.pool.query('select id from workspaces')).rows).toEqual([])
-    expect(database.pool.options.max).toBe(1)
-  } finally {
-    await database.close()
-  }
 })
