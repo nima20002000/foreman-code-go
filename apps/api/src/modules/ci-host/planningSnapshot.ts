@@ -1,5 +1,6 @@
 import type { CiHostReply, CiHostRequest, CiHostStatus } from '@foreman-code/contracts'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
 const FRESHNESS_MS = 5000
@@ -53,11 +54,20 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
     let snapshot = this.statuses.get(key)
     if (snapshot?.status && Date.now() - snapshot.at < FRESHNESS_MS) return snapshot.status
     if (snapshot?.pending) return snapshot.pending
+    const previous = snapshot
     snapshot = { at: 0 }
     this.statuses.set(key, snapshot)
     const pending = this.endpoint.request(computer, request).then(reply => {
       if (this.statuses.get(key) === snapshot) this.observeStatus(computer, reply)
       return reply
+    }).catch(error => {
+      if (this.statuses.get(key) === snapshot && previous?.status
+        && error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield') {
+        // Yielding preserves the answer, but its age still requires a refresh on the next read.
+        this.statuses.set(key, { at: previous.at, status: previous.status })
+        return previous.status
+      }
+      throw error
     }).finally(() => {
       // A failed or invalid status cannot extend an older readiness snapshot.
       if (this.statuses.get(key) === snapshot) this.statuses.delete(key)
