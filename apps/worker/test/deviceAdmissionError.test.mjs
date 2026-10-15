@@ -14,6 +14,6 @@ test('Worker imports admission errors with strip-only TypeScript and retains the
 
 for (const code of ['COMPUTER_ACCOUNT_UNAVAILABLE', 'GITHUB_STATUS_UNKNOWN']) {
   test(`preserves the retryable ${code} account error across the Worker channel`, () => {
-    assert.deepEqual(deviceApplicationFailure({ code }), { code, retryable: true });
+    assert.deepEqual(deviceApplicationFailure({ code }), { code, class: 'transient', retryable: true });
   });
 }

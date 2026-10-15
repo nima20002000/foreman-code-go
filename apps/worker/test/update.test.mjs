@@ -47,6 +47,7 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2',
   rootPersistent: true, homePersistent: true, storagePersistent: true };
 const expected = { protocolVersion: 1, identityFormat: 1 };
+const releaseTarget = { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node };
 
 async function artifact(base, version) {
   const directory = join(base, `artifact-${version}`);
@@ -358,7 +359,7 @@ test('authenticated-ready check detects Main version mismatch, installs and reco
   const restarted = await new WorkerUpdater({ ...f.options, version: '1.1.0',
     releaseDirectory: (await readInstalledRelease({ root: f.root, facts, expected })).directory,
     manifestSha256: f.incoming.release.manifestSha256 }).initialize();
-  assert.deepEqual(await restarted.status(), { currentVersion: '1.1.0', targetVersion: '1.1.0',
+  assert.deepEqual(await restarted.status(), { target: releaseTarget, currentVersion: '1.1.0', targetVersion: '1.1.0',
     contentSha256: workerArtifactContentSha256(f.incoming.release.manifest),
     manifestSha256: f.incoming.release.manifestSha256,
     state: 'current', lastError: null });
@@ -375,12 +376,12 @@ test('concurrent status polling preserves saved update transitions and metadata'
   const draining = updater.save({ state: 'draining' });
   const drainingStatus = updater.status();
   await Promise.all([pending, draining]);
-  assert.deepEqual(await pendingStatus, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+  assert.deepEqual(await pendingStatus, { target: releaseTarget, currentVersion: '1.0.0', targetVersion: '1.1.0',
     contentSha256: workerArtifactContentSha256(f.previous.release.manifest),
     manifestSha256: f.previous.release.manifestSha256,
     state: 'pending', lastError: null });
   const status = await drainingStatus;
-  assert.deepEqual(status, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+  assert.deepEqual(status, { target: releaseTarget, currentVersion: '1.0.0', targetVersion: '1.1.0',
     contentSha256: workerArtifactContentSha256(f.previous.release.manifest),
     manifestSha256: f.previous.release.manifestSha256,
     state: 'draining', lastError: null });
@@ -478,7 +479,7 @@ test('failed new startup restores the previous pointer and persists rollback acr
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   const restarted = await new WorkerUpdater(f.options).initialize();
   const { lastError, ...status } = await restarted.status();
-  assert.deepEqual(status, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+  assert.deepEqual(status, { target: releaseTarget, currentVersion: '1.0.0', targetVersion: '1.1.0',
     contentSha256: workerArtifactContentSha256(f.previous.release.manifest),
     manifestSha256: f.previous.release.manifestSha256, state: 'rolled-back' });
   assert.match(lastError, /worker_update_startup_timeout/);
@@ -542,12 +543,11 @@ test('runtime drain fences workflow and Job admission while allowing status read
     drainMaintenance: async () => { drained.push('maintenance'); },
     quiescent: async () => true });
   const completion = drain.run();
-  for (const method of ['prepare', 'job-dispatch']) {
+  for (const method of ['prepare', 'job-dispatch', 'start-turn']) {
     assert.throws(() => drain.assertAdmission('execution-v1', { method }),
       { code: 'WORKER_RUNTIME_DRAINING' });
   }
   assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'status' }));
-  assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'start-turn' }));
   await completion;
   assert.deepEqual(drained, ['jobs', 'qualifications', 'maintenance']);
   assert.throws(() => drain.assertAdmission('execution-v1', { method: 'prepare' }),
@@ -647,7 +647,7 @@ test('manual retry clears an earlier failure when Main now serves the already ru
   await assert.rejects(updater.start(), { code: 'worker_update_supervisor_unavailable' });
   f.incoming.release = f.previous.release;
   assert.equal(await updater.start({ retry: true }), 'Worker 1.0.0 is current.');
-  assert.deepEqual(await updater.status(), { currentVersion: '1.0.0', targetVersion: '1.0.0',
+  assert.deepEqual(await updater.status(), { target: releaseTarget, currentVersion: '1.0.0', targetVersion: '1.0.0',
     contentSha256: workerArtifactContentSha256(f.previous.release.manifest),
     manifestSha256: f.previous.release.manifestSha256,
     state: 'current', lastError: null });
@@ -878,6 +878,7 @@ test('terminal maintenance outcomes identify the release running after success o
       await updater.start();
       const installed = await readInstalledRelease({ root: f.root, facts, expected });
       assert.deepEqual(await updater.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
+        target: releaseTarget,
         currentVersion: installed.manifest.version,
         manifestSha256: installed.manifestSha256,
         contentSha256: workerArtifactContentSha256(installed.manifest),
@@ -910,7 +911,7 @@ test('consecutive releases retain the first terminal maintenance outcome without
   await second.start();
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.currentVersion, '1.2.0');
   assert.deepEqual(await second.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
-    currentVersion: '1.1.0', manifestSha256: release.manifestSha256,
+    target: releaseTarget, currentVersion: '1.1.0', manifestSha256: release.manifestSha256,
     contentSha256: workerArtifactContentSha256(release.manifest),
     targetVersion: '1.1.0', state: 'current', lastError: null,
   });
