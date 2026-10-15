@@ -127,7 +127,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
       SELECTED_FILES: selection ? '' : 's:1', DEFAULT_BRANCH: 'release/stable', CI_STATE: join(directory, 'state'),
       RUNNER_SELECTION: JSON.stringify(selection),
       BASE_COMMIT: selection?.baseCommit ?? '',
-      CI_HOST_RUNNER: hostRunner ? '1' : '0',
+      CI_HOST_RUNNER: hostRunner ? '1' : '0', FOREMAN_CODE_CI_CLIS_PREFIX: '',
       FOREMAN_CODE_CI_CONTRACTS_CACHE: selection?.contractsCache ? '.logs/contracts-cache' : '',
       CONTRACTS_READY: String(selection?.contractsReady ?? false),
       CI_USER_SYSTEMD: '0', CI_EXPECTED_DURATION_MS: '', CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
