@@ -46,8 +46,11 @@ export class HarnessInstanceSettingsRepository {
     [instanceId, instanceRevision, options ? JSON.stringify(options.target) : null])
     return result.rows[0] ? HostHarnessOverrideSchema.parse(result.rows[0].record) : null
   }
-  async lockRevision(client: pg.ClientBase, instanceId: string): Promise<void> {
-    await client.query('select pg_advisory_xact_lock(hashtext($1))', [`harness-instance:${instanceId}`])
+  async lockRevision(client: pg.ClientBase, instanceId: string, options?: { mode: 'shared' }): Promise<void> {
+    const statement = options?.mode === 'shared'
+      ? 'select pg_advisory_xact_lock_shared(hashtext($1))'
+      : 'select pg_advisory_xact_lock(hashtext($1))'
+    await client.query(statement, [`harness-instance:${instanceId}`])
   }
   async append(client: pg.PoolClient, principalId: string, expectedRevision: number | undefined, value: HostHarnessOverride): Promise<HostHarnessOverride> {
     await this.lockRevision(client, value.instanceId)

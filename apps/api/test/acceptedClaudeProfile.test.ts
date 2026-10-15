@@ -3,7 +3,7 @@ import type pg from 'pg'
 import type { HostHarnessOverride, HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import type { RegistryHarnessSelection } from '../src/modules/harnesses/installationRegistry.js'
 import { AcceptedHarnessProfileAdmission, AcceptedClaudeProfileAdmission, type AcceptedProfileAuthority } from '../src/modules/harnesses/instanceSettings/acceptedProfile.js'
-import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
+import { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../src/modules/harnesses/instanceRegistry.js'
 import { claudeDiscoveryDeclaration } from '../src/modules/harnesses/claudeDiscovery.js'
@@ -31,6 +31,64 @@ function fixture() {
   const admission = new AcceptedClaudeProfileAdmission(settings as unknown as HarnessInstanceSettingsRepository, proofs as unknown as HostHarnessProfileEvidenceRepository, authority)
   return { value, proof, client, settings, proofs, authority, registry, admission, selector: { instanceId: value.instanceId, instanceRevision: '1', target } }
 }
+
+it('allows concurrent profile admission while another reader waits for its Run owner', async () => {
+  const f = fixture()
+  const reading = Promise.withResolvers<void>()
+  const resume = Promise.withResolvers<void>()
+  let writer = false
+  let readers = 0
+  const waiters = new Set<() => void>()
+  const pool = { connect: async () => {
+    let releaseLock: (() => void) | undefined
+    return { release() {}, query: async (text: string) => {
+      if (text.includes('pg_advisory_xact_lock')) {
+        const shared = text.includes('_shared')
+        while (writer || !shared && readers > 0) {
+          await new Promise<void>(resolve => { waiters.add(resolve) })
+        }
+        if (shared) readers++
+        else writer = true
+        releaseLock = () => {
+          if (shared) readers--
+          else writer = false
+          for (const resolve of waiters) resolve()
+          waiters.clear()
+        }
+      }
+      if (text === 'commit' || text === 'rollback') releaseLock?.()
+      return { rows: [] }
+    } }
+  } } as unknown as pg.Pool
+  const settings = new HarnessInstanceSettingsRepository(pool)
+  vi.spyOn(settings, 'latest').mockImplementation(f.settings.latest)
+  const current = vi.mocked(f.authority.current).getMockImplementation()!
+  vi.mocked(f.authority.current).mockImplementation(async (owner, value, client) => {
+    if (owner === 'first-owner') {
+      reading.resolve()
+      await resume.promise
+    }
+    return current(owner, value, client)
+  })
+  const admission = new AcceptedClaudeProfileAdmission(settings,
+    f.proofs as unknown as HostHarnessProfileEvidenceRepository, f.authority)
+  const first = admission.admit('first-owner', f.selector)
+  let second: ReturnType<typeof admission.admit> | undefined
+  try {
+    await reading.promise
+    let admitted = false
+    second = admission.admit('second-owner', f.selector).then(result => {
+      admitted = true
+      return result
+    })
+    await new Promise<void>(resolve => { setImmediate(resolve) })
+    expect(admitted).toBe(true)
+  } finally {
+    resume.resolve()
+    await Promise.all([first, second])
+  }
+})
+
 describe('exact accepted Claude profile admission', () => {
   it('reads existing same-client proof and freezes independent snapshots without inferring qualification from settings', async () => {
     const f = fixture(); const result = await f.admission.admit('actual-owner', f.selector)
