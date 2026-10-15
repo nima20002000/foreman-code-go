@@ -1,5 +1,5 @@
 import { beginRuntimeTiming, runtimeTimingChannel, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
-import { TransactionTiming, beginTransaction, commitTransaction } from '../../infrastructure/transaction.js'
+import { beginTransaction, commitTransaction, finishTransactionTiming } from '../../infrastructure/transaction.js'
 import { recoverGraphRollback } from './rollbackRecovery.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -137,7 +137,6 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   transaction<T>(work: (sql: GraphTransactionSql) => Promise<T>, readOnly = false): Promise<T> {
     const origin = new Error('transaction caller')
     return this.enqueue(async () => {
-      const timing = new TransactionTiming(origin)
       const state = {
         live: true, failed: false, committed: false, finalizing: false, readOnly, finalizers: [] as (() => Promise<void>)[],
       }
@@ -151,8 +150,8 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
             assertStatement(text)
             if (pending) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
           } catch (error) { state.failed = true; return Promise.reject(error) }
-          const operation = timing.track(timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
-            queryTimingFields(text)))
+          const operation = timeRuntimeOperation('db', 'sql.query', () => this.readQuery<R>(text, values),
+            queryTimingFields(text))
           pending = operation
           // A caught SQL error must still prevent commit, including after SAVEPOINT misuse.
           return operation.then((result) => { pending = undefined; return result }, (error: unknown) => {
@@ -166,7 +165,8 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
       let committing = false
       try {
         await timeRuntimeOperation('db', 'sql.begin', () => beginTransaction(this.#client,
-          readOnly ? { isolation: 'repeatable read', readOnly: true } : { isolation: 'read committed' }))
+          readOnly ? { isolation: 'repeatable read', readOnly: true, operation: 'graph.read' }
+            : { isolation: 'read committed', operation: 'graph.write' }, origin))
         const result = await work(sql)
         state.finalizing = true
         for (const finalize of state.finalizers) { assertGraphTransaction(sql); await finalize() }
@@ -201,7 +201,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         throw error
       } finally {
         state.live = false
-        timing.finish()
+        finishTransactionTiming(this.#client, 'failed')
       }
     }, 'transaction')
   }

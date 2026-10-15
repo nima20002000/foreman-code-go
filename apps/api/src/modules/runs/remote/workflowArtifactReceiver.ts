@@ -25,7 +25,7 @@ import { DomainError } from '../../errors.js'
 const OPERATION = 'remote.artifact-transfer.admit'
 const denied = (): never => { throw new DomainError('WORKFLOW_ARTIFACT_DENIED', 'The original workflow worker lease or artifact binding is unavailable.', 403) }
 type Endpoint = Pick<DeviceEndpoint, 'currentBinding'>
-type Authority = Pick<PostgresArtifactPublicationAuthority, 'resolveWorkflowContext' | 'authorize'>
+type Authority = Pick<PostgresArtifactPublicationAuthority, 'resolveAuthorizedWorkflowContext'>
 type Fence = Pick<PostgresAcceptedArtifactAttemptFence, 'assertCurrent'>
 interface Caller {
   worker: ManagementPrincipal
@@ -91,8 +91,8 @@ export class WorkflowArtifactEndpointAuthorization implements DistributedArtifac
     this.assertConnection(caller.binding)
   }
   async publication(sql: pg.PoolClient, caller: Caller): Promise<AcceptedArtifactPublication> {
-    const accepted = await this.publications.resolveWorkflowContext(caller.attempt, transferContextForBinding(caller.binding), sql)
-    const authorized = await this.publications.authorize(accepted, sql)
+    const { accepted, authorized } = await this.publications.resolveAuthorizedWorkflowContext(
+      caller.attempt, transferContextForBinding(caller.binding), sql)
     if (!isDeepStrictEqual(accepted.attempt, caller.attempt) || authorized.principal.id !== caller.authority.principalId
       || !isDeepStrictEqual(authorized.context, accepted.context)) return denied()
     this.assertConnection(caller.binding)

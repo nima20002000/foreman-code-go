@@ -11,8 +11,10 @@ import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError, databaseReadFailure } from '../errors.js'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
-import { readRepeatExecutionLocked } from './repeatPostgres.js'
+import { readRepeatExecutionsLocked } from './repeatExecutionRead.js'
 import { readExecutionQueueReason } from './executionQueue.js'
+
+const executionReadBatchSize = 16
 
 /** Readback uses one unlocked snapshot; mutation callers retain admission locks. */
 export async function withCurrentRunRead<T>(pool: pg.Pool, principal: ManagementPrincipal,
@@ -44,21 +46,21 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
       [runId, REPEAT_GRAPH_LIMITS.executions + 1])).rows
     if (rows.length > REPEAT_GRAPH_LIMITS.executions) throw new DomainError('RUN_DETAIL_TOO_LARGE', 'Use the bounded canonical current graph for this Run.', 409)
     // Reject an oversized response before validating execution inputs and receipts.
-    // Read one record at a time so this check retains at most one execution body.
+    // Bound the temporary records retained while checking response size.
     let detailBytes = graphJsonBytes({ run, executions: [] })
-    for (const [index, { id }] of rows.entries()) {
-      const recorded = (await sql.query<{ record: unknown }>(
-        'select record from harness_executions where id=$1 and run_id=$2', [id, runId])).rows[0]!
-      detailBytes += graphJsonBytes(HarnessExecutionSchema.parse(recorded.record)) + (index > 0 ? 1 : 0)
-      if (detailBytes > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError(
-        'RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
+    for (let offset = 0; offset < rows.length; offset += executionReadBatchSize) {
+      const ids = rows.slice(offset, offset + executionReadBatchSize).map(row => row.id)
+      const recorded = await sql.query<{ record: unknown }>(
+        'select record from harness_executions where run_id=$1 and id=any($2::text[])', [runId, ids])
+      for (const [index, row] of recorded.rows.entries()) {
+        detailBytes += graphJsonBytes(HarnessExecutionSchema.parse(row.record)) + (offset + index > 0 ? 1 : 0)
+        if (detailBytes > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError(
+          'RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
+      }
     }
     const executions = []
-    for (const { id } of rows) {
-      // Reuse A's exact readback, including physical node/Agent/configuration,
-      // occurrence/attempt/input identity and its existing canonical source
-      // receipt. A loose JSON execution parser cannot qualify current readback.
-      const execution = (await readRepeatExecutionLocked(sql, snapshot, id)).execution
+    const stored = await readRepeatExecutionsLocked(sql, snapshot, rows.map(row => row.id))
+    for (const { execution } of stored) {
       const queueReason = readExecutionQueueReason(execution)
       executions.push(queueReason ? { ...execution, queueReason } : execution)
     }
