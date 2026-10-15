@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CiGetOutputSchema, CiRunOutputSchema, type CiHostReply, type CiHostRequest, type CiHostRun } from '@foreman-code/contracts'
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HostCiService, type CiCommits, type HostCiComputer } from '../src/modules/ci-host/service.js'
+import { claimCiSlot } from '../src/modules/ci-host/cloudSlots.js'
+import { ciReadWhen } from './helpers/ciReadWhen.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 
@@ -74,7 +76,7 @@ async function operatorApp(ci: HostCiService, commands: PostgresCommandCoordinat
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Verification workspace', repository: {
       provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
-    } })])
+    }, ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const access = new PostgresAccessService(database.pool)
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
@@ -140,49 +142,46 @@ it('keeps reserved cloud slots out of a gate plan and starts a fix verification 
 })
 
 it('never dispatches a ticket to a cloud slot another Main dispatcher assigned meanwhile', async () => {
-  const [slot] = cloudSlots(1)
-  const builder = builders[0]!
-  let paused!: () => void
-  const reachedStatus = new Promise<void>(resolve => { paused = resolve })
-  let release!: () => void
-  const held = new Promise<void>(resolve => { release = resolve })
-  // The second dispatcher reads free slots, then waits on a build computer while the first assigns the cloud slot.
-  const fleet = executor({ status: async computer => {
-    paused()
-    await held
-    return { operation: 'status', ready: false, reasons: [`${computer.label} is updating`],
-      cpuCount: 16, memoryBytes: 16 * 2 ** 30, runs: [] }
-  } })
+  const slot = cloudSlots(1)[0]!
+  const fleet = executor()
   const commands = new PostgresCommandCoordinator(database.pool)
-  const primary = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), commits,
-    { computers: async () => [slot!], request: fleet.request })
+  const endpoint = { computers: async () => [slot], request: fleet.request }
+  const primary = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), commits, endpoint)
+  const secondary = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), commits, endpoint)
+  // Hold automatic dispatch while both callers capture the same free-slot state.
+  const start = vi.spyOn(primary, 'start').mockImplementation(() => {})
+  const dispatch = vi.spyOn(primary, 'dispatch').mockResolvedValue(undefined)
   const f = await operatorApp(primary, commands)
-  const secondary = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), commits,
-    { computers: async () => [builder, slot!], request: fleet.request })
+  const read = async (ticketId: string) => CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))
   try {
-    const earlier = CiRunOutputSchema.parse(await f.value('ci_run', verification('c'.repeat(40))))
-    await primary.dispatch()
     const waiting = CiRunOutputSchema.parse(await f.value('ci_run', verification('d'.repeat(40), 'normal')))
-    await primary.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: waiting.ticketId })).run.state).toBe('queued')
-    fleet.finish(earlier.ticketId)
-    const stale = secondary.dispatch()
-    await reachedStatus
+    const stale = (await read(waiting.ticketId)).run
     const urgent = CiRunOutputSchema.parse(await f.value('ci_run', verification('e'.repeat(40))))
-    await primary.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: urgent.ticketId })).run)
-      .toMatchObject({ state: 'running', computer: { hostRef: slot!.hostRef } })
-    release()
-    await stale
-    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: waiting.ticketId }))
-    expect(read.run).toMatchObject({ state: 'queued', computer: null, startedAt: null,
-      message: expect.stringContaining('Cloud 0: slot is busy with another CI ticket') })
-    expect(fleet.started.filter(start => start.runId === waiting.ticketId)).toEqual([])
+    const latest = (await read(urgent.ticketId)).run
+    const request = (run: typeof latest): Extract<CiHostRequest, { operation: 'start' }> => ({
+      operation: 'start', runId: run.id, workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
+      repository: run.repository, commit: run.commit, suite: run.suite, scope: run.scope, files: run.files,
+    })
+    const claimed = await claimCiSlot(database.pool, latest, slot, request(latest))
+    expect(claimed).toMatchObject({ id: urgent.ticketId, state: 'starting', computer: { hostRef: slot.hostRef } })
+    // A claim made from the earlier queue snapshot must recheck the persisted slot assignment.
+    expect(await claimCiSlot(database.pool, stale, slot, request(stale))).toBe('busy')
+    dispatch.mockRestore()
+    start.mockRestore()
+    await Promise.all([primary.dispatch(), secondary.dispatch()])
+    const running = await ciReadWhen(database.pool, () => read(urgent.ticketId), output => output.run.state === 'running')
+    expect(running.run).toMatchObject({ state: 'running', computer: { hostRef: slot.hostRef } })
+    const queued = await ciReadWhen(database.pool, () => read(waiting.ticketId), output =>
+      output.run.message?.includes('all CI slots in use') === true)
+    expect(queued.run).toMatchObject({ state: 'queued', computer: null, startedAt: null,
+      message: expect.stringContaining('Cloud 0: all CI slots in use (1/1)') })
+    expect(fleet.started).toEqual([{ key: slot.key, runId: urgent.ticketId }])
     const active = (await database.pool.query<{ id: string }>(
-      `select id from ci_runs where host_key=$1 and state in ('starting','running')`, [slot!.key])).rows
+      `select id from ci_runs where host_key=$1 and state in ('starting','running')`, [slot.key])).rows
     expect(active.map(row => row.id)).toEqual([urgent.ticketId])
   } finally {
-    release()
+    dispatch.mockRestore()
+    start.mockRestore()
     await secondary.close()
     await f.close()
   }

@@ -99,13 +99,13 @@ it.each([
       commit: 'a'.repeat(40), commandId: 'after-nul-log', noSupersede: true,
     }))
     expect(second.partitions).toBeUndefined()
-    await f.ci.close()
+    await f.ci.dispatch()
     expect((await read(second.ticketId)).run).toMatchObject({
       state: 'queued', commit: 'a'.repeat(40), scope: 'affected', files: ['apps/api/src/example.ts'],
     })
     f.finish(first.ticketId, 0, output.text, undefined, output.message)
     await f.ci.dispatch()
-    const finished = await read(first.ticketId)
+    const finished = await f.waitFor(f.operator, first.ticketId, output => output.run.state === 'passed')
     expect(finished).toMatchObject({ run: { state: 'passed', message: output.cleanMessage }, logTail: output.cleanText })
     const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', { ticketId: first.ticketId }))
     expect(logs.text).toBe(output.cleanText)
@@ -113,7 +113,8 @@ it.each([
     const stored = (await f.pool.query<{ record: unknown; log_tail: string }>(
       'select record,log_tail from ci_runs where id=$1', [first.ticketId])).rows[0]!
     expect(stored).toEqual({ record: finished.run, log_tail: finished.logTail })
-    expect((await read(second.ticketId)).run.state).toBe('running')
+    expect((await f.waitFor(f.operator, second.ticketId, output => output.run.state === 'running')).run.state)
+      .toBe('running')
     const denied = await f.connect(['workflows:read'])
     for (const name of ['ci_get', 'ci_logs_read']) {
       expect((await denied.callTool({ name,
@@ -148,6 +149,7 @@ it('lists persisted active tickets on their assigned computers even when host st
     }
     await f.ci.dispatch()
     expect(f.started).toHaveLength(4)
+    for (const start of f.started) expect(start.request).toMatchObject({ ciMirror: 'octo/site-ci' })
     const read = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
     for (const computer of f.computers) {
       const assigned = f.started.filter(start => start.computer === computer.label)

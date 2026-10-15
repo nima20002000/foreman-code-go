@@ -1,6 +1,6 @@
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
@@ -19,20 +19,26 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
   const entered = deferred()
   const release = deferred()
   let timeout: NodeJS.Timeout | undefined
+  let readPending = false
+  let schedule: ReturnType<typeof vi.spyOn> | undefined
   try {
-    await f.value(f.operator, 'ci_run', { suite: 'install', commit: 'a'.repeat(40) })
-    await f.ci.close()
+    const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commit: 'a'.repeat(40) }))
+    await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       if (input.operation === 'read') {
+        readPending = true
         entered.resolve()
         await release.promise
+        readPending = false
       }
       return request(computer, input)
     }
-    let finished = false
-    const dispatch = f.ci.dispatch().then(() => { finished = true })
+    const dispatch = f.ci.dispatch()
     await entered.promise
+    await dispatch
+    // Keep the admitted gate queued while comparing its MCP and database snapshots.
+    schedule = vi.spyOn(f.ci, 'dispatch').mockResolvedValue(undefined)
     const input = { suite: 'integration', scope: 'full', gate: true, commit: 'b'.repeat(40),
       commandId: 'pending-dispatch-gate' }
     const denied = await f.connect(CI_GET_ACTIONS)
@@ -43,7 +49,7 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
         timeout = setTimeout(() => reject(new Error('Gate admission waited for the executor read')), 3000)
       }),
     ]))
-    expect(finished).toBe(false)
+    expect(readPending).toBe(true)
     const result = await f.operator.callTool({ name: 'ci_get', arguments: {
       workspaceId: f.workspaceId, ticketId: admitted.ticketId,
     } })
@@ -58,6 +64,7 @@ it('admits and reads back a gate through authenticated MCP while an executor rea
   } finally {
     clearTimeout(timeout)
     release.resolve()
+    schedule?.mockRestore()
     await f.close()
   }
 })
@@ -72,7 +79,7 @@ it('returns replacement tickets before executor cancellation and retains cleanup
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'a'.repeat(40), commandId: 'cleanup-old',
     }))
-    await f.ci.close()
+    await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       if (input.operation === 'cancel') {

@@ -40,6 +40,7 @@ it('persists completed unit result reports for read-only MCP callers', async () 
     }))
     await f.ci.dispatch()
     f.finish(started.ticketId, 0, 'passed\n', { 'apps/api/test/example.test.ts': 60_000 })
+    await f.waitFor(reader, started.ticketId, output => output.run.collection === 'complete')
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
       ticketId: started.ticketId, testStatus: ['passed'],
     }))
@@ -63,7 +64,9 @@ it('sizes persisted unit parts from committed timings and then from learned unit
     const input = { suite: 'unit', scope: 'full', commandId: 'timed-parts' }
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
-    let read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: first.ticketId }))
+    let read = await f.waitFor(reader, first.ticketId, output =>
+      output.partitions!.every(run => run.state === 'running' || run.state === 'queued')
+        && output.partitions!.some(run => run.state === 'running'))
     expect(read.partitions!.filter(run => run.part === 'unit-api')).toHaveLength(6)
     const measured: string[] = []
     for (let pass = 0; pass < first.partitions!.length && read.group!.state !== 'passed'; pass++) {
@@ -74,7 +77,10 @@ it('sizes persisted unit parts from committed timings and then from learned unit
         measured.push(...slice)
         f.finish(run.id, 0, 'passed\n', Object.fromEntries(slice.map(file => [file, 60_000])))
       }
-      read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: first.ticketId }))
+      read = await f.waitFor(reader, first.ticketId, output =>
+        active.every(previous => output.partitions!.find(run => run.id === previous.id)?.collection === 'complete')
+          && (output.partitions!.every(run => run.state === 'passed')
+            || output.partitions!.some(run => run.state === 'running')))
     }
     expect(read.group!.state).toBe('passed')
     expect(read.partitions!.every(run => run.collection === 'complete')).toBe(true)
@@ -191,7 +197,7 @@ it('persists an explicit base through authenticated Operator MCP, enforces grant
     expect(stored).toEqual(read.run)
     f.finish(started.ticketId, 0, 'completed')
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run)
+    expect((await f.waitFor(reader, started.ticketId, output => output.run.state === 'passed')).run)
       .toMatchObject({ baseCommit, state: 'passed', exitCode: 0 })
   } finally { await f.close() }
 })
@@ -253,9 +259,7 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
         expect(run.deriveFiles).toBe(scope === undefined ? true : undefined)
         await f.ci.dispatch()
         f.finish(started.ticketId, 0, 'integration passed\n')
-        const completed = CiGetOutputSchema.parse(await f.value(agent, 'ci_get', {
-          ticketId: started.ticketId,
-        }))
+        const completed = await f.waitFor(agent, started.ticketId, output => output.run.collection === 'complete')
         expect(completed.run).toMatchObject({ id: started.ticketId, scope: scope ?? 'affected', files: [],
           commit: 'a'.repeat(40), state: 'passed', exitCode: 0, collection: 'complete' })
         expect(completed.run.baseCommit).toBe(baseCommit)
@@ -286,7 +290,7 @@ it('retains an Agent ticket for an authorized Operator after the Agent runtime c
     }))
     await agent.ci.dispatch()
     agent.finish(started.ticketId, 0, 'install passed\n')
-    completed = CiGetOutputSchema.parse(await agent.value(agent.agent!, 'ci_get', { ticketId: started.ticketId }))
+    completed = await agent.waitFor(agent.agent!, started.ticketId, output => output.run.state === 'passed')
     expect(completed.run.state).toBe('passed')
   } finally { await agent.close() }
 
@@ -321,7 +325,8 @@ it('persists large selections outside repository-specific roots through authenti
     }
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
-    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const read = await f.waitFor(reader, started.ticketId, output =>
+      output.run.state === 'running' && output.run.observation?.status === 'available')
     expect(read.run).toMatchObject({ scope: 'affected', files: [...files].sort() })
     const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
     expect(stored.rows[0]!.record).toEqual(read.run)

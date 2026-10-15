@@ -11,6 +11,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/service.js'
 import { RunCiAuthority, CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
+import { ciReadWhen } from './helpers/ciReadWhen.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
@@ -79,12 +80,13 @@ it.each(['starting', 'running'] as const)('retains transient CircleCI ownership 
     expect(f.control.canceled).toEqual([])
     f.advance(75_000)
     await ci.dispatch()
-    const recovered = await reader.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: record.id } })
-    expect(recovered.isError).not.toBe(true)
+    const recovered = await ciReadWhen(pool, async () => CiGetOutputSchema.parse(decodeMcpToolResult(
+      await reader.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: record.id } }),
+    )), output => output.run.state === 'queued')
     const requeued = { state: 'queued', computer: null, startedAt: null, finishedAt: null, exitCode: null,
       unstartedProviders: ['circleci'],
       messageHistory: expect.arrayContaining([expect.stringContaining('queued for another computer')]) }
-    expect(CiGetOutputSchema.parse(decodeMcpToolResult(recovered)).run).toMatchObject(requeued)
+    expect(recovered.run).toMatchObject(requeued)
     expect((await pool.query('select host_key,record from ci_runs where id=$1', [record.id])).rows[0])
       .toMatchObject({ host_key: null, record: requeued })
     expect(f.control.reads).toBeGreaterThan(reads)
