@@ -862,8 +862,9 @@ export class HostCiService {
       }
     }
     const terminal = !['queued', 'starting', 'running'].includes(reply.run.state)
-    let collected = { run: reply.run, durations: reply.durations }
-    if (terminal) collected = await collectCiResults(this.pool, this.endpoint, computer, run, reply)
+    const collected = terminal ? await collectCiResults(this.pool, this.endpoint, computer, run, reply)
+      : { run: reply.run, durations: reply.durations, error: undefined }
+    let observationError = logError ?? collected.error
     if (!['queued', 'starting', 'running'].includes(run.state)) {
       collected.run = { ...collected.run, state: run.state, exitCode: run.exitCode, finishedAt: run.finishedAt }
     }
@@ -872,6 +873,7 @@ export class HostCiService {
         await this.learnDurations(run.repository, collected.durations)
       } catch (error) {
         collected.run = { ...collected.run, collection: 'pending' }
+        observationError ??= error
         log.warn({ err: error, runId: run.id }, 'CI durations remain pending')
       }
     }
@@ -880,18 +882,22 @@ export class HostCiService {
         await recordCiResultCache(this.pool, run, collected.run.state)
       } catch (error) {
         collected.run = { ...collected.run, collection: 'pending' }
+        observationError ??= error
         log.warn({ err: error, runId: run.id }, 'CI result cache recording remains pending')
       }
     }
-    await this.settle(run, computer, collected.run, { logTail, observation })
-    if (logError) throw logError
+    if (terminal && collected.run.collection === 'pending') {
+      observationError ??= new DomainError('CI_COLLECTION_PENDING', 'CI test reports are not available yet.', 503)
+    }
+    await this.settle(run, computer, collected.run, { logTail, observation: observationError ? undefined : observation })
+    if (observationError) throw observationError
   }
 
   private async recordObservationFailure(id: string, workspaceId: string, error: unknown) {
     const run = await this.read(id, workspaceId)
     const consecutiveFailures = (run.observation?.consecutiveFailures ?? 0) + 1
     const code = error && typeof error === 'object' && 'code' in error
-      && typeof error.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(error.code) ? ` (${error.code})` : ''
+      && typeof error.code === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(error.code) ? ` (${error.code})` : ''
     const lastError = `CI observation unavailable${code}; ownership retained.`
     const delayMs = Math.min(60_000, 1000 * 2 ** Math.min(consecutiveFailures - 1, 6))
     const observation: CiRunRecord['observation'] = { status: 'unavailable',
@@ -899,7 +905,7 @@ export class HostCiService {
       nextAttemptAt: new Date(Date.now() + delayMs).toISOString() }
     const next = CiRunRecordSchema.parse({ ...run, observation,
       message: lastError })
-    log.warn({ runId: id, observation }, 'CI observation unavailable; retry scheduled')
+    log.warn({ err: error, runId: id, observation }, 'CI observation unavailable; retry scheduled')
     await this.pool.query(`update ci_runs set record=$4::jsonb
       where id=$1 and state=$2 and workspace_id=$3 and record=$5::jsonb`,
     [run.id, run.state, workspaceId, serializeCiJson(next), JSON.stringify(run)])
