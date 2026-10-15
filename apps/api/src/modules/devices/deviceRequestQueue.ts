@@ -158,6 +158,8 @@ export function deviceRequestIsBulk(namespace: string, payload: unknown, hasByte
 
 /** Provider history and physical settlement can outlast short device calls. */
 export function deviceRequestIsObservation(namespace: string, payload: unknown): boolean {
+  if (namespace === 'computer-maintenance-v2' && payload && typeof payload === 'object'
+    && 'operation' in payload && payload.operation === 'status') return true
   if (namespace !== 'execution-v1' || !payload || typeof payload !== 'object') return false
   const fields = payload as Record<string, unknown>
   return typeof fields.method === 'string'

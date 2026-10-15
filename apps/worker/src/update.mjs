@@ -126,13 +126,15 @@ export class WorkerUpdater {
       const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(bytes.toString('utf8')));
       validateManifest(manifest, this.options.facts, expected);
       this.contentSha256 = workerArtifactContentSha256(manifest);
+      this.target = manifest.target;
+      this.statusValue.target = this.target;
       this.statusValue.contentSha256 = this.contentSha256;
     }
     const retained = await readUpdateRecord(this.options.stateDirectory);
     if (retained) {
       this.record = retained;
       this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version,
-        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
+        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256, target: this.target });
       if (['pending', 'draining', 'downloading', 'installing'].includes(this.statusValue.state)) {
         await this.save({ state: 'failed', lastError: 'worker_update_interrupted' });
       }
@@ -155,7 +157,7 @@ export class WorkerUpdater {
       if (retained) {
         this.record = retained;
         this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version,
-          manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
+          manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256, target: this.target });
         await this.recoverAdmission(retained);
       }
       return { ...this.statusValue };
@@ -186,7 +188,7 @@ export class WorkerUpdater {
     return this.withUpdateRecord(async () => {
       this.options.assertStateOwnership();
       this.statusValue = WorkerUpdateStatusSchema.parse({ ...this.statusValue, ...change,
-        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
+        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256, target: this.target });
       const retained = await readUpdateRecord(this.options.stateDirectory);
       this.record = { ...retained, ...details, format: 1, status: this.statusValue };
       if (this.statusValue.lastError === null) delete this.record.failureCode;

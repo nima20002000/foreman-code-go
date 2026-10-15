@@ -44,6 +44,7 @@ export interface DeviceApplicationFailure {
   code: string
   /** Availability hint; operation retries still require their owner and idempotency checks. */
   retryable: boolean
+  details?: import('./workerUpdate.js').WorkerBundleReadiness
 }
 
 /** Leaves room for the original receipt and physical readout in the same carrier. */

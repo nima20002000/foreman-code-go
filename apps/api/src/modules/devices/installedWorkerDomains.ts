@@ -1,3 +1,4 @@
+import { isWorkerAdmission, requiresWorkerBundle } from './workerAdmission.js'
 import { createInstalledWorkerManagedMcp } from '../harnesses/installedWorkerManagedMcp.js'
 import { createWorkerManagedMcpExtension } from '../harnesses/workerManagedMcp.js'
 import { createInstalledWorkerAccounts } from '../provider-accounts/installedWorkerAccounts.js'
@@ -108,6 +109,7 @@ interface InstalledWorkerInput {
   rsync?: InstalledRsyncProviders
   workerUpdate?: NonNullable<MaintenancePorts['workerUpdate']>
   ciStartupPending?: () => boolean | Promise<boolean>
+  assertBundleReady?(context: DeviceExtensionContext): Promise<void>
 }
 
 interface InstalledWorkerComposition {
@@ -813,11 +815,9 @@ async function configureWorkerDrain(composition: InstalledWorkerComposition) {
     } })
   composition.tracked = extensions.map(extension => ({ ...extension, ...(extension.handle ? { handle: (payload: unknown, context: DeviceExtensionContext) => {
     lifetime.signal.throwIfAborted()
-    try {
-      updateDrain.assertAdmission(extension.namespace, payload)
-    }
-    catch (error) { return Promise.reject(error) }
     const task = (async () => {
+      if (requiresWorkerBundle(extension.namespace, payload)) await input.assertBundleReady?.(context)
+      updateDrain.assertAdmission(extension.namespace, payload)
       if (extension.namespace === 'execution-v1' && payload && typeof payload === 'object'
         && 'method' in payload && ['inspect-mcp', 'conversation.inspect-mcp'].includes(String(payload.method))) {
         await composition.managedMcp.ensureReady({ signal: AbortSignal.any([context.signal, lifetime.signal,
@@ -892,33 +892,4 @@ function isWorkerSourceCleanup(namespace: string, payload: unknown): boolean {
     && 'operation' in payload && [
       'sources.reclaim-reservation', 'sources.reconcile-preparation', 'sources.release',
     ].includes(String(payload.operation))
-}
-
-function isWorkerAdmission(namespace: string, payload: unknown): boolean {
-  if (namespace === 'managed-mcp-v1' && payload && typeof payload === 'object' && 'request' in payload) {
-    const request = payload.request
-    if (request && typeof request === 'object' && 'operation' in request) return request.operation === 'apply'
-  }
-  if (namespace === 'harness-discovery-v1' || namespace === 'host-harness-check-v1') return true
-  if (!payload || typeof payload !== 'object') return false
-  if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && 'method' in payload) {
-    return payload.method === 'prepare'
-  }
-  if (namespace === 'execution-v1' && 'method' in payload) {
-    return ['job-dispatch', 'prepare', 'session-compact', 'capabilities', 'inspect-mcp',
-      'conversation.open', 'conversation.initial-turn', 'conversation.start-turn', 'conversation.compact',
-      'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
-      'conversation.file-copy']
-      .includes(String(payload.method))
-  }
-  if (namespace === 'byte-transfer-v1' && 'method' in payload) return payload.method === 'start'
-  if (namespace === 'rsync-stage-v1' && 'method' in payload) {
-    return ['source-prepare', 'receiver-prepare', 'writer-prepare', 'writer-activate'].includes(String(payload.method))
-  }
-  if (!('operation' in payload)) return false
-  return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
-    || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'
-    || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
-    || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
-    || namespace === CI_HOST_NAMESPACE && payload.operation === 'start'
 }

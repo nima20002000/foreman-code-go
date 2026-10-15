@@ -26,7 +26,8 @@ import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
 import { createProductionWorkerArtifactExtension, readProductionWorkerManifestSha256s,
-  readProductionWorkerContentSha256s, readProductionWorkerReleasePublication } from './modules/computers/workerArtifactsProduction.js'
+  readProductionWorkerContentSha256s, readProductionWorkerReleasePublication,
+  workerArtifactLocation } from './modules/computers/workerArtifactsProduction.js'
 import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, pluginMarketplaces, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION } from '@foreman-code/contracts/computer-maintenance'
@@ -621,6 +622,8 @@ function configureDeviceRuntime(composition: ProductionComposition) {
     remoteTelemetry,
   } = composition
   const deviceRuntime = composition.deviceRuntime = new ProductionDeviceRuntime(database.pool, infrastructure?.deviceListener, {
+    workerArtifacts: workerArtifactLocation({ environment: process.env,
+      releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }),
     extensions: [
       remoteTelemetry.extension,
       ...rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const, async handle(raw: unknown, context: import('./modules/devices/deviceApplicationChannel.js').DeviceExtensionContext) {
@@ -2697,7 +2700,9 @@ async function initializeWorkflowArtifacts(composition: ProductionComposition, m
     composition.agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
       harnessRegistry, { codex: selectedSuites.codex.revision },
       workerExecution, profile => harnessInstances.ensureReady(profile),
-      (hosts, signal) => installationMonitor.refreshHosts(hosts, signal), providerAccounts)
+      (hosts, signal) => installationMonitor.refreshHosts(hosts, signal), providerAccounts, async host => {
+        if (host.kind === 'device') await deviceRuntime.endpointForDomains().assertWorkerBundleReady(host.deviceId)
+      })
     composition.agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, composition.agentPlacement)
     composition.executionAuthority = createExecutionAuthorityExtension(database.pool, locations, composition.agentPlacement)
   }
