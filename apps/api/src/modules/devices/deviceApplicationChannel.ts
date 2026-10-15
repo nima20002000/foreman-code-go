@@ -15,7 +15,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
-import { DeviceRequestQueue, deviceForegroundWaitMs, effectiveDeviceRequestPriority } from './deviceRequestQueue.js'
+import { DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestIsBulk, effectiveDeviceRequestPriority } from './deviceRequestQueue.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
@@ -62,6 +62,7 @@ export class DeviceApplicationChannel {
   private readonly binding: Readonly<DeviceSessionBinding>
   private readonly pending = new Map<string, Pending>()
   private readonly requestQueue = new DeviceRequestQueue()
+  private saturationReportedAt = -Infinity
   private readonly assemblies = new Map<string, Assembly>()
   private readonly handlers = new Map<string, Assembly>()
   private readonly rawHandlers = new Map<string, Assembly>()
@@ -162,7 +163,11 @@ export class DeviceApplicationChannel {
     const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
     const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
     const priority = effectiveDeviceRequestPriority(namespace, payload, options.priority)
-    const release = await this.requestQueue.acquire({ priority, stop, signal: options.signal })
+    const bulk = deviceRequestIsBulk(namespace, payload, options.bytes !== undefined)
+    const release = await this.requestQueue.acquire({ priority, stop, bulk, namespace, signal: options.signal }).catch((error: unknown) => {
+      if (error instanceof DeviceApplicationAdmissionError) this.reportSaturation(namespace, error.reason)
+      throw error
+    })
     try {
       const deadline = Date.now() + deviceForegroundWaitMs
       const signal = AbortSignal.any([this.abort.signal, ...(options.signal ? [options.signal] : [])])
@@ -196,6 +201,7 @@ export class DeviceApplicationChannel {
     const timer = setTimeout(() => {
       const failure = uploading && !this.uploads.has(id)
         ? new DeviceApplicationAdmissionError('upload_capacity_timeout') : new DeviceApplicationError('timeout')
+      this.reportSaturation(namespace, failure instanceof DeviceApplicationAdmissionError ? failure.reason : failure.message)
       abort.abort()
       reject(failure)
       this.trySendCancel(id)
@@ -213,6 +219,14 @@ export class DeviceApplicationChannel {
     } finally {
       clearTimeout(timer); options.signal?.removeEventListener('abort', cancel); this.pending.delete(id); abort.abort()
     }
+  }
+  /** Names the in-flight requests by namespace when a request is refused or times out; at most one line per 30 s per channel. */
+  private reportSaturation(namespace: string, reason: string) {
+    const now = Date.now()
+    if (now - this.saturationReportedAt < 30_000) return
+    this.saturationReportedAt = now
+    componentLogger('devices').warn({ side: this.options.side, deviceId: this.binding.deviceId, namespace, reason,
+      slots: this.requestQueue.snapshot() }, 'Device application channel saturated')
   }
   private trySendCancel(id: string) {
     if (!this.abort.signal.aborted) this.queueFrame({ type: 'application-cancel', id })
