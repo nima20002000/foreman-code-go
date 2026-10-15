@@ -106,7 +106,7 @@ async function transcriptCorrelation(sql: GraphTransactionSql, capture: Workflow
  * no-submission/close evidence occurs inside these methods. */
 export class WorkflowNativeProofServices {
   constructor(private readonly captures: WorkflowNativeVerificationPort,
-    private readonly assertAdditionalPhysical?: (sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) => Promise<void>,
+    private readonly assertAdditionalPhysical?: (sql: GraphTransactionSql, owner: RunOwnership, captures: readonly WorkflowNativeCapture[]) => Promise<void>,
     private readonly afterPersistOriginalLocked?: (sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord) => Promise<void>) {}
 
   private async current(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, executionId: string,
@@ -121,9 +121,11 @@ export class WorkflowNativeProofServices {
   }
 
   private async physical(sql: GraphTransactionSql, scope: RepeatScope, stored: StoredRepeatExecution,
-    capture: WorkflowNativeCapture, owner: RunOwnership): Promise<void> {
-    capture.assertCurrent(); owner.assertOwned()
-    await this.assertAdditionalPhysical?.(sql, owner, capture)
+    capture: WorkflowNativeCapture, owner: RunOwnership,
+    captures: readonly WorkflowNativeCapture[] = [capture]): Promise<void> {
+    for (const frame of captures) frame.assertCurrent()
+    owner.assertOwned()
+    await this.assertAdditionalPhysical?.(sql, owner, captures)
     if (capture.owner !== owner || !isDeepStrictEqual(immutableExecution(capture.execution), immutableExecution(stored.execution))) return fail()
     if (capture.lane) await renewWorkflowNativePublicationLease(sql, owner, capture.lane.id)
     const reservation = workflowNativeReservation(scope, stored.ref, stored.execution, stored.inputDigest)
@@ -416,10 +418,10 @@ export class WorkflowNativeProofServices {
     owner: RunOwnership): Promise<void> {
     const capture = frames[0]!.capture
     const { stored, scope } = await this.current(sql, run, capture.execution.id, owner)
-    await this.physical(sql, scope, stored, capture, owner)
+    const captures = frames.map(frame => frame.capture)
+    await this.physical(sql, scope, stored, capture, owner, captures)
     const fence = await owner.readOneShotFence(sql)
     for (const frame of frames) frame.capture.assertCurrent()
-    for (const frame of frames.slice(1)) await this.assertAdditionalPhysical?.(sql, owner, frame.capture)
     const records = await persistWorkflowNativeSources(sql,
       frames.map((frame) => workflowNativeSourceRecord(frame.capture, stored, scope, fence)))
     const publication = hasRunGraphPublication(sql, scope) ? currentRunGraphPublication(sql, scope) : undefined
@@ -440,8 +442,7 @@ export class WorkflowNativeProofServices {
       try {
         for (const frame of frames) frame.capture.assertCurrent()
         if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) return fail('RUN_OWNERSHIP_LOST')
-        await this.physical(sql, scope, stored, capture, owner)
-        for (const frame of frames.slice(1)) await this.assertAdditionalPhysical?.(sql, owner, frame.capture)
+        await this.physical(sql, scope, stored, capture, owner, captures)
         if (!publication && !await transcriptCorrelation(sql, capture, frames[0]!.event)) {
           return fail('NATIVE_TURN_IDENTITY_CONFLICT')
         }
