@@ -240,7 +240,7 @@ export class PostgresRunRepository {
       after = page[page.length - 1]!.id
     }
   }
-  async reconciliationCandidates(afterId = '', limit = 100): Promise<RepositoryWorkflowRun[]> {
+  async reconciliationCandidates(afterId = '', limit = 100): Promise<{ id: string }[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new DomainError('RUN_READ_LIMIT', 'Use a bounded Run cursor.', 409)
     // Failed Main-local Runs can outlive their detached runtime. Selection still requires physical closure in cleanup.
     const rows = (await this.pool.query<{ id: string }>(`select id from runs where id>$1 and
@@ -255,9 +255,7 @@ export class PostgresRunRepository {
               and not exists(select 1 from run_node_placements p where p.run_id=e.run_id
                 and p.node_id=e.workflow_node_id and p.record#>>'{hostRef,kind}'='device'))))
       order by id limit $2`, [afterId, limit])).rows
-    const result = []
-    for (const { id } of rows) result.push((await this.getRepeatSnapshot(id)).run)
-    return result
+    return rows
   }
   async remainingApprovalTime(runId: string, executionIds: string[], owner: RunOwnership): Promise<number> {
     this.requireOwner(runId, owner)

@@ -8,6 +8,7 @@ import { sourceStorageCapacityFixture } from '../../../test/helpers/sourceStorag
 import { verificationFixture } from '../../../test/helpers/jobVerificationFixture.js'
 import { JobDefinitionRecordSchema, jobPolicyRequirementsRecord } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { BuildComputerPreference } from '@foreman-code/contracts/build-computers'
 import { buildComputerTarget, type BuildComputerSettings } from '../settings/buildComputers.js'
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { JobSql } from './repository.js'
@@ -16,6 +17,13 @@ import { JobComputerSelection, compatibleJobComputer, jobComputerCapacity, jobCo
 
 const mainId = '11111111-1111-4111-8111-111111111111'
 
+function settingsFixture(read: (target: ReturnType<typeof buildComputerTarget>) => BuildComputerPreference) {
+  return {
+    preferences: async (_sql: JobSql, targets: ReturnType<typeof buildComputerTarget>[]) => targets.map(read),
+    requireEnabled: async (_sql: JobSql, target: ReturnType<typeof buildComputerTarget>) => read(target),
+  } as unknown as BuildComputerSettings
+}
+
 it('inspects an explicit launch override without reserving and permits an offline computer to wait', async () => {
   const { candidate, auto } = buildComputerFixture(mainId, 'workspace-fixture')
   candidate.ready = false
@@ -23,7 +31,7 @@ it('inspects an explicit launch override without reserving and permits an offlin
   const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
     buildPriority: 100, buildAllowancePercent: 100 }
   const candidates = vi.fn(async () => ({ candidates: [candidate], diagnosticCodes: [] }))
-  const settings = { preference: async () => preference } as unknown as BuildComputerSettings
+  const settings = settingsFixture(() => preference)
   const selection = new JobComputerSelection(settings, { candidates },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
   const query = vi.fn(async () => ({ rows: [], rowCount: 0 }))
@@ -78,7 +86,7 @@ describe('reviewed verification admission capacity', () => {
     const unqualified = { ...ready, ready: false, reasons: ['runtime_setup_required'] }
     const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true,
       buildPriority: 100, buildAllowancePercent: 100 }
-    const settings = { preference: async () => preference, requireEnabled: async () => preference } as unknown as BuildComputerSettings
+    const settings = settingsFixture(() => preference)
     const selection = new JobComputerSelection(settings, {
       candidates: async () => ({ candidates: [unqualified, ready], diagnosticCodes: [] }),
     }, { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
@@ -101,7 +109,7 @@ describe('reviewed verification admission capacity', () => {
     const candidate = { spec, profile, ready: false, reasons: ['runtime_setup_required'],
       sourceReservation: { scopeId: 'approved-source', reservedBytes: 1024 * 1024 } }
     const preference = { target: buildComputerTarget(spec.target), revision: 1, buildEnabled: true, buildPriority: 100, buildAllowancePercent: 100 }
-    const settings = { preference: async () => preference } as unknown as BuildComputerSettings
+    const settings = settingsFixture(() => preference)
     const workerExecution = { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy
     const selection = new JobComputerSelection(settings,
       { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) }, workerExecution)
@@ -262,7 +270,7 @@ it.each([false, true])('checks only the requesting source pool during placement 
       : candidate.profile.limits } }).spec : ordinary.auto
   const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
     buildPriority: 100, buildAllowancePercent: 100 }
-  const selection = new JobComputerSelection({ preference: async () => preference } as unknown as BuildComputerSettings,
+  const selection = new JobComputerSelection(settingsFixture(() => preference),
     { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
   const storage = { bytes: '0', verification_bytes: '0',
@@ -286,7 +294,7 @@ function measuredSourcePlacement() {
     verification_materializations: '0', pending_bytes: '0', preparing: '0' }
   const preference = { target: buildComputerTarget(candidate.spec.target), revision: 1, buildEnabled: true,
     buildPriority: 100, buildAllowancePercent: 100 }
-  const selection = new JobComputerSelection({ preference: async () => preference } as unknown as BuildComputerSettings,
+  const selection = new JobComputerSelection(settingsFixture(() => preference),
     { candidates: async () => ({ candidates: [candidate], diagnosticCodes: [] }) },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
   const sql = { query: async (_text: string, values?: unknown[]) => {
@@ -337,9 +345,8 @@ it('selects the fallback computer when only it fits the captured source and Git 
   const preference = (target: ReturnType<typeof buildComputerTarget>) => ({ target, revision: 1, buildEnabled: true,
     buildPriority: target.hostRef.kind === 'device' && target.hostRef.deviceId === first.registration.deviceId ? 100 : 50,
     buildAllowancePercent: 100 })
-  const settings = { preference: async (_sql: unknown, target: ReturnType<typeof buildComputerTarget>) => preference(target),
-    requireEnabled: async (_sql: unknown, target: ReturnType<typeof buildComputerTarget>) => preference(target) }
-  const selection = new JobComputerSelection(settings as unknown as BuildComputerSettings,
+  const settings = settingsFixture(preference)
+  const selection = new JobComputerSelection(settings,
     { candidates: async () => ({ candidates: [first.candidate, second.candidate], diagnosticCodes: [] }) },
     { requireEnabled: vi.fn() } as unknown as WorkerExecutionPolicy)
   let saved: { spec: unknown; bytes: number } | undefined

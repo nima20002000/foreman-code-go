@@ -16,3 +16,17 @@ export async function ciEnrollmentDisabled(sql: JobSql, workspaceId: string,
     [workspaceId, buildComputerKey(target)])).rows[0]
   return row?.enabled === false
 }
+
+export async function disabledCiEnrollmentHosts(sql: JobSql, workspaceId: string,
+  targets: DeviceProvisioningTarget[], options: { lock?: boolean } = {}): Promise<Set<string>> {
+  const byHost = new Map(targets.map(target => [buildComputerKey(target), target]))
+  const keys = [...byHost.keys()].sort()
+  if (!keys.length) return new Set()
+  if (options.lock) {
+    for (const key of keys) await lockCiEnrollment(sql, workspaceId, byHost.get(key)!)
+  }
+  const rows = (await sql.query<{ host_key: string; enabled: boolean }>(
+    'select host_key,enabled from ci_enrollment_computers where workspace_id=$1 and host_key=any($2::text[])',
+    [workspaceId, keys])).rows
+  return new Set(rows.filter(row => !row.enabled).map(row => row.host_key))
+}

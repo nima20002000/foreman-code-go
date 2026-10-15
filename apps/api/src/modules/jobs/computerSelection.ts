@@ -1,5 +1,5 @@
 import { jobPlacementRequest } from './placementRequest.js'
-import { ciEnrollmentDisabled } from './ciEnrollmentState.js'
+import { disabledCiEnrollmentHosts } from './ciEnrollmentState.js'
 import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'
@@ -229,7 +229,8 @@ export class JobComputerSelection {
         reasons.push('remote_execution_disabled')
         continue
       }
-      const preference = await this.settings.requireEnabled(sql, buildComputerTarget(candidate.spec.target))
+      const preference = await this.settings.requireEnabled(sql, buildComputerTarget(candidate.spec.target),
+        { preference: candidate.preference })
       await this.assertBundleReady?.(candidate.spec.target.hostRef)
       const hostKey = buildComputerKey(preference.target)
       waitingHosts.push(hostKey)
@@ -274,19 +275,21 @@ export class JobComputerSelection {
       placementOverride ?? undefined, options)
     const enrolled: EnrolledCandidate[] = []
     const reasons: string[] = [...discovery.diagnosticCodes]
-    // Claim enrollment locks in host order, after build order and before capacity/source locks.
-    const candidates = options.lockEnrollment ? [...discovery.candidates].sort((left, right) =>
-      buildComputerKey(buildComputerTarget(left.spec.target)).localeCompare(
-        buildComputerKey(buildComputerTarget(right.spec.target)))) : discovery.candidates
-    for (const candidate of candidates) {
-      if (!compatibleJobComputer(candidate, request)
+    const candidates = discovery.candidates.filter(candidate => {
+      const incompatible = !compatibleJobComputer(candidate, request)
         || (placementOverride?.kind === 'explicit'
-          && canonicalJson(placedRoot(candidate.spec.target)) !== canonicalJson(placedRoot(placementOverride.target)))) {
-        reasons.push('incompatible')
-        continue
-      }
-      const preference = await this.settings.preference(sql, buildComputerTarget(candidate.spec.target))
-      if (await ciEnrollmentDisabled(sql, workspaceId, preference.target, { lock: options.lockEnrollment ?? false })) {
+          && canonicalJson(placedRoot(candidate.spec.target)) !== canonicalJson(placedRoot(placementOverride.target)))
+      if (incompatible) reasons.push('incompatible')
+      return !incompatible
+    })
+    const targets = candidates.map(candidate => buildComputerTarget(candidate.spec.target))
+    const preferences = await this.settings.preferences(sql, targets)
+    // Enrollment locks follow build order and precede capacity/source locks.
+    const disabledHosts = await disabledCiEnrollmentHosts(sql, workspaceId, targets,
+      { lock: options.lockEnrollment ?? false })
+    for (const [index, candidate] of candidates.entries()) {
+      const preference = preferences[index]!
+      if (disabledHosts.has(buildComputerKey(preference.target))) {
         reasons.push('disabled')
         continue
       }
