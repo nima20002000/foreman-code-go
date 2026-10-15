@@ -294,7 +294,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', async 
     if (turn?.status === 'inProgress') complete(turn, 'Interrupted', 'interrupted')
   } else if (message.method === 'config/read') {
     const user = readNativeConfig()
-    reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'on-request',
+    reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'never',
       mcp_servers: { ...user.mcp_servers,
         [mcpName]: { ...user.mcp_servers[mcpName], enabled: mcp.enabled } } }, origins: {},
       layers: [{ name: { type: 'user', file: nativeConfigFile }, version: configVersion(user), config: user }] })
