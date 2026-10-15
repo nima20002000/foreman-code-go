@@ -52,6 +52,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
   const contexts = new Map<string, NativeManagerResolutionContext>()
   let placements: Awaited<ReturnType<typeof mixedComputerPlacement>>
   const nativePlacements = new Map<string, NativeExecutionPlacement>()
+  let preparationFailure: { error: unknown } | undefined
   let mcpReady = !options.mcpUnavailable
   let unavailableInspections = 0
   const base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
@@ -63,11 +64,16 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       intents.set(execution.id, intent)
     },
     preparePlacementExecution: async (owner, run, execution) => {
-      const paths = await prepareHandoffSource(owner, run, execution, placements)
-      const native = await readNativePlacement(base.db.pool, execution.id)
-      if (!native) throw new Error('Expected prepared native source')
-      nativePlacements.set(execution.id, native)
-      return paths
+      try {
+        const paths = await prepareHandoffSource(owner, run, execution, placements)
+        const native = await readNativePlacement(base.db.pool, execution.id)
+        if (!native) throw new Error('Expected prepared native source')
+        nativePlacements.set(execution.id, native)
+        return paths
+      } catch (error) {
+        preparationFailure = { error }
+        throw error
+      }
     },
     prepareManagerContext: async context => {
       const acceptedPlacement = await readExecutionPlacement(base.db.pool, context.executionId)
@@ -153,9 +159,10 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       return SavedRunDetailsSchema.parse(response.json())
     }
     const readStartup = async () => {
+      if (preparationFailure) throw preparationFailure.error
       const details = await read()
       const failed = details.executions.find(execution => execution.result?.outcome === 'failed')
-      expect(failed?.result, canonicalGraphJson(details)).toBeUndefined()
+      expect(failed?.result, canonicalGraphJson(failed?.result ?? null)).toBeUndefined()
       return details
     }
     const completed = new Set<string>()
