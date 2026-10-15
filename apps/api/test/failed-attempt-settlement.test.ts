@@ -30,7 +30,8 @@ function fixture(failure?: ExecutionResult) {
     settleNativeExecution }
   const observe = () => coordinator.observeExact({ execution, owner, workflowId: base.run.workflowId,
     graphThreadId: base.run.id, signal: new AbortController().signal, store: store as never,
-    request: { executionId: execution.id, runId: execution.runId, workflowNodeId: execution.workflowNodeId,
+    request: { executionId: execution.id, runId: execution.runId, workspaceId: base.run.workspaceId,
+      workflowNodeId: execution.workflowNodeId, workingDirectory: '/project', runtimeDirectory: '/runtime/failed-execution',
       configuration, input: execution.input }, approval: base.run.approval })
   return { observe, abandon, settleNativeExecution, resolve, owner, stopped, execution }
 }
