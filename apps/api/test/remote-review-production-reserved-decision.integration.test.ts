@@ -44,6 +44,13 @@ describe('production remote review and native recovery through authenticated MCP
       expect(receipt.controls.filter(control => control.action.kind === 'respond')).toEqual([command])
       expect(fixture.deliveryReads).toContainEqual({ command, phase: 'reserved' })
       expect((await fixture.provider.calls()).filter(call => 'approvalResponse' in call)).toHaveLength(1)
+      const settled = await waitForRemoteReview(async () => {
+        await fixture.reconcile()
+        return fixture.details(active.run.id)
+      }, details => details.run.executionState === 'completed' && details.cleanupPending !== true,
+      'completed Run and native cleanup after the reserved decision')
+      expect(settled.run.outcome).toBe('succeeded')
+      expect((await fixture.executions(active.run.id)).every(execution => execution.state === 'completed')).toBe(true)
     })
   }, 240_000)
 })
