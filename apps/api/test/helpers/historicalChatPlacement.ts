@@ -26,11 +26,13 @@ export async function historicalChatPlacement(
 
 export async function historicalChatSource(fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) {
   const started = await measureIntegrationPhase('historical source Run start', () => fixture.start())
+  // Native cleanup still changes the saved Run after it completes; fork against the settled record.
   const before = await measureIntegrationPhase('historical source Run completion',
     () => waitForRemoteReview(async () => {
       await fixture.reconcile()
       return fixture.details(started.run.id)
-    }, value => value.run.executionState === 'completed', 'completed source Run', fixture.subscribeNativeChanges))
+    }, value => value.run.executionState === 'completed' && value.cleanupPending !== true,
+    'completed source Run with settled cleanup', fixture.subscribeNativeChanges))
   const execution = before.executions[0]!
   expect(execution.nativeSessionId).toBeTruthy()
   const workspaceId = fixture.version.workspaceId
