@@ -13,7 +13,7 @@ import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import type { NativeManagerResolutionContext } from '../interactions/runtimePorts.js'
 import type { RunOwnership } from '../runs/ownership.js'
-import { readAcceptedPlacement, readDispatchIntent, readNativePlacement } from './persistence.js'
+import { readAcceptedPlacement, readAcceptedPlacements, readDispatchIntent, readNativePlacement } from './persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readNativeExecutionBinding } from './executionBinding.js'
 import type { AcceptedExecutionBinding } from './nativeComposition.js'
@@ -23,7 +23,7 @@ import { VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { remoteNativeManager, type MainWorkerCarrier } from './workerCarrier.js'
 import { deviceEndpointCarrier } from './deviceEndpointCarrier.js'
 import { OwnedRemoteReceiptCommit, reserveRemoteDispatchOrigin } from './remoteReceiptCommit.js'
-import { createRemoteNativeSourceChannel, assertRemoteNativeSourceLocked, type RemoteNativeSourceEvidence, type VerifiedRemoteOriginalSource } from './remoteNativeSource.js'
+import { createRemoteNativeSourceChannel, assertRemoteNativeSourcesLocked, type RemoteNativeSourceEvidence, type VerifiedRemoteOriginalSource } from './remoteNativeSource.js'
 import { createRemoteWorkflowPhysicalVerification, type PreparedRemoteWorkflowPhysical } from '../runs/remote/workflowPhysicalVerification.js'
 import { remoteWorkflowSourceDigest } from '../runs/remote/workflowPhysicalReadout.js'
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture, WorkflowNativeCaptureInput } from '../interactions/workflowNativeCapture.js'
@@ -248,15 +248,34 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
         }
       }
     },
-    async assertPhysical(sql: GraphTransactionSql, owner: RunOwnership, capture: WorkflowNativeCapture) {
-      const placement = await readAcceptedPlacement(sql, capture.execution.runId, capture.execution.workflowNodeId)
-      if (placement?.hostRef.kind !== 'device') return
-      const evidence = companions.get(capture)
-      if (!evidence) throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'A local native capture cannot authorize a remote placement.', 409)
-      const original = channel.verify.read(evidence)
-      await assertRemoteNativeSourceLocked(sql, owner, capture.execution, original.source, evidence, channel.verify, physical)
-    },
+    assertPhysical: (sql: GraphTransactionSql, owner: RunOwnership,
+      captures: WorkflowNativeCapture | readonly WorkflowNativeCapture[]) =>
+      assertWorkflowPhysicalBatch(sql, owner, captures, companions, channel.verify, physical),
   }
+}
+
+async function assertWorkflowPhysicalBatch(sql: GraphTransactionSql, owner: RunOwnership,
+  input: WorkflowNativeCapture | readonly WorkflowNativeCapture[],
+  companions: WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>,
+  verification: ReturnType<typeof createRemoteNativeSourceChannel>['verify'],
+  physical: RemoteWorkflowPhysicalVerification): Promise<void> {
+  const captures = Array.isArray(input) ? input : [input as WorkflowNativeCapture]
+  for (const capture of captures) {
+    capture.assertCurrent()
+    if (capture.execution.runId !== owner.runId) throw new DomainError(
+      'RUN_OWNERSHIP_LOST', 'The native capture belongs to another Run.', 409)
+  }
+  const placements = await readAcceptedPlacements(sql, owner.runId,
+    captures.map(capture => capture.execution.workflowNodeId))
+  const remote = []
+  for (const capture of captures) {
+    if (placements.get(capture.execution.workflowNodeId)?.hostRef.kind !== 'device') continue
+    const evidence = companions.get(capture)
+    if (!evidence) throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED',
+      'A local native capture cannot authorize a remote placement.', 409)
+    remote.push({ execution: capture.execution, source: capture.source, evidence })
+  }
+  await assertRemoteNativeSourcesLocked(sql, owner, remote, verification, physical)
 }
 
 async function prepareRemoteWorkflowBinding(input: ProductionRemoteWorkflowInput,

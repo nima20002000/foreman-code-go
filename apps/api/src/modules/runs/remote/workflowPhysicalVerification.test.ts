@@ -39,6 +39,7 @@ import type { WorkflowNativeCapture, WorkflowOriginalNativeSource } from '../../
 import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
 import { workflowNativeReservation } from '../workflowNativeEntry.js'
 import { workflowNativeSourceRecord } from '../workflowNativeSource.js'
+import { remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 import type { StoredRepeatExecution } from '../repeatPostgres.js'
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
@@ -156,7 +157,7 @@ async function physicalFixture(options: {
     correlation:`execution:${execution.id}`,provider_id:'original-turn',held:true}
   const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}})
   const currentBinding=vi.fn<()=>DeviceSessionBinding|undefined>(()=>f.context.binding)
-  const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:typeof source}}[]=[]
+  const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:WorkflowOriginalNativeSource}}[]=[]
   let proofReadLimit = Infinity
   const proofId = (original: WorkflowOriginalNativeSource) => workflowNativeSourceRecord(
     { ...lifetime, source: original } as unknown as WorkflowNativeCapture,
@@ -739,4 +740,45 @@ describe('remote history publication under the Run lock', () => {
       })).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'closure_generation' } })
     } finally { await f.sqlConnection.close() }
   })
+})
+
+
+it('retains every remote frame and acknowledges a large reply with one grouped proof read', async () => {
+  const f = await physicalFixture()
+  try {
+    const events = Array.from({ length: 16 }, (_, sequence) => ({
+      connectionId: 'connection', sequence,
+      type: 'native.notification', occurredAt: f.execution.createdAt,
+      payload: { nativeMethod: 'item/agentMessage/delta', text: `frame ${sequence}` },
+    }))
+    f.readout.history!.events = events
+    const originals = []
+    for (const event of events) {
+      const source = { type: 'event' as const, event: { ...event, executionId: f.execution.id } }
+      const original = await f.bind(source)
+      originals.push(original)
+      const record = workflowNativeSourceRecord({ ...f.lifetime, source, owner: f.owner, kind: 'live',
+        observedAt: event.occurredAt } as WorkflowNativeCapture,
+      { execution: f.execution, ref: { nodeId: f.execution.workflowNodeId, occurrence: null },
+        inputDigest: repeatDigest(f.execution.input) } as StoredRepeatExecution,
+      f.entry.reservation.scope, { ownerId: 'original-owner', fence: '1' })
+      f.canonicalProofs.push({ record })
+    }
+    const saved = structuredClone(f.canonicalProofs)
+    f.query.mockClear()
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginals(sql, f.owner, originals))
+    expect(f.query.mock.calls.length).toBeLessThanOrEqual(25)
+    expect(f.canonicalProofs).toEqual(saved)
+    for (const original of originals) {
+      const ack = { version: 1, operationId: f.intent.operationId, receiptSequence: f.readout.receipt.sequence,
+        sourceDigest: original.sourceDigest, status: 'retired' }
+      f.request.mockResolvedValueOnce({ payload: ack })
+      await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
+    }
+    const sourceDigest = remoteWorkflowSourceDigest({ type: 'history', history: f.readout.history! })
+    const replyAck = { version: 1, operationId: f.intent.operationId,
+      receiptSequence: f.readout.receipt.sequence, sourceDigest, status: 'retired' }
+    f.request.mockResolvedValueOnce({ payload: replyAck })
+    await expect(f.producer.acknowledgeReply(originals[0]!)).resolves.toEqual(replyAck)
+  } finally { await f.sqlConnection.close() }
 })

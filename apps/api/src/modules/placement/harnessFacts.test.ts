@@ -59,7 +59,9 @@ function fixture(driver: 'codex' | 'claude' = 'codex', hostKind: 'main' | 'devic
       return { rows: (sql.includes('limit 1') ? selected.slice(0, 1) : selected).map(record => ({ record })) }
     }
     if (sql.includes('from harness_instance_profile_evidence')) {
-      return { rows: (proofRecords.get(Number(values?.[1])) ?? []).map(record => ({ record })) }
+      const revisions = Array.isArray(values?.[1]) ? values[1] : [values?.[1]]
+      return { rows: revisions.flatMap(revision => (proofRecords.get(Number(revision)) ?? [])
+        .map(record => ({ instance_revision: Number(revision), record }))) }
     }
     if (sql.includes('from host_harness_measurements')) return { rows: records.map(row => ({
       evidence: row.evidence, qualification: { harness: row.harness, version: row.version, binarySha256: row.binary_sha256,
@@ -314,4 +316,22 @@ it('admits Main Claude by its exact qualified profile check, which is its native
   await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
     message: 'The native check for the selected harness profile did not pass.',
     details: { reason: 'profile_check_failed' } })
+})
+
+
+it('resolves a pinned profile across a large settings history with bounded database reads', async () => {
+  const f = fixture()
+  const accepted = await f.read()
+  if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+  f.placement.payload.profileProofDigest = placementDigest(accepted.profileProof)
+  f.placement.payload.qualificationDigest = placementDigest(accepted.qualification)
+  for (let revision = 2; revision <= 80; revision++) {
+    f.settingsRecords.push({ ...f.override, revision })
+    f.proofRecords.set(revision, [{ ...f.proof, checkedAt: new Date(Date.parse(f.proof.checkedAt) + revision).toISOString() }])
+  }
+  const before = structuredClone({ settings: f.settingsRecords, proofs: [...f.proofRecords], placement: f.placement })
+  f.query.mockClear()
+  expect(await f.read()).toEqual(accepted)
+  expect({ settings: f.settingsRecords, proofs: [...f.proofRecords], placement: f.placement }).toEqual(before)
+  expect(f.query.mock.calls.length).toBeLessThanOrEqual(4)
 })

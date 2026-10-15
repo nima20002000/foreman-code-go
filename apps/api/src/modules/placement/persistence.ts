@@ -41,6 +41,22 @@ export async function readAcceptedPlacement(sql: Pick<GraphTransactionSql, 'quer
   return pin
 }
 
+/** Read only the selected nodes; unrelated placements cannot affect this batch. */
+export async function readAcceptedPlacements(sql: Pick<GraphTransactionSql, 'query'>,
+  runId: string, nodeIds: readonly string[]): Promise<Map<string, AcceptedNodePlacement>> {
+  const rows = await sql.query<{ node_id: string; binding_hash: string; record: unknown }>(
+    'select node_id,binding_hash,record from run_node_placements where run_id=$1 and node_id=any($2::text[])',
+    [runId, [...new Set(nodeIds)]])
+  const result = new Map<string, AcceptedNodePlacement>()
+  for (const row of rows.rows) {
+    const pin = readPlacement(row.record)
+    if (pin.runId !== runId || pin.nodeId !== row.node_id || pin.bindingHash !== row.binding_hash
+      || result.has(row.node_id)) conflict()
+    result.set(row.node_id, pin)
+  }
+  return result
+}
+
 export async function readRunAcceptedPlacements(sql: Pick<GraphTransactionSql, 'query'>,
   runId: string): Promise<AcceptedNodePlacement[]> {
   const rows = await sql.query<{ node_id: string; binding_hash: string; record: unknown }>(

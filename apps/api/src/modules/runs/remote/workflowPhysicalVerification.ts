@@ -11,7 +11,7 @@ import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-exec
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
-import type { RemoteNativePhysicalVerification, VerifiedRemoteOriginalSource } from '../../placement/remoteNativeSource.js'
+import type { RemoteNativeBatchPhysicalVerification, VerifiedRemoteOriginalSource } from '../../placement/remoteNativeSource.js'
 import { readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
@@ -118,7 +118,7 @@ interface RemoteWorkflowPhysicalVerificationInput {
 /** Network and real worker observations occur only in prefetch. bind() attaches
  * its opaque result to this exact private original-source object. SQL verification
  * reads retained evidence and original Main rows; it never performs native IO. */
-export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPhysicalVerificationInput): RemoteNativePhysicalVerification & {
+export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPhysicalVerificationInput): RemoteNativeBatchPhysicalVerification & {
   passiveNativeOwner(original: VerifiedRemoteOriginalSource): PassiveRemoteNativeOwner | undefined
   confirmedClosed(prepared: PreparedRemoteWorkflowPhysical, session: NativeSessionReference | null): boolean
   prefetch(receipt: RemoteOperationReceipt, placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical>
@@ -253,6 +253,12 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
       }catch(error){poisonGraphTransaction(sql);throw error}
     },
     assertOriginal: (sql: GraphTransactionSql, owner: RunOwnership, original: VerifiedRemoteOriginalSource) => assertBound(sql, owner, original, false),
+    async assertOriginals(sql, owner, originals) {
+      const proofs = await readRemotePublicationProofs(sql, owner, originals, bound)
+      for (const original of originals) {
+        await assertRemoteWorkflowBinding(sql, owner, original, false, bound, input, proofs)
+      }
+    },
   }
 
 }
@@ -501,7 +507,8 @@ async function assertRemoteWriterLane(sql: GraphTransactionSql, capture: Bound, 
 
 async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunOwnership,
   original: VerifiedRemoteOriginalSource, retained: boolean, bound: WeakMap<object, Bound>,
-  input: RemoteWorkflowPhysicalVerificationInput): Promise<void> {
+  input: RemoteWorkflowPhysicalVerificationInput,
+  proofs?: readonly WorkflowNativeProofRecord[]): Promise<void> {
   assertGraphTransaction(sql)
   const capture = bound.get(original)
   if (!capture || capture.owner !== owner) return unavailable('unbound_owner')
@@ -528,7 +535,7 @@ async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunO
   }
   if (!lifetime.lane && (original.source.type === 'history' || original.source.type === 'event')) return unavailable('missing_writer_lane')
   check()
-  await recordRemotePublications(sql, original, capture, rows.execution)
+  await recordRemotePublications(sql, original, capture, rows.execution, proofs)
   check()
   finalized?.add(original)
 }
@@ -541,14 +548,45 @@ function finalizedOriginals(sql: GraphTransactionSql, retained: boolean): WeakSe
   return originals
 }
 
+/** Fetch every source needed for publication acknowledgments once for this boundary. */
+async function readRemotePublicationProofs(sql: GraphTransactionSql, owner: RunOwnership,
+  originals: readonly VerifiedRemoteOriginalSource[], bound: WeakMap<object, Bound>): Promise<WorkflowNativeProofRecord[]> {
+  assertGraphTransaction(sql)
+  const ids = new Set<string>()
+  for (const original of originals) {
+    const capture = bound.get(original)
+    if (!capture || capture.owner !== owner) return unavailable('unbound_owner')
+    const executionId = capture.readout.receipt.intent.executionId
+    if (original.source.type !== 'boundary') ids.add(workflowNativeSourceId(executionId, original.source))
+    for (const event of capture.readout.history?.events ?? []) {
+      ids.add(workflowNativeSourceId(executionId, { type: 'event', event: { ...event, executionId } }))
+    }
+  }
+  if (!ids.size) return []
+  const rows = await sql.query<{ record: WorkflowNativeProofRecord }>(
+    'select record from workflow_native_proofs where run_id=$1 and proof_id=any($2::text[])',
+    [owner.runId, [...ids]])
+  return rows.rows.map(row => row.record)
+}
+
 /** Publication is acknowledged only after this exact original was retained by the existing canonical writer AND
  * its owning transaction committed. A boundary observation is never retained as a source, so it has no proof. */
 async function recordRemotePublications(sql: GraphTransactionSql, original: VerifiedRemoteOriginalSource,
-  capture: Bound, execution: HarnessExecution): Promise<void> {
+  capture: Bound, execution: HarnessExecution, retainedProofs?: readonly WorkflowNativeProofRecord[]): Promise<void> {
   const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
-  const proofs=original.source.type==='boundary'?{rows:[]}:await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
-    where execution_id=$1 and run_id=$2 and proof_id=$3`,
-    [intent.executionId,intent.runId,workflowNativeSourceId(intent.executionId,original.source)])
+  const matching = retainedProofs?.filter(record => record.scope.runId === intent.runId
+    && record.execution.executionId === intent.executionId)
+  let proofs: { rows: { record: WorkflowNativeProofRecord }[] }
+  if (matching) {
+    proofs = { rows: matching.filter(record => original.source.type !== 'boundary'
+      && record.proofId === workflowNativeSourceId(intent.executionId, original.source)).map(record => ({ record })) }
+  } else if (original.source.type === 'boundary') {
+    proofs = { rows: [] }
+  } else {
+    proofs = await sql.query<{ record: WorkflowNativeProofRecord }>(`select record from workflow_native_proofs
+      where execution_id=$1 and run_id=$2 and proof_id=$3`,
+    [intent.executionId, intent.runId, workflowNativeSourceId(intent.executionId, original.source)])
+  }
   if(proofs.rows.some(row=>row.record.execution.executionId===intent.executionId&&same(row.record.session,readout.session)
     &&same(row.record.original,original.source)))capture.publications.add(sql)
   if (lifetime.review) {
@@ -572,7 +610,10 @@ async function recordRemotePublications(sql: GraphTransactionSql, original: Veri
   }
   if(readout.history && capture.publications.has(sql)) {
     const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
-    const events=await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs
+    const sourceIds = new Set(sources.map(source => workflowNativeSourceId(intent.executionId, source)))
+    const events = matching ? { rows: matching.filter(record => sourceIds.has(record.proofId))
+      .map(record => ({ original: record.original })) }
+      : await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs
       where execution_id=$1 and run_id=$2 and proof_id=any($3::text[])`,
       [intent.executionId,intent.runId,sources.map(source=>workflowNativeSourceId(intent.executionId,source))])
     if(sources.every(source=>events.rows.some(row=>same(row.original,source))))capture.replyPublications.add(sql)
