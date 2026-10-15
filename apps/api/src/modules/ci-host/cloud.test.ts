@@ -891,6 +891,54 @@ describe('GitHub Actions CI on a public mirror', () => {
       .toContain(f.mirrorGit('rev-parse', 'refs/heads/main'))
   })
 
+  it('finds the default-branch merge-base through shallow caches after the default branch moved on', async () => {
+    const source = 'apps/api/test/value.ts'
+    const test = 'apps/api/test/value.integration.test.ts'
+    const f = await fixture({ [source]: 'export const value = 1', [test]: "import './value.js'" })
+    const fixtureGit = f.git.git
+    // Main's git cache clones and fetches shallowly, so the branch tip alone shares no history with the feature.
+    f.git.git = (args, options) => fixtureGit(args[0] === 'clone' ? ['clone', '--no-local', '--depth=1', ...args.slice(1)]
+      : args[0] === 'fetch' && args.includes('origin') ? ['fetch', '--depth=1', ...args.slice(1)] : args, options)
+    f.run('checkout', '-qb', 'feature')
+    await f.write(source, 'export const value = 2')
+    f.run('add', '.')
+    f.run('commit', '-qm', 'feature change')
+    const commit = f.run('rev-parse', 'HEAD')
+    f.push('feature')
+    f.run('checkout', '-q', 'main')
+    for (const name of ['one', 'two', 'three']) {
+      await f.write(`${name}.txt`, name)
+      f.run('add', '.')
+      f.run('commit', '-qm', name)
+    }
+    f.push('main')
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit,
+      suite: 'integration', defaultBranch: 'main' })
+    const command = f.dispatched[0]!
+    expect(command).toContain('scope=affected')
+    expect(command).toContain(`default_branch=ci-default/${commit}`)
+  })
+
+  it('verifies an explicit base through shallow caches', async () => {
+    const source = 'apps/api/test/value.ts'
+    const test = 'apps/api/test/value.integration.test.ts'
+    const f = await fixture({ [source]: 'export const value = 1', [test]: "import './value.js'" })
+    const fixtureGit = f.git.git
+    f.git.git = (args, options) => fixtureGit(args[0] === 'clone' ? ['clone', '--no-local', '--depth=1', ...args.slice(1)]
+      : args[0] === 'fetch' && args.includes('origin') ? ['fetch', '--depth=1', ...args.slice(1)] : args, options)
+    const baseCommit = f.commit
+    await f.write(source, 'export const value = 2')
+    f.run('add', '.')
+    f.run('commit', '-qm', 'change since release')
+    const commit = f.run('rev-parse', 'HEAD')
+    f.push('main')
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit,
+      baseCommit, suite: 'integration', scope: 'affected' })
+    const command = f.dispatched[0]!
+    expect(command).toContain('scope=affected')
+    expect(command.some(value => value.startsWith('base_commit='))).toBe(true)
+  })
+
   it('publishes again from a shallow source clone after the mirror moved on', async () => {
     const f = await fixture()
     const fixtureGit = f.git.git
