@@ -375,9 +375,9 @@ export async function recoverTerminalBeforeClosure(
       await t.stop()
       expect(await next.engine.cancel(t.f.run.id)).toBe(true)
     } else if (kind === 'retry-exhausted') {
-      // The real driver reports the selected failed node even AFTER
-      // negative settlement succeeds. Both facts are part of the contract.
-      await expect(next.engine.start(t.f.run.id)).rejects.toMatchObject({ code: 'WORKFLOW_SELECTED_EXECUTION_FAILED' })
+      // A selected node that exhausts its attempts settles the Run as failed.
+      // That failed outcome is the Run's data, not an engine start error.
+      await next.engine.start(t.f.run.id)
     } else await next.engine.start(t.f.run.id)
     expect(await next.runs.get(t.f.run.id)).toMatchObject({ executionState: 'completed',
       outcome: kind === 'stop' ? 'canceled' : kind === 'retry-exhausted' ? 'failed' : 'succeeded' })
