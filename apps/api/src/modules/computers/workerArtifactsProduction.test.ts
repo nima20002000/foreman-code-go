@@ -5,7 +5,7 @@ import type pg from 'pg'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkerArtifactReplySchema } from '@foreman-code/contracts/computer-maintenance'
-import { createWorkerArtifactExtension } from './workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerBundleIdentity } from './workerArtifacts.js'
 import { createProductionWorkerArtifactExtension } from './workerArtifactsProduction.js'
 
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
@@ -138,4 +138,27 @@ it('reports missing smoke configuration concretely and never skips smoke for ena
   await writeFile(join(f.directory, 'ci-smoke.json'), JSON.stringify({ repository: 'example/product', commit: 'c'.repeat(40) }))
   await expect(extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context))
     .rejects.toMatchObject({ code: 'WORKER_UPDATE_SMOKE_UNAVAILABLE' })
+})
+
+it('serves retained GitHub bundles with their original manifest and smoke for the installed release', async () => {
+  const f = await release()
+  const version = '0.0.57'
+  const commit = 'c'.repeat(40)
+  await writeFile(join(f.directory, 'package.json'), JSON.stringify({ name: 'foreman-code', version }))
+  const github = { repository: 'example/worker', tag: `worker-${commit}` }
+  const index = { ...f.index, version, commit, github,
+    artifacts: [{ target, manifestSha256: f.manifestSha256, github: f.index.github }] }
+  await writeFile(join(f.artifacts, 'index.json'), JSON.stringify(index))
+  const ciSmoke = { repository: github.repository, commit }
+  await writeFile(join(f.directory, 'ci-smoke.json'), JSON.stringify(ciSmoke))
+  const pool = { query: async () => ({ rows: [{}] }) } as unknown as pg.Pool
+  const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory, pool })
+  const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'release', target }, context)).payload)
+  expect(reply).toEqual({ operation: 'release', release: {
+    version: f.manifest.version, manifest: f.manifest, manifestSha256: f.manifestSha256, github: f.index.github,
+  } })
+  expect(await readWorkerBundleIdentity({ directory: f.artifacts, version }, target))
+    .toMatchObject({ version: f.manifest.version, manifestSha256: f.manifestSha256 })
+  expect((await extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context)).payload)
+    .toEqual({ operation: 'ci-smoke', ciSmoke })
 })

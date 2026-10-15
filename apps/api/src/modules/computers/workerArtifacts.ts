@@ -56,14 +56,14 @@ async function artifactIndex(directory: string, version: string) {
   return { root, index }
 }
 
-async function artifactManifest(root: string, manifestSha256: string, version: string) {
+async function artifactManifest(root: string, manifestSha256: string) {
   const directory = join(root, manifestSha256)
   if (!(await lstat(directory)).isDirectory()) throw new DeviceApplicationError('extension-rejected')
   const bytes = await readRegularFile(directory, 'manifest.json', WORKER_UPDATE_MAX_JSON_BYTES)
   if (sha256(bytes) !== manifestSha256) throw new DeviceApplicationError('extension-rejected')
   const value: unknown = JSON.parse(bytes.toString('utf8'))
-  const parsed = WorkerArtifactManifestSchema.parse(value)
-  if (parsed.version !== version || !bytes.equals(Buffer.from(`${JSON.stringify(value, null, 2)}\n`))) {
+  WorkerArtifactManifestSchema.parse(value)
+  if (!bytes.equals(Buffer.from(`${JSON.stringify(value, null, 2)}\n`))) {
     throw new DeviceApplicationError('extension-rejected')
   }
   const manifest = value as WorkerArtifactManifest
@@ -88,7 +88,7 @@ export async function readWorkerManifestSha256s(options: { directory: string; ve
 export async function readWorkerContentSha256s(options: { directory: string; version: string }): Promise<string[]> {
   const { root, index } = await publishedArtifactIndex(options)
   return Promise.all(index.artifacts.map(async artifact => {
-    const { manifest } = await artifactManifest(root, artifact.manifestSha256, options.version)
+    const { manifest } = await artifactManifest(root, artifact.manifestSha256)
     if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
     const contentSha256 = workerArtifactContentSha256(manifest)
     if (artifact.contentSha256 && artifact.contentSha256 !== contentSha256) {
@@ -107,7 +107,7 @@ export async function readWorkerBundleIdentity(options: { directory: string; ver
     throw new DomainError('WORKER_BUNDLE_UNPUBLISHED', 'No published Worker bundle matches this target.', 503,
       { publicationError: 'No published Worker bundle matches this target.' })
   }
-  const { manifest } = await artifactManifest(root, artifact.manifestSha256, options.version)
+  const { manifest } = await artifactManifest(root, artifact.manifestSha256)
   const contentSha256 = workerArtifactContentSha256(manifest)
   if (!sameTarget(manifest.target, target) || artifact.contentSha256 && artifact.contentSha256 !== contentSha256) {
     throw new DeviceApplicationError('extension-rejected')
@@ -161,25 +161,23 @@ export function createWorkerArtifactExtension(options: {
         if (request.operation === 'release') return { payload: { operation: 'release', release: null } }
         throw new DeviceApplicationError('extension-rejected')
       }
-      const { manifest } = await artifactManifest(
-        root, artifact.manifestSha256, options.version,
-      )
+      const { manifest } = await artifactManifest(root, artifact.manifestSha256)
       if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
       if (request.operation === 'ci-smoke') {
         const enabled = await options.buildEnabled?.(context.binding) ?? false
         if (!enabled) return { payload: { operation: 'ci-smoke', ciSmoke: null } }
         const configuration: unknown = options.ciSmoke
           ? await options.ciSmoke()
-          : { repository: index.github.repository, commit: manifest.commit }
+          : { repository: index.github.repository, commit: index.commit ?? manifest.commit }
         const smoke = WorkerCiSmokeSchema.safeParse(configuration)
-        if (!smoke.success || smoke.data.commit !== manifest.commit) {
+        if (!smoke.success || smoke.data.commit !== (index.commit ?? manifest.commit)) {
           throw new DeviceApplicationError('WORKER_UPDATE_SMOKE_UNAVAILABLE')
         }
         return { payload: { operation: 'ci-smoke', ciSmoke: smoke.data } }
       }
       return { payload: { operation: 'release', release: {
-        version: options.version, manifestSha256: artifact.manifestSha256, manifest,
-        github: index.github,
+        version: manifest.version, manifestSha256: artifact.manifestSha256, manifest,
+        github: artifact.github ?? index.github,
       } } }
     },
   }

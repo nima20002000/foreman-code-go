@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { artifactFiles, validateWorkerTarget, workerReleaseVersion, assertWorkerUpdateToolchain } from './worker-artifact-files.mjs'
 
@@ -113,7 +114,10 @@ async function readPreviousArtifacts(directory) {
   try {
     const index = JSON.parse(await readFile(join(directory, 'index.json'), 'utf8'))
     if (!Array.isArray(index.artifacts)) throw new Error('Worker artifact index is invalid')
-    return index.artifacts
+    return index.artifacts.map(artifact => {
+      const github = artifact.github ?? (index.publication?.state === 'published' ? index.github : undefined)
+      return { ...artifact, ...(github ? { github } : {}) }
+    })
   } catch (error) {
     if (error.code !== 'ENOENT') console.warn(`Worker artifact cache unavailable: ${error.message}`)
     return []
@@ -130,7 +134,18 @@ function committedBlobIds(repository, commit) {
   }))
 }
 
-async function reuseWorkerArtifact({ previousDirectory, previousArtifacts, path, target, version, commit, blobs, staging }) {
+function sameWorkerInputs({ repository, commit, manifest, blobs }) {
+  return manifest.sourceSnapshot.files.every(file => {
+    if (!blobs.has(file.path)) return false
+    if (blobs.get(file.path) === file.gitBlobSha1) return true
+    if (file.path !== 'package.json') return false
+    const previous = JSON.parse(committedBytes(repository, manifest.commit, file.path))
+    const product = JSON.parse(committedBytes(repository, commit, file.path))
+    return isDeepStrictEqual({ ...previous, version: product.version }, product)
+  })
+}
+
+async function reuseWorkerArtifact({ repository, previousDirectory, previousArtifacts, path, target, commit, blobs, staging }) {
   const retained = previousArtifacts.find(artifact => artifact.target && targetKey(artifact.target) === targetKey(target))
   if (!retained || !/^[a-f0-9]{64}$/.test(retained.manifestSha256)) return false
   try {
@@ -142,15 +157,12 @@ async function reuseWorkerArtifact({ previousDirectory, previousArtifacts, path,
     const required = ['package.json', 'pnpm-lock.yaml', 'scripts/build-worker-artifact.mjs', path]
     if (!snapshot || snapshot.commit !== manifest.commit || !Array.isArray(snapshot.files)
       || !required.every(path => snapshot.files.some(file => file.path === path))
-      || !snapshot.files.every(file => blobs.has(file.path) && blobs.get(file.path) === file.gitBlobSha1)) return false
-    const identity = await verifyArtifact(directory, target, version, manifest.commit)
+      || !sameWorkerInputs({ repository, commit, manifest, blobs })) return false
+    const identity = await verifyArtifact(directory, target, manifest.version, manifest.commit)
     if (identity.contentSha256 !== retained.contentSha256) throw new Error('Worker content identity mismatch')
     await cp(directory, staging, { recursive: true })
-    // Payload bytes are unchanged; each release still records its own captured commit.
-    const updated = { ...manifest, commit, sourceSnapshot: { ...snapshot, commit } }
-    await writeFile(join(staging, 'manifest.json'), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 })
     console.log(JSON.stringify({ operation: 'reuse Worker artifact', target: targetKey(target) }))
-    return true
+    return { ...identity, ...(retained.github ? { github: retained.github } : {}) }
   } catch (error) {
     console.warn(`Worker artifact cache unavailable for ${targetKey(target)}: ${error.message}`)
     await rm(staging, { recursive: true, force: true })
@@ -209,7 +221,9 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
     const assets = []
     for (const { manifestSha256 } of artifacts) {
       const asset = join(staging, `${manifestSha256}.tar.gz`)
-      await run('tar', ['-czf', asset, '-C', join(directory, manifestSha256), '.'], { cwd: repository ?? directory })
+      await run('tar', ['-czf', asset, '--sort=name', '--format=gnu', '--mtime=@0',
+        '--owner=0', '--group=0', '--numeric-owner', '--mode=u+rwX,go-rwx',
+        '-C', join(directory, manifestSha256), '.'], { cwd: repository ?? directory })
       assets.push(asset)
     }
     const backoff = [5000, 10000, 20000, 25000]
@@ -263,15 +277,15 @@ export async function buildWorkerReleaseArtifacts({
       const staging = await mkdtemp(join(directory, '.build-'))
       // The builder requires a fresh directory that it creates itself.
       await rm(staging, { recursive: true })
-      const reused = previousArtifacts.length && await reuseWorkerArtifact({ previousDirectory, previousArtifacts,
-        path, target, version, commit, blobs, staging })
+      const reused = previousArtifacts.length && await reuseWorkerArtifact({ repository, previousDirectory, previousArtifacts,
+        path, target, commit, blobs, staging })
       if (!reused) {
         await run(process.execPath, ['scripts/build-worker-artifact.mjs', path, staging], {
           cwd: repository,
           env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },
         })
       }
-      const identity = await verifyArtifact(staging, target, version, commit)
+      const identity = reused || await verifyArtifact(staging, target, version, commit)
       await chmod(staging, 0o700)
       await rename(staging, join(directory, identity.manifestSha256))
       return { target, ...identity }
@@ -279,8 +293,11 @@ export async function buildWorkerReleaseArtifacts({
     const failed = builds.find(build => build.status === 'rejected')
     if (failed) throw failed.reason
     const artifacts = builds.map(build => build.value)
-    const github = publish ? await publish({ repository, directory, commit, artifacts, run }) : undefined
-    const index = { format: 1, version, ...(github ? { github } : {}), artifacts,
+    const unpublished = artifacts.filter(artifact => !artifact.github)
+    const github = unpublished.length
+      ? publish && await publish({ repository, directory, commit, artifacts: unpublished, run })
+      : artifacts[0].github
+    const index = { format: 1, version, commit, ...(github ? { github } : {}), artifacts,
       publication: { state: github ? 'published' : 'pending', lastError: null,
         ...(!github ? publicationWindow() : {}) } }
     await writeFile(join(directory, 'index.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
@@ -324,7 +341,8 @@ export async function publishInstalledWorkerArtifacts({ directory, repositoryNam
   try {
     await writeArtifactIndex(directory, { ...index,
       publication: { state: 'pending', lastError: null, ...publicationWindow(index.publication) } })
-    const github = await publish({ name: repositoryName, directory, commit, artifacts: index.artifacts,
+    const unpublished = index.artifacts.filter(artifact => !artifact.github)
+    const github = await publish({ name: repositoryName, directory, commit, artifacts: unpublished,
       run: run ?? runWorkerPublicationCommand })
     const published = { ...index, github, publication: { state: 'published', lastError: null } }
     await writeArtifactIndex(directory, published)
