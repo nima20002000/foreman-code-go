@@ -69,9 +69,15 @@ export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
+/** Longest ci_get wait budget; the managed launcher's native tool deadline is derived from it. */
+export const CI_WAIT_MAX_SECONDS = 1800
 export const CiGetInputSchema = CiTicketInputSchema.extend({
-  waitSeconds: z.number().min(0).max(300).optional().describe('Defaults to 0. Wait up to 300 seconds for the ticket’s '
-    + 'state or step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
+  waitSeconds: z.number().min(0).max(CI_WAIT_MAX_SECONDS).optional().describe('Defaults to 0. With waitUntil, the whole '
+    + 'group wait budget (up to 1800 seconds). Without it, waits at most 60 seconds per call for this ticket’s state or '
+    + 'step to change; terminal tickets return immediately. The wait ends when the MCP request is canceled.'),
+  waitUntil: z.literal('group-terminal').optional().describe('Wait until every ticket of this ticket’s group is terminal '
+    + 'and its test results are collected. Returns wait.status settled, or still-running with the ticket counts when the '
+    + 'budget ends; then call again with the same ticketId. Use one such call instead of polling.'),
   logTail: z.boolean().optional().describe('Defaults to true. Set false to omit the 32 KiB log tail while waiting; '
     + 'read logs once at the end with ci_logs_read.'),
   testStatus: CiTestStatusFilterSchema.optional().describe('Include the ticket’s structured test results, limited to '
@@ -90,6 +96,9 @@ export const CiGetOutputSchema = z.object({
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
   tests: CiTestResultsSchema.nullable().optional(),
+  /** Present for waitUntil: settled when every group ticket is terminal with collection settled; otherwise still-running. */
+  wait: z.object({ until: z.literal('group-terminal'), status: z.enum(['settled', 'still-running']),
+    tickets: z.number().int().positive(), settledTickets: z.number().int().nonnegative() }).strict().optional(),
   /** For a failed ticket: how often each failed test (or a failed file without failed tests, test null) failed in
    * recent gate runs that ran its file, so a known flake is recognized instead of root-caused again. It never changes
    * the ticket's result. */

@@ -5,11 +5,11 @@ import type { ChildProcessEnvironment } from '../../harnesses/port.js'
 import type { DeviceConnectionSupervisor } from '../../devices/connectionSupervisor.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
-import { APP_MCP_TIMEOUTS } from '../../harnesses/appMcpLauncher.js'
 
-/** The native client's tool deadline starts before any device admission wait. The relay answers first with a
- * retryable timeout, so the client never has to report its own deadline as a cancellation. */
-const relayDeadlineMs = APP_MCP_TIMEOUTS.tool_timeout_sec * 1000 - 20_000
+/** Relayed calls keep their 100-second deadline, which precedes the 120-second bridge deadline. Group waits send chunks
+ * of at most 60 seconds, so they fit too. The relay answers first with a retryable timeout, so the client never has to
+ * report its own deadline as a cancellation. */
+const relayDeadlineMs = 100_000
 
 async function withRelayDeadline<T>(run: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
   const deadline = new AbortController()
