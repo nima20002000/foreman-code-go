@@ -60,6 +60,8 @@ it('keeps source development commands usable after successful and failed product
     const require = createRequire(new URL('../../worker/package.json', import.meta.url))
     const { parse } = require('yaml') as { parse: (text: string) => Record<string, unknown> }
     const lock = parse(await readFile(new URL('../../../pnpm-lock.yaml', import.meta.url), 'utf8'))
+    // This minimal workspace has no patched dependencies.
+    delete lock.patchedDependencies
     await writeFile(join(source, 'pnpm-lock.yaml'), JSON.stringify({ ...lock, importers: {
       '.': { devDependencies: { '@types/node': { specifier: '26.5.1', version: '26.5.1' } } },
       'apps/api': { dependencies: {
@@ -114,6 +116,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
       for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
         await cp(join(repository, name), join(source, name))
       }
+      await cp(join(repository, 'patches'), join(source, 'patches'), { recursive: true })
       await cp(join(repository, 'scripts/require-pnpm.mjs'), join(source, 'scripts/require-pnpm.mjs'))
       for (const project of ['apps/api', 'packages/contracts']) {
         await mkdir(join(source, project), { recursive: true })
