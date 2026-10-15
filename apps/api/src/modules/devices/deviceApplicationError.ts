@@ -106,6 +106,10 @@ const retryability: Readonly<Record<string, boolean>> = {
 }
 
 export function deviceApplicationFailure(error: unknown): DeviceApplicationFailure {
+  // A handler whose own deadline fired (Node's TimeoutError has a numeric code) is transient, not a rejection.
+  if (error && typeof error === 'object' && (error as { name?: unknown }).name === 'TimeoutError') {
+    return { code: 'timeout', retryable: true }
+  }
   const proposed = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
   const code = typeof proposed === 'string' && Object.hasOwn(retryability, proposed) ? proposed : 'extension-rejected'
   return { code, retryable: retryability[code]! }

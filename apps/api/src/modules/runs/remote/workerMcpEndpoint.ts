@@ -41,6 +41,10 @@ export interface WorkerMcpRelay {
   refresh?(signal?: AbortSignal): Promise<string>
 }
 
+/** A bound route renews itself this long before it expires, without waiting for a Main status frame. */
+const WORKER_MCP_LEASE_RENEWAL_WINDOW_MS = 2 * 60_000
+const WORKER_MCP_LEASE_RENEWAL_RETRY_MS = 15_000
+
 interface WorkerMcpEndpointOptions {
   launcher: string
   signal: AbortSignal
@@ -118,6 +122,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
   let unregister: (() => Promise<void>) | undefined
   const close = () => shutdown ??= (async () => {
     closing = true
+    clearTimeout(renewal)
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     await Promise.all([...active])
     await updates
@@ -141,6 +146,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       }
       unregister = release
       bound = { relay, digest: createHash('sha256').update(`Bearer ${token}`).digest(), expiresAt: relay.expiresAt }
+      scheduleRenewal(bound, renewalDelay(relay.expiresAt))
       log.info({ agentId: relay.environment.agentId, launcher: input.launcher, expiresAt: relay.expiresAt },
         'Worker MCP launcher route registered')
     }).catch(error => {
@@ -173,6 +179,25 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
     })
     updates = task.then(() => undefined, () => undefined)
     return task
+  }
+  /** The bound route renews itself in its final window, so a long native turn never depends on Main status frames. */
+  let renewal: ReturnType<typeof setTimeout> | undefined
+  const renewalDelay = (expiresAt: string) => Date.parse(expiresAt) - Date.now() - WORKER_MCP_LEASE_RENEWAL_WINDOW_MS
+  const scheduleRenewal = (lease: NonNullable<typeof bound>, delay: number) => {
+    if (closing || bound !== lease || !lease.relay.refresh || Date.parse(lease.expiresAt) <= Date.now()) return
+    clearTimeout(renewal)
+    renewal = setTimeout(() => { renewal = undefined; void renewLease(lease) }, Math.max(0, delay))
+    renewal.unref()
+  }
+  const renewLease = async (lease: NonNullable<typeof bound>) => {
+    if (closing || bound !== lease) return
+    try {
+      await refreshLease()
+      scheduleRenewal(lease, Math.max(WORKER_MCP_LEASE_RENEWAL_RETRY_MS, renewalDelay(lease.expiresAt)))
+    } catch {
+      // ignore: refreshLease already logged the failed renewal; retry until the lease expires.
+      scheduleRenewal(lease, WORKER_MCP_LEASE_RENEWAL_RETRY_MS)
+    }
   }
   return { endpoint, bindRelay, refreshLease, close }
 }

@@ -20,6 +20,7 @@ import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readAcceptedPlacement } from './persistence.js'
 import { DomainError, databaseReadFailure } from '../errors.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 
 export interface SelectedMainMcpForward {
   /** Existing selected main's MCP transports, with this exact worker bearer;
@@ -207,7 +208,7 @@ export function selectedMainMcpForward(app: import('fastify').FastifyInstance): 
     const authority = `${host.includes(':') ? `[${host}]` : host}:${address.port}`
     const response = await fetch(`http://${authority}${url}`, {
       method: 'POST', body: JSON.stringify(body), redirect: 'error',
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), headers: {
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(deviceRequestTimeoutMs)]) : AbortSignal.timeout(deviceRequestTimeoutMs), headers: {
       authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'content-type': 'application/json',
       ...(protocolVersion ? { 'mcp-protocol-version': protocolVersion } : {}),
     } })
