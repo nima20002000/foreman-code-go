@@ -327,8 +327,13 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
     }
   } })
   const inventory = await waitForReplacementReviewInventory(fixture, beforeInventory)
+  const previousBinding = beforeInventory.hostMetadata!.connection!.binding
+  const replacementBinding = inventory.hostMetadata!.connection!.binding
+  expect(replacementBinding.bootId).toBe(previousBinding.bootId)
+  expect(replacementBinding.connectionEpoch).not.toBe(previousBinding.connectionEpoch)
+  expect(replacementBinding.connectionGeneration).toBeGreaterThan(previousBinding.connectionGeneration)
   expect(inventory.installations[0]?.connectionGeneration)
-    .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
+    .toBe(beforeInventory.installations[0]?.connectionGeneration)
   expect(fixture.workerPid()).toBe(originalWorkerPid)
   const profileEvidence = new HostHarnessProfileEvidenceRepository(fixture.db.pool)
   // Inventory arrives before reconnect qualification; dispatching early incurs a retry backoff.

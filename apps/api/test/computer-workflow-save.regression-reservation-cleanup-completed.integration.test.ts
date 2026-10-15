@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { MaterializationReservationCleanup } from '../src/modules/sources/materializationReservationCleanup.js'
 import type { SourceReservation } from '../src/modules/sources/reservations.js'
@@ -50,20 +51,26 @@ it('defers reservation cleanup without waiting on a locked completed Run', async
     if (!reservation) throw new Error('The completed workflow has no retained source reservation.')
     await fixture.db.pool.query("update source_storage_reservations set state='uncertain' where reservation_id=$1",
       [reservation.record.reservationId])
-    const transaction = await fixture.db.pool.connect()
     try {
-      await transaction.query('begin')
-      await transaction.query('select id from runs where id=$1 for update', [runId])
-      const reclaim = vi.fn(async () => ({ closures: [] }))
-      const cleanup = new MaterializationReservationCleanup(fixture.db.pool, reclaim)
-      expect(await cleanup.reconcile()).toBe(0)
-      expect(reclaim).not.toHaveBeenCalled()
-      const retained = await transaction.query<{ state: string; record: SourceReservation }>(
-        'select state,record from source_storage_reservations where reservation_id=$1',
-        [reservation.record.reservationId])
-      expect(retained.rows[0]).toEqual({ state: 'uncertain', record: reservation.record })
+      await withTransaction(fixture.db.pool, async transaction => {
+        await transaction.query('select id from runs where id=$1 for update', [runId])
+        const reclaim = vi.fn(async () => ({ closures: [] }))
+        const cleanup = new MaterializationReservationCleanup(fixture.db.pool, reclaim)
+        const startedAt = Date.now()
+        expect(await cleanup.reconcile()).toBe(0)
+        expect(reclaim).not.toHaveBeenCalled()
+        const retained = await transaction.query<{ state: string; record: SourceReservation }>(
+          'select state,record from source_storage_reservations where reservation_id=$1',
+          [reservation.record.reservationId])
+        expect(retained.rows[0]).toEqual({ state: 'uncertain', record: {
+          ...reservation.record,
+          cleanupRetry: { failures: reservation.record.cleanupRetry?.failures ?? 0, nextAttemptAt: expect.any(String) },
+        } })
+        const deferredAt = Date.parse(retained.rows[0]!.record.cleanupRetry!.nextAttemptAt)
+        expect(deferredAt).toBeGreaterThanOrEqual(startedAt)
+        expect(deferredAt).toBeLessThanOrEqual(Date.now())
+      })
     } finally {
-      try { await transaction.query('rollback') } finally { transaction.release() }
       await fixture.db.pool.query('update source_storage_reservations set state=$2 where reservation_id=$1',
         [reservation.record.reservationId, reservation.state])
     }
