@@ -64,7 +64,7 @@ export class DeviceRequestQueue {
         ? this.observationActive >= DEVICE_APPLICATION_OBSERVATION_IN_FLIGHT - 1
           || this.waiting.some(waiter => waiter.observation)
         : this.busy
-      if (busy) throw new DeviceApplicationAdmissionError('background_yield')
+      if (busy || !this.canAdmit(slot)) throw new DeviceApplicationAdmissionError('background_yield')
       return this.reserve(slot)
     }
     if (this.canAdmit(slot) && !this.waiting.some(waiter =>

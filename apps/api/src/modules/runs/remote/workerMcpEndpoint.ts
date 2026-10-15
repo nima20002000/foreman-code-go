@@ -42,7 +42,7 @@ export interface WorkerMcpRelay {
 }
 
 /** A bound route renews itself this long before it expires, without waiting for a Main status frame. */
-const WORKER_MCP_LEASE_RENEWAL_WINDOW_MS = 2 * 60_000
+export const WORKER_MCP_LEASE_RENEWAL_WINDOW_MS = 2 * 60_000
 const WORKER_MCP_LEASE_RENEWAL_RETRY_MS = 15_000
 
 interface WorkerMcpEndpointOptions {
@@ -156,11 +156,12 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
     updates = task.then(() => undefined, () => undefined)
     return task
   }
-  /** Long native turns renew the bound lease in place; the native URL and bearer stay the same. */
+  /** Refresh only in the renewal window; queued callers reuse the latest expiry. */
   const refreshLease = () => {
     const task = updates.then(async () => {
       const lease = bound
       if (closing || !lease?.relay.refresh) throw new Error('The original worker MCP endpoint is closing.')
+      if (Date.parse(lease.expiresAt) - Date.now() > WORKER_MCP_LEASE_RENEWAL_WINDOW_MS) return lease.expiresAt
       const renewedExpiry = await lease.relay.refresh(input.signal)
       input.signal.throwIfAborted()
       if (closing || bound !== lease) throw new Error('The original worker MCP endpoint is closing.')

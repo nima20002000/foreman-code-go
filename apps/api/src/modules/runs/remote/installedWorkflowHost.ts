@@ -58,7 +58,7 @@ import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contract
 import { RemoteExecutionRpcRequestSchema, type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
-import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
+import { createWorkerMcpEndpoint, WORKER_MCP_LEASE_RENEWAL_WINDOW_MS } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
@@ -1221,7 +1221,8 @@ class InstalledWorkflowHostRuntime {
             const authority = await workerExecutionAuthorizer(this.forBinding(context.binding))(frame.intent, frame.placement,
               receipt.stopFence ? 'stop' : 'read')
             const cleanupOnly = authority?.cleanupOnly === true
-            if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence && !resident.physicalClosure) {
+            if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence && !resident.physicalClosure
+              && Date.parse(resident.leaseExpiresAt) - Date.now() <= WORKER_MCP_LEASE_RENEWAL_WINDOW_MS) {
               if (!resident.mcp) unavailable('original_main_lease_required')
               resident.leaseExpiresAt = await resident.mcp!.refreshLease()
             } else if (!reviewerObservationExpiresAt && !cleanupOnly && !receipt.stopFence
