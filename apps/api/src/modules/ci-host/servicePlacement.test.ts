@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { CiHostRequestSchema, CiRunRecordSchema, type CiDurations, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -33,7 +34,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   const started: { computer: HostCiComputer; request: CiHostRequest; assigned: CiRunRecord }[] = []
   let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
-    if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
+    if (sql.includes('ci_dispatch_claims')) return { rows: [], rowCount: 1 }
     if (sql.startsWith('select record from ci_runs where id=')) {
       return { rows: records.filter(record => record.id === parameters![0]).map(record => ({ record })) }
     }
@@ -59,6 +60,10 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
     }
+    if (sql.startsWith('select distinct group_id')) {
+      return { rows: records.filter(record => record.gate && ['failed', 'lost'].includes(record.state))
+        .map(record => ({ group_id: record.groupId })) }
+    }
     if (sql.includes('where group_id=any')) {
       return { rows: records.map(record => ({ record })) }
     }
@@ -73,8 +78,11 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
       return { rows: records.filter(record => record.gate).map(record => ({ record })) }
     }
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
-    return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
-      .map(record => ({ record, host_key: record.computer?.hostRef.kind === 'cloud' ? cloud.key : host.key })) }
+    const active = records.filter(record => ['starting', 'running'].includes(record.state))
+      .map(record => ({ record, host_key: available.find(computer =>
+        isDeepStrictEqual(computer.hostRef, record.computer?.hostRef))?.key ?? host.key }))
+    return { rows: sql.startsWith('select host_key from ci_runs')
+      ? active.filter(row => row.host_key === parameters![0]) : active }
   }, connect: async () => ({ query: pool.query, release: () => {} }) } as unknown as pg.Pool
   const endpoint: HostCiEndpoint = {
     computers: async () => available,
@@ -99,6 +107,45 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
     endpoint, undefined, options)
   return { service, started, writes: () => writes }
 }
+
+const secondHost: HostCiComputer = {
+  key: 'device:builder', hostRef: { kind: 'device', mainId: 'main', deviceId: 'builder' },
+  label: 'Second builder', priority: -1,
+}
+
+it.each([false, true])('spreads a two-part integration group across free computers with a saved plan=%s', async saved => {
+  const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
+    ...(saved ? { partition: { ...run.partition, weights: [1, 1], tier: 'fast' }, plannedHostKey: host.key } : {}),
+  }))
+  const f = fleet(records, [host, secondHost], new Map(), new Set(), new Map([[host.key, 2]]))
+  await f.service.dispatch()
+  expect(f.started.map(item => item.computer.key)).toEqual([host.key, secondHost.key])
+  expect(records.map(run => run.state)).toEqual(['running', 'running'])
+  if (!saved) expect(records.map(run => run.plannedHostKey)).toEqual([host.key, secondHost.key])
+})
+
+it('spreads a queued partition away from a sibling dispatched in an earlier pass', async () => {
+  const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
+    partition: { ...run.partition, weights: [1, 1], tier: 'fast' }, plannedHostKey: host.key,
+  }))
+  records[0] = CiRunRecordSchema.parse({ ...records[0], state: 'running',
+    computer: { hostRef: host.hostRef, label: host.label } })
+  const f = fleet(records, [host, secondHost], new Map(), new Set(), new Map([[host.key, 2]]))
+  await f.service.dispatch()
+  expect(f.started.map(item => item.computer.key)).toEqual([secondHost.key])
+})
+
+it.each(['busy', 'not-ready', 'offline'])('uses a second slot when the other computer is %s', async reason => {
+  const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run,
+    partition: { ...run.partition, weights: [1, 1], tier: 'fast' },
+  }))
+  const unavailable = reason === 'busy' ? new Map<string, string>() : new Map([[secondHost.key, reason]])
+  const occupied = reason === 'busy' ? new Set([secondHost.key]) : new Set<string>()
+  const f = fleet(records, [host, secondHost], unavailable, occupied, new Map([[host.key, 2]]))
+  await f.service.dispatch()
+  expect(f.started.map(item => item.computer.key)).toEqual([host.key, host.key])
+  expect(records.map(run => run.state)).toEqual(['running', 'running'])
+})
 
 const gateChecks = [
   { suite: 'typecheck', part: 'typecheck-api' },

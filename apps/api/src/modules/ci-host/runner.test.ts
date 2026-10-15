@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
+import { integrationShardPlan } from '../../../../../scripts/test-integration.mjs'
 
 const roots: string[] = []
 const children = new Set<ReturnType<typeof spawn>>()
@@ -26,7 +27,7 @@ afterEach(async () => {
 async function computer(options: { github?: boolean; suiteExit?: number; watchdogReason?: string; pause?: boolean
   measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
   change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean
-  affectedUnitTests?: number; inspectSource?: boolean } = {}) {
+  affectedUnitTests?: number; inspectSource?: boolean; memoryBytes?: number } = {}) {
   const temporaryRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(temporaryRoot, { recursive: true })
   const root = await mkdtemp(join(temporaryRoot, 'host-ci-'))
@@ -132,8 +133,8 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
   const unitStarted = new Promise<void>(resolve => { notifyUnitStarted = resolve })
   const units = new Map<string, ReturnType<typeof spawn>>()
   const system = systemHostCiPorts()
-  const ports: HostCiPorts = { ...system, cpus: options.cpuCount ?? 8, memoryBytes: 16 * 2 ** 30,
-    availableMemoryBytes: () => 16 * 2 ** 30,
+  const ports: HostCiPorts = { ...system, cpus: options.cpuCount ?? 8, memoryBytes: options.memoryBytes ?? 16 * 2 ** 30,
+    availableMemoryBytes: () => options.memoryBytes ?? 16 * 2 ** 30,
     run: async (file, args, runOptions = {}) => {
       if (file === 'gh') return { code: options.github === false ? 1 : 0, stdout: '', stderr: '' }
       if (file === 'git' && args.some(value => value.startsWith('https://github.com/'))) {
@@ -174,6 +175,30 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
 }
 
 describe('host CI runner', () => {
+  it.each(['integration', 'unit'] as const)('passes each concurrent %s ticket its allowed slot share', async suite => {
+    const gib = 2 ** 30
+    const f = await computer({ cpuCount: 16, memoryBytes: 32 * gib, hostSlots: true, pause: true })
+    const runIds = [randomUUID(), randomUUID()]
+    const databaseCpus = suite === 'integration' ? 2 : 1
+    const cpuBudget = 12 / 2 - databaseCpus
+    const databaseMemory = suite === 'integration' ? 1.5 * gib : gib
+    const memoryBudget = Math.floor(24 * gib * 0.9 / 2) - databaseMemory
+    for (const runId of runIds) {
+      await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+        suite, scope: 'full', buildAllowancePercent: 75 })
+      await vi.waitFor(async () => {
+        const reply = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
+        expect(reply).toMatchObject({ operation: 'read', run: { state: 'running' },
+          text: expect.stringContaining(`CI budget ${cpuBudget} ${memoryBudget} ${cpuBudget}`) })
+      })
+    }
+    expect(await f.runner.status()).toMatchObject({ slotsUsed: 2, slotsTotal: 2 })
+    const plan = integrationShardPlan({ FOREMAN_CODE_CI_CPU_COUNT: String(cpuBudget),
+      FOREMAN_CODE_CI_MEMORY_BYTES: String(memoryBudget) }, { cpuCount: 16, availableMemoryBytes: 32 * gib })
+    expect(plan.shards).toBe(cpuBudget)
+    for (const runId of runIds) await f.runner.cancel(runId)
+  })
+
   it.each([false, true])('honors saved build allowances for integration starts with gate=%s', async gate => {
     const f = await computer({ cpuCount: 16, hostSlots: true })
     const runId = randomUUID()
