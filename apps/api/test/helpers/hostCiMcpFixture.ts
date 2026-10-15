@@ -124,6 +124,7 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
   integrationInventory?: CiIntegrationInventory
   cloud?: boolean | { github: number; circleci: number }; agent?: boolean; hostSlots?: number; cloudSystemd?: boolean
   changedFiles?: string[]
+  databasePool?: (databaseUrl: string) => pg.Pool
   supersession?: { branch(commit: string): string | null; isAncestor(ancestor: string, commit: string): boolean }
   repositoryRunner?: { commits: CiCommits; endpoint: HostCiEndpoint } } = {}) {
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
@@ -133,7 +134,8 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
         'ci_computers_list' as const] }))
   }
   const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved, database }) : undefined
-  const db = runtime?.db ?? database
+  const ownedPool = options.databasePool?.(database.databaseUrl)
+  const db = runtime?.db ?? { ...database, pool: ownedPool ?? database.pool }
   const access = runtime?.access ?? new PostgresAccessService(db.pool)
   const workspaceId = runtime?.f.scope.workspaceId ?? randomUUID()
   if (!runtime) {
@@ -194,6 +196,7 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
     await ci.close()
     await app.close()
     await runtime?.close()
+    await ownedPool?.end()
   }
   let agent: Client | undefined
   let connectAgent: (() => Promise<Client>) | undefined
