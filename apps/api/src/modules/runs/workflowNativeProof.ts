@@ -8,7 +8,8 @@ import { DurableInteractionSchema, HarnessExecutionSchema, NativeSessionReferenc
 import { canonicalGraphJson, type GraphEvidence, type NativeGraphProjectionKey, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
 import { assertGraphTransaction, beforeGraphCommit, poisonGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
-import { currentRunGraphPublication, hasRunGraphPublication } from '../run-graph/publication.js'
+import { activeNativeBatch, memoizeNativeRead, nativeCommitCheck, seedNativeRead } from '../run-graph/nativeBatch.js'
+import { currentRunGraphPublication, hasRunGraphPublication, seedRetainRows } from '../run-graph/publication.js'
 import { assertRepeatCanonicalReceiptRows, requireRepeatCanonicalReceiptBeforeCommit,
   type RepeatCanonicalReceiptRow } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../interactions/workflowNativeCapture.js'
@@ -34,6 +35,7 @@ import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
 import { appendNormalizedNativeEvents } from './nativeEventBatch.js'
 import { assertWorkflowCorrelation } from './workResultRepair.js'
 import { retainNativeTranscriptSources } from './nativeTranscriptReceipts.js'
+import { prefetchNativeFrames } from '../run-graph/nativeIngestion.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
  * graph feed: G1 publishes only its immutable digest and ordinary graph facts. */
@@ -62,6 +64,15 @@ function fail(code = 'NATIVE_SOURCE_IDENTITY_CONFLICT'): never {
 function immutableExecution(execution: HarnessExecution) {
   return { identity: repeatExecutionIdentity(execution), runId: execution.runId, input: execution.input,
     createdAt: execution.createdAt, workingDirectory: execution.workingDirectory, runtimeDirectory: execution.runtimeDirectory }
+}
+
+const proofRecordKey = (proofId: string) => `proof-record:${proofId}`
+
+/** The group's persisted row for this proof when the batch wrote it; otherwise its own write. */
+async function persistOriginalRecord(sql: GraphTransactionSql, record: WorkflowNativeProofRecord): Promise<WorkflowNativeProofRecord> {
+  const seeded = activeNativeBatch(sql)?.reads.get(proofRecordKey(record.proofId))
+  if (seeded) return structuredClone(await seeded) as WorkflowNativeProofRecord
+  return (await persistWorkflowNativeSources(sql, [record]))[0]!
 }
 
 function transcriptEvent(event: HarnessNativeEvent): boolean {
@@ -113,11 +124,13 @@ export class WorkflowNativeProofServices {
     owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope; snapshot: AcceptedRepeatRunSnapshot }> {
     assertGraphTransaction(sql); owner.assertOwned()
     if (owner.runId !== run.id) return fail('RUN_OWNERSHIP_LOST')
-    const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
-    if (!sameRepeatValue(snapshot.run, run)) return fail('RUN_PIN_CONFLICT')
-    const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
-    return { stored, snapshot, scope: { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
-      workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 } }
+    return memoizeNativeRead(sql, `current:${run.id}:${executionId}`, async () => {
+      const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
+      if (!sameRepeatValue(snapshot.run, run)) return fail('RUN_PIN_CONFLICT')
+      const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
+      return { stored, snapshot, scope: { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+        workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 } }
+    })
   }
 
   private async physical(sql: GraphTransactionSql, scope: RepeatScope, stored: StoredRepeatExecution,
@@ -125,6 +138,14 @@ export class WorkflowNativeProofServices {
     captures: readonly WorkflowNativeCapture[] = [capture]): Promise<void> {
     for (const frame of captures) frame.assertCurrent()
     owner.assertOwned()
+    // Physical locks and validation are one read per batch; COMMIT re-runs them live.
+    await memoizeNativeRead(sql, `physical:${stored.execution.id}:${capture.lane?.id ?? '-'}:${capture.kind}`,
+      () => this.physicalLocked(sql, scope, stored, capture, owner, captures))
+  }
+
+  private async physicalLocked(sql: GraphTransactionSql, scope: RepeatScope, stored: StoredRepeatExecution,
+    capture: WorkflowNativeCapture, owner: RunOwnership,
+    captures: readonly WorkflowNativeCapture[]): Promise<void> {
     await this.assertAdditionalPhysical?.(sql, owner, captures)
     if (capture.owner !== owner || !isDeepStrictEqual(immutableExecution(capture.execution), immutableExecution(stored.execution))) return fail()
     if (capture.lane) await renewWorkflowNativePublicationLease(sql, owner, capture.lane.id)
@@ -308,8 +329,7 @@ export class WorkflowNativeProofServices {
           [stored.execution.id, capture.session.nativeSessionId, lane.generation,
             scope.runId, scope.workspaceId, scope.workflowId, stored.execution.agentId])
       }
-      const record = (await persistWorkflowNativeSources(sql,
-        [workflowNativeSourceRecord(capture, stored, scope, fence)]))[0]!
+      const record = await persistOriginalRecord(sql, workflowNativeSourceRecord(capture, stored, scope, fence))
       const proofId = record.proofId
       const publication = currentRunGraphPublication(sql, scope)
       const receipt = await publication.retainNativeSource(owner, proofId)
@@ -355,7 +375,7 @@ export class WorkflowNativeProofServices {
       if (history?.terminalTurn && capture.lane) {
         await this.publishContinuations(sql, run, stored, scope, capture, record, owner)
       }
-      beforeGraphCommit(sql, async () => {
+      nativeCommitCheck(sql, `original-final:${stored.execution.id}:${capture.lane?.id ?? '-'}:${capture.kind}`, async () => {
         try {
           if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) return fail('RUN_OWNERSHIP_LOST')
           await this.physical(sql, scope, stored, capture, owner)
@@ -366,10 +386,29 @@ export class WorkflowNativeProofServices {
     } catch (error) { poisonGraphTransaction(sql); throw error }
   }
 
+  /** Original-source rows for the group persist in one write before any frame is processed. */
+  private async prefetchOriginalProofs(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
+    frames: readonly { event: HarnessNativeEvent; evidence: RepeatNativeEvidence }[], owner: RunOwnership): Promise<void> {
+    if (!activeNativeBatch(sql)) return
+    const records: WorkflowNativeProofRecord[] = []
+    for (const frame of frames) {
+      if (transcriptEvent(frame.event)) continue
+      const capture = this.eventCapture(frame.event, frame.evidence)
+      const { stored, scope } = await this.current(sql, run, capture.execution.id, owner)
+      records.push(workflowNativeSourceRecord(capture, stored, scope, await owner.readOneShotFence(sql)))
+    }
+    if (!records.length) return
+    const saved = await persistWorkflowNativeSources(sql, records)
+    for (const record of saved) seedNativeRead(sql, proofRecordKey(record.proofId), record)
+    await seedRetainRows(sql, run.id, saved.map((record) => record.proofId))
+  }
+
   async appendEventsLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
     frames: readonly { event: HarnessNativeEvent; evidence: RepeatNativeEvidence }[],
     owner: RunOwnership, lease?: WorkflowNativeLease): Promise<void> {
     try {
+      await prefetchNativeFrames(sql, run.id, frames.map((frame) => normalizeNativeProducerEvent(frame.event)))
+      await this.prefetchOriginalProofs(sql, run, frames, owner)
       let transcripts: Array<{ event: HarnessNativeEvent; evidence: RepeatNativeEvidence;
         capture: WorkflowNativeCapture }> = []
       const flush = async () => {
@@ -438,7 +477,7 @@ export class WorkflowNativeProofServices {
     // The first frame still initializes or verifies the current graph correlation.
     if (publication) await appendWorkflowNativeGraphEventLocked(sql, owner, frames[0]!.event, lease,
       undefined, undefined, { sql, scope, execution: stored.execution, appended: appended[0]! })
-    beforeGraphCommit(sql, async () => {
+    nativeCommitCheck(sql, `transcript-final:${stored.execution.id}:${capture.lane?.id ?? '-'}:${capture.kind}`, async () => {
       try {
         for (const frame of frames) frame.capture.assertCurrent()
         if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) return fail('RUN_OWNERSHIP_LOST')

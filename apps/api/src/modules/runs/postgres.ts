@@ -192,7 +192,7 @@ export class PostgresRunRepository {
     await owner.oneShotConnection().transaction(async (sql) => {
       if (await this.nativeProof.tryAppendTranscriptsLocked(sql, frames, owner, lease)) return
       const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
-      await withNativeGraphProjectionBatch(sql, () => this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease))
+      await withNativeGraphProjectionBatch(sql, owner.runId, () => this.nativeProof.appendEventsLocked(sql, snapshot.run, frames, owner, lease))
     })
     for (const { evidence } of frames) await this.nativeCommitted?.(evidence)
   }
