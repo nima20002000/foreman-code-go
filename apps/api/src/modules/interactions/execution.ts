@@ -2194,11 +2194,19 @@ export class ApprovalExecutionCoordinator {
         return true
       }
     }
-    // An interrupted sibling fences the Run before a completed reviewer can be recovered.
+    // Close interrupted attempts before recovering the completed reviewer.
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id) || execution.state !== 'completed') continue
-        if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
+        try {
+          if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
+        } catch (error) {
+          if (!(error instanceof DomainError) || error.code !== 'REVIEWER_AUTHORITY_LOST') throw error
+          await this.runs.requestCleanup(owner.runId, owner, { outcome: 'failed',
+            error: { code: error.code, message: error.message, retryable: false } })
+          owner.assertOwned()
+          return true
+        }
         if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
           // A finalized workflow has already closed its original lifetime and
           // may have handed this session to a reviewer. Missing closure now
