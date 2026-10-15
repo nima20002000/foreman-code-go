@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import { EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS } from '../src/modules/runs/executionRetryPolicy.js'
 import { workflowConcurrencyFixture } from './helpers/workflowConcurrencyFixture.js'
 import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 
@@ -6,6 +7,10 @@ const createRuntime = workflowConcurrencyFixture()
 
 it.each(['before turn', 'session reply', 'lane bind'] as const)(
   'closes each failed session and retries a database failure at %s before offering a turn', async timing => {
+    // Infrastructure failures retry within a time window; the third wait ends it, so the Run fails after three attempts.
+    if (timing === 'before turn') {
+      vi.stubEnv('FOREMAN_EXECUTION_RETRY_BACKOFF_MS', `0,0,${EXECUTION_INFRASTRUCTURE_RETRY_WINDOW_MS}`)
+    }
     const f = await createRuntime()
     let sessionSaved = false
     const update = f.runs.updateExecution.bind(f.runs)
@@ -45,8 +50,9 @@ it.each(['before turn', 'session reply', 'lane bind'] as const)(
       expect(failures).toHaveLength(recovered ? 1 : attempts)
       for (const execution of failures) {
         expect(execution).toMatchObject({ state: 'completed', result: { error: {
+          // The attempt keeps the database error code that interrupted it.
           ...(timing === 'session reply' ? { code: expect.any(String) }
-            : { code: 'NATIVE_EXECUTION_FAILED', retryable: true }),
+            : { code: timing === 'lane bind' ? '57014' : '08006', retryable: true }),
         } } })
       }
       const errors: unknown[] = []
@@ -54,6 +60,7 @@ it.each(['before turn', 'session reply', 'lane bind'] as const)(
       expect(errors).toEqual([])
       expect(f.provider.counts.starts).toBe(starts)
     } finally {
+      vi.unstubAllEnvs()
       await f.close()
     }
   }, 60_000)
