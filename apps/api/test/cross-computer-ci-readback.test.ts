@@ -4,8 +4,7 @@ import { AgentCiReportSchema, readAgentCiReport, readCiLog,
   requireCiStateOrder } from './helpers/crossComputerCiReadback.js'
 
 function report() {
-  const ticketId = randomUUID()
-  return { ticketId, suite: 'build', outcome: 'passed', repository: 'example/project',
+  return { suite: 'build', outcome: 'passed', repository: 'example/project',
     logLine: 'Build passed', observedStates: ['queued', 'running', 'passed'] }
 }
 
@@ -17,18 +16,18 @@ it('reads a complete Agent report from a native text envelope', () => {
     .toEqual(value)
 })
 
-it('rejects a missing top-level ticket, empty observed states and a blank log line', () => {
+it('accepts judgments without copied identifiers and rejects empty observations or logs', () => {
   const value = report()
-  expect(AgentCiReportSchema.safeParse({ ...value, ticketId: undefined }).success).toBe(false)
+  expect(AgentCiReportSchema.safeParse(value).success).toBe(true)
   expect(AgentCiReportSchema.safeParse({ ...value, observedStates: [] }).success).toBe(false)
   expect(AgentCiReportSchema.safeParse({ ...value, logLine: ' ' }).success).toBe(false)
 })
 
-it('requires a terminal CI lifecycle and rejects regression within an attempt', () => {
+it('requires known CI states and a terminal result without inferring unobserved transitions', () => {
   expect(() => requireCiStateOrder(['queued', 'starting', 'running', 'passed'])).not.toThrow()
   expect(() => requireCiStateOrder(['starting', 'failed'])).not.toThrow()
   expect(() => requireCiStateOrder(['queued', 'running'])).toThrow()
-  expect(() => requireCiStateOrder(['running', 'starting', 'passed'])).toThrow()
+  expect(() => requireCiStateOrder(['running', 'starting', 'passed'])).not.toThrow()
   expect(() => requireCiStateOrder(['unknown', 'passed'])).toThrow()
   expect(() => requireCiStateOrder(['failed', 'passed'])).toThrow()
 })

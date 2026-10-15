@@ -19,12 +19,18 @@ function assignment(index: number, suite: ScenarioAgent['suite']): ScenarioAgent
 }
 
 describe('cross-computer CI graph', () => {
-  it('instructs CI Agents to wait without log tails and read logs after every ticket finishes', () => {
+  it('enforces judgments without copied identifiers in the Agent output schema', () => {
     const { graph } = buildCrossComputerCiGraph(base, [assignment(0, null), assignment(1, 'build')])
     const node = graph.nodes[1]!
     if (node.kind === 'job') throw new Error('Expected a CI Agent')
-    expect(node.initialPrompt).toContain('waitSeconds 60 and logTail false')
-    expect(node.initialPrompt).toContain('Once all are terminal, read ci_logs_read for EVERY ticket')
+    expect(node.outputSchema).toMatchObject({
+      required: ['suite', 'outcome', 'repository', 'logLine', 'observedStates'],
+      additionalProperties: false,
+    })
+    expect(node.outputSchema?.properties).not.toHaveProperty('ticketId')
+    expect(node.initialPrompt).toContain('group-terminal')
+    expect(node.initialPrompt).toContain('logTail false')
+    expect(node.initialPrompt).toContain('ci_logs_read')
   })
 
   it.each(['graphql', 'demo'] as const)('starts every %s suite as an independent parallel Agent', project => {

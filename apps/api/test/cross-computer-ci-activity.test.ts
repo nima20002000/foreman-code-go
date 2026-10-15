@@ -30,3 +30,9 @@ it('rejects missing CI phases or another workflow’s job', () => {
   expect(() => requireCiWorkflowActivity([...agents, ...ci.map(item => ({ ...item,
     refs: { ...item.refs, ciTicketId: '7a2b3c4d-5e6f-4a70-8b8c-9d0e1f2a3b4c' } }))], expected)).toThrow('CI')
 })
+
+it('requires queued before terminal by sequence without requiring intermediate observations', () => {
+  expect(() => requireCiWorkflowActivity([agents[1]!, ci[0]!, ci[2]!], expected)).not.toThrow()
+  expect(() => requireCiWorkflowActivity([...agents, { ...ci[2]!, sequence: '3' },
+    { ...ci[0]!, sequence: '5' }], expected)).toThrow('order')
+})

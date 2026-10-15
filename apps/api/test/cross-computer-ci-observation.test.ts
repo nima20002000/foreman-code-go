@@ -1,87 +1,63 @@
-import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import type { Client } from '@modelcontextprotocol/client'
-import { CiRunRecordSchema } from '@foreman-code/contracts'
-import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { expect, it, vi } from 'vitest'
 import { createScenarioObservation, pollCiScenario,
   type RunningCiWorkflow } from './helpers/crossComputerCiObservation.js'
 
 function fixture() {
-  const now = '2026-10-14T00:00:00.000Z'
-  const scope = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
-    runId: 'run', executionSemanticsVersion: 3 as const }
-  const run = CiRunRecordSchema.parse({ id: randomUUID(), groupId: randomUUID(), workspaceId: scope.workspaceId,
-    suite: 'unit', repository: 'example/project', commit: 'a'.repeat(40), partition: null,
-    state: 'passed', computer: { hostRef: { kind: 'main', mainId: 'main' }, label: 'Executor' },
-    step: null, exitCode: 0, message: null, queuedAt: now, startedAt: now, finishedAt: now,
-    initiator: { principalId: 'operator', executionId: 'execution' } })
-  const details = SavedRunDetailsSchema.parse({
-    run: { id: scope.runId, workspaceId: scope.workspaceId, workflowId: scope.workflowId,
-      workflowVersionId: scope.workflowVersionId, executionSemanticsVersion: 3, agentConfigurationVersionIds: { agent: 'configuration' },
-      approval: { handler: 'user' }, executionCondition: { kind: 'manual' }, executionState: 'completed',
-      outcome: 'succeeded', result: { outcome: 'succeeded', output: {} }, input: {}, createdAt: now, finishedAt: now },
-    executions: [{ id: 'execution', runId: scope.runId, workflowNodeId: 'node', agentId: 'agent',
-      agentConfigurationVersionId: 'configuration', attempt: 1, state: 'running', input: {}, createdAt: now }],
-    activity: [],
-  })
-  // Observation reads only these fields from the prepared workflow.
-  const workflow = { workspace: { workspaceId: scope.workspaceId }, graph: { id: scope.workflowId },
-    saved: { version: { id: scope.workflowVersionId } }, runId: scope.runId, repository: run.repository,
-    assignments: [{ agentId: 'agent', suite: 'unit' }] } as RunningCiWorkflow
-  const observation = createScenarioObservation()
+  const recorded = JSON.parse(readFileSync(new URL('./fixtures/cross-computer-ci.json', import.meta.url), 'utf8'))
+  const workflow = recorded.workflows[0]
+  const details = recorded.runs[0]
+  const ticket = recorded.tickets[0].latest
+  const prepared = { workspace: { workspaceId: workflow.workspaceId }, graph: { id: workflow.workflowId },
+    saved: { version: { id: workflow.workflowVersionId } }, runId: workflow.runId, repository: workflow.repository,
+    assignments: workflow.assignments } as RunningCiWorkflow
+  const activity = { scope: recorded.activities['run-1'][0].scope, items: recorded.activities['run-1'],
+    mode: 'initial', highWater: '3', retainedFrom: '0', nextCursor: 'cursor', olderCursor: null, hasMore: false }
   const replies: Record<string, unknown> = {
-    run_get: details,
-    run_activities_get_v1: { scope, items: [], mode: 'initial', highWater: '0', retainedFrom: '0',
-      nextCursor: 'cursor', olderCursor: null, hasMore: false },
-    run_events_list: { items: [], pageInfo: { nextCursor: null } },
-    ci_computers_list: { computers: [{ label: 'Executor', hostRef: run.computer!.hostRef,
-      priority: 0, ready: true, reasons: [], slotsUsed: 0, slotsTotal: 1, running: [run.id] }] },
-    ci_get: { run },
+    run_get: details, ci_get: recorded.groups[ticket.groupId], ci_list: recorded.ciLists['run-1'],
+    run_activities_get_v1: activity,
   }
-  const ticketReads = vi.fn<() => Promise<Awaited<ReturnType<Client['callTool']>>>>()
-    .mockResolvedValue({ content: [], structuredContent: { run } })
-  const callTool = vi.fn<Client['callTool']>(async (request) => {
-    if (request.name === 'ci_get') return ticketReads()
+  const callTool = vi.fn<Client['callTool']>(async request => {
     if (!(request.name in replies)) throw new Error(`Unexpected tool ${request.name}`)
     return { content: [], structuredContent: replies[request.name] }
   })
-  return { run, workflow, observation, ticketReads, callTool,
+  return { ticket, prepared, replies, activity, observation: createScenarioObservation(), callTool,
     client: { callTool } as unknown as Client }
 }
 
-function toolError(code: string): Awaited<ReturnType<Client['callTool']>> {
-  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code, message: 'Read failed.' } }) }] }
-}
-
-it('retries a transient discovered-ticket read and retains the recovered ticket', async () => {
+it('discovers tickets from product initiators without a copied identifier in the Agent report', async () => {
   const f = fixture()
-  f.ticketReads.mockResolvedValueOnce(toolError('DATABASE_READ_TIMEOUT'))
-  const persist = vi.fn(async () => undefined)
-  await pollCiScenario(f.client, [f.workflow], f.observation, persist)
-  expect(f.ticketReads).toHaveBeenCalledTimes(2)
-  expect(f.observation.tickets.get(f.run.id)?.latest).toEqual(f.run)
-  expect(f.observation.groups.get('execution')?.run).toEqual(f.run)
-  expect(f.callTool.mock.calls.filter(([request]) => request.name === 'ci_get')).toEqual([
-    [{ name: 'ci_get', arguments: { workspaceId: 'workspace', ticketId: f.run.id } }, { timeout: 180_000 }],
-    [{ name: 'ci_get', arguments: { workspaceId: 'workspace', ticketId: f.run.id } }, { timeout: 180_000 }],
-  ])
-  expect(persist).toHaveBeenCalledOnce()
+  await pollCiScenario(f.client, [f.prepared], f.observation, async () => undefined)
+  expect(f.observation.tickets.get(f.ticket.id)?.latest).toEqual(expect.objectContaining(f.ticket))
+  expect(f.observation.reports.get('execution-1')).not.toHaveProperty('ticketId')
+  expect(f.callTool.mock.calls.some(([request]) => request.name === 'ci_list')).toBe(true)
 })
 
-it('ignores scoped not-found inventory tickets after a transient read error', async () => {
-  const f = fixture()
-  f.workflow.assignments[0]!.suite = null
-  f.ticketReads.mockResolvedValueOnce(toolError('DATABASE_READ_TIMEOUT'))
-    .mockResolvedValueOnce(toolError('CI_RUN_NOT_FOUND'))
-  await pollCiScenario(f.client, [f.workflow], f.observation, async () => undefined)
-  expect(f.ticketReads).toHaveBeenCalledTimes(2)
-  expect(f.observation.tickets.size).toBe(0)
+it('waits for delayed ticket publication after a workflow completes', async () => {
+  vi.useFakeTimers()
+  try {
+    const f = fixture()
+    const ciList = f.replies.ci_list
+    f.replies.ci_list = { runId: 'run-1', jobs: [], truncated: false }
+    f.replies.run_activities_get_v1 = { ...f.activity, items: [], highWater: '0' }
+    const pending = pollCiScenario(f.client, [f.prepared], f.observation, async () => undefined)
+    await vi.advanceTimersByTimeAsync(500)
+    f.replies.ci_list = ciList
+    f.replies.run_activities_get_v1 = f.activity
+    await vi.runAllTimersAsync()
+    await pending
+    expect(f.observation.tickets.has(f.ticket.id)).toBe(true)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
-it.each(['CI_RUN_NOT_FOUND', 'ACCESS_DENIED'])('rejects %s for a discovered activity ticket', async code => {
+it('records malformed reports for replay instead of failing before readbacks are collected', async () => {
   const f = fixture()
-  f.observation.candidates.set(f.workflow.runId, new Set([f.run.id]))
-  f.ticketReads.mockResolvedValueOnce(toolError(code))
-  await expect(pollCiScenario(f.client, [f.workflow], f.observation, async () => undefined)).rejects.toThrow()
-  expect(f.ticketReads).toHaveBeenCalledTimes(1)
+  const details = f.replies.run_get as { executions: { result: { output: unknown } }[] }
+  details.executions[0]!.result.output = 'not JSON'
+  await pollCiScenario(f.client, [f.prepared], f.observation, async () => undefined)
+  expect(f.observation.tickets.has(f.ticket.id)).toBe(true)
+  expect(f.observation.reports.get('execution-1')).toBe('not JSON')
 })
