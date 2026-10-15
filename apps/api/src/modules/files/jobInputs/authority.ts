@@ -10,6 +10,7 @@ import type { PostgresJobDispatch } from '../../jobs/dispatch.js'
 import { JobRepository, type JobSql } from '../../jobs/repository.js'
 import { PostgresFileReferenceAuthorization } from '../references/authorization.js'
 import { PostgresFileRepository } from '../postgres.js'
+import type { StoredFile } from '../repository.js'
 import { DomainError } from '../../errors.js'
 import { repeatDigest } from '../../runs/repeatResolution.js'
 import { artifactPins, ensureDistinct, inputHash, workflowPins } from './manifest.js'
@@ -37,8 +38,10 @@ export class JobInputAuthority {
     await this.runtime.require(sql, current, { attemptId: current.attemptId, owner: current.owner })
     return { execution: JobExecutionRecordSchema.parse(current), principal }
   }
-  private async pin(sql:JobSql,execution:JobExecutionRecord|null,principal:ManagementPrincipal,pin:{fileId:string;revisionId:string;sha256:string;byteSize:number},relativePath:string,delegation:JobInputEntry['delegation']):Promise<JobInputEntry> {
-    const stored=await this.files.read(pin.fileId,pin.revisionId,sql)
+  private async pin(sql: JobSql, execution: JobExecutionRecord | null, principal: ManagementPrincipal,
+    pin: JobInputEntry['pin'], relativePath: string, delegation: JobInputEntry['delegation'],
+    snapshot?: StoredFile): Promise<JobInputEntry> {
+    const stored = snapshot ?? await this.files.read(pin.fileId, pin.revisionId, sql)
     if(!stored||stored.value.revision.sha256!==pin.sha256||stored.value.revision.byteSize!==pin.byteSize)throw new DomainError('JOB_INPUT_PIN_CONFLICT','The exact accepted input revision is missing or differs.',409)
     const scope=FileScopeSchema.parse(stored.value.file.scope)
     if(fileStateAt(stored.value.file,this.clock().toISOString())!=='ready')throw new DomainError('FILE_BYTES_UNAVAILABLE','The exact input is expired, removed or pending.',410)
@@ -104,10 +107,44 @@ export class JobInputAuthority {
   }
   async recheck(sql:JobSql,execution:JobExecutionRecord,entry:JobInputEntry):Promise<FileWithRevision> {
     const recipient=await this.recipient(sql,execution)
-    const current=await this.pin(sql,execution,recipient.principal,entry.pin,entry.relativePath,entry.delegation)
-    if(!isDeepStrictEqual(current,entry))throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED','Original input authority changed or was revoked.',403)
-    const stored=await this.files.read(entry.pin.fileId,entry.pin.revisionId,sql)
-    if(!stored||fileStateAt(stored.value.file,this.clock().toISOString())!=='ready')throw new DomainError('FILE_BYTES_UNAVAILABLE','The input expired while authority locks waited.',410)
-    return stored.value
+    return (await this.recheckEntries(sql,execution,recipient.principal,[entry]))[0]!
+  }
+  async recheckEntries(sql: JobSql, execution: JobExecutionRecord, principal: ManagementPrincipal,
+    entries: JobInputEntry[]): Promise<FileWithRevision[]> {
+    const pins = entries.map(entry => entry.pin)
+    const snapshots = new Map((await this.files.readMany(pins, sql)).map(value =>
+      [inputHash([value.value.file.fileId, value.value.revision.revisionId]), value]))
+    // These authorization reads hold row locks and can be shared until this recheck ends.
+    const queries = new Map<string, Promise<pg.QueryResult>>()
+    const authorizationSql: JobSql = {
+      query: async <R extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> => {
+        const key = inputHash([text, values ?? []])
+        let result = queries.get(key)
+        if (!result) {
+          result = sql.query(text, values)
+          queries.set(key, result)
+        }
+        return await result as pg.QueryResult<R>
+      },
+    }
+    for (const entry of entries) {
+      const snapshot = snapshots.get(inputHash([entry.pin.fileId, entry.pin.revisionId]))
+      if (!snapshot) throw new DomainError('JOB_INPUT_PIN_CONFLICT', 'The accepted input revision is missing.', 409)
+      const current = await this.pin(authorizationSql, execution, principal, entry.pin,
+        entry.relativePath, entry.delegation, snapshot)
+      if (!isDeepStrictEqual(current, entry)) {
+        throw new DomainError('JOB_INPUT_AUTHORITY_CHANGED', 'Original input authority changed or was revoked.', 403)
+      }
+    }
+    // Refresh file state after waiting for authorization locks, without using the shared reads.
+    const refreshed = new Map((await this.files.readMany(pins, sql)).map(value =>
+      [inputHash([value.value.file.fileId, value.value.revision.revisionId]), value.value]))
+    return entries.map(entry => {
+      const value = refreshed.get(inputHash([entry.pin.fileId, entry.pin.revisionId]))
+      if (!value || fileStateAt(value.file, this.clock().toISOString()) !== 'ready') {
+        throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The input expired while authority locks waited.', 410)
+      }
+      return value
+    })
   }
 }

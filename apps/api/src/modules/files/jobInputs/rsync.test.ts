@@ -35,7 +35,6 @@ describe('canonical Job rsync input source and delivery ACK',()=>{
   it('requires one exact transfer inside one original bind receipt',async()=>{
     const f=fixture(),id=f.accepted.transfer.intent.transferId
     vi.mocked(f.service.acceptedTransfer).mockRestore()
-    vi.spyOn(f.service,'accepted').mockResolvedValue({execution:f.accepted.execution,admission:f.accepted.admission})
     vi.spyOn(f.service,'execution').mockResolvedValue(f.accepted.execution)
     const record={result:f.accepted.admission,command_id:`job-input:${inputHash(recipient(f.accepted.execution))}`}
     f.query.mockResolvedValue({rows:[record]})

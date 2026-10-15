@@ -118,6 +118,15 @@ export class PostgresFileRepository implements FileReferenceRepository {
     return result.rows[0] ? stored(result.rows[0]) : undefined
   }
 
+  async readMany(pins: readonly { fileId: string; revisionId: string }[], query: Query = this.pool): Promise<StoredFile[]> {
+    if (pins.length === 0) return []
+    const result = await query.query<RevisionRow>(`select ${projection} from files f join file_revisions r
+      on r.file_id=f.file_id join unnest($1::text[],$2::text[]) as pins(file_id,revision_id)
+      on pins.file_id=f.file_id and pins.revision_id=r.revision_id`,
+    [pins.map(pin => pin.fileId), pins.map(pin => pin.revisionId)])
+    return result.rows.map(stored)
+  }
+
   async list(scope: FileScope, page: { cursor?: string; limit: number }, asOfUtc: string) {
     scope = FileScopeSchema.parse(scope)
     z.string().datetime().parse(asOfUtc)
