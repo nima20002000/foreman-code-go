@@ -61,7 +61,8 @@ describe('profile-scoped Start after a Worker harness installation update', () =
       await waitForRemoteReview(() => fixture.provider.calls(), calls =>
         calls.some(call => call.workflowTurn !== undefined), 'active native placement')
       const callsBefore = (await fixture.provider.calls()).length
-      await fixture.provider.blockModels()
+      // Hold only Worker profile checks; the later Run starts its session in a fresh source tree.
+      await fixture.provider.blockModels({ workingDirectory: fixture.stateDirectory })
       modelsBlocked = true
       await fixture.provider.updatePayload()
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
