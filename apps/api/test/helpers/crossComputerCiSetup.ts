@@ -72,7 +72,7 @@ export async function expectCiDenied(client: Client, name: string, args: Record<
 
 export async function qualifyCiProfile(client: Client, computer: ScenarioComputer): Promise<HarnessProfileSelection> {
   const inventory = await waitForCi(`${computer.name} harness readiness`, async () =>
-    HarnessRegistryReadbackSchema.parse(await callCiTool(client, 'harness_registry_get', { hostRef: computer.hostRef })),
+    HarnessRegistryReadbackSchema.parse(await callCiTool(client, 'harness_registry_get', { ...computer.hostRef })),
   value => Boolean(value.hostMetadata && value.installations.some(item => item.driverId === 'codex'
     && item.installed && item.installationFingerprint))
     && (!computer.registration || value.hostMetadata?.connection?.phase === 'ready'),
