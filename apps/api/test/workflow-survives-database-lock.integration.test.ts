@@ -14,7 +14,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
-  // A six-second Run lock must retry reporting and expose the database delay in operational diagnostics.
+  // A Run lock held across three one-second statement deadlines must retry reporting and expose the database delay in operational diagnostics.
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
     await fixture.launch()
     await fixture.active()
@@ -30,8 +30,8 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
       locked.resolve(lockerPid)
       await readUntil(async () => (await fixture.base.db.pool.query<{ waiting: boolean }>(
         'select exists(select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting',
-        [lockerPid])).rows[0]!.waiting, waiting => waiting && performance.now() - started >= 6_010,
-      { timeoutMs: 10_000, description: 'Agent reporting still blocked after six seconds of Run contention' })
+        [lockerPid])).rows[0]!.waiting, waiting => waiting && performance.now() - started >= 3_010,
+      { timeoutMs: 10_000, description: 'Agent reporting still blocked after three statement deadlines of Run contention' })
       heldMs = performance.now() - started
     })
     const settledLock = Promise.allSettled([hold])
@@ -45,7 +45,7 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
         [lockerPid])).rows[0]!.waiting, waiting => waiting,
       { timeoutMs: 2_000, description: 'Agent reporting blocked on the Run row' })
       await hold
-      expect(heldMs).toBeGreaterThanOrEqual(6_000)
+      expect(heldMs).toBeGreaterThanOrEqual(3_000)
       expectSuccessfulFaultRecovery(await fixture.finished(), fixture)
       const retries = readOperationalFailures().find(value => value.operation === 'retry database operation')
       expect(retries).toMatchObject({ component: 'engine', status: 'degraded' })

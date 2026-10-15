@@ -9,6 +9,8 @@ import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions
 import { hasRetainedRemoteReviewerSource, readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from './workflowCleanup.js'
 import { PostgresSourceService } from './service.js'
+import { withSourceOperationExclusion } from './sourceOperationExclusion.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { DomainError, databaseReadFailure } from '../errors.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
@@ -355,8 +357,10 @@ it('continues through a full page of deferred sources to clean up another source
   })
   const lastPage = [{ materialization_id: ready.record.receipt.materializationId,
     record: ready.record, execution: ready.execution }]
-  const query = vi.fn().mockResolvedValueOnce({ rows: page }).mockResolvedValueOnce({ rows: lastPage })
-    .mockResolvedValueOnce({ rows: page }).mockResolvedValueOnce({ rows: lastPage })
+  const scans = [{ rows: page }, { rows: lastPage }, { rows: page }, { rows: lastPage }]
+  // A lookup of one source still sees it open; scans return their pages in order.
+  const query = vi.fn(async (_text: string, params: unknown[]) => params[3] === null ? scans.shift()
+    : { rows: [...page, ...lastPage].filter(row => row.materialization_id === params[3]) })
   const pool = { query } as unknown as Pick<pg.Pool, 'query'>
   const confirmClosed = vi.fn(async (record: typeof ready.record) => {
     if (record.receipt.materializationId !== ready.record.receipt.materializationId) {
@@ -377,8 +381,8 @@ it('discards retry state when a source no longer appears in a completed scan', a
   const f = remoteSourceFixture()
   const rows = [{ materialization_id: f.record.receipt.materializationId,
     record: f.record, execution: f.execution }]
-  const query = vi.fn().mockResolvedValueOnce({ rows }).mockResolvedValueOnce({ rows: [] })
-    .mockResolvedValueOnce({ rows })
+  const scans = [{ rows }, { rows: [] }, { rows }]
+  const query = vi.fn(async (_text: string, params: unknown[]) => params[3] === null ? scans.shift() : { rows })
   const pool = { query } as unknown as Pick<pg.Pool, 'query'>
   f.sources.confirmClosed.mockRejectedValue(new DeviceApplicationError('ENOENT'))
   await closeCompletedWorkflowSources(pool, f.sources, f.report)
@@ -386,4 +390,34 @@ it('discards retry state when a source no longer appears in a completed scan', a
   await closeCompletedWorkflowSources(pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledTimes(2)
   expect(f.report).toHaveBeenCalledTimes(2)
+})
+
+it('leaves a source that reservation reclamation closed after the sweep listed it', async () => {
+  const f = remoteSourceFixture()
+  const listed = (await f.pool.query('')).rows
+  let queries = 0
+  // Reclamation removes the Worker directory and settles the reservation while the sweep is walking its page.
+  const pool = { query: async () => ({ rows: ++queries === 1 ? listed : [] }) } as unknown as Pick<pg.Pool, 'query'>
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+})
+
+it('waits for reservation reclamation of the same source before closing it', async () => {
+  const f = remoteSourceFixture()
+  const listed = (await f.pool.query('')).rows
+  let reclaimed = false
+  const pool = { query: async () => ({ rows: reclaimed ? [] : listed }) } as unknown as Pick<pg.Pool, 'query'>
+  const reclamation = deferred<void>()
+  const reclaiming = withSourceOperationExclusion(f.record.operationId, async () => {
+    await reclamation.promise
+    reclaimed = true
+  })
+  const sweep = closeCompletedWorkflowSources(pool, f.sources, f.report)
+  await new Promise(resolve => setImmediate(resolve))
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  reclamation.resolve()
+  await Promise.all([reclaiming, sweep])
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
 })

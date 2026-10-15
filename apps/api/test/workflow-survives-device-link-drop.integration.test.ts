@@ -7,13 +7,14 @@ describe.runIf(postgresEnabled)('workflow device reconnect', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
     fixture = await faultWorkflowFixture()
-    fixture.launch()
-    await fixture.active()
+    await fixture.prepareEntry()
   }, 10_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   // Device transport loss must reconnect without failing the Run or replaying healthy siblings.
-  it.fails('finishes after the remote device link drops during an admitted turn', async () => {
+  it('finishes after the remote device link drops during an admitted turn', async () => {
+    await fixture.launch()
+    await fixture.active()
     const before = await fixture.read()
     fixture.worker.disconnect()
     try {
