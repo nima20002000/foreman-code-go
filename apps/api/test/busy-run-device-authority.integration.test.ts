@@ -61,7 +61,9 @@ describe.skipIf(!postgresEnabled)('Worker device requests while the Run is busy'
       'runs(id text primary key,workspace_id text,workflow_id text,execution_state text,stop_requested_at timestamptz,record jsonb)',
       'harness_executions(id text primary key,run_id text,record jsonb)',
       'run_cleanup_intents(run_id text,pending boolean)',
-      'execution_dispatch_intents(operation_id text primary key,run_id text,record jsonb)',
+      `execution_dispatch_intents(operation_id text primary key,run_id text,execution_id text,node_id text,
+        binding_hash text,attempt_id text,record jsonb)`,
+      'run_node_placements(run_id text,node_id text,record jsonb)',
       'remote_execution_owner_reconciliations(operation_id text,ordinal integer,transition jsonb)',
       'execution_dispatch_owner_grants(execution_id text,operation_id text,grant_id text,epoch text,revoked boolean)',
       'remote_dispatch_origins(operation_id text primary key,connection jsonb)',
@@ -74,7 +76,10 @@ describe.skipIf(!postgresEnabled)('Worker device requests while the Run is busy'
     const insert = (sql: string, values: unknown[]) => database.pool.query(`insert into ${schema}.${sql}`, values)
     await insert(`runs values('run','workspace','workflow','running',null,$1::jsonb)`, [JSON.stringify({ authorizationPrincipalId: owner.id })])
     await insert(`harness_executions values($1,'run',$2::jsonb)`, [intent.executionId, JSON.stringify({ state: 'running' })])
-    await insert('execution_dispatch_intents values($1,$2,$3::jsonb)', [intent.operationId, intent.runId, JSON.stringify(intent)])
+    await insert('execution_dispatch_intents values($1,$2,$3,$4,$5,$6,$7::jsonb)',
+      [intent.operationId, intent.runId, intent.executionId, intent.nodeId, intent.bindingHash,
+        intent.attemptId, JSON.stringify(intent)])
+    await insert('run_node_placements values($1,$2,$3::jsonb)', [intent.runId, intent.nodeId, JSON.stringify(placement)])
     await insert('execution_dispatch_owner_grants values($1,$2,$3,$4,false)',
       [intent.executionId, intent.operationId, intent.owner.grantId, intent.owner.epoch])
     await insert('remote_dispatch_origins values($1,$2::jsonb)', [intent.operationId, JSON.stringify(connection)])
@@ -112,6 +117,7 @@ describe.skipIf(!postgresEnabled)('Worker device requests while the Run is busy'
     "select id from runs where id='run' for update",
     `select id from harness_executions where run_id='run' for update`,
     'select operation_id from execution_dispatch_intents where operation_id=$1 for update',
+    "select run_id from run_node_placements where run_id='run' for update",
     'select operation_id from execution_dispatch_owner_grants where operation_id=$1 for update',
     'select operation_id from remote_dispatch_origins where operation_id=$1 for update',
     "select run_id from workflow_native_entries where run_id='run' for update",
@@ -138,7 +144,11 @@ describe.skipIf(!postgresEnabled)('Worker device requests while the Run is busy'
     const authorityFailure = await whileRunBusy(blocked, () => authority.handle!(start, context()).then(() => undefined, error => error))
     const relayFailure = await whileRunBusy(blocked, () => relay.handle({ version: 1, operation: 'worker-mcp.authorize',
       intent, placement, applicationAccess }, connection).then(() => undefined, error => error))
-    expect(deviceApplicationFailure(authorityFailure)).toEqual({ code: 'DATABASE_READ_TIMEOUT', retryable: true })
-    expect(deviceApplicationFailure(relayFailure)).toEqual({ code: 'DATABASE_READ_TIMEOUT', retryable: true })
+    expect(deviceApplicationFailure(authorityFailure)).toEqual({
+      code: 'DATABASE_READ_TIMEOUT', retryable: true, class: 'transient',
+    })
+    expect(deviceApplicationFailure(relayFailure)).toEqual({
+      code: 'DATABASE_READ_TIMEOUT', retryable: true, class: 'transient',
+    })
   })
 })
