@@ -139,6 +139,7 @@ it('admits selected-file CI with a pinned commit and persists the selection thro
     })
     expect(unpinned.isError).toBe(true)
     const started = await f.start()
+    await f.ci.close()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(3)
     for (const run of read.partitions!) {
@@ -220,6 +221,7 @@ it('caps aggregate group log bytes even when the budget is smaller than the part
   try {
     const started = await f.start()
     await f.ci.dispatch()
+    await f.ci.close()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     for (const run of read.partitions!) {
       const directory = join(f.root, 'runs', run.id)
@@ -294,6 +296,12 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     f.control.stopCode = 0
     f.control.code = 0
     await f.ci.dispatch()
+    const cancellationRead = CiGetOutputSchema.parse(await f.value('ci_get', {
+      ticketId: active.id, waitSeconds: 10,
+    }))
+    expect(cancellationRead.run.state).toBe('canceled')
+    await f.ci.dispatch()
+    await f.ci.close()
     const closed = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
     expect(closed.run.state).toBe('canceled')
     expect(closed.partitions!.some(run => run.id !== active.id && run.state === 'running')).toBe(true)
