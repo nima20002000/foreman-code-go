@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
+import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import { readHostCiStatus } from './status.js'
 
-function fixture() {
+function fixture(deviceId = 'device') {
   const target: DeviceProvisioningTarget = {
-    hostRef: { kind: 'device', mainId: 'main', deviceId: 'device' },
+    hostRef: { kind: 'device', mainId: 'main', deviceId },
     applicationInstallationId: 'worker', keyRevision: 1, authorizationRevision: 2,
   }
   let binding = { workerInstallationId: 'worker', keyRevision: 1, authorizationRevision: 2, connectionId: 'first' }
@@ -41,6 +42,13 @@ describe('Host CI status', () => {
       return { payload: f.status }
     })
     await expect(readHostCiStatus(f.endpoint, f.target)).rejects.toMatchObject({ code: 'CI_ENROLLMENT_OFFLINE' })
+  })
+
+  it('reports the last known readiness when a status read yields to foreground work', async () => {
+    const f = fixture('busy-device')
+    expect(await readHostCiStatus(f.endpoint, f.target)).toEqual(f.status)
+    f.request.mockRejectedValueOnce(new DeviceApplicationAdmissionError('background_yield'))
+    expect(await readHostCiStatus(f.endpoint, f.target)).toEqual(f.status)
   })
 
   it('reports an unavailable connection without launching work', async () => {
