@@ -389,6 +389,26 @@ describe('installed host resident execution continuity', () => {
     }
   })
 
+  it('confirms source cleanup closure for a resident session stopped after its native turn started', async () => {
+    const f = await runningInstalledFixture()
+    try {
+      await f.stop()
+      await f.settled
+      // The journal adds the started turn to the native identity; the process identity is unchanged.
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({ status: 'known',
+        receipt: { stopFence: true, native: { sessionId: f.session.nativeSessionId, turnId: 'original-turn' } } })
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(false)
+      const cleanup = { ...f.owner, preparationKind: 'workflow' as const, preparationClosed: true as const }
+      expect(await f.host.preparationClosed(cleanup)).toBe(true)
+      expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
+      // A retried reclamation reads back the same closure.
+      expect(await f.host.preparationClosed(cleanup)).toBe(true)
+    } finally {
+      f.cleanup()
+      await f.host.close()
+    }
+  })
+
   it.each(['status', 'reattach'] as const)('reads %s during committed cleanup without renewing the reviewer', async method => {
     const f = await runningInstalledFixture('generation', { retainReviewer: true })
     try {
