@@ -16,7 +16,7 @@ interface WaitingRequest {
   reject(error: Error): void
 }
 
-/** Background work leaves one slot available and yields to queued foreground requests. */
+/** Background work leaves one slot available and yields to queued foreground requests; a long foreground request in flight does not starve it. */
 export class DeviceRequestQueue {
   private active = 0
   private foreground = 0
@@ -25,7 +25,7 @@ export class DeviceRequestQueue {
   private failure: Error | undefined
 
   get busy(): boolean {
-    return this.foreground > 0 || this.waiting.length > 0 || this.active >= DEVICE_APPLICATION_IN_FLIGHT - 1
+    return this.waiting.length > 0 || this.active >= DEVICE_APPLICATION_IN_FLIGHT - 1
   }
 
   async acquire({ priority, stop, signal }: RequestSlot & { signal?: AbortSignal | undefined }): Promise<() => void> {
