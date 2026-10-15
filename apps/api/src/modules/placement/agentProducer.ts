@@ -73,6 +73,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     const hosts = savedVersion.definition.nodes.filter(node => node.kind !== 'job')
       .map(node => node.placement?.hostRef ?? initial.root?.selection.hostRef
         ?? { kind: 'main' as const, mainId: this.mainId })
+    // The bundle check reads the Worker over its connection, so it uses the preparation budget, not the quick Start deadline.
+    if (hosts.length && this.assertBundleReady) options.sourcePreparationStarted?.()
     for (const host of hosts) await this.assertBundleReady?.(host)
     if (hosts.length && this.refreshProfileInventory) {
       // Host discovery makes Worker round-trips, so it uses the preparation budget, not the quick Start deadline.

@@ -100,3 +100,23 @@ it('gives slow Agent host discovery the preparation budget instead of the quick 
     expect(await settled).not.toBe('RUN_START_PREPARATION_TIMEOUT')
   } finally { vi.useRealTimers() }
 })
+
+it('gives a slow Worker bundle readiness check the preparation budget instead of the quick Start deadline', async () => {
+  vi.useFakeTimers()
+  try {
+    const readiness = START_PREPARATION_TIMEOUT_MS * 3
+    let abortedAfterReadiness: boolean | undefined
+    let signalOfStart: AbortSignal | undefined
+    const f = fixture('agent', async () => {}, async () => {
+      await new Promise(resolve => setTimeout(resolve, readiness))
+      abortedAfterReadiness = signalOfStart?.aborted
+    })
+    const settled = prepareRunStart((signal, started) => {
+      signalOfStart = signal
+      return f.producer.prepare(f.input, f.principal, signal, { source: 'mcp', sourcePreparationStarted: started })
+    }).catch((error: { code?: string }) => error.code)
+    await vi.advanceTimersByTimeAsync(readiness + 1)
+    expect(abortedAfterReadiness).toBe(false)
+    expect(await settled).not.toBe('RUN_START_PREPARATION_TIMEOUT')
+  } finally { vi.useRealTimers() }
+})
