@@ -217,7 +217,8 @@ export class CloudCi {
       const retainedOutput = run.collection?.log || (run.live?.bytes ?? 0) > 0
       const awaitingOutput = ['queued', 'starting', 'running', 'canceled'].includes(run.state)
         || run.collection?.log === false
-        || run.mirrorPublication?.state === 'failed' && !run.providerRunId
+        // A run that failed before dispatch never had a provider log.
+        || !run.providerRunId
       if (retainedOutput || !awaitingOutput) {
         throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
       }
