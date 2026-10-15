@@ -41,7 +41,8 @@ describe.skipIf(!postgresEnabled)('native activity reads with retained PostgreSQ
       (id,run_id,workflow_node_id,agent_id,attempt,record,created_at)
       values($1,$2,$3,$4,1,$5::jsonb,$6::timestamptz)`,
     [executionId, fixture.run.id, node.id, node.agentId, JSON.stringify(execution), occurredAt])
-    await database.pool.query("update runs set execution_state='running' where id=$1", [fixture.run.id])
+    await database.pool.query(`update runs set execution_state='running',
+      record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [fixture.run.id])
     // Execution insertion publishes activity at wall-clock time; keep this fixture's clock consistent.
     await database.pool.query('update run_activity set occurred_at=$1::timestamptz where harness_execution_id=$2',
       [occurredAt, executionId])

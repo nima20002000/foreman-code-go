@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { createRequire } from 'node:module'
+import fs from 'node:fs'
+import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { createTestPool } from './helpers/testPool.mjs'
 import * as resources from '../../../scripts/test-resources.mjs'
 
@@ -46,6 +47,13 @@ it('recovers abandoned nested invocations, native reservations and databases aft
   const admin = await resources.testAdminPool()
   const caller = createTestPool({ connectionString: saved.fixture.databaseUrl, max: 1 })
   let callerClosed = false
+  const readDirectory = fs.readdirSync
+  // Model an isolated process namespace; unrelated protected host services must stay outside this fixture.
+  const inventory = vi.spyOn(fs, 'readdirSync').mockImplementation((...args) => {
+    if (args[0] === '/proc') return [String(process.pid)] as never
+    return readDirectory(...args)
+  })
+  syncBuiltinESMExports()
   try {
     await chmod(saved.readonly, 0o500)
     expect((await caller.query('select 1 as connected')).rows).toEqual([{ connected: 1 }])
@@ -57,6 +65,17 @@ it('recovers abandoned nested invocations, native reservations and databases aft
     await expect.poll(async () => (await admin.query(
       'select count(*)::int as callers from pg_stat_activity where datname = any($1::text[])',
       [[saved.database.name, saved.fixture.name]])).rows[0]!.callers).toBe(0)
+    const heldFile = await open(join(saved.readonly, 'data'), 'r')
+    try {
+      const inUse = await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
+      expect(inUse.removed).toEqual([])
+      expect(inUse.retained).toEqual([{
+        directory: saved.root.directory, reason: 'Test root is still in use by a process',
+      }])
+      expect(existsSync(saved.root.directory)).toBe(true)
+    } finally {
+      await heldFile.close()
+    }
     const recovered = await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
     expect(recovered.retained).toEqual([])
     expect(recovered.removed).toContain(saved.root.directory)
@@ -67,6 +86,8 @@ it('recovers abandoned nested invocations, native reservations and databases aft
     await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
     expect(existsSync(saved.slot.directory)).toBe(false)
   } finally {
+    inventory.mockRestore()
+    syncBuiltinESMExports()
     if (!callerClosed) await caller.end()
     if (existsSync(saved.readonly)) await chmod(saved.readonly, 0o700)
     // Preserve failed recovery journals for the orchestrator's inspection.

@@ -603,6 +603,48 @@ it('forks independently, keeps its source untouched and carries real initial-mes
     nativeSessionId: initial.session.nativeSessionId, nativeMessageId: 'observed-message' })
 })
 
+it('reads fork history during preparation and reconciles the message after native submission', async () => {
+  const f = await setup()
+  const source = { ...f.session, nativeSessionId: 'historical-source-session' }
+  await f.request({ ...f.open, mode: 'fork', source })
+  let began!: () => void
+  const preparing = new Promise<void>(resolve => { began = resolve })
+  let release!: () => void
+  const preparation = new Promise<void>(resolve => { release = resolve })
+  let completed!: () => void
+  const completion = new Promise<void>(resolve => { completed = resolve })
+  const startTurn = f.manager.startTurn.bind(f.manager)
+  vi.spyOn(f.manager, 'startTurn').mockImplementation(async function* (session, input) {
+    began()
+    await preparation
+    yield* startTurn(session, input)
+    completed()
+  })
+  const retained = { events: [{ sequence: 1, type: 'thread.forked',
+    occurredAt: '2026-10-05T00:00:00.000Z', payload: {} }], pendingInteractions: [] }
+  vi.spyOn(f.manager, 'history').mockResolvedValue(retained)
+  const readPage = vi.fn((session: NativeSessionReference, correlationId: string) =>
+    f.manager.reconcile(session, correlationId))
+  Object.assign(f.manager, { reconcileHistoryPage: readPage })
+  const correlationId = 'fork-follow-up'
+  try {
+    await f.request({ method: 'conversation.start-turn', session: f.session,
+      prompt: 'Continue the saved task', correlationId })
+    await preparing
+    const request = { method: 'conversation.history', session: f.session, correlationId, afterSequence: -1 }
+    expect(await f.request(request)).toMatchObject({ history: retained })
+    expect(readPage).not.toHaveBeenCalled()
+    expect((await f.journal.conversations.read(f.binding))?.turns[0]).toHaveProperty('nativeTurnId', null)
+    release()
+    await completion
+    expect(await f.request(request)).toMatchObject({ history: { correlationId, nativeTurnId: 'fixture-turn-1' } })
+    expect(readPage).toHaveBeenCalledOnce()
+  } finally {
+    release()
+    await f.host.shutdown()
+  }
+})
+
 it('routes chats on execution-v1 without entering the workflow handler', async () => {
   const f = await setup()
   const workflow = vi.fn(async () => { throw new Error('A chat must not enter workflow dispatch.') })
