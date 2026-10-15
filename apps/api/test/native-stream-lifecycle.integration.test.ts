@@ -276,7 +276,11 @@ describe.skipIf(!postgresEnabled)('native stream lifecycle', () => {
       expect(f.provider.counts).toMatchObject({ sessions: 3, starts: 3 })
     } finally {
       release.resolve()
-      if (task) await task.catch(() => undefined)
+      if (task) {
+        await task.catch(() => {
+          // ignore: the test body already asserted this task's outcome; cleanup only waits for it to settle.
+        })
+      }
     }
   }, 60_000)
 
