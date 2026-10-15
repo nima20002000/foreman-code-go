@@ -28,7 +28,8 @@ function fixture() {
   const session = { harness: 'codex' as const, nativeSessionId: 'session', providerVersion: 'fixture' }
   const scope = { workspaceId: 'workspace', workflowId: 'workflow', runId: 'run',
     workflowVersionId: 'version', executionSemanticsVersion: 3 as const }
-  const stored = { execution, ref: { nodeId: 'node', occurrence: null }, inputDigest: repeatDigest(execution.input) }
+  const stored = { execution, ref: { nodeId: 'node', occurrence: null },
+    inputDigest: repeatDigest(execution.input) } as executions.StoredRepeatExecution
   const run = { id: 'run', workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version' } as AcceptedWorkflowRunV3
   vi.spyOn(snapshots, 'readAcceptedRepeatRunLocked').mockResolvedValue({ run } as
     Awaited<ReturnType<typeof snapshots.readAcceptedRepeatRunLocked>>)

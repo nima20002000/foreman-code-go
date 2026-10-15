@@ -46,7 +46,7 @@ function fixture() {
       node_id: intent.nodeId, binding_hash: intent.bindingHash, attempt_id: intent.attemptId,
       authorization_principal_id: 'principal', workspace_id: 'workspace', workflow_id: 'workflow',
       execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup, granted: state.grant,
-      connection: state.origin, receipt: state.receipt ? receipt : null, entered: true }], rowCount: 1 }
+      connection: state.origin, receipt: state.receipt ? receipt : null, receipt_present: state.receipt, entered: true }], rowCount: 1 }
     if (text.startsWith('select r.record as run')) return { rows: state.reviewer ? [state.reviewer] : [],
       rowCount: state.reviewer ? 1 : 0 }
     if (text.startsWith('select 1 from review_jobs')) return { rows: state.reviewsPending ? [{}] : [],
