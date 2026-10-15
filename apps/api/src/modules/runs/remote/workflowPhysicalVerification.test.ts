@@ -752,7 +752,7 @@ it('retains every remote frame and acknowledges a large reply with one grouped p
       payload: { nativeMethod: 'item/agentMessage/delta', text: `frame ${sequence}` },
     }))
     f.readout.history!.events = events
-    const originals = []
+    const originals: Awaited<ReturnType<typeof f.bind>>[] = []
     for (const event of events) {
       const source = { type: 'event' as const, event: { ...event, executionId: f.execution.id } }
       const original = await f.bind(source)
@@ -775,7 +775,7 @@ it('retains every remote frame and acknowledges a large reply with one grouped p
       f.request.mockResolvedValueOnce({ payload: ack })
       await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
     }
-    const sourceDigest = remoteWorkflowSourceDigest({ type: 'history', history: f.readout.history! })
+    const sourceDigest = remoteWorkflowSourceDigest({ type: 'history', history: f.readout.history! as Parameters<typeof remoteWorkflowSourceDigest>[0] extends { history: infer H } ? H : never })
     const replyAck = { version: 1, operationId: f.intent.operationId,
       receiptSequence: f.readout.receipt.sequence, sourceDigest, status: 'retired' }
     f.request.mockResolvedValueOnce({ payload: replyAck })

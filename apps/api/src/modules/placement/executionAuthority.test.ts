@@ -70,8 +70,8 @@ function fixture() {
   const client = { query: sql.query, on() {}, removeListener() {}, release() {} }
   const extension = createExecutionAuthorityExtension({ connect: async () => client } as unknown as pg.Pool,
     locations, producer)
-  const request = (action: 'read' | 'control' = 'read') => extension.handle(
-    { version: 1, intent, placement, action }, { binding: connection } as Parameters<typeof extension.handle>[1])
+  const request = (action: 'read' | 'control' = 'read') => extension.handle!(
+    { version: 1, intent, placement, action }, { binding: connection } as Parameters<NonNullable<typeof extension.handle>>[1])
   return { authorize, state, locations, pins, connection, intent, receipt, request, reads: () => reads }
 }
 
