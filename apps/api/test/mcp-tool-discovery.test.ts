@@ -43,7 +43,7 @@ function fixture(options: { ci?: boolean; defaults?: GraphqlAgentTool[] } = {}) 
   const app = Fastify()
   app.setErrorHandler((error, _request, reply) => {
     reply.code(error instanceof DomainError ? error.status : 500).send({ error: {
-      code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR', message: error.message,
+      code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error),
     } })
   })
   registerGraphqlMcp(app, { access, interactions, operator })
