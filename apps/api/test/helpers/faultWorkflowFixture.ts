@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { expect, vi } from 'vitest'
-import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  type HarnessExecution } from '@foreman-code/contracts'
 import { SavedRunDetailsSchema, makeCurrentWorkflowFixture, canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { readDispatchIntent, readExecutionPlacement, readNativePlacement } from '../../src/modules/placement/persistence.js'
@@ -248,8 +249,13 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
     }, 500)
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
+      readExecutions: async () => (await Promise.all([...intents.keys()].map(id => base.runs.getExecution(id))))
+        .filter((execution): execution is HarnessExecution => execution !== undefined),
       get startupDescription() { return startupDescription },
-      async mcpInspections() { await readStartup(); return worker.unavailableInspections },
+      async mcpInspections() {
+        if (preparationFailure) throw preparationFailure.error
+        return worker.unavailableInspections
+      },
       async makeMcpReady(delayMs: number) {
         worker.makeMcpReady()
         await readUntil(async () => worker.advanceNativeTimer(delayMs), advanced => advanced,
@@ -257,16 +263,19 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       },
       launch() {
         started = Promise.allSettled([base.engine.start(base.f.run.id)])
-        return readUntil(readStartup, details => details.executions.some(execution =>
-          execution.workflowNodeId === entry.id && execution.result?.outcome === 'succeeded'),
+        return readUntil(async () => {
+          const intent = [...intents.values()].find(value => value.nodeId === entry.id)
+          return intent ? base.runs.getExecution(intent.executionId) : undefined
+        }, execution => execution?.result?.outcome === 'succeeded',
         { timeoutMs: 4_000, minimumReadIntervalMs: 250, description: 'the initial graph entry completion' })
       },
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readActiveRemoteRun(base, placements, affected.id, readStartup),
       async finished() {
-        const details = await readUntil(read, value => value.run.executionState === 'completed'
-          && value.cleanupPending === false,
+        await readUntil(() => base.runs.get(base.f.run.id), value => value?.executionState === 'completed',
         { timeoutMs: 8_000, minimumReadIntervalMs: 250, description: 'terminal Run readback' })
+        const details = await read()
+        expect(details.cleanupPending).toBe(false)
         const mcp = await readerClient.callTool({ name: 'run_get', arguments: {
           workspaceId: base.f.run.workspaceId, runId: base.f.run.id, detail: 'full',
         } })

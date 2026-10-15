@@ -14,12 +14,12 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     await fixture.launch()
     const before = await fixture.active()
     const remote = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
-    const checking = await readUntil(fixture.read, details => details.executions.some(execution =>
+    const checking = await readUntil(fixture.readExecutions, executions => executions.some(execution =>
       execution.workflowNodeId === fixture.entry.id && execution.state === 'running'
         && typeof execution.input === 'object' && execution.input !== null && 'tick' in execution.input
         && fixture.worker.replay.starts.some(turn => turn.correlationId === `execution:${execution.id}`)),
     { timeoutMs: 12_000, minimumReadIntervalMs: 250, description: 'the scheduled loop check beside graph work' })
-    const check = checking.executions.find(execution => typeof execution.input === 'object'
+    const check = checking.find(execution => typeof execution.input === 'object'
       && execution.input !== null && 'tick' in execution.input)!
     const turn = fixture.worker.replay.starts.find(item => item.correlationId === `execution:${check.id}`)!
     const thread = fixture.worker.replay.threads.get(turn.sessionId)!
@@ -29,19 +29,21 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     fixture.worker.replay.channels.get(turn.sessionId)!.notify('turn/completed', {
       threadId: turn.sessionId, turn: structuredClone(native),
     })
-    const failed = await readUntil(fixture.read, details =>
-      details.executions.find(execution => execution.id === check.id)?.state === 'completed',
+    await readUntil(fixture.readExecutions, executions =>
+      executions.find(execution => execution.id === check.id)?.state === 'completed',
     { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'the failed loop check being recorded' })
+    const failed = await fixture.read()
     expect(failed.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(failed.cleanupPending).toBe(false)
     expect(failed.executions.find(execution => execution.id === remote.id)).toMatchObject({
       state: 'running', attempt: 1, nativeSessionId: remote.nativeSessionId,
     })
     fixture.release()
-    const details = await readUntil(fixture.read, value =>
-      [fixture.affected.id, fixture.sibling.id].every(nodeId => value.executions.some(execution =>
+    await readUntil(fixture.readExecutions, executions =>
+      [fixture.affected.id, fixture.sibling.id].every(nodeId => executions.some(execution =>
         execution.workflowNodeId === nodeId && execution.result?.outcome === 'succeeded')),
     { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'successful sibling work after the failed check' })
+    const details = await fixture.read()
     expect(details.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(details.executions.filter(execution => execution.result?.outcome === 'failed').map(execution => execution.id))
       .toEqual([check.id])

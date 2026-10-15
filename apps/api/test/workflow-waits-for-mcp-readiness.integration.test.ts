@@ -20,10 +20,10 @@ describe.runIf(postgresEnabled)('workflow MCP startup readiness', () => {
     expect(before.executions.filter(execution => execution.workflowNodeId === fixture.affected.id)
       .every(execution => !fixture.worker.replay.starts.some(turn =>
         turn.correlationId === `execution:${execution.id}`))).toBe(true)
-    const waiting = await readUntil(fixture.read, details => details.activity.some(activity =>
-      activity.payload.nativeEventType === 'turn.mcp_startup_retry'),
+    const waiting = await readUntil(() => fixture.base.runs.listActivity(fixture.base.f.run.id),
+      activity => activity.some(value => value.payload.nativeEventType === 'turn.mcp_startup_retry'),
     { timeoutMs: 4_000, description: 'the native MCP startup retry' })
-    const retry = waiting.activity.find(activity => activity.payload.nativeEventType === 'turn.mcp_startup_retry')!
+    const retry = waiting.find(activity => activity.payload.nativeEventType === 'turn.mcp_startup_retry')!
     const native = (await fixture.base.db.pool.query<{ record: HarnessNativeEvent }>(
       'select record from harness_native_events where execution_id=$1 and sequence=$2',
       [retry.harnessExecutionId, retry.payload.nativeEventSequence])).rows[0]!.record
