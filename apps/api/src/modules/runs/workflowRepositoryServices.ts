@@ -1,7 +1,9 @@
 import { assertOriginalWorkflowTerminal } from '../interactions/workflowTerminalSource.js'
 import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
-import { HarnessExecutionSchema, type DurableInteraction, type ExecutionResult, type HarnessExecution } from '@foreman-code/contracts'
+import {
+  ExecutionResultSchema, HarnessExecutionSchema, type DurableInteraction, type ExecutionResult, type HarnessExecution,
+} from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, AcceptedCurrentNodeResultSchema, canonicalGraphJson, RUN_GRAPH_LIMITS,
   type AcceptedWorkflowRunV3, type WorkflowVersionV3,
@@ -21,7 +23,7 @@ import type { RunOwnership } from './ownership.js'
 import { visitRepeatNativeAttemptsLocked } from './repeatNativeAttempts.js'
 import { hasWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { assertRestartAttemptsLocked } from './workflowRestartSettlement.js'
-import { EXECUTION_MAX_ATTEMPTS, isTransientExecutionResult } from './executionRetryPolicy.js'
+import { hasExecutionRetryBudget, isTransientExecutionResult } from './executionRetryPolicy.js'
 import type { ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { lockInteraction } from '../interactions/wave25/context.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
@@ -97,10 +99,20 @@ export async function allowTechnicalRetryLocked(sql: GraphTransactionSql, run: A
     const stored = await readRepeatExecutionLocked(sql, snapshot, execution.id)
     if (!sameRepeatValue(stored.execution, execution) || stored.accepted) return conflict('REPEAT_RETRY_NOT_ALLOWED')
     if (execution.state !== 'completed' || execution.result?.outcome !== 'failed' || !execution.result.error?.retryable) return false
-    // A technical retry consumes the shared Run execution budget and may
-    // replace one failed attempt at most; it never creates an occurrence.
     const budget = version.definition.executionPolicy?.maxNodeExecutions
-    if (!budget || execution.attempt >= EXECUTION_MAX_ATTEMPTS) return false
+    if (!budget) return false
+    // Slot history survives restart and keeps repeat occurrences and handoff activations independent.
+    const attempts = (await sql.query<{ record: unknown; failure_result: unknown }>(`
+      select e.record,b.failure_result from run_repeat_executions x
+        join harness_executions e on e.id=x.execution_id and e.run_id=x.run_id
+        left join approval_execution_state b on b.execution_id=e.id
+      where x.run_id=$1 and x.slot_id=$2 and x.technical_attempt<=$3
+      order by x.technical_attempt`, [run.id, stored.slotId, execution.attempt])).rows.map(row => ({
+      execution: HarnessExecutionSchema.parse(row.record),
+      infrastructureFailure: isTransientExecutionResult(
+        row.failure_result ? ExecutionResultSchema.parse(row.failure_result) : undefined),
+    }))
+    if (!hasExecutionRetryBudget(execution, attempts)) return false
     if (!await hasWorkflowExecutionCapacityLocked(sql, run.id, version)) return false
     // An abandoned attempt carries its recorded infrastructure cause, not a provider terminal.
     if (isTransientExecutionResult(execution.result)) return true
