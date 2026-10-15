@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import type { CloudStatus } from './cloudProviders.js'
+import { DomainError } from '../errors.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { fixture } from './cloud.testSupport.js'
 
 async function runningFixture(durations: number[]) {
@@ -56,5 +58,45 @@ it('polls a busy cloud fleet concurrently and puts an overdue queued run first',
     unblock = true
     for (const release of releases.values()) release()
     await Promise.all(reads)
+  }
+})
+
+it('keeps a rate-limit pause when an older concurrent poll succeeds and starts it at failure time', async () => {
+  const f = await runningFixture([600_000, 600_000])
+  f.advance(4_000)
+  const limited = deferred()
+  const successful = deferred()
+  const entered: string[] = []
+  vi.mocked(f.cloud.provider.status).mockImplementation(async run => {
+    entered.push(run.runId)
+    if (run.runId === f.ids[0]) {
+      await limited.promise
+      throw new DomainError('CI_CLOUD_RATE_LIMITED', 'Rate limit reached', 503)
+    }
+    await successful.promise
+    return { done: false }
+  })
+  const first = f.read(f.ids[0]!)
+  const sibling = f.read(f.ids[1]!)
+  try {
+    await expect.poll(() => entered.length).toBe(2)
+    f.advance(40_000)
+    limited.resolve()
+    await first
+    successful.resolve()
+    await sibling
+    f.advance(4_000)
+    await f.read(f.ids[1]!)
+    expect(entered).toHaveLength(2)
+    f.advance(25_999)
+    await f.read(f.ids[1]!)
+    expect(entered).toHaveLength(2)
+    f.advance(1)
+    await f.read(f.ids[1]!)
+    expect(entered).toHaveLength(3)
+  } finally {
+    limited.resolve()
+    successful.resolve()
+    await Promise.all([first, sibling])
   }
 })
