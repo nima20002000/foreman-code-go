@@ -191,7 +191,7 @@ export const CiHostStatusSchema = z.object({
   removedRunIds: z.array(CiHostRunIdSchema).max(1000).optional(),
   cpuCount: z.number().int().positive(), memoryBytes: z.number().int().positive(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),
-  slotsUsed: z.number().int().nonnegative().optional(), slotsTotal: z.number().int().positive().optional(),
+  slotsUsed: z.number().int().nonnegative().optional(), slotsTotal: z.number().int().nonnegative().optional(),
   userSystemd: CiUserSystemdSchema.optional(),
   runs: z.array(CiHostRunSchema).max(50),
 }).strict()

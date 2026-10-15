@@ -176,7 +176,7 @@ export const CiComputersOutputSchema = z.object({
   cpuCount: z.number().int().positive().optional(), memoryBytes: z.number().int().positive().optional(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),
   userSystemd: CiUserSystemdSchema.optional(),
-  slotsUsed: z.number().int().nonnegative(), slotsTotal: z.number().int().positive(),
+  slotsUsed: z.number().int().nonnegative(), slotsTotal: z.number().int().nonnegative(),
   running: z.array(z.string()).optional(),
 }).strict()) }).strict()
 
