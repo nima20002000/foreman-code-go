@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
@@ -110,13 +110,25 @@ it('loads the compiled API using only its deployed production dependencies', asy
   const dependencies = { root: join(testFixtureCacheRoot(), 'api-dependencies'), source }
   const release = join(directory, 'release')
   const destination = join(release, 'apps/api')
-  const environment: NodeJS.ProcessEnv = { ...process.env, npm_config_offline: 'true' }
+  // The repository's clone-or-copy import writes ~800 MB per dependency-cache miss, which on a busy disk outlasts
+  // the file's deadline; hard links reuse the store's files and deploy the same production packages.
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env, npm_config_offline: 'true', pnpm_config_package_import_method: 'hardlink',
+  }
+  // Every child process is killed after a bounded time and reports the fixture step it was running.
+  const child = async (step: string, command: string, args: string[], options: { cwd: string, env: NodeJS.ProcessEnv }) => {
+    try {
+      return await execute(command, args, { ...options, timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 })
+    } catch (cause) {
+      const failure = cause as ExecFileException
+      const detail = failure.killed ? `exceeded 30000 ms and was killed: ${failure.message}` : failure.message
+      throw new Error(`Production runtime fixture step "${step}" failed: ${detail}`, { cause })
+    }
+  }
   const run = async (command: string, args: string[]) => {
     // This source is discarded after deployment, so it needs no development dependency restoration.
     if (args.includes('install')) return
-    await execute(command, args, {
-      cwd: source, env: environment, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
-    })
+    await child(`${command} ${args.join(' ')}`, command, args, { cwd: source, env: environment })
   }
   try {
     const prepareSource = async () => {
@@ -152,16 +164,14 @@ it('loads the compiled API using only its deployed production dependencies', asy
     await mkdir(join(release, 'packages/contracts/src'), { recursive: true })
     await cp(join(repository, 'packages/contracts/src/productEnvironment.mjs'),
       join(release, 'packages/contracts/src/productEnvironment.mjs'))
-    const { stdout } = await execute(process.execPath, ['--input-type=module', '-e',
+    const { stdout } = await child('load the deployed production API', process.execPath, ['--input-type=module', '-e',
       'const api = await import(process.argv[1]); console.log(typeof api.buildProductionApp);',
-      pathToFileURL(join(destination, 'dist/production.js')).href], {
-      cwd: destination, env: process.env, timeout: 30_000, maxBuffer: 1024 * 1024,
-    })
+      pathToFileURL(join(destination, 'dist/production.js')).href], { cwd: destination, env: process.env })
     expect(stdout.trim()).toBe('function')
     const project = join(directory, 'ci-project')
     const context = join(directory, 'ci-context')
     const { commit: captured, environment: gitEnvironment } = await createLocalProductionProject(project)
-    const { stdout: runtimeOutput } = await execute(process.execPath, ['--input-type=module', '-e', [
+    const { stdout: runtimeOutput } = await child('build the CI runtime context', process.execPath, ['--input-type=module', '-e', [
       'import { readFile } from "node:fs/promises";',
       'import { join } from "node:path";',
       'import { pathToFileURL } from "node:url";',
@@ -178,9 +188,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
       'containerfile: (await readFile(join(output, "Containerfile"), "utf8")).length,',
       'verification: (await readFile(join(output, "verification/verify-repository.mjs"), "utf8")).length }));',
     ].join('\n'), pathToFileURL(join(destination, 'dist/modules/jobs/ciRuntimeContext.mjs')).href,
-    project, context, captured], {
-      cwd: destination, env: gitEnvironment, timeout: 30_000, maxBuffer: 1024 * 1024,
-    })
+    project, context, captured], { cwd: destination, env: gitEnvironment })
     const runtimeResult = JSON.parse(runtimeOutput) as {
       digest: string; sourceCommit: string; lock: unknown; containerfile: number; verification: number
       finalizeVerification: string
