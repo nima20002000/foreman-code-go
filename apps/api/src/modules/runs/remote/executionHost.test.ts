@@ -103,6 +103,8 @@ describe('actual worker native-port adapter', () => {
     const preparing = f.host.prepare(f)
     const preparationResult = Promise.allSettled([preparing])
     await entered.promise
+    await expect(f.host.prepare({ ...f, request: { ...f.request, input: { changed: true } } }))
+      .rejects.toThrow('binding mismatch')
     const stopping = f.host.abortPreparation(f.intent.operationId)
     try {
       expect(preflightSignal).toBeDefined()
