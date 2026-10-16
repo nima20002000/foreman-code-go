@@ -119,7 +119,7 @@ export function runningCircleCiOwners(pool: pg.Pool): () => Promise<string[]> {
 export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
   const readAt = Date.now()
   const rows = (await pool.query<{ id: string; retry_id: string | null }>(
-    "select id,record#>>'{setupRetry,runId}' as retry_id from ci_runs where state in ('queued','starting','running')")).rows
+    "select id,coalesce(record->>'executionRunId',record#>>'{setupRetry,runId}') as retry_id from ci_runs where state in ('queued','starting','running')")).rows
   return { ids: new Set(rows.flatMap(row => row.retry_id ? [row.id, row.retry_id] : [row.id])), readAt }
 }
 
@@ -241,12 +241,12 @@ export class CloudCi {
     if (request.operation === 'cancel') {
       let run = await this.read(request.runId)
       if (['queued', 'starting', 'running'].includes(run.state)) {
-        run = await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.',
+        run = await this.save({ ...run, message: 'Cancellation requested; waiting for the provider to stop.',
           cancellation: run.cancellation ?? { at: this.ports.now().toISOString(), canceledIds: [] } })
       }
       const canceled = cancellationPending(run) && run.mirrorPublication?.state !== 'pending'
         ? await this.cancelAttempts(run) : run
-      this.schedulePrune(canceled, canceled.runId)
+      if (!['queued', 'starting', 'running'].includes(canceled.state)) this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
     return this.withRead(request.runId, async () => this.answer(request, await this.refresh(request.runId, request.reassign)))
@@ -433,10 +433,13 @@ export class CloudCi {
     // Keep each start separately: releasing one partition must not release a concurrent one.
     const reservation = `${request.runId}\n${branchName}`
     reservations.add(reservation)
+    const executionReservation = `${request.runId}\nci/${request.commit}-${request.runId}`
+    if (this.provider.id === 'circleci') reservations.add(executionReservation)
     publishingBranches.set(mirror, reservations)
     const maintenance = mirrorMaintenance.get(this.mirrorKey(request.repository, mirror))
     if (maintenance?.cleanup) {
       maintenance.keep.add(branchName)
+      if (this.provider.id === 'circleci') maintenance.keep.add(`ci/${request.commit}-${request.runId}`)
       maintenance.keep.add(`ci-default/${request.commit}`)
     }
     try {
@@ -449,13 +452,15 @@ export class CloudCi {
           const completed = { ...latest, mirrorPublication: publication.mirrorPublication }
           delete completed.publicationRequest
           await this.save(completed)
-          if (latest.state !== 'starting' || latest.cancellation) return this.view(completed, 0)
+          if (latest.cancellation) return this.view(await this.cancelAttempts(completed), 0)
+          if (latest.state !== 'starting') return this.view(completed, 0)
           return this.startPublished(request, mirror, publication)
         })
       }
       return await this.startPublished(request, mirror, publication)
     } finally {
       reservations.delete(reservation)
+      reservations.delete(executionReservation)
       if (!reservations.size) publishingBranches.delete(mirror)
     }
   }
@@ -496,12 +501,17 @@ export class CloudCi {
       ...(baseCommit ? { baseCommit } : {}),
       ...(partition ? { partition } : {}),
       ...(durations && durations.length <= limit ? { durations } : {}) }
+    if (this.provider.id === 'circleci') {
+      input.workflowRef = `ci/${request.commit}-${request.runId}`
+      await git(['push', '--quiet', `https://github.com/${mirror}.git`,
+        `${snapshot}:refs/heads/${input.workflowRef}`])
+    }
     validateProviderParameters(this.provider, input)
     let run = await this.save({ mirrorBranch: branch, runId: request.runId, repository: request.repository, mirror, commit: request.commit,
       suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
       scope, ...(request.files !== undefined ? { files: request.files } : {}),
       ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
-      provenance: { sourceCommit: request.commit, workflowCommit: snapshot, workflowRef },
+      provenance: { sourceCommit: request.commit, workflowCommit: snapshot, workflowRef: input.workflowRef! },
       finishedAt: null, exitCode: null, message, mirrorPublication,
       dispatch: { input, attempts: 0, at: this.ports.now().toISOString() } })
     run = await this.trigger(run, input)
@@ -525,7 +535,8 @@ export class CloudCi {
 
   private async trigger(run: CloudRun, input: CloudDispatchInput) {
     const pending = await this.save({ ...run, state: 'starting', providerRunId: null,
-      dispatch: { input, attempts: (run.dispatch?.attempts ?? 0) + 1, at: this.ports.now().toISOString() } })
+      dispatch: { input, attempts: (run.dispatch?.attempts ?? 0) + 1, at: this.ports.now().toISOString(),
+        uncertain: true } })
     if (this.provider.id === 'circleci') {
       const failed = await readCloudRun(this.configErrorPath(pending)).catch(error => {
         if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN') return null
@@ -534,7 +545,7 @@ export class CloudCi {
       if (failed) return this.failPipeline(pending, { message: failed.message! })
     }
     const providerRunId = await this.provider.dispatch(input)
-    return this.save({ ...pending, providerRunId, dispatchHistory: [...pending.dispatchHistory ?? [],
+    return this.save({ ...pending, providerRunId, dispatch: { ...pending.dispatch!, uncertain: false }, dispatchHistory: [...pending.dispatchHistory ?? [],
       { at: pending.dispatch!.at, providerRunId }] })
   }
 
@@ -553,7 +564,26 @@ export class CloudCi {
     return this.save(failed)
   }
 
+  private async adoptSubmission(run: CloudRun): Promise<CloudRun> {
+    if (this.provider.id !== 'circleci' || run.providerRunId || !run.dispatch?.attempts
+      || run.dispatch.uncertain === false) return run
+    const discovered = await this.provider.discover!(run)
+    const known = new Set(run.dispatchHistory?.map(attempt => attempt.providerRunId))
+    const matches = discovered.filter(id => !known.has(id))
+    if (matches.length > 1) {
+      throw new DomainError('CI_CLOUD_SUBMISSION_UNCERTAIN',
+        'Multiple CircleCI pipelines match the pending submission; ownership retained.', 503)
+    }
+    if (!matches.length) return run
+    const providerRunId = matches[0]!
+    return this.save({ ...run, providerRunId, dispatch: { ...run.dispatch, uncertain: false },
+      dispatchHistory: [...run.dispatchHistory ?? [], { at: run.dispatch.at, providerRunId }] })
+  }
+
   private async recoverUnstarted(run: CloudRun) {
+    if (run.dispatch?.uncertain) {
+      return this.save({ ...run, message: 'Cloud submission is unconfirmed; discovering the pipeline before retrying.' })
+    }
     const dispatchedAt = run.dispatch?.at ?? run.mirrorPublication?.finishedAt ?? run.startedAt
     if (this.ports.now().getTime() - Date.parse(dispatchedAt) < CLOUD_START_TIMEOUT_MS) return run
     // Retire the pipeline before retrying so it cannot acquire a workflow later.
@@ -1014,7 +1044,7 @@ export class CloudCi {
         return this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
       }
       if (error instanceof DomainError && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code)) {
-        return this.reconcileLookupFailure(run, error)
+        return this.reconcileLookupFailure(await this.read(runId), error)
       }
       if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED')) throw error
       this.pausePolling(runId)
@@ -1037,13 +1067,15 @@ export class CloudCi {
   private async reconcileLookupFailure(run: CloudRun, error: unknown): Promise<CloudRun> {
     const now = this.ports.now()
     const since = run.reconciliation?.since ?? run.reconciliation?.at ?? now.toISOString()
-    if (['starting', 'running'].includes(run.state) && now.getTime() - Date.parse(since) >= CLOUD_START_TIMEOUT_MS) {
+    if (!cancellationPending(run) && ['starting', 'running'].includes(run.state)
+      && now.getTime() - Date.parse(since) >= CLOUD_START_TIMEOUT_MS) {
       return this.requeueUnreadable(run, error)
     }
     const attempts = Math.min(MAX_DISPATCH_ATTEMPTS, (run.reconciliation?.attempts ?? 0) + 1)
     const message = `${this.provider.label} execution could not be reconciled: `
       + (error instanceof Error ? error.message : String(error)).slice(0, 500)
-      + ' Retrying lookup for up to 75 seconds before moving to another computer.'
+      + (cancellationPending(run) ? ' Cancellation is unconfirmed; ownership retained while status reads retry.'
+        : ' Retrying lookup for up to 75 seconds before moving to another computer.')
     log.warn({ err: error, runId: run.runId, attempts }, 'Cloud CI execution needs reconciliation')
     return this.save({ ...run, message, reconciliation: { attempts, at: now.toISOString(), since,
       previousMessage: run.reconciliation ? run.reconciliation.previousMessage : run.message } })
@@ -1153,27 +1185,37 @@ export class CloudCi {
 
   private async cancelAttempts(run: CloudRun): Promise<CloudRun> {
     if (!cancellationPending(run)) return run
+    run = await this.adoptSubmission(run)
     const canceled = new Set(run.cancellation!.canceledIds)
-    let discovered: string | null = null
-    try {
-      discovered = await this.provider.find(run)
-    } catch (error) {
-      if (!(error instanceof DomainError
-        && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code))) throw error
-      log.warn({ err: error, runId: run.runId }, 'Cloud CI discovery unavailable; canceling known pipelines')
+    const discovered = this.provider.id === 'github'
+      ? await this.provider.discover!(run) : []
+    const history = [...run.dispatchHistory ?? []]
+    for (const providerRunId of discovered) {
+      if (!history.some(attempt => attempt.providerRunId === providerRunId)) {
+        history.push({ at: this.ports.now().toISOString(), providerRunId })
+      }
     }
-    const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []
-    const ids = new Set([discovered, run.providerRunId, ...attempts])
+    run = await this.save({ ...run, dispatchHistory: history })
+    const attempts = history.map(attempt => attempt.providerRunId)
+    const ids = new Set([run.providerRunId, ...attempts, ...discovered].filter((id): id is string => Boolean(id)))
+    const discoveryComplete = !run.dispatch?.attempts
+      || this.ports.now().getTime() - Date.parse(run.cancellation!.at) >= CLOUD_START_TIMEOUT_MS
+    let stopped = discoveryComplete && !run.dispatch?.uncertain && (ids.size > 0 || !run.dispatch?.attempts)
     for (const providerRunId of ids) {
-      if (!providerRunId || canceled.has(providerRunId)) continue
-      await this.provider.cancel({ ...run, providerRunId })
-      canceled.add(providerRunId)
+      const attempt = { ...run, providerRunId }
+      if (!canceled.has(providerRunId)) {
+        await this.provider.cancel(attempt)
+        canceled.add(providerRunId)
+        run = await this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled] } })
+      }
+      if (!(await this.provider.status(attempt)).done) stopped = false
     }
     this.polled.set(run.runId, this.ports.now().getTime())
-    const completedAt = this.ports.now().getTime() - Date.parse(run.cancellation!.at) >= CLOUD_START_TIMEOUT_MS
-      ? this.ports.now().toISOString() : undefined
-    return this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled],
-      ...(completedAt ? { completedAt } : {}) } })
+    const now = this.ports.now().toISOString()
+    return this.save({ ...run,
+      ...(stopped ? { state: run.state === 'queued' ? 'queued' : 'canceled',
+        finishedAt: run.state === 'queued' ? null : now, message: 'Canceled.' } : {}),
+      cancellation: { ...run.cancellation!, canceledIds: [...canceled], ...(stopped ? { completedAt: now } : {}) } })
   }
 
   private async collect(run: CloudRun): Promise<CloudRun> {
@@ -1283,7 +1325,7 @@ export class CloudCi {
     await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
     const requeued: CloudRun = { ...run, state: 'queued', finishedAt: null, exitCode: null, message,
       providerRunId: null,
-      cancellation: { at: this.ports.now().toISOString(), canceledIds: [run.providerRunId!] } }
+      cancellation: { at: this.ports.now().toISOString(), canceledIds: [run.providerRunId!], completedAt: this.ports.now().toISOString() } }
     delete requeued.providerQueuedAt
     delete requeued.queueCancelRequested
     delete requeued.reconciliation
@@ -1293,6 +1335,7 @@ export class CloudCi {
   /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
   private async follow(run: CloudRun, reassign: boolean): Promise<CloudRun> {
     const runId = run.runId
+    run = await this.adoptSubmission(run)
     if (run.state === 'starting' || !run.providerRunId || !run.workflowStarted && this.provider.id === 'circleci') {
       const providerRunId = await this.provider.find(run)
       if (!providerRunId) {

@@ -279,6 +279,8 @@ export const CiRunRecordSchema = z.object({
   requiresBuildComputer: z.boolean().optional(),
   /** Providers that accepted a dispatch but exhausted retries without creating work. */
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
+  /** A fresh executor identity after confirmed reassignment; the ticket keeps its ID. */
+  executionRunId: CiHostRunIdSchema.optional(),
   /** One fresh executor attempt after a cloud failure before its first test case. */
   setupRetry: z.object({
     runId: CiHostRunIdSchema, failedComputer: CiComputerRefSchema, reason: z.string().max(2000),
