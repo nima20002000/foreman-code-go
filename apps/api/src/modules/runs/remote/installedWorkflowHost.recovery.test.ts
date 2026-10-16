@@ -353,8 +353,12 @@ describe('lazy installed worker host qualification boundary',()=>{
 })
 
 describe('installed workflow construction concurrency', () => {
-  it.each(['qualification', 'thread acknowledgement'] as const)(
-    'closes an original pending %s on reconnect while the worker remains alive', async stage => {
+  it.each([
+    ['qualification', false], ['thread acknowledgement', false],
+    ['qualification', true], ['thread acknowledgement', true],
+  ] as const)(
+    'closes an original pending %s on reconnect while the worker remains alive (status first: %s)',
+    async (stage, statusFirst) => {
       const f = await constructionFixture()
       const entered = deferred()
       const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async (_input, signal) => {
@@ -395,6 +399,12 @@ describe('installed workflow construction concurrency', () => {
           connectionEpoch: randomUUID() }
         f.currentBinding.mockReturnValue(binding)
         const context = { binding, signal: new AbortController().signal }
+        if (statusFirst) {
+          const status = await f.handler({ method: 'status', intent: f.intent, placement: f.placement }, context)
+          expect(status.payload).toMatchObject({ status: 'known', receipt: { entryAttempted: true } })
+          expect((status.payload as { receipt: { native?: unknown } }).receipt.native).toBeUndefined()
+          expect(closeOwner).not.toHaveBeenCalled()
+        }
         const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-original-preparation',
           operationId: f.intent.operationId, executionId: f.intent.executionId, attemptId: f.intent.attemptId,
           bindingHash: f.intent.bindingHash, owner: f.intent.owner, action: { kind: 'stop' } }
@@ -409,6 +419,12 @@ describe('installed workflow construction concurrency', () => {
           return { payload: { version: 1, action: parsed.data.action, operationId: f.intent.operationId,
             attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner } }
         })
+        if (statusFirst) {
+          await expect(f.handler({ method: 'control', intent: f.intent, placement: f.placement,
+            command: { ...command, commandId: 'stale-stop', owner: { grantId: 'stale-owner', epoch: '2' } },
+          }, context)).rejects.toThrow('Stale control ownership')
+          expect(closeOwner).not.toHaveBeenCalled()
+        }
         const response = await f.handler({ method: 'control', intent: f.intent, placement: f.placement, command }, context)
         const receipt = RemoteOperationReceiptSchema.parse((response.payload as { receipt: unknown }).receipt)
         expect(hasPositiveRemoteEntryClosure(receipt)).toBe(true)

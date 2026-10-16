@@ -301,6 +301,59 @@ it('persists positive closure for an interrupted entry that never returned a ses
   } finally { await f.close() }
 })
 
+it.each(['native_entry_attempted', 'uncertain'] as const)(
+  'stops an unacknowledged %s and waits for positive entry closure before settling', async phase => {
+    const f = fixture()
+    delete f.receipt.native
+    delete f.receipt.terminal
+    f.receipt.phase = phase
+    f.receipt.stopFence = false
+    f.state.cleanup = undefined
+    const commands: unknown[] = []
+    f.request.mockImplementation(async payload => {
+      const frame = payload as { method: string; command?: unknown }
+      if (frame.method === 'control') {
+        commands.push(frame.command)
+        f.receipt.phase = 'stop_requested'
+        f.receipt.stopFence = true
+        f.receipt.sequence++
+        if (commands.length === 2) {
+          const launchId = '55555555-5555-4555-8555-555555555555'
+          const entryClosure = {
+            intent: f.receipt.intent, connection: f.receipt.connection, owner: 'execution:execution',
+            initialLaunchId: launchId,
+            launches: [{ owner: 'execution:execution', launchId, bootId: f.receipt.connection.bootId,
+              boundary: { kind: 'cgroup-v2' as const, path: '/unit/boundary', device: '1', inode: '2' },
+              lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }],
+          }
+          f.receipt.phase = 'confirmed_terminal'
+          f.receipt.terminal = { kind: 'cancelled', entryClosure,
+            closureEvidenceDigest: remoteEntryClosureDigest(entryClosure) }
+        }
+      }
+      return { payload: { status: 'known', receipt: structuredClone(f.receipt) } }
+    })
+    try {
+      const signal = new AbortController().signal
+      await expect(f.composition.confirmClosedExecution('execution', signal, f.owner)).resolves.toBe(false)
+      expect(f.state.stored).toBeUndefined()
+      expect(commands).toHaveLength(1)
+      await expect(f.composition.confirmClosedExecution('execution', signal, f.owner)).resolves.toBe(true)
+      expect(commands).toHaveLength(2)
+      expect(commands[0]).toEqual(commands[1])
+      expect(commands[0]).toMatchObject({ operationId: f.receipt.intent.operationId,
+        executionId: f.receipt.intent.executionId, attemptId: f.receipt.intent.attemptId,
+        owner: f.receipt.intent.owner, action: { kind: 'stop' } })
+      expect(commands[0]).not.toHaveProperty('native')
+      expect(f.request.mock.calls.map(call => (call[0] as { method: string }).method))
+        .toEqual(['status', 'control', 'status', 'control'])
+      expect(f.state.stored).toEqual(f.receipt)
+      expect(f.state.session).toBeNull()
+      expect(ports.prefetch).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  },
+)
+
 it('leaves a live or unconfirmed native owner unsettled', async () => {
   const f = fixture()
   ports.closed.mockReturnValue(false)
