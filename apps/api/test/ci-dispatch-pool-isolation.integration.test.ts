@@ -47,7 +47,10 @@ it('dispatches a queued MCP ticket while an observation holds every shared datab
         && start.request.runId === queued.ticketId && start.computer === idle.label)).toBe(true)
     }, { timeout: 3500 })
     release.resolve()
-    const saved = await f.waitFor(reader, queued.ticketId, output => output.run.state === 'running')
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: queued.ticketId,
+    })).run.state).toBe('running')
+    const saved = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: queued.ticketId }))
     expect(saved.run).toMatchObject({ id: queued.ticketId, state: 'running', computer: { hostRef: idle.hostRef } })
     expect(saved.run.id).not.toBe(first.ticketId)
   } finally {
