@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, OperatorCiListInputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
+import { HarnessExecutionSchema, CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, OperatorCiListInputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
   type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
@@ -15,6 +15,9 @@ import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/
 import { databaseHotQueriesMigration } from '../src/infrastructure/databaseHotQueriesMigration.js'
 import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
+import { RepeatRepositoryFactory, repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
+import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
+import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { BugReportService } from '../src/modules/bug-reports/service.js'
@@ -24,7 +27,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
 import { ciActivityRunLockMigration } from '../src/infrastructure/ciActivityRunLockMigration.js'
 import { ciSharedActivityMigration } from '../src/infrastructure/ciSharedActivityMigration.js'
-import { changeRunState, graphFixture, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
+import { changeRunState, graphFixture, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 import { acceptRunAuthority, bindRunAuthority } from '../src/modules/access/runAuthority.js'
@@ -65,7 +68,23 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
     agentId: executionNode.agentId, attempt: 1,
     agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[executionNode.agentId],
     state: 'starting', input: {}, createdAt: graph.run.createdAt })])
-  await insertExecution(executionId, graph.run.id)
+  await ownedGraph(database, graph, async owner => {
+    const locations = new WorkspaceLocationService(database.pool, graph.commands)
+    const factory = new RepeatRepositoryFactory(locations, database.directory,
+      createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify).services)
+    const store = factory.forOwner(owner, graph.version)
+    const admitted = await store.admit({ nodeId: node.id, occurrence: null }, () => HarnessExecutionSchema.parse({
+      id: executionId, runId: graph.run.id, workflowNodeId: node.id, agentId: node.agentId, attempt: 1,
+      agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[node.agentId],
+      state: 'queued', input: {}, createdAt: graph.run.createdAt,
+    }))
+    if (admitted.kind !== 'admitted') throw new Error('Expected the CI fixture execution to be admitted')
+    const starting = await store.claimLaunch(executionId, {
+      workingDirectory: database.directory,
+      runtimeDirectory: repeatRuntimeDirectory(database.directory, graph.scope, admitted.execution),
+    })
+    if (!starting) throw new Error('Expected the CI fixture execution to start')
+  })
   await database.pool.query(`update workspaces set record=record||$2::jsonb where id=$1`,
     [graph.scope.workspaceId, JSON.stringify({ repository: { provider: 'github', owner: 'example',
       name: 'project', defaultBranch: 'main' } })])
