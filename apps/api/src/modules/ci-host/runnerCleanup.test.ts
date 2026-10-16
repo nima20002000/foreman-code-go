@@ -41,12 +41,13 @@ async function fixture() {
   await mkdir(parent, { recursive: true })
   const root = await mkdtemp(join(parent, 'ci-cleanup-'))
   roots.push(root)
+  let now = new Date('2026-10-14T00:00:00Z')
   const ports: HostCiPorts = { cpus: 8, memoryBytes: 16 * 2 ** 30,
-    now: () => new Date('2026-10-14T00:00:00Z'),
+    now: () => now,
     run: async () => ({ code: 0, stdout: 'active', stderr: '' }) }
   const runner = new HostCiRunner(root, ports, {})
   runners.push(runner)
-  return { root, runner }
+  return { root, runner, advance: (milliseconds: number) => { now = new Date(now.getTime() + milliseconds) } }
 }
 
 async function run(root: string, options: { state?: string; cleaned?: boolean; repository?: string } = {}) {
@@ -209,4 +210,48 @@ it('preserves a repository that becomes active while a background cache scan is 
     await f.runner.beginDrain()
   }
   await expect(access(cache)).resolves.toBeUndefined()
+})
+
+
+it('does not rewalk unchanged cache trees on cleanup passes until the hourly refresh', async () => {
+  const f = await fixture()
+  const cached = join(f.root, 'cache/fixture/site/pnpm-store/entry')
+  await sparseFile(cached, 16, '2026-10-01T00:00:00Z')
+  let scans = 0
+  maintenance.scan = async () => { scans++ }
+  const cleanup = async () => {
+    await f.runner.handle({ operation: 'status' })
+    await f.runner.beginDrain()
+    f.runner.resumeAdmissions()
+  }
+  await cleanup()
+  expect(scans).toBe(1)
+  for (let pass = 0; pass < 11; pass++) {
+    f.advance(5 * 60_000)
+    await cleanup()
+  }
+  expect(scans).toBe(1)
+  await expect(access(cached)).resolves.toBeUndefined()
+  f.advance(5 * 60_000)
+  await cleanup()
+  expect(scans).toBe(2)
+})
+
+it('rescans a cache as soon as its writer settles and preserves oldest-first eviction', async () => {
+  const f = await fixture()
+  const ticket = await run(f.root, { state: 'running' })
+  const oldest = join(f.root, 'cache/fixture/site/pnpm-store/old')
+  const newest = join(f.root, 'cache/fixture/site/pnpm-store/new')
+  await sparseFile(oldest, 2 ** 30, '2026-10-01T00:00:00Z')
+  await sparseFile(newest, 2 * 2 ** 30, '2026-10-03T00:00:00Z')
+  await f.runner.handle({ operation: 'status' })
+  await f.runner.beginDrain()
+  f.runner.resumeAdmissions()
+  await expect(access(oldest)).resolves.toBeUndefined()
+  await sparseFile(newest, 3 * 2 ** 30, '2026-10-03T00:00:00Z')
+  await writeFile(join(ticket.directory, 'exit'), '0\n')
+  await f.runner.handle({ operation: 'status' })
+  await f.runner.beginDrain()
+  await expect(access(oldest)).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(access(newest)).resolves.toBeUndefined()
 })
