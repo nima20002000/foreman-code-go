@@ -529,3 +529,28 @@ it('reads a shared folder without inventorying conflicts or unrelated workspace 
   expect(rest.mock.calls.filter(([, path]) => path.startsWith('/rest/db/status')))
     .toEqual([['GET', `/rest/db/status?folder=${sharedFolderId('workspace-a')}`, undefined, expect.any(AbortSignal)]])
 })
+
+
+it.each(['running', 'restarted'] as const)('refreshes regenerated peer identities on a %s service and persists them', async mode => {
+  const f = await fixture()
+  await f.service.reconcile()
+  const mainId = Array(8).fill('DDDDDDD').join('-')
+  const workerId = Array(8).fill('EEEEEEE').join('-')
+  f.rest[0]!.identity.deviceId = mainId
+  f.rest[1]!.identity.deviceId = workerId
+  const service = mode === 'running' ? f.service : f.createService()
+  await service.reconcile()
+  const folderDevices = async (index: number) => {
+    const folders = await f.rest[index]!.rest('GET', '/rest/config/folders') as { id: string; devices: { deviceID: string }[] }[]
+    return folders.find(folder => folder.id === sharedFolderId('workspace-a'))?.devices
+  }
+  expect(await folderDevices(0)).toEqual([{ deviceID: mainId }, { deviceID: workerId }])
+  expect(await folderDevices(1)).toEqual([{ deviceID: workerId }, { deviceID: mainId }])
+  const request = f.endpoint.request.bind(f.endpoint)
+  vi.spyOn(f.endpoint, 'request').mockImplementation((id, namespace, payload, options) => {
+    if (id === f.devices[0]!.deviceId) throw new DomainError('COMPUTER_OFFLINE', 'Peer offline.', 409)
+    return request(id, namespace, payload, options)
+  })
+  await expect(f.createService().reconcile()).rejects.toThrow()
+  expect(await folderDevices(0)).toEqual([{ deviceID: mainId }, { deviceID: workerId }])
+})
