@@ -10,7 +10,7 @@ import { HarnessRegistryReadbackSchema, HostHarnessOverrideSaveResultSchema,
 import { NodePlacementChoicesResultSchema } from '@foreman-code/contracts/placement-readback'
 import { CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema, SavedManagedWorkflowCommandResultSchema,
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
-import { buildCrossComputerCiGraph, ciHarness, projectSuites, type ScenarioAgent } from './crossComputerCiGraph.js'
+import { buildCrossComputerCiGraph, ciHarness, createCiTasks, type ScenarioAgent } from './crossComputerCiGraph.js'
 import type { ScenarioComputer, ScenarioWorkspace } from './crossComputerCiInput.js'
 import { waitForCi } from './crossComputerCiWait.js'
 
@@ -162,13 +162,13 @@ export async function prepareCiWorkflow(client: Client, workspace: ScenarioWorks
     workspaceId: workspace.workspaceId, commandId: randomUUID(),
     name: `Cross-computer CI ${workspace.project} round ${round} workflow ${index}`, executionSemanticsVersion: 3,
   })).value
-  const suites = [null, ...projectSuites[workspace.project]]
-  const assignments: ScenarioAgent[] = suites.map((suite, index) => {
+  const tasks = [{ suite: null }, ...createCiTasks(workspace.project, index, created.workflow.id)]
+  const assignments: ScenarioAgent[] = tasks.map((task, index) => {
     const computer = workspace.computers[Math.max(0, index - 1) % workspace.computers.length]!
     const profile = profiles.get(JSON.stringify(computer.hostRef))
     if (!profile) throw new Error(`Missing qualified profile for ${computer.name}.`)
-    return { agentId: randomUUID(), nodeId: randomUUID(), profile, suite,
-      name: `${computer.name} ${suite ?? 'coordinator'}` }
+    return { agentId: randomUUID(), nodeId: randomUUID(), profile, ...task,
+      name: `${computer.name} ${task.suite ?? 'coordinator'}` }
   })
   const built = buildCrossComputerCiGraph(created.workflow, assignments)
   const first = await saveGraph(client, {

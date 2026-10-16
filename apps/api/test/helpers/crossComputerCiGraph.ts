@@ -1,4 +1,4 @@
-import { AgentSchema, type Agent } from '@foreman-code/contracts'
+import { AgentSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION, type Agent } from '@foreman-code/contracts'
 import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import type { SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { WorkflowDefinitionV3Schema, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
@@ -10,22 +10,53 @@ export const ciHarness = {
   serviceTier: 'standard' as const,
   // Writable Agents receive their own product-managed git worktree and branch.
   sandbox: 'workspace-write' as const,
+  advanced: {
+    ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+    workspaceWrite: { networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+  },
 }
 
 export const projectSuites = {
-  graphql: ['build', 'lint', 'integration'],
-  demo: ['build', 'lint', 'unit'],
+  graphql: ['typecheck', 'lint', 'integration'],
+  demo: ['unit', 'unit', 'unit'],
 } as const
 export type ScenarioProject = keyof typeof projectSuites
 export type ScenarioSuite = (typeof projectSuites)[ScenarioProject][number]
+
+export type ScenarioTask = {
+  scope: 'affected' | 'full'
+  files: string[]
+  change: string
+  seedFailure: boolean
+}
 
 export type ScenarioAgent = {
   nodeId: string
   agentId: string
   name: string
   suite: ScenarioSuite | null
+  task?: ScenarioTask
   profile: HarnessProfileSelection
   placement?: SavedNodePlacement
+}
+
+export function createCiTasks(project: ScenarioProject, workflowIndex: number, workflowId: string) {
+  const changes = [
+    { name: 'normalize-label', change: 'Implement normalizeLabel: trim and collapse whitespace; test empty and spaced labels.' },
+    { name: 'sum-line-items', change: 'Implement sumLineItems: sum quantity times price; test empty and multiple items.' },
+    { name: 'clamp-percentage', change: 'Implement clampPercentage: clamp to 0..100; test below, within and above bounds.' },
+  ]
+  return projectSuites[project].map((suite, index) => {
+    const change = changes[index]!
+    const suffix = suite === 'integration' ? '.integration.test.ts' : '.test.ts'
+    const task: ScenarioTask = {
+      scope: project === 'graphql' && suite === 'integration' && workflowIndex === 1 ? 'full' : 'affected',
+      files: [`apps/api/test/ci-scratch-${change.name}-${workflowId}${suffix}`],
+      change: change.change,
+      seedFailure: project === 'demo' && workflowIndex === 1 && index === 0,
+    }
+    return { suite, task }
+  })
 }
 
 const terminalOutcome = { enum: ['passed', 'failed', 'canceled', 'lost'] }
@@ -46,22 +77,37 @@ export function ciReportOutputSchema(suite: ScenarioSuite) {
   }
 }
 
-function agentPrompt(suite: ScenarioSuite | null): string {
+function agentPrompt({ suite, task }: ScenarioAgent): string {
   if (suite === null) {
     return 'Use context_get to read your own worktree and branch, then finish successfully with a short ready message. '
       + 'The workflow will then start all CI Agents in parallel. Do not request CI or change files.'
   }
-  return 'Use only Foreman Code MCP tools. Do not use shell, filesystem, network or browser tools. '
-    + 'Read context_get and ci_computers_list. '
-    + `Call ci_run exactly once for suite ${suite}, scope full, with a fresh commandId, `
-    + 'and no commit override; this must publish your current worktree files to GitHub. '
-    + 'Retain that commandId for an uncertain response and retry only that same request. '
+  if (!task) throw new Error('Every suite Agent needs a file change and CI task.')
+  const selection = task.scope === 'full' ? 'scope full, omit files (the round’s only full integration burst)'
+    : `scope affected, files ${JSON.stringify(task.files)}`
+  const seed = task.seedFailure
+    ? 'In your first commit deliberately implement trim-only, keeping the collapse-whitespace test correct. '
+      + 'After its CI failure, fix the helper in the same file, commit and push, then rerun only the failed files. '
+    : ''
+  return 'Read context_get and ci_computers_list. Use native tools in your assigned product-managed worktree/branch; '
+    + 'do not create another worktree or switch branches. '
+    + `Change only ${JSON.stringify(task.files)}: add a self-contained Vitest file with the helper and tests. ${task.change} `
+    + 'Do not change product code, existing tests or configuration. '
+    + seed
+    + 'Use git add for only that file, git commit, then git push origin HEAD to publish only your Agent branch. '
+    + `Call ci_run for suite ${suite}, ${selection}, commit = git rev-parse HEAD and a fresh commandId. `
+    + 'For an uncertain response retry the same commandId and identical arguments. '
     + 'Placement is automatic: do not supply a computer or placementOverride. '
     + 'Wait with ONE ci_get call on any ticket: waitUntil "group-terminal", waitSeconds 1800 and logTail false. '
     + 'Repeat that same call only while its wait.status is still-running; do not poll tickets one by one. '
     + 'When wait.status is settled, its partitions (or run, for a single ticket) hold every ticket’s final state. '
-    + 'Record the top-level ticket’s observed state changes in order from the ci_run and ci_get results you read. '
-    + 'Then read ci_logs_read for the top-level ticket and choose one nonempty line from it. '
+    + 'If parts fail, read each failed ticket once with ci_get testStatus ["failed"]; union its failed files from tests.files. '
+    + 'For lint/typecheck without structured results use the failed run.files; if no failed files are available, report failure. '
+    + 'Fix only your own helper/test if needed, commit and push changes. Rerun ONLY those failed files with scope affected, '
+    + 'the same suite, current published HEAD and a new commandId; never rerun a whole suite. Wait for that group the same way. '
+    + 'Repeat only for observed failed files; do not retry canceled/lost work or request CI after a passed group. '
+    + 'Report the final request only: record its top-level ticket’s observed states in order, then read ci_logs_read '
+    + 'for that ticket and choose one nonempty line. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '
     + '{"suite":"' + suite + '",'
     + '"outcome":"group.state","repository":"run.repository",'
@@ -70,7 +116,7 @@ function agentPrompt(suite: ScenarioSuite | null): string {
     + 'Include only states you observed; starting and running may be missed. '
     + 'Do not copy ticket IDs, group IDs or branch names into your report. '
     + 'Repository is the owner/repository string from run.repository. '
-    + 'If CI fails, report its actual outcome instead of claiming success. Do not edit or commit any files.'
+    + 'If CI cannot pass, report its actual outcome.'
 }
 
 export function buildCrossComputerCiGraph(
@@ -112,7 +158,7 @@ export function buildCrossComputerCiGraph(
       id: assignment.nodeId,
       agentId: assignment.agentId,
       name: assignment.name,
-      initialPrompt: agentPrompt(assignment.suite),
+      initialPrompt: agentPrompt(assignment),
       ...(assignment.suite ? { outputSchema: ciReportOutputSchema(assignment.suite) } : {}),
       position: { x: index === 0 ? 0 : 320, y: index * 180 },
       ...(assignment.placement ? { placement: assignment.placement } : {}),

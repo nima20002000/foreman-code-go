@@ -20,6 +20,7 @@ export type TicketObservation = {
   initiatingExecutionId: string
   timeline: { observedAt: string; run: CiRunRecord }[]
   latest: CiRunRecord
+  tests?: CiReadback['tests']
   log?: { text: string; logBytes: number }
 }
 export function createScenarioObservation() {
@@ -126,6 +127,13 @@ async function observeWorkflow(client: Client, workflow: RunningCiWorkflow, obse
       workspaceId: workflow.workspace.workspaceId, ticketId,
     }))
     recordCiGroup(workflow, readback, observation)
+    for (const run of readback.partitions ?? [readback.run]) {
+      if (run.state !== 'failed') continue
+      const failed = CiGetOutputSchema.parse(await callCiTool(client, 'ci_get', {
+        workspaceId: workflow.workspace.workspaceId, ticketId: run.id, testStatus: ['failed'], logTail: false,
+      }))
+      observation.tickets.get(run.id)!.tests = failed.tests
+    }
     groups.add(readback.run.groupId)
   }
 }

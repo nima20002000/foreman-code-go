@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { CiRunRecord } from '@foreman-code/contracts'
-import { ciGroupRequestedBy, readAgentCiReport, requireCiStateOrder } from './crossComputerCiReadback.js'
+import { ciGroupRequestedBy, readAgentCiReport, requireCiStateOrder, type CiReadback } from './crossComputerCiReadback.js'
 import type { RecordedScenario } from './crossComputerCiRecording.js'
 import type { TicketObservation } from './crossComputerCiObservation.js'
 
@@ -20,19 +20,24 @@ function sameTicket(left: CiRunRecord | undefined, right: CiRunRecord) {
 }
 
 function verifyPartitions(runs: CiRunRecord[], project: string, suite: string, check: Check) {
-  if (project === 'demo') {
+  if (project === 'demo' && runs.every(run => run.part === null)) {
     check(runs.length === 1 && runs[0]?.part === null && runs[0]?.partition === null,
       'repository-defined suite has one job')
     return
   }
-  check(runs.length >= 2, 'suite has all parts')
+  const full = runs[0]?.scope === 'full'
+  check(runs.length >= 1, 'suite has all parts')
   if (suite === 'integration') {
-    check(runs.every(run => run.part === null && run.partition), 'integration has tier partitions')
+    check(runs.every(run => run.part === null && (!full || run.partition)), 'integration has tier partitions')
+    if (full) check(runs.length >= 100, 'full integration has a hundred-part burst')
   } else {
     check(runs.every(run => run.part?.startsWith(`${suite}-`)), 'parts belong to suite')
-    if (suite === 'build' || suite === 'lint') {
-      check(isDeepStrictEqual([...new Set(runs.map(run => run.part))].sort(), [`${suite}-api`, `${suite}-other`]),
-        'suite includes api and other parts')
+    if (suite === 'typecheck' || suite === 'lint') {
+      const expected = full ? [`${suite}-api`, `${suite}-other`]
+        : [...new Set(runs.flatMap(run => run.files).map(file =>
+          `${suite}-${file.startsWith('apps/api/') ? 'api' : 'other'}`))].sort()
+      check(isDeepStrictEqual([...new Set(runs.map(run => run.part))].sort(), expected),
+        'suite includes every selected part')
     }
   }
   const keys = new Set(runs.map(run => suite === 'integration' ? run.partition?.tier : run.part))
@@ -53,12 +58,94 @@ function verifyTicket(ticket: TicketObservation, run: CiRunRecord, executionId: 
   check(ticket.timeline.every(sample => sample.run.initiator.executionId === executionId
     && sample.run.workspaceId === ticket.workspaceId && sample.run.id === run.id),
   `ticket ${run.id} retains its owner and executionId throughout its lifecycle`)
-  check(run.state === 'passed', `ticket ${run.id} passed`)
-  check(run.exitCode === 0, `ticket ${run.id} exit code is zero`)
+  check(run.state === 'passed' || run.state === 'failed', `ticket ${run.id} reached a test outcome`)
+  check(run.state === 'passed' ? run.exitCode === 0 : typeof run.exitCode === 'number' && run.exitCode !== 0,
+    `ticket ${run.id} exit code agrees with its outcome`)
   check(run.computer, `ticket ${run.id} ran on a computer`)
   check(run.startedAt && run.finishedAt && Date.parse(run.finishedAt) >= Date.parse(run.startedAt),
     `ticket ${run.id} has ordered start and finish times`)
   check(ticket.log && ticket.log.logBytes > 0, `ticket ${run.id} has its complete log`)
+}
+
+function requesters(group: CiReadback) {
+  return [group.run.initiator.executionId,
+    ...(group.sharing?.requesters.filter(requester => !requester.initiator).map(requester => requester.executionId) ?? [])]
+}
+
+function groupFailed(group: CiReadback) {
+  return (group.partitions ?? [group.run]).some(run => run.state === 'failed')
+}
+
+function failedFiles(recorded: RecordedScenario, group: CiReadback, check: Check) {
+  return [...new Set((group.partitions ?? [group.run]).filter(run => run.state === 'failed').flatMap(run => {
+    const ticket = recorded.tickets.find(ticket => ticket.ticketId === run.id)
+    const files = ['unit', 'integration'].includes(run.suite)
+      ? ticket?.tests?.files.filter(file => file.status === 'failed').map(file => file.file) ?? []
+      : run.files
+    check(files.length, `ticket ${run.id} has failed files from ci_get`)
+    return files
+  }))].sort()
+}
+
+function verifyRequestChain(recorded: RecordedScenario, workflow: RecordedScenario['workflows'][number],
+  assignment: RecordedScenario['workflows'][number]['assignments'][number],
+  executionId: string, baseCommit: string | undefined, check: Check) {
+  const groups = Object.values(recorded.groups).filter(group => ciGroupRequestedBy(group, executionId))
+    .sort((left, right) => Date.parse(left.run.queuedAt) - Date.parse(right.run.queuedAt))
+  const expected = assignment.suite ? 1 + groups.filter(groupFailed).length : 0
+  check(groups.length === expected, `Agent ${assignment.agentId} has the right number of CI groups`)
+  if (!assignment.suite) return
+  check(assignment.task, `Agent ${assignment.agentId} has a designed file task`)
+  if (!assignment.task) return
+  const task = assignment.task
+  if (task.seedFailure) check(groups.length >= 2 && groupFailed(groups[0]!), 'Seeded failure is fixed through CI')
+  for (const [index, group] of groups.entries()) {
+    const previous = groups[index - 1]
+    const scope = previous ? 'affected' : task.scope
+    const files = previous ? failedFiles(recorded, previous, check) : task.files
+    const runs = group.partitions ?? [group.run]
+    check(runs.every(run => run.workspaceId === workflow.workspaceId && run.repository === workflow.repository),
+      `group ${group.run.groupId} belongs to its requesting workspace and repository`)
+    check(runs.every(run => run.scope === scope && run.suite === assignment.suite), `group ${group.run.groupId} selection agrees`)
+    const selected = [...new Set(runs.flatMap(run => run.files))].sort()
+    check(isDeepStrictEqual(selected, scope === 'full' ? [] : [...files].sort()), `group ${group.run.groupId} selects only its designed or failed files`)
+    check(baseCommit && group.run.commit !== baseCommit, `Agent ${assignment.agentId} has a committed change`)
+    if (previous) {
+      check(groupFailed(previous), `group ${group.run.groupId} follows a failed request`)
+      check((previous.partitions ?? [previous.run]).every(run => run.finishedAt
+        && Date.parse(run.finishedAt) <= Date.parse(group.run.queuedAt)), `group ${group.run.groupId} starts after its failed request settles`)
+      if (task.seedFailure && index === 1) check(group.run.commit !== previous.run.commit, 'Seeded failure fix is committed')
+    }
+  }
+  const final = groups.at(-1)
+  check(final && !groupFailed(final) && final.group?.state === 'passed', `Agent ${assignment.agentId} final request passed`)
+  return final
+}
+
+function verifyGroup(recorded: RecordedScenario, workflow: RecordedScenario['workflows'][number], group: CiReadback,
+  agentId: string, executionId: string, check: Check, capture: (label: string, verify: () => void) => void) {
+  const runs = group.partitions ?? [group.run]
+  check(group.group?.state === (groupFailed(group) ? 'failed' : 'passed'), `group ${group.run.groupId} terminal state agrees`)
+  check(runs.some(run => run.id === group.run.id), 'Group includes its requested ticket')
+  check(new Set(runs.map(run => run.id)).size === runs.length, 'Group tickets are unique')
+  const tickets = recorded.tickets.filter(ticket => ticket.latest.groupId === group.run.groupId)
+  check(isDeepStrictEqual(tickets.map(ticket => ticket.ticketId).sort(), runs.map(run => run.id).sort()),
+    `Agent ${agentId} owns every group ticket`)
+  verifyPartitions(runs, workflow.project, group.run.suite, check)
+  const logParts = recorded.groupLogs[group.run.groupId]?.parts ?? []
+  check(isDeepStrictEqual(logParts.map(part => part.run.id).sort(), runs.map(run => run.id).sort()), 'Group logs include every ticket')
+  for (const run of runs) {
+    const ticket = recorded.tickets.find(value => value.ticketId === run.id)
+    check(ticket, `ticket ${run.id} was collected`)
+    check(run.workspaceId === workflow.workspaceId && run.repository === workflow.repository
+      && run.suite === group.run.suite && run.groupId === group.run.groupId && run.scope === group.run.scope
+      && run.commit === group.run.commit && isDeepStrictEqual(run.initiator, group.run.initiator), `ticket ${run.id} request facts agree`)
+    if (!ticket) continue
+    check(ticket.runId === workflow.runId && ticket.agentId === agentId, `ticket ${run.id} has its own run and owner`)
+    verifyTicket(ticket, run, executionId, check)
+    capture(`ticket ${run.id} sampled lifecycle`, () => requireCiStateOrder(ticket.timeline.map(sample => sample.run.state)))
+    check(sameTicket(logParts.find(part => part.run.id === run.id)?.run, run), `ticket ${run.id} group log record agrees`)
+  }
 }
 
 function verifyActivity(recorded: RecordedScenario, workflow: RecordedScenario['workflows'][number], check: Check) {
@@ -122,11 +209,24 @@ export function verifyScenario(recorded: RecordedScenario): void {
   const branches: string[] = []
   const directories: string[] = []
   const groups = Object.values(recorded.groups)
-  const expected = recorded.workflows.flatMap(workflow => workflow.assignments).filter(agent => agent.suite).length
+  const assignments = recorded.workflows.flatMap(workflow => workflow.assignments)
+  const expected = assignments.filter(agent => agent.suite).length
+    + groups.filter(groupFailed).reduce((count, group) => count + requesters(group).length, 0)
   // Identical concurrent requests share one group; each joined request is listed in its sharing requesters.
-  const requests = groups.reduce((count, group) => count + 1
-    + (group.sharing?.requesters.filter(requester => !requester.initiator).length ?? 0), 0)
+  const requests = groups.reduce((count, group) => count + requesters(group).length, 0)
   check(requests === expected, 'No lost or duplicated CI requests')
+  const suiteExecutions = recorded.runs.flatMap(details => details.executions)
+    .filter(execution => assignments.some(agent => agent.agentId === execution.agentId && agent.suite))
+  for (const group of groups) {
+    const owners = requesters(group)
+    check(new Set(owners).size === owners.length && owners.every(owner =>
+      suiteExecutions.some(execution => execution.id === owner)), 'Every CI request has one assigned requester')
+  }
+  const graphql = recorded.workflows.filter(workflow => workflow.project === 'graphql')
+  const full = groups.filter(group => group.run.scope === 'full')
+  check(full.reduce((count, group) => count + requesters(group).length, 0) === (graphql.length ? 1 : 0)
+    && full.every(group => group.run.suite === 'integration'
+    && graphql.some(workflow => workflow.workspaceId === group.run.workspaceId)), 'The round has one full integration request for graphql')
   for (const workflow of recorded.workflows) {
     const details = recorded.runs.find(value => value.run.id === workflow.runId)
     check(details?.run.outcome === 'succeeded', `workflow ${workflow.runId} outcome is succeeded`)
@@ -173,11 +273,7 @@ export function verifyScenario(recorded: RecordedScenario): void {
         && placement.nodeId === assignment.nodeId, `Agent ${assignment.agentId} placement belongs to run and node`)
       check(placement?.readback.evidence === 'accepted'
         && isDeepStrictEqual(placement.readback.placement.hostRef, assignment.hostRef), `Agent ${assignment.agentId} placement accepted on chosen computer`)
-      const own = groups.filter(group => group.run.initiator.executionId === execution.id)
-      const joined = groups.filter(group => group.run.initiator.executionId !== execution.id
-        && ciGroupRequestedBy(group, execution.id))
-      check(own.length + joined.length === (assignment.suite ? 1 : 0),
-        `Agent ${assignment.agentId} has the right number of CI groups`)
+      const final = verifyRequestChain(recorded, workflow, assignment, execution.id, tree?.baseCommit, check)
       if (!assignment.suite) continue
       let report: ReturnType<typeof readAgentCiReport> | undefined
       capture(`Agent ${assignment.agentId} report`, () => { report = readAgentCiReport(recorded.reports[execution.id]) })
@@ -188,42 +284,16 @@ export function verifyScenario(recorded: RecordedScenario): void {
         capture(`Agent ${assignment.agentId} observed states`, () => requireCiStateOrder(report!.observedStates))
         check(report.observedStates.at(-1) === 'passed', `Agent ${assignment.agentId} observed terminal state agrees`)
       }
-      for (const group of own) {
-        const runs = group.partitions ?? [group.run]
-        check(group.group?.state === 'passed', `group ${group.run.groupId} passed`)
-        check(runs.some(run => run.id === group.run.id), 'Group includes its requested ticket')
-        check(new Set(runs.map(run => run.id)).size === runs.length, 'Group tickets are unique')
-        const tickets = recorded.tickets.filter(ticket => ticket.initiatingExecutionId === execution.id)
-        check(isDeepStrictEqual(tickets.map(ticket => ticket.ticketId).sort(), runs.map(run => run.id).sort()),
-          `Agent ${assignment.agentId} owns every group ticket`)
-        verifyPartitions(runs, workflow.project, assignment.suite, check)
-        const logParts = recorded.groupLogs[group.run.groupId]?.parts ?? []
-        check(isDeepStrictEqual(logParts.map(part => part.run.id).sort(), runs.map(run => run.id).sort()), 'Group logs include every ticket')
-        for (const run of runs) {
-          const ticket = recorded.tickets.find(value => value.ticketId === run.id)
-          check(ticket, `ticket ${run.id} was collected`)
-          check(run.workspaceId === workflow.workspaceId && run.repository === workflow.repository
-            && run.suite === assignment.suite && run.groupId === group.run.groupId && run.scope === 'full'
-            && !run.files.length && run.commit === group.run.commit
-            && isDeepStrictEqual(run.initiator, group.run.initiator), `ticket ${run.id} request facts agree`)
-          if (!ticket) continue
-          check(ticket.runId === workflow.runId && ticket.agentId === assignment.agentId, `ticket ${run.id} has its own run and owner`)
-          verifyTicket(ticket, run, execution.id, check)
-          capture(`ticket ${run.id} sampled lifecycle`, () => requireCiStateOrder(ticket.timeline.map(sample => sample.run.state)))
-          check(sameTicket(logParts.find(part => part.run.id === run.id)?.run, run), `ticket ${run.id} group log record agrees`)
-        }
-        if (report) check(tickets.some(ticket => ticket.log?.text.split('\n').some(line => line.trim() === report!.logLine)),
-          `Agent ${assignment.agentId} logLine appears in its ticket log`)
-      }
-      for (const group of joined) {
-        const runs = group.partitions ?? [group.run]
-        check(group.group?.state === 'passed', `joined group ${group.run.groupId} passed`)
-        check(runs.every(run => run.workspaceId === workflow.workspaceId && run.repository === workflow.repository
-          && run.suite === assignment.suite && run.groupId === group.run.groupId),
-        `joined group ${group.run.groupId} request facts agree`)
-        const tickets = recorded.tickets.filter(ticket => ticket.latest.groupId === group.run.groupId)
-        if (report) check(tickets.some(ticket => ticket.log?.text.split('\n').some(line => line.trim() === report!.logLine)),
-          `Agent ${assignment.agentId} logLine appears in its joined ticket log`)
+      const own = groups.filter(group => group.run.initiator.executionId === execution.id)
+      const tickets = recorded.tickets.filter(ticket => ticket.initiatingExecutionId === execution.id)
+      check(isDeepStrictEqual(tickets.map(ticket => ticket.ticketId).sort(),
+        own.flatMap(group => (group.partitions ?? [group.run]).map(run => run.id)).sort()),
+      `Agent ${assignment.agentId} owns every group ticket`)
+      for (const group of own) verifyGroup(recorded, workflow, group, assignment.agentId, execution.id, check, capture)
+      if (report && final) {
+        const finalTickets = recorded.tickets.filter(ticket => ticket.latest.groupId === final.run.groupId)
+        check(finalTickets.some(ticket => ticket.log?.text.split('\n').some(line => line.trim() === report!.logLine)),
+          `Agent ${assignment.agentId} logLine appears in its final ticket log`)
       }
     }
     capture(`workflow ${workflow.runId} activity`, () => verifyActivity(recorded, workflow, check))

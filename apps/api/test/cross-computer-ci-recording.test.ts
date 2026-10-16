@@ -56,6 +56,7 @@ it('collects delayed public readbacks into one JSON value that replays offline',
   await pending
   expect(observation.readErrors).toEqual([])
   const replay = JSON.parse(JSON.stringify(recordScenario(workflows, observation, input)))
+  expect(replay.workflows[0].assignments[0].task).toEqual(recorded.workflows[0]!.assignments[0]!.task)
   expect(replay.placements).toHaveProperty('execution-1')
   expect(replay.tickets.every((ticket: { log: unknown }) => ticket.log)).toBe(true)
   expect(() => verifyScenario(replay)).not.toThrow()

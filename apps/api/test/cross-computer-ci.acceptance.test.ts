@@ -148,6 +148,10 @@ it('runs concurrent projects through Agent Host CI with isolated readback twice 
         for (const workspace of input.workspaces) {
           for (const index of [1, 2]) prepared.push(await prepareCiWorkflow(writer, workspace, profiles, round, index))
         }
+        const agents = prepared.flatMap(workflow => workflow.assignments).filter(agent => agent.suite)
+        expect(agents).toHaveLength(12)
+        expect(agents.filter(agent => agent.task?.scope === 'full')).toHaveLength(1)
+        expect(agents.filter(agent => agent.task?.seedFailure)).toHaveLength(1)
         expect(new Set(prepared.map(workflow => workflow.repository)).size, 'The projects use distinct repositories')
           .toBe(input.workspaces.length)
         await startWorkflows(writer, denied, prepared, workflows)
