@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
+import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, OperatorCiListInputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
   type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
@@ -215,7 +215,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
           .toEqual([f.executionId, joinedExecutionId].sort())
         const operator = await f.graph.credential([{ actions: [...CI_GET_ACTIONS, 'runs:read', 'bug_reports:read'],
           scope: { workspaceIds: [f.graph.scope.workspaceId] } }])
-        const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', { runId: other.run.id }))
+        const listInput = { workspaceId: other.scope.workspaceId, runId: other.run.id }
+        expect(OperatorCiListInputSchema.safeParse(listInput).success).toBe(true)
+        const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', listInput))
         expect(listed.jobs).toContainEqual(expect.objectContaining({ ticketId: ticket.ticketId,
           requester: expect.objectContaining({ executionId: joinedExecutionId }) }))
         const board = RunBoardSnapshotGetResultSchema.parse(await f.value(operator.token, 'run_board_snapshot_get', {
