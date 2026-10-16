@@ -72,7 +72,7 @@ function interaction(item: HarnessExecution, status: DurableInteraction['status'
 class Manager implements NativeHarnessSessionManager {
   readonly harness = 'codex' as const
   cancelImpl = async () => true
-  closeImpl = async () => undefined
+  closeImpl: (signal?: AbortSignal) => Promise<void> = async () => undefined
   capabilitiesImpl = async () => ({ provider: this.harness, providerVersion: '0.154.0', persistentSessions: true,
     reconnect: true, sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true,
     mcpDetection: true, supportedInteractionKinds: ['approval'] })
@@ -101,10 +101,10 @@ class Manager implements NativeHarnessSessionManager {
     this.calls.push(`cancel:${this.id}`)
     return this.cancelImpl()
   }
-  async close(session: NativeSessionReference) {
+  async close(session: NativeSessionReference, signal?: AbortSignal) {
     assert.equal(session.nativeSessionId, `native-${this.id}`)
     this.calls.push(`close:${this.id}`)
-    return this.closeImpl()
+    return this.closeImpl(signal)
   }
   async history(): Promise<NativeHistory> {
     const pending = await this.pending()
@@ -289,14 +289,21 @@ it('bounds a hung native cancel, still closes it, and cancels siblings (#20)', a
 
 it('retains a timed-out native close for retry instead of evicting the manager', async () => {
   const f = await fixture([execution('one'), execution('two')])
-  f.managers.get('one')!.closeImpl = never
+  const closeFinished = rejectableDeferred()
+  let closeSignal: AbortSignal | undefined
+  f.managers.get('one')!.closeImpl = async signal => {
+    assert.ok(signal)
+    closeSignal = signal
+    await closeFinished.promise
+  }
   await assert.rejects(f.stop('run-1'), AggregateError)
+  assert.equal(closeSignal?.aborted, true)
   assert.ok(!f.calls.includes('release:one'))
   assert.ok(f.calls.includes('release:two'))
-  f.managers.get('one')!.closeImpl = async () => undefined
+  closeFinished.resolve()
   await f.stop('run-1')
   assert.ok(f.calls.includes('release:one'))
-  assert.ok(f.calls.includes('release:one'))
+  assert.equal(f.calls.filter(call => call === 'close:one').length, 2)
 }, 20_000)
 
 it('passes an execution-owned abort signal to native iteration and cancels before database discovery', async () => {

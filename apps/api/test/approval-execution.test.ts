@@ -13,6 +13,7 @@ import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js
 import { nativeLanes } from './helpers/nativeLanes.js'
 
 import { DomainError } from '../src/modules/errors.js'
+import * as placementPersistence from '../src/modules/placement/persistence.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import type { ExecutionCredentialProvider } from '../src/modules/harnesses/mcpDetection.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
@@ -33,7 +34,10 @@ import { normalizeRepeatTerminal } from '../src/modules/runs/repeatNode.js'
 import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 
 const connections: ExclusiveGraphConnection[] = []
-afterEach(async () => { await Promise.all(connections.splice(0).map((connection) => connection.close())) })
+afterEach(async () => {
+  await Promise.all(connections.splice(0).map(connection => connection.close()))
+  vi.restoreAllMocks()
+})
 
 const now = '2026-09-16T00:00:00.000Z'
 const success: ExecutionResult = { outcome: 'succeeded', output: { done: true } }
@@ -779,7 +783,11 @@ for (const failure of ['prepare', 'create', 'turn', 'activity', 'budget'] as con
     if (failure === 'create') f.manager.createError = error
     if (failure === 'turn') f.manager.turnError = error
     if (failure === 'activity') f.failActivity(error)
-    if (failure === 'budget') f.failBudget(error)
+    if (failure === 'budget') {
+      // Budget admission failed before a dispatch intent or native lifetime existed.
+      vi.spyOn(placementPersistence, 'readExecutionPlacement').mockResolvedValue(undefined)
+      f.failBudget(error)
+    }
     await assert.rejects(f.coordinator.observeExact(f.input), error)
     expect(await f.runs.getExecution(f.candidate.id)).toMatchObject({
       state: 'completed', finishedAt: now, result: { outcome: 'failed', error: {

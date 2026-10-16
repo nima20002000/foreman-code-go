@@ -250,7 +250,7 @@ it('revokes resident credentials after attachment failure without preparing anot
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('attachment failed')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
-  expect(f.managers[0]!.close).toHaveBeenCalledWith(f.session)
+  expect(f.managers[0]!.close).toHaveBeenCalledWith(f.session, expect.any(AbortSignal))
   expect(resident.lifecycle).toBe('failed')
 })
 
@@ -440,7 +440,7 @@ it('retains the terminal lifetime until budget finalization succeeds, without re
   expect(f.managers).toHaveLength(1)
   expect(f.managers[0]!.startTurn).toHaveBeenCalledTimes(1)
   // A finalized workflow replay cannot revoke a subsequently issued review credential.
-  expect(f.managers[0]!.close).toHaveBeenCalledWith(f.session)
+  expect(f.managers[0]!.close).toHaveBeenCalledWith(f.session, expect.any(AbortSignal))
   const revoked = f.credentials.revoke.mock.calls.length
   await expect(f.observe()).resolves.toMatchObject({ state: 'completed' })
   expect(f.credentials.revoke).toHaveBeenCalledTimes(revoked)

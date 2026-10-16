@@ -7,8 +7,6 @@ import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot } from '../s
 import { readRepeatExecutionLocked, readRepeatExecutionsLocked } from '../src/modules/runs/repeatExecutionRead.js'
 import { repeatDigest, repeatExecutionIdentity, repeatSlotId } from '../src/modules/runs/repeatResolution.js'
 import { isGraphTransactionFinalizing } from '../src/modules/run-graph/connection.js'
-import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activitiesSql.js'
-import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { compactRunDetails } from '../src/mcp/operator/runSummary.js'
@@ -69,60 +67,66 @@ function fixture(queued = false, size = 1, form: 'single' | 'repeat' = 'single')
     source_semantic_digest: repeatDigest({ saved: true }), source_sequence: '1', effect_digest: repeatDigest(execution.input),
     effect_semantic_digest: repeatDigest({ saved: true }), effect_sequence: '1' }
   let transactionOutcome = 'open'
+  const reply = (rows: unknown[], expectedValues?: unknown[]) => (values?: unknown[]) => {
+    if (expectedValues) expect(values).toEqual(expectedValues)
+    return { rows }
+  }
+  const activityFacts = () => [
+    reply([{ revision: '1', stopped: false, outcome: run.outcome,
+      started_at: null, execution_state: run.executionState }], [run.id, run.workspaceId, run.workflowId, run.workflowVersionId]),
+    reply([{ id: execution.id, attempt: 1, revision: '1', state: execution.state,
+      outcome: 'result' in execution ? execution.result?.outcome : undefined,
+      created_at: f.createdAt, started_at: null, native_session_id: null, harness: null, native_revision: '0' }],
+    [run.id, run.workspaceId]),
+    reply([], [run.id, run.workspaceId, run.workflowId, run.workflowVersionId]),
+    reply([], [run.id, run.workspaceId, run.workflowId, run.workflowVersionId]),
+    reply([], [run.id, run.workspaceId, run.workflowId]),
+    reply([{ high_water: '0', retained_from: '0', observed: 0 }], [run.id]),
+  ]
+  const receiptRows = () => executions.length === 1 ? [receipt]
+    : executions.map((_item, ordinal) => ({ ordinal, receipts: [receipt] }))
+  const recordedBatches = () => {
+    const batches = []
+    for (let offset = 0; offset < executions.length; offset += 16) {
+      const batch = executions.slice(offset, offset + 16)
+      batches.push(reply(batch.map(record => ({ record })), [run.id, batch.map(item => item.id)]))
+    }
+    return batches
+  }
+  // Script persisted row sets, leaving SQL construction to the real readers.
+  const readResponses = () => [
+    reply([{ workspace_id: run.workspaceId, workflow_id: run.workflowId }], [run.id, run.workspaceId]),
+    reply([{ id: principal.id, name: principal.name, audience: 'operator', grants: liveGrants,
+      expires_at: new Date(principal.expiresAt), revoked_at: revoked ? new Date() : null, delegated_from: null }]),
+    reply(executions.map(item => ({ id: item.id }))),
+    ...recordedBatches(),
+    reply(executions.map(storedRow).reverse()),
+    reply(receiptRows()),
+    reply([]),
+    reply([{ pending: false }]),
+    ...activityFacts(),
+    reply([], [run.id, '0', '0', '0', 101]),
+    reply([], [run.id]),
+    ...activityFacts(),
+    reply([{ record: worktree }]),
+    reply([]),
+    reply(receiptRows()),
+  ]
+  let responses: ReturnType<typeof readResponses> = []
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
-    if (/^(begin|commit|rollback)/.test(sql)) {
-      if (sql === 'commit') transactionOutcome = 'committed'
-      if (sql === 'rollback') transactionOutcome = 'rolled_back'
+    // Transaction commands are the fake client's state changes, not business query matchers.
+    if (sql.startsWith('begin ')) {
+      transactionOutcome = 'open'
+      responses = readResponses()
       return { rows: [] }
     }
-    if (sql.includes('with pinned_head')) {
-      const item = executions.find(item => item.id === values?.[0])!
-      return { rows: [{ heads: [{ protocol_version: 1 }], executions: [storedRow(item)],
-        effects: [{ payload_digest: repeatDigest(item.input) }] }] }
+    if (sql === 'commit' || sql === 'rollback') {
+      transactionOutcome = sql === 'commit' ? 'committed' : 'rolled_back'
+      return { rows: [] }
     }
-    if (sql.includes('with head as materialized')) return { rows: executions.map(storedRow).reverse() }
-    if (sql.includes('from run_repeat_occurrences')) return { rows: [{ record: occurrence,
-      input_json: JSON.stringify(entry), input_digest: repeatDigest(entry) }] }
-    if (sql.includes('as receipts')) {
-      const inputs = JSON.parse(String(values?.[0])) as { ordinal: number }[]
-      return { rows: inputs.map(input => ({ ordinal: input.ordinal, receipts: [receipt] })) }
-    }
-    if (sql.includes('from runs r join workflow_versions')) return { rows: [receipt] }
-    if (sql.startsWith('select workspace_id,workflow_id from runs')) {
-      expect(values).toEqual([run.id, run.workspaceId])
-      return { rows: [{ workspace_id: run.workspaceId, workflow_id: run.workflowId }] }
-    }
-    if (sql.includes('from management_principals')) return { rows: [{ id: principal.id, name: principal.name,
-      audience: 'operator', grants: liveGrants, expires_at: new Date(principal.expiresAt),
-      revoked_at: revoked ? new Date() : null, delegated_from: null }] }
-    if (sql.startsWith('select activity_record_revision::text as revision,stop_requested_at')) {
-      expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId])
-      return { rows: [{ revision: '1', stopped: false, outcome: run.outcome, started_at: null, execution_state: run.executionState }] }
-    }
-    if (sql === RUN_NATIVE_ACTIVITY_FACTS_SQL) { expect(values).toEqual([run.id]); return { rows: [] } }
-    if (sql === RUN_ACTIVITIES_PAGE_SQL.replace('__COMPARATOR__', '<=').replace('__ORDER__', 'desc')) {
-      expect(values).toEqual([run.id, '0', '0', '0', 101]); return { rows: [] }
-    }
-    if (sql.startsWith('select e.id,e.attempt,e.activity_record_revision')) {
-      expect(values).toEqual([run.id, run.workspaceId])
-      const outcome = 'result' in execution ? execution.result?.outcome : undefined
-      return { rows: [{ id: execution.id, attempt: 1, revision: '1', state: execution.state, outcome,
-        created_at: f.createdAt, started_at: null, native_session_id: null, harness: null, native_revision: '0' }] }
-    }
-    if (sql.includes('from workflow_job_executions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId]); return { rows: [] } }
-    if (sql.includes('from ci_runs')) return { rows: [] }
-    if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
-    if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
-    if (sql.startsWith('select record from harness_executions')) {
-      return { rows: executions.filter(item => Array.isArray(values?.[1])
-        ? values[1].includes(item.id) : item.id === values?.[0]).map(item => ({ record: item })) }
-    }
-    if (sql.includes('from harness_executions')) return { rows: executions.map(item => ({ id: item.id })) }
-    if (sql.includes('from run_activity')) return { rows: [] }
-    if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
-    if (sql.includes('from run_worktrees')) return { rows: [{ record: worktree }] }
-    if (sql.includes('from source_execution_materializations')) return { rows: [] }
-    throw new Error(`Unexpected query: ${sql}`)
+    const respond = responses.shift()
+    if (!respond) throw new Error('Unexpected read after the saved Run snapshot completed')
+    return respond(values)
   })
   const release = vi.fn()
   const pool = { connect: async () => ({ query, release, on() {}, removeListener() {} }) } as unknown as pg.Pool

@@ -39,7 +39,7 @@ describe('execution failure classification', () => {
     new DomainError('GRAPH_STOP_CONFLICT', 'stopped', 409),
     new HarnessExecutionError('CODEX_TURN_FAILED', 'the Agent failed'),
     new ZodError([]),
-    new AggregateError([new Error('close failed')], 'closure pending'),
+    new AggregateError([new DomainError('WORK_RESULT_INVALID', 'contract', 409)], 'task failed'),
   ])('does not retry task failure %#', (error) => {
     expect(isTransientExecutionError(error)).toBe(false)
   })
@@ -83,4 +83,13 @@ describe('wrapped infrastructure failures', () => {
     error.cause = error
     expect(isTransientExecutionError(error)).toBe(false)
   })
+})
+
+it('retries aggregate cleanup failures while preserving a permanent child failure', () => {
+  const transient = new DomainError('DEVICE_TRANSPORT_ERROR', 'link lost', 503)
+  expect(isTransientExecutionError(new AggregateError([transient], 'closure pending'))).toBe(true)
+  expect(isTransientExecutionError(new AggregateError([new Error('close failed')], 'closure pending'))).toBe(true)
+  expect(isTransientExecutionError(new AggregateError([
+    transient, new DomainError('WORK_RESULT_INVALID', 'contract', 409),
+  ], 'mixed failure'))).toBe(false)
 })
