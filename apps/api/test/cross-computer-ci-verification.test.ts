@@ -183,8 +183,8 @@ it('counts an initial failed request and a committed retry of only its failed fi
   expect(() => verifier.verifyScenario(retryFixture())).not.toThrow()
 })
 
-it.each(['full', 'unrelated', 'missing', 'early', 'no-failure-results'] as const)
-('rejects a retry with %s selection or readback', change => {
+it.each(['full', 'unrelated', 'missing', 'early', 'no-failure-results'] as const)(
+  'rejects a retry with %s selection or readback', change => {
   const recorded = retryFixture()
   const retry = recorded.groups[recorded.tickets[2]!.latest.groupId]!
   if (change === 'full') { retry.run.scope = 'full'; retry.run.files = [] }

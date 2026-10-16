@@ -88,5 +88,5 @@ it('collects failed file results for every failed partition after the group sett
   await pollCiScenario(f.client, [f.prepared], f.observation, async () => undefined)
   expect(f.observation.tickets.get(failed.id)?.tests).toEqual(tests)
   expect(f.callTool.mock.calls.some(([request]) => request.name === 'ci_get'
-    && request.arguments?.ticketId === failed.id && Array.isArray(request.arguments.testStatus))).toBe(true)
+    && request.arguments?.ticketId === failed.id && Array.isArray(request.arguments?.testStatus))).toBe(true)
 })
