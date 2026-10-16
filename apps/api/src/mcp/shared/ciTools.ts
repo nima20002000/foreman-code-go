@@ -56,7 +56,8 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
     + 'test also failed it, so a known flake is recognized. sharing lists every requester (principalId, executionId, '
     + 'initiator, active) when identical requests joined the group. Agents with ci_get read every ticket of their workspace. '
-    + 'CI_RUN_NOT_FOUND includes up to five recent groups you requested or joined, scoped to your execution when present, '
+    + 'Malformed or unknown ticketId returns CI_RUN_NOT_FOUND with up to five recent groups you requested or joined, '
+    + 'scoped to your execution when present, '
     + 'in the message and details.recentTickets (lead ticketId, suite, scope, group state, createdAt in UTC).',
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
     + 'systemd), saved buildAllowancePercent, allowedCpuCount, CPU and memory within that allowance, '
@@ -69,10 +70,12 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'retry is safe. CI_CANCEL_PENDING means remote cleanup is unconfirmed and still retrying. A requester of a group '
     + 'that joined identical requests share only detaches (detached.remainingRequesters) while others remain; the '
     + 'tickets are canceled once no requester remains. run_stop cancels every open ticket of that Run\u2019s Agents '
-    + 'that no other requester still shares.',
+    + 'that no other requester still shares. Malformed or unknown ticketId returns CI_RUN_NOT_FOUND with your recent '
+    + 'tickets in the message and details.recentTickets.',
   ci_logs_read: `Read a CI ticket\u2019s full log from its computer: omit afterOffset for the last maxBytes (at most ${CI_LOG_MAX_BYTES}), `
     + 'or page forward with nextOffset. group=true pages every part of the ticket\u2019s group within the same budget. '
-    + 'Queued tickets return CI_NOT_STARTED. CI_RUN_NOT_FOUND includes up to five recent groups you requested or joined, '
+    + 'Queued tickets return CI_NOT_STARTED. Malformed or unknown ticketId returns CI_RUN_NOT_FOUND with up to five '
+    + 'recent groups you requested or joined, '
     + 'scoped to your execution when present, in the message and details.recentTickets '
     + '(lead ticketId, suite, scope, group state, createdAt in UTC).',
   ci_list: 'List CI tickets the Agents of one Run requested or joined as identical requests, newest first (at most 500). '
