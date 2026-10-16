@@ -1,9 +1,10 @@
+import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { sweepCiRunDirectories } from './directoryRetention.js'
+import { ciDirectoryCleanupCandidates, sweepCiRunDirectories } from './directoryRetention.js'
 import { withHostCiRunLock } from './runnerLock.js'
 
 const roots: string[] = []
@@ -65,4 +66,21 @@ it('preserves a directory when a read starts while deletion checks its metadata'
   await expect(readFile(join(f.directory, 'log'), 'utf8')).resolves.toBe('retained bytes')
   inUse = false
   await expect(sweepCiRunDirectories(f.options)).resolves.toEqual(f.options.runIds)
+})
+
+
+it('returns bounded cleanup pages without losing candidates at a page boundary', async () => {
+  const host = { hostRef: { kind: 'main' as const, mainId: 'fixture-main' }, label: 'Build executor' }
+  const ids = Array.from({ length: 1001 }, () => randomUUID())
+  const rows = ids.map((id, index) => ({ run_id: id, state: 'passed',
+    finished_at: '2026-01-01T00:00:00.000Z', collection: null, rank: String(index + 201) }))
+  const pool = { query: async (_sql: string, parameters: unknown[]) => {
+    const limit = parameters[3] as number | undefined
+    const offset = parameters[4] as number | undefined ?? 0
+    return { rows: rows.slice(offset, limit === undefined ? undefined : offset + limit) }
+  } } as unknown as pg.Pool
+  const now = Date.parse('2026-10-16T00:00:00.000Z')
+  expect(await ciDirectoryCleanupCandidates(pool, host, now)).toEqual(ids.slice(0, 1000))
+  expect(await ciDirectoryCleanupCandidates(pool, host, now, { offset: 1000 })).toEqual(ids.slice(1000))
+  expect(await ciDirectoryCleanupCandidates(pool, host, now, { offset: 2000 })).toEqual([])
 })
