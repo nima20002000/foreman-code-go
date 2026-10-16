@@ -31,7 +31,7 @@ it('shares full-suite slots between measured tiers and leaves a single heavy fil
   const slow = Array.from({ length: 8 }, (_, index) => `apps/api/test/slow-${index}.integration.test.ts`)
   const heavy = 'apps/api/test/heavy.integration.test.ts'
   const selected = [...quick, ...slow, heavy]
-  const measured = { ...Object.fromEntries(quick.map(file => [file, 20_000])),
+  const measured: Record<string, number> = { ...Object.fromEntries(quick.map(file => [file, 20_000])),
     ...Object.fromEntries(slow.map(file => [file, 90_000])), [heavy]: 250_000 }
   const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 0, ordinary: 112 })
 

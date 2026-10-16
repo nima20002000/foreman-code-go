@@ -85,7 +85,7 @@ function joinedFixture() {
     workingDirectory: '/projects/joined', branch: 'agent/joined' })
   const page = recorded.executions[workflow.runId]![0]!
   page.items.push({ ...page.items[0]!, executionId, agentId, workflowNodeId: nodeId,
-    worktree: { ...page.items[0]!.worktree!, branch: 'agent/joined' } })
+    worktree: { ...page.items[0]!.worktree!, branch: 'agent/joined' } } as typeof page.items[number])
   const placement = structuredClone(recorded.placements[original.id]!)
   placement.nodeId = nodeId
   if (placement.readback.evidence !== 'accepted') throw new Error('Expected accepted placement')

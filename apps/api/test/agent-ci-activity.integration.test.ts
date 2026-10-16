@@ -241,7 +241,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
         const terminalBoard = RunBoardSnapshotGetResultSchema.parse(await f.value(operator.token,
           'run_board_snapshot_get', { workspaceId: other.scope.workspaceId,
             workflowId: other.scope.workflowId, runId: other.run.id }))
-        const joinedActivities = terminalBoard.activitySnapshot?.activities.filter(item => item.ci?.id === ticket.ticketId
+        const joinedActivities = terminalBoard.activitySnapshot?.activities.filter(item => item.owner.kind === 'ci' && item.owner.ticketId === ticket.ticketId
           && item.parent?.kind === 'execution' && item.parent.executionId === joinedExecutionId)
         expect(joinedActivities).toHaveLength(4)
         expect(joinedActivities!.every(item => item.owner.kind === 'ci'
