@@ -1,3 +1,4 @@
+import { deferred } from './deferred.js'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { mkdir, rm } from 'node:fs/promises'
@@ -28,7 +29,7 @@ import { handoffOutput } from './workHandoffSiblings.js'
  * and physical source preparation are synthetic. No device or CI job is contacted. */
 export async function handoffPlacementFixture(options: { checkOutcome?: 'qualified' | 'failed' } = {}) {
   const failedCheck = options.checkOutcome === 'failed'
-  const completion = Promise.withResolvers<void>()
+  const completion = deferred<void>()
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
   definition.version.definition.nodes = definition.version.definition.nodes.map(node => {
     const agent = { ...node }
