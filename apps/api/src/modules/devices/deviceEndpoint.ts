@@ -191,6 +191,7 @@ export class DeviceEndpoint {
       if (!current()) throw new DeviceConnectionError('transport')
       if (!session?.presence || this.sessions.get(principal.deviceId)?.abort !== abort) throw new DeviceConnectionError('transport')
       session.ready = true
+      channel.confirmMainReady()
       session.presence = Object.freeze({ ...session.presence, phase: 'ready', dispatch: welcome.capabilities.dispatch, transfer: welcome.capabilities.transfer })
       this.options.presence(session.presence)
       if (this.options.onBindingReady) await this.track(Promise.resolve(this.options.onBindingReady(binding, abort.signal)))

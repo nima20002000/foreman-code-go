@@ -98,6 +98,7 @@ export class DeviceApplicationChannel {
     /** Main live device authorization, separate from the handler's operation authority. */
     revalidate?(): Promise<void>
     onObservedFrame?(observedAt: string): void
+    onMainReady?(): void
     onPeerTime?(peerTime: number | null, mainTime: number): void
     mainTime?: number
     beforeRequest?(namespace: string, payload: unknown): Promise<void>
@@ -127,6 +128,10 @@ export class DeviceApplicationChannel {
     const { requestQueue } = this
     return Object.freeze({ binding: this.binding, get busy() { return requestQueue.busy },
       request: (payload: unknown, options?: DeviceApplicationRequestOptions) => this.request(namespace, payload, options) })
+  }
+  confirmMainReady(): void {
+    this.queueFrame({ type: 'pong', connectionEpoch: this.binding.connectionEpoch,
+      observedAt: new Date().toISOString(), mainReady: true })
   }
   capabilities(): DeviceNegotiatedExtension[] { return this.extensions.map((item) => ({ ...item })) }
   private current() { if (this.abort.signal.aborted) throw this.failure ?? new DeviceConnectionError('transport') }
@@ -610,6 +615,7 @@ export class DeviceApplicationChannel {
           lastHeartbeat = Date.now()
           const peerTime = typeof frame.observedAt === 'string' ? Date.parse(frame.observedAt) : NaN
           if (worker && Number.isFinite(peerTime)) this.mainClock.observe(peerTime)
+          if (worker && frame.mainReady === true) this.options.onMainReady?.()
           if (!worker) {
             this.options.onPeerTime?.(Number.isFinite(peerTime) ? peerTime : null, lastHeartbeat)
             this.queueFrame({ type: 'pong', connectionEpoch: this.binding.connectionEpoch,

@@ -72,7 +72,7 @@ export class DeviceConnectionSupervisor {
       const cancel = () => attempt.abort()
       signal.addEventListener('abort', cancel, { once: true })
       let socket: DeviceSocket | undefined
-      let readyAt: number | undefined
+      let mainReadyAt: number | undefined
       try {
         this.update('connecting')
         const registration = this.options.refresh
@@ -131,8 +131,8 @@ export class DeviceConnectionSupervisor {
         sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
         this.channel = new DeviceApplicationChannel({ side: 'worker', binding, socket, signal: attempt.signal, extensions,
           ...(typeof frame.observedAt === 'string' && Number.isFinite(Date.parse(frame.observedAt))
-            ? { mainTime: Date.parse(frame.observedAt) } : {}), registrations: this.options.extensions ?? [] })
-        readyAt = Date.now()
+            ? { mainTime: Date.parse(frame.observedAt) } : {}),
+          onMainReady: () => { mainReadyAt ??= Date.now() }, registrations: this.options.extensions ?? [] })
         this.update('ready')
         await this.channel.run(iterator, this.options.heartbeatMs ?? 15_000)
       } catch (error) {
@@ -145,7 +145,7 @@ export class DeviceConnectionSupervisor {
         attempt.abort(); socket?.close(); this.socket = undefined
         this.channel?.close(); this.channel = undefined
         this.update('backoff', code)
-        if (readyAt !== undefined && Date.now() - readyAt >= healthyConnectionMs) failures = 0
+        if (mainReadyAt !== undefined && Date.now() - mainReadyAt >= healthyConnectionMs) failures = 0
         const baseDelay = 500 * 2 ** Math.min(failures++, 6)
         const delay = Math.min(30_000, baseDelay * (0.75 + (this.options.random?.() ?? Math.random()) * 0.5))
         await pause(delay, signal)

@@ -42,7 +42,10 @@ export interface DeviceWelcome extends DeviceSessionBinding {
   capabilities: { heartbeat: true; dispatch: boolean; transfer: boolean; extensions?: DeviceNegotiatedExtension[] }
 }
 export type DeviceFrame = DeviceApplicationFrame | DeviceHello | DeviceWelcome
-  | { type: 'ping' | 'pong' | 'ready'; connectionEpoch: string; observedAt?: string }
+  | { type: 'ping' | 'ready'; connectionEpoch: string; observedAt?: string }
+  | { type: 'pong'; connectionEpoch: string; observedAt?: string;
+    /** Main has completed reconciliation for this connection. */
+    mainReady?: true }
   | { type: 'blocked'; code: DeviceFailureCode }
 export interface DeviceConnectionView {
   desired: boolean
