@@ -1,11 +1,13 @@
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { deferred } from '../../../../test/helpers/deferred.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { remoteWorkflowPhysicalOutput } from '@foreman-code/contracts/remote-workflow-physical'
 import { remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
 import { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
-import { restartedInstalledFixture, runningInstalledFixture } from './__tests__/installedWorkflowHost.js'
+import { restartedInstalledFixture, runningInstalledFixture, constructionFixture } from './__tests__/installedWorkflowHost.js'
 
 it.each([false, true])('keeps recovered session ACKs readable until terminal history retirement (retire=%s)', async retire => {
   const f = await restartedInstalledFixture()
@@ -19,7 +21,7 @@ it.each([false, true])('keeps recovered session ACKs readable until terminal his
     const receipt = RemoteOperationReceiptSchema.parse((reply.payload as { status: { receipt: unknown } }).status.receipt)
     const selector = { receiptSequence: receipt.sequence,
       sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created', session: f.session }) }
-    expect((await call('physical-ack', { ...selector, retire })).payload).toMatchObject({ status: 'retired' })
+    expect((await call('physical-ack', { ...selector, ...(retire ? { retire: true } : {}) })).payload).toMatchObject({ status: 'retired' })
     const history = await call('history')
     expect(history.payload).toMatchObject({ status: { receipt } })
     const source = { type: 'history' as const, history: (history.payload as { history: never }).history }
@@ -61,4 +63,98 @@ it('refuses to invent artifact output when a recovered terminal has no saved out
     await expect(host.extensions[0]!.handle!({ method: 'history', intent: f.intent,
       placement: f.placement }, f.context)).rejects.toThrow('Original workflow recovery output is missing')
   } finally { await host.close() }
+})
+
+it('cancels the installed Worker preflight request when Stop arrives', async () => {
+  const f = await constructionFixture()
+  const entered = deferred()
+  const release = deferred()
+  let requestSignal: AbortSignal | undefined
+  const original = f.readMain.getMockImplementation()!
+  f.readMain.mockImplementation(async (...args: unknown[]) => {
+    const [raw, options] = args as [unknown, { signal?: AbortSignal } | undefined]
+    if ((raw as { operation?: string }).operation === 'worker-mcp.authorize') {
+      requestSignal = options?.signal
+      entered.resolve()
+      await release.promise
+      requestSignal?.throwIfAborted()
+      throw new Error('Preflight request released')
+    }
+    return original(raw)
+  })
+  const preparing = f.handler({ method: 'prepare', intent: f.intent, placement: f.placement,
+    executionPlacement: f.nativePlacement, request: f.request,
+    applicationAccess: { kind: 'scoped-worker-mcp', token: 'unit-token', executionId: f.intent.executionId,
+      agentId: f.request.configuration.agentId, operationId: f.intent.operationId,
+      attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash },
+  }, f.context)
+  const preparationResult = Promise.allSettled([preparing])
+  let stopping: Promise<unknown> | undefined
+  try {
+    await entered.promise
+    stopping = f.handler({ method: 'control', intent: f.intent, placement: f.placement,
+      command: { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-preflight',
+        operationId: f.intent.operationId, executionId: f.intent.executionId,
+        attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash, owner: f.intent.owner,
+        action: { kind: 'stop' } },
+    }, f.context)
+    const stopped = Promise.allSettled([stopping])
+    await expect.poll(() => requestSignal?.aborted, { timeout: 1000 }).toBe(true)
+    release.resolve()
+    await stopped
+  } finally {
+    release.resolve()
+    await Promise.allSettled([preparing, stopping])
+    await preparationResult
+    await f.host.close()
+  }
+})
+
+it('persists published artifact output before the terminal receipt is committed', async () => {
+  const f = await runningInstalledFixture('generation', { artifactOutputKeys: ['report'] })
+  if (!f.outputs) throw new Error('Expected native outputs')
+  const configuration = f.request.configuration.harness
+  if (configuration.harness !== 'codex') throw new Error('Expected Codex')
+  const signal = new AbortController().signal
+  const sandbox = { cwd: f.request.workingDirectory, writableRoots: [f.request.workingDirectory],
+    networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true, tmpdir: undefined }
+  const bridge = await f.outputs.prepare({ configuration, binary: '/unit/codex', binaryIdentity: 'unit-binary',
+    providerVersion: f.session.providerVersion, schemaIdentity: 'unit-schema',
+    expectedSandbox: sandbox, effectiveSandbox: sandbox, session: f.session,
+    clientCorrelationId: 'execution:execution', connectionId: 'native-connection', runtimeGeneration: 1 }, signal)
+  const pin = { session: f.session, connectionId: 'native-connection', runtimeGeneration: 1,
+    nativeTurnId: 'original-turn', assertCurrent() {} }
+  const callback = () => ({ ...pin, rpcId: 'output-rpc', callId: randomUUID() })
+  const recovery = new InstalledWorkflowRecovery(join(f.root, 'workflow-recovery'),
+    new NativeProcessRegistry(join(f.root, 'native-processes')))
+  let outputAtCommit: unknown
+  const commit = f.journal.terminal.bind(f.journal)
+  vi.spyOn(f.journal, 'terminal').mockImplementation(async (operationId, terminal) => {
+    outputAtCommit = await recovery.readOutput(operationId)
+    return commit(operationId, terminal)
+  })
+  try {
+    await bridge.activate(pin, signal)
+    const created = await bridge.dispatch({ operation: 'create', commandId: randomUUID(),
+      filename: 'report.md', mediaType: 'text/markdown' }, callback(), signal)
+    if (created.operation !== 'create') throw new Error('Expected artifact')
+    await bridge.dispatch({ operation: 'append', commandId: randomUUID(), artifactId: created.artifactId,
+      offset: 0, contentBase64: Buffer.from('workflow report').toString('base64') }, callback(), signal)
+    await bridge.dispatch({ operation: 'seal', commandId: randomUUID(), artifactId: created.artifactId }, callback(), signal)
+    const commandId = randomUUID()
+    await bridge.dispatch({ operation: 'publish', publication: { commandId, artifactId: created.artifactId,
+      filename: 'report.md', mediaType: 'text/markdown' } }, callback(), signal)
+    f.finish('succeeded', { text: JSON.stringify({ data: { report: 'complete' }, artifactOutputs: {
+      version: 1, outputs: [{ outputKey: 'report', commandId }],
+    } }) })
+    await f.settled
+    expect(outputAtCommit).toMatchObject({ kind: 'published-artifacts',
+      artifactOutputs: { version: 1, outputs: [{ outputKey: 'report', commandId }] } })
+    const status = await f.journal.status(f.intent.operationId)
+    expect(status).toMatchObject({ receipt: { terminal: { artifactDigests: [expect.any(String)] } } })
+    expect(await recovery.readOutput(f.intent.operationId)).toEqual(outputAtCommit)
+  } finally {
+    f.finish('canceled')
+    await f.host.close()
+  }
 })
