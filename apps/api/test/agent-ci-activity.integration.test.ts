@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema, CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, OperatorCiListInputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
@@ -27,6 +26,7 @@ import { measuredCiPages } from './helpers/measuredCiPages.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { hostCiActivityMigration } from '../src/infrastructure/hostCiActivityMigration.js'
 import { ciActivityRunLockMigration } from '../src/infrastructure/ciActivityRunLockMigration.js'
+import { runActivityCommitLockMigration } from '../src/infrastructure/runActivityCommitLockMigration.js'
 import { ciSharedActivityMigration } from '../src/infrastructure/ciSharedActivityMigration.js'
 import { changeRunState, graphFixture, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
@@ -675,11 +675,10 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
     } finally { await f.close() }
   }, 120000)
 
-  it('serializes same-Run CI commits so incremental cursors see both events once', async () => {
+  it('allows independent same-Run CI writes and delivers each event once in commit order', async () => {
     const f = await fixture()
     const first = await f.database.pool.connect()
     const second = await f.database.pool.connect()
-    let secondUpdate: Promise<pg.QueryResult> | undefined
     try {
       const ticketA = await f.submit()
       const ticketB = await f.submit()
@@ -688,42 +687,38 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
         'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence', [f.graph.run.id])).rows
       await beginTransaction(first)
       await beginTransaction(second)
-      const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
-      const waiter = (await second.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const canceledAt = new Date().toISOString()
       const cancel = `update ci_runs set state='canceled',record=record||jsonb_build_object(
         'state','canceled','finishedAt',$2::text) where id=$1`
       await first.query(cancel, [ticketA.ticketId, canceledAt])
-      secondUpdate = second.query(cancel, [ticketB.ticketId, canceledAt])
-      const pending = secondUpdate.then(() => ({ error: null }), error => ({ error }))
-      const deadline = Date.now() + 4000
-      let blocked = false
-      while (!blocked && Date.now() < deadline) {
-        blocked = (await f.database.pool.query<{ blocked: boolean }>(
-          'select $2::integer=any(pg_blocking_pids($1::integer)) as blocked', [waiter, holder])).rows[0]!.blocked
-        if (!blocked) await setImmediate()
-      }
-      expect(blocked).toBe(true)
+      await second.query("select set_config('statement_timeout','500ms',true)")
+      await second.query(cancel, [ticketB.ticketId, canceledAt])
       const during = await f.activity({ cursor: initial.nextCursor })
       expect(during.items).toEqual([])
-      await commitTransaction(first)
-      const settled = await pending
-      if (settled.error) throw settled.error
-      const afterFirst = await f.activity({ cursor: during.nextCursor, limit: 1 })
-      expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketA.ticketId } }])
+      const uncommitted = (await f.database.pool.query<{ id: string; state: string }>(
+        'select id::text,state from ci_runs where id=any($1::uuid[]) order by id',
+        [[ticketA.ticketId, ticketB.ticketId]])).rows
+      expect(uncommitted).toEqual([ticketA.ticketId, ticketB.ticketId].sort()
+        .map(id => ({ id, state: 'queued' })))
+      // Commit in reverse write order: a cursor must not consume the first writer's provisional identity.
       await commitTransaction(second)
+      const afterFirstCommit = await f.activity({ cursor: during.nextCursor, limit: 1 })
+      expect(afterFirstCommit.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketB.ticketId } }])
+      const beforeSecondCommit = await f.activity({ cursor: afterFirstCommit.nextCursor, limit: 1 })
+      expect(beforeSecondCommit.items).toEqual([])
+      await commitTransaction(first)
       const records = (await f.database.pool.query<{ record: unknown }>(
         'select record from ci_runs where id=any($1::uuid[])', [[ticketA.ticketId, ticketB.ticketId]])).rows
       expect(records.map(row => CiRunRecordSchema.parse(row.record))).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: ticketA.ticketId, state: 'canceled', finishedAt: canceledAt }),
         expect.objectContaining({ id: ticketB.ticketId, state: 'canceled', finishedAt: canceledAt }),
       ]))
-      const afterSecond = await f.activity({ cursor: afterFirst.nextCursor, limit: 1 })
-      expect(afterSecond.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketB.ticketId } }])
-      const delivered = [...afterFirst.items, ...afterSecond.items]
+      const afterSecondCommit = await f.activity({ cursor: beforeSecondCommit.nextCursor, limit: 1 })
+      expect(afterSecondCommit.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketA.ticketId } }])
+      const delivered = [...afterFirstCommit.items, ...afterSecondCommit.items]
       expect(new Set(delivered.map(item => item.id)).size).toBe(2)
       expect(BigInt(delivered[1]!.sequence)).toBeGreaterThan(BigInt(delivered[0]!.sequence))
-      expect((await f.activity({ cursor: afterSecond.nextCursor })).items).toEqual([])
+      expect((await f.activity({ cursor: afterSecondCommit.nextCursor })).items).toEqual([])
       expect((await f.database.pool.query<{ sequence: string }>(
         'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence limit $2',
         [f.graph.run.id, before.length])).rows).toEqual(before)
@@ -731,7 +726,6 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(denied.error || denied.result?.isError).toBeTruthy()
     } finally {
       await rollbackTransaction(first)
-      if (secondUpdate) await Promise.allSettled([secondUpdate])
       await rollbackTransaction(second)
       first.release()
       second.release()
@@ -740,9 +734,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
   }, 120000)
 
   it('observes retained Host CI once without inventing earlier transitions', async () => {
-    // The run-lock migration replaces the function the host CI migration creates, so it defers with it.
+    // Defer activity function replacements with the migrations that define those functions.
     const f = await fixture({ deferMigration: [hostCiActivityMigration.version, ciActivityRunLockMigration.version,
-      databaseHotQueriesMigration.version, ciSharedActivityMigration.version] })
+      databaseHotQueriesMigration.version, ciSharedActivityMigration.version, runActivityCommitLockMigration.version] })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])
