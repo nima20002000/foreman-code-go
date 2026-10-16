@@ -1,7 +1,7 @@
 import pg from 'pg'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createDatabase } from '../../infrastructure/database.js'
-import { withCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
+import { withCiDatabasePriority, withoutCiDatabaseReservation } from '../../infrastructure/ciDatabasePriority.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { claimCiSlot } from './cloudSlots.js'
@@ -9,6 +9,7 @@ import { ticketStore } from './ciTicketStore.testSupport.js'
 import { queuedTicket, readyStatus } from './dispatchFleet.testSupport.js'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
 import { deferred } from '../../../test/helpers/deferred.js'
+import { ProductionHostCiEndpoint } from './endpoint.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -221,6 +222,27 @@ it('delivers tickets with every shared connection held and releases reserved con
     for (const client of held) client.release()
     await vi.advanceTimersByTimeAsync(3001)
     await service.close()
+    await db.close()
+  }
+})
+
+it('keeps persisted build validation independent of shared-pool saturation', async () => {
+  vi.useFakeTimers()
+  const run = queuedTicket()
+  const db = database([run])
+  const held = await Promise.all(Array.from({ length: 4 }, () => db.pool.connect()))
+  const endpoint = new ProductionHostCiEndpoint(db.pool, 'main', () => undefined, {
+    handle: async () => { throw new Error('Disabled computers cannot enter the executor') },
+  })
+  try {
+    const reply = Promise.allSettled([withCiDatabasePriority(() => withoutCiDatabaseReservation(() =>
+      endpoint.request(executor(0), startRequest(run))))])
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(await reply).toEqual([{ status: 'rejected', reason: expect.objectContaining({
+      code: 'BUILD_COMPUTER_DISABLED',
+    }) }])
+  } finally {
+    for (const client of held) client.release()
     await db.close()
   }
 })
