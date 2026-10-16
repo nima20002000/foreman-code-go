@@ -58,7 +58,7 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
 
 /** Main also bounds failures before the cloud adapter can persist its provider dispatch. */
 export async function dispatchCloudTicket(sql: SqlQuery, endpoint: HostCiEndpoint,
-  computer: HostCiComputer, run: CiRunRecord): Promise<DispatchOutcome> {
+  computer: HostCiComputer, run: CiRunRecord, onRejected?: (error: unknown) => void): Promise<DispatchOutcome> {
   const attempts = run.dispatchAttempts ?? 1
   const elapsed = Date.now() - cloudDispatchStartedAt(run)
   if (attempts > 0) {
@@ -101,7 +101,10 @@ export async function dispatchCloudTicket(sql: SqlQuery, endpoint: HostCiEndpoin
     }
     if (rejectedCiStart(error)) {
       const released = await releaseCiDispatch(sql, next, computer, (error as Error).message, { clearRetry: true })
-      if (released) return { outcome: (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected' }
+      if (released) {
+        onRejected?.(error)
+        return { outcome: (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected' }
+      }
     }
     log.warn({ err: error, runId: run.id, attempts: next.dispatchAttempts }, 'Cloud CI start remains pending')
     return { outcome: 'pending' }

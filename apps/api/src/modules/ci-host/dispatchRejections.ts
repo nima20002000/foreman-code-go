@@ -26,9 +26,11 @@ function executorState(computer: HostCiComputer, status: CiHostStatus | undefine
   })
 }
 
-/** A fresh copy of an unchanged status cannot make a rejected executor eligible again. */
+const TRANSIENT_BACKOFF_MS = 60_000
+
+/** Unchanged status preserves structural refusals; transient refusals expire after backoff. */
 export class CiDispatchRejections {
-  private readonly tickets = new Map<string, Map<string, { state: string; message: string }>>()
+  private readonly tickets = new Map<string, Map<string, { state: string; message: string; expiresAt: number }>>()
 
   retain(queued: readonly CiRunRecord[]) {
     const ids = new Set(queued.map(run => run.id))
@@ -37,13 +39,15 @@ export class CiDispatchRejections {
     }
   }
 
-  record(ticketId: string, computer: HostCiComputer, status: CiHostStatus | undefined, message: string) {
+  record(ticketId: string, computer: HostCiComputer, status: CiHostStatus | undefined, message: string,
+    options: { structural?: boolean } = {}) {
     let rejected = this.tickets.get(ticketId)
     if (!rejected) {
       rejected = new Map()
       this.tickets.set(ticketId, rejected)
     }
-    rejected.set(executorKey(computer), { state: executorState(computer, status), message })
+    rejected.set(executorKey(computer), { state: executorState(computer, status), message,
+      expiresAt: options.structural ? Infinity : Date.now() + TRANSIENT_BACKOFF_MS })
   }
 
   reason(ticketId: string, computer: HostCiComputer, status: CiHostStatus | undefined): string | undefined {
@@ -53,7 +57,8 @@ export class CiDispatchRejections {
     const previous = rejected.get(key)
     if (!previous) return undefined
     // An invalidated or in-flight status is not an observed state change.
-    if (!status || previous.state === executorState(computer, status)) return previous.message
+    if (Date.now() < previous.expiresAt
+      && (!status || previous.state === executorState(computer, status))) return previous.message
     rejected.delete(key)
     return undefined
   }

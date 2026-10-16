@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import type { HostCiComputer } from './service.js'
 import type { SqlQuery } from '../../infrastructure/transaction.js'
+import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
+import { errorMessage } from '../../shared/errorMessage.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 export { withCiTicketLock, type CiTicketSql } from './ticketLock.js'
 
@@ -62,11 +64,30 @@ export function ciMessages(run: CiRunRecord, observed: string | null) {
   }
 }
 
+/** No Start was sent, so even a transport failure here is safe to requeue. */
+export class CiStartPreflightError extends Error {
+  readonly code: string
+
+  constructor(cause: unknown) {
+    super(errorMessage(cause, 'CI start preflight failed.'), { cause })
+    this.code = cause && typeof cause === 'object' && 'code' in cause
+      ? String(cause.code) : 'CI_START_PREFLIGHT_FAILED'
+  }
+}
+
+export function structuralCiStartRejection(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false
+  return ['COMPUTER_GITHUB_REQUIRED', 'CI_HOST_PROTOCOL_UNSUPPORTED']
+    .includes(String(error.code))
+}
+
 export function rejectedCiStart(error: unknown) {
+  if (error instanceof CiStartPreflightError || error instanceof DeviceApplicationAdmissionError) return true
   if (!error || typeof error !== 'object' || !('code' in error)) return false
   return ['CI_HOST_BUSY', 'COMPUTER_GITHUB_REQUIRED', 'CI_CLOUD_UNAVAILABLE',
     'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'CI_MIRROR_PRIVATE_DATA',
-    'WORKER_RUNTIME_DRAINING'].includes(String(error.code))
+    'WORKER_RUNTIME_DRAINING', 'WORKER_UPDATING', 'WORKER_VERSION_SKEW',
+    'WORKER_STATUS_UNAVAILABLE', 'WORKER_BUNDLE_UNPUBLISHED'].includes(String(error.code))
 }
 
 /** The request may finish later; its reply cannot settle a ticket after this deadline. */

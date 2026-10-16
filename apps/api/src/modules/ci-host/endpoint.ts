@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
-import { ciDirectoryCleanupCandidates } from './directoryRetention.js'
+import { CiStartPreflightError } from './dispatch.js'
+import { CI_DIRECTORY_PAGE_SIZE, ciDirectoryCleanupCandidates } from './directoryRetention.js'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiHostReplySchema,
   type CiHostReply, type CiHostRequest } from '@foreman-code/contracts'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
@@ -88,23 +89,12 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
 
   async request(computer: HostCiComputer, request: CiHostRequest,
     options?: { priority: DeviceRequestPriority }): Promise<CiHostReply> {
-    if (request.operation === 'start' && computer.hostRef.kind !== 'cloud') {
-      const saved = (await this.computers()).find(value => value.key === computer.key
-        && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))
-      if (!saved) {
-        throw new DomainError('BUILD_COMPUTER_DISABLED', 'This computer is no longer available for builds.', 409)
+    if (request.operation === 'start') {
+      try {
+        request = await this.prepareStart(computer, request)
+      } catch (error) {
+        throw new CiStartPreflightError(error)
       }
-      request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
-    }
-    if (request.operation === 'start' && computer.hostRef.kind === 'device') {
-      await this.devices()?.assertWorkerBundleReady?.(computer.hostRef.deviceId!)
-      const status = await this.sendRequest(computer,
-        { operation: 'status', buildAllowancePercent: request.buildAllowancePercent }, { priority: 'foreground' })
-      if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
-      if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
-        throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
-      }
-      if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
     }
     let reply = await this.sendRequest(computer, request, options)
     if (reply.operation === 'status' && computer.hostRef.kind === 'device') {
@@ -121,6 +111,29 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     return reply
   }
 
+  private async prepareStart(computer: HostCiComputer,
+    request: Extract<CiHostRequest, { operation: 'start' }>) {
+    if (computer.hostRef.kind !== 'cloud') {
+      const saved = (await this.computers()).find(value => value.key === computer.key
+        && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))
+      if (!saved) {
+        throw new DomainError('BUILD_COMPUTER_DISABLED', 'This computer is no longer available for builds.', 409)
+      }
+      request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
+    }
+    if (computer.hostRef.kind === 'device') {
+      await this.devices()?.assertWorkerBundleReady?.(computer.hostRef.deviceId!)
+      const status = await this.sendRequest(computer,
+        { operation: 'status', buildAllowancePercent: request.buildAllowancePercent }, { priority: 'foreground' })
+      if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
+      if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
+        throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
+      }
+      if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
+    }
+    return request
+  }
+
   private async cleanDirectories(computer: HostCiComputer): Promise<void> {
     const hostRef = { ...computer.hostRef }
     delete hostRef.slot
@@ -130,10 +143,14 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     const now = Date.now()
     if (now - (this.cleanupAt.get(key) ?? -Infinity) < 5 * 60_000) return
     const cleanup = (async () => {
-      const runIds = await ciDirectoryCleanupCandidates(this.pool, { hostRef: computer.hostRef, label: computer.label }, now)
-      for (let offset = 0; offset < runIds.length; offset += 1000) {
-        const reply = await this.sendRequest(computer, { operation: 'status', cleanupRunIds: runIds.slice(offset, offset + 1000) })
-        if (reply.operation !== 'status' || !reply.removedRunIds) throw new Error('Expected CI cleanup reply.')
+      for (let offset = 0; ; offset += CI_DIRECTORY_PAGE_SIZE) {
+        const runIds = await ciDirectoryCleanupCandidates(this.pool,
+          { hostRef: computer.hostRef, label: computer.label }, now, { offset })
+        if (runIds.length) {
+          const reply = await this.sendRequest(computer, { operation: 'status', cleanupRunIds: runIds })
+          if (reply.operation !== 'status' || !reply.removedRunIds) throw new Error('Expected CI cleanup reply.')
+        }
+        if (runIds.length < CI_DIRECTORY_PAGE_SIZE) break
       }
       this.cleanupAt.set(key, now)
     })()

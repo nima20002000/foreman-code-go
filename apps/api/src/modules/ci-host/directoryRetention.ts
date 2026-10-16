@@ -5,10 +5,12 @@ import { CiHostRequestSchema, type CiHostRequest, type CiRunRecord } from '@fore
 
 export const CI_DIRECTORY_RETENTION_MS = 3 * 86_400_000
 export const CI_DIRECTORY_KEEP = 200
+export const CI_DIRECTORY_PAGE_SIZE = 1000
 const terminalStates = new Set(['passed', 'failed', 'canceled', 'lost'])
 
 /** Main's saved ticket, including its executor attempts, determines which local directories can expire. */
-export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRecord['computer'], now = Date.now()) {
+export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRecord['computer'], now = Date.now(),
+  options: { offset?: number } = {}) {
   if (!host) return []
   const hostRef = { ...host.hostRef }
   delete hostRef.slot
@@ -21,6 +23,8 @@ export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRec
       from ci_runs c cross join lateral jsonb_to_record(c.record)
         as x("finishedAt" text, collection text, computer jsonb, "setupRetry" jsonb)
       where c.state in ('passed','failed','canceled','lost')
+        and ((c.record#>'{computer,hostRef}') @> $1::jsonb
+          or (c.record#>'{setupRetry,failedComputer}') @> $1::jsonb)
     ), attempts as (
       select run_id, state, finished_at, collection, host_ref from tickets where setup_retry is null
       union all
@@ -31,8 +35,12 @@ export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRec
       select *, row_number() over (order by finished_at::timestamptz desc nulls first, run_id desc) as rank
       from attempts where host_ref @> $1::jsonb
     )
-    select run_id,state,finished_at,collection,rank from ranked where rank > $2`,
-  [JSON.stringify(hostRef), CI_DIRECTORY_KEEP])).rows
+    select run_id,state,finished_at,collection,rank from ranked
+    where rank > $2 and collection is distinct from 'pending'
+      and finished_at::timestamptz < $3::timestamptz
+    order by rank limit $4 offset $5`,
+  [JSON.stringify(hostRef), CI_DIRECTORY_KEEP, new Date(now - CI_DIRECTORY_RETENTION_MS).toISOString(),
+    CI_DIRECTORY_PAGE_SIZE, options.offset ?? 0])).rows
   const cutoff = now - CI_DIRECTORY_RETENTION_MS
   return rows.filter(row => terminalStates.has(row.state) && row.collection !== 'pending'
     && row.finished_at !== null && Date.parse(row.finished_at) < cutoff).map(row => row.run_id)
