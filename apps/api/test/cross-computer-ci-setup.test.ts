@@ -1,4 +1,4 @@
-import { Client, SdkError, SdkErrorCode } from '@modelcontextprotocol/client'
+import { Client, SdkError, SdkErrorCode, SdkHttpError } from '@modelcontextprotocol/client'
 import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callCiTool, callCiToolResult, connectCiOperator, disableCiProfiles,
@@ -18,6 +18,63 @@ afterEach(() => {
 })
 
 describe('scenario MCP recovery', () => {
+  it.each([SdkErrorCode.RequestTimeout, SdkErrorCode.ConnectionClosed, SdkErrorCode.NotConnected])(
+    'retries a placement-choice read after %s without a mutation command ID', async code => {
+      const args = { workspaceId: 'workspace', workflowId: 'workflow', nodeId: 'node' }
+      const callTool = vi.fn<Client['callTool']>()
+        .mockRejectedValueOnce(new SdkError(code, 'Transport interrupted'))
+        .mockResolvedValue(success)
+      const pending = expect(callCiTool({ callTool }, 'workflow_node_placement_choices', args))
+        .resolves.toEqual({ accepted: true })
+      await Promise.all([pending, vi.runAllTimersAsync()])
+      expect(callTool.mock.calls.map(([request]) => request.arguments)).toEqual([args, args])
+    })
+
+  it.each([502, 503])('recovers a read after SDK HTTP %s', async status => {
+    const callTool = vi.fn<Client['callTool']>()
+      .mockRejectedValueOnce(new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'Gateway unavailable', { status }))
+      .mockResolvedValue(success)
+    const pending = expect(callCiTool({ callTool }, 'run_get', { runId: 'run' }))
+      .resolves.toEqual({ accepted: true })
+    await Promise.all([pending, vi.runAllTimersAsync()])
+    expect(callTool).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([502, 503])('reuses the mutation command and payload after SDK HTTP %s', async status => {
+    const args = { runId: 'run', commandId: 'original-command' }
+    const callTool = vi.fn<Client['callTool']>()
+      .mockRejectedValueOnce(new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'Gateway unavailable', { status }))
+      .mockResolvedValue(success)
+    const pending = expect(callCiToolResult({ callTool }, 'run_stop', args)).resolves.toEqual(success)
+    await Promise.all([pending, vi.runAllTimersAsync()])
+    expect(callTool.mock.calls.map(([request]) => request.arguments)).toEqual([args, args])
+  })
+
+  it.each([502, 503])('does not replay a mutation without a command ID after SDK HTTP %s', async status => {
+    const error = new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'Gateway unavailable', { status })
+    const callTool = vi.fn<Client['callTool']>().mockRejectedValue(error)
+    await expect(callCiToolResult({ callTool }, 'workflow_create', {})).rejects.toBe(error)
+    expect(callTool).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([400, 401, 403, 404, 409, 500])('does not retry SDK HTTP %s', async status => {
+    const error = new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'HTTP operation failed', { status })
+    const callTool = vi.fn<Client['callTool']>().mockRejectedValue(error)
+    await expect(callCiToolResult({ callTool }, 'run_get', {})).rejects.toBe(error)
+    expect(callTool).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([502, 503])('stops repeated SDK HTTP %s failures at the supplied deadline', async status => {
+    const started = Date.now()
+    const callTool = vi.fn<Client['callTool']>().mockRejectedValue(
+      new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'Gateway unavailable', { status }))
+    const pending = expect(callCiToolResult({ callTool }, 'run_get', {}, { deadline: started + 2500 }))
+      .rejects.toThrow('Timed out')
+    await Promise.all([pending, vi.runAllTimersAsync()])
+    expect(Date.now() - started).toBe(2500)
+    expect(callTool).toHaveBeenCalledTimes(3)
+  })
+
   it.each([SdkErrorCode.RequestTimeout, SdkErrorCode.ConnectionClosed, SdkErrorCode.NotConnected])(
     'recovers a transient %s read without recording a permanent error', async code => {
       const callTool = vi.fn<Client['callTool']>()
