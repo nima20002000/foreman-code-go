@@ -6,6 +6,7 @@ import { DeviceConnectionSupervisor } from './connectionSupervisor.js'
 import { DeviceEndpoint } from './deviceEndpoint.js'
 import { adaptDeviceSocket } from './deviceWire.js'
 import { signMainIdentityProof } from './mainIdentity.js'
+import { ciDatabasePriority, withCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -90,7 +91,7 @@ async function fixture() {
 
 afterEach(() => vi.useRealTimers())
 
-it('answers heartbeats while a single authorization read stalls and denies unvalidated application work', async () => {
+it('answers heartbeats and keeps serving a recently authorized link while its authorization read stalls', async () => {
   const f = await fixture()
   const read = deferred()
   f.setValidation(() => read.promise)
@@ -102,28 +103,33 @@ it('answers heartbeats while a single authorization read stalls and denies unval
     expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
     expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong')).toHaveLength(3)
     expect(f.revalidate).toHaveBeenCalledTimes(1)
-    expect(f.handle).not.toHaveBeenCalled()
-    for (const result of await Promise.all(requests)) expect(result).toMatchObject({ retryable: true })
+    expect(await Promise.all(requests)).toEqual(Array.from({ length: 8 }, (_, index) => ({ payload: { index } })))
+    await vi.advanceTimersByTimeAsync(120_000)
+    const stale = f.worker.request('test-echo', { stale: true }).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await expect(stale).resolves.toMatchObject({ retryable: true })
+    expect(f.handle).toHaveBeenCalledTimes(8)
     read.resolve()
     await vi.advanceTimersByTimeAsync(0)
     await expect(f.worker.request('test-echo', { recovered: true })).resolves.toEqual({ payload: { recovered: true } })
-    expect(f.handle).toHaveBeenCalledOnce()
+    expect(f.handle).toHaveBeenCalledTimes(9)
   } finally {
     read.resolve()
     await f.close()
   }
 })
 
-it('returns an authorization database failure to the request without closing the authenticated link', async () => {
+it('serves a recently authorized link through an authorization database failure and refuses work only once that authorization is stale', async () => {
   const f = await fixture()
-  const read = deferred()
-  f.setValidation(() => read.promise)
+  f.setValidation(async () => { throw new Error('Query read timeout') })
   try {
-    const request = f.worker.request('test-echo', { denied: true }).catch((error: unknown) => error)
-    await vi.advanceTimersByTimeAsync(0)
-    read.reject(new Error('Query read timeout'))
-    await expect(request).resolves.toMatchObject({ code: 'unavailable', retryable: true })
-    expect(f.handle).not.toHaveBeenCalled()
+    await expect(f.worker.request('test-echo', { during: true })).resolves.toEqual({ payload: { during: true } })
+    await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { main: true }))
+      .resolves.toEqual({ payload: { main: true } })
+    await vi.advanceTimersByTimeAsync(125_000)
+    expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
+    await expect(f.worker.request('test-echo', { stale: true })).rejects.toMatchObject({ code: 'unavailable', retryable: true })
+    expect(f.handle).toHaveBeenCalledOnce()
     expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
     f.setValidation(async () => {})
     await expect(f.worker.request('test-echo', { recovered: true })).resolves.toEqual({ payload: { recovered: true } })
@@ -131,7 +137,7 @@ it('returns an authorization database failure to the request without closing the
   } finally { await f.close() }
 })
 
-it('rejects a response whose authorization read fails without discarding the link', async () => {
+it('delivers a Worker response on a recently authorized link while the authorization read fails', async () => {
   const f = await fixture()
   f.workerHandle.mockImplementation(async payload => {
     f.setValidation(async () => { throw new Error('Query read timeout') })
@@ -139,9 +145,37 @@ it('rejects a response whose authorization read fails without discarding the lin
   })
   try {
     await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { value: true }))
-      .rejects.toMatchObject({ code: 'unavailable', retryable: true })
+      .resolves.toEqual({ payload: { value: true } })
     expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
     expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
+  } finally { await f.close() }
+})
+
+it('authorizes a request made by CI dispatch without the CI dispatch database connections', async () => {
+  const f = await fixture()
+  try {
+    f.setValidation(async () => { throw new Error('Query read timeout') })
+    await vi.advanceTimersByTimeAsync(125_000)
+    // The CI dispatch connections are exhausted: a read that borrows them times out.
+    f.setValidation(async () => {
+      if (ciDatabasePriority()) throw new Error('timeout exceeded when trying to connect')
+    })
+    await expect(withCiDatabasePriority(() => f.endpoint.request(f.identity.deviceId, 'test-echo', { ci: true })))
+      .resolves.toEqual({ payload: { ci: true } })
+    await expect(withCiDatabasePriority(() => f.worker.request('test-echo', { status: true })))
+      .resolves.toEqual({ payload: { status: true } })
+  } finally { await f.close() }
+})
+
+it('closes a recently authorized link at once when the device is revoked', async () => {
+  const f = await fixture()
+  try {
+    f.endpoint.revoke(f.identity.deviceId, f.identity.authorizationRevision)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.endpoint.currentBinding(f.identity.deviceId)).toBeUndefined()
+    await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { revoked: true })).rejects.toBeDefined()
+    expect(f.worker.status()).toMatchObject({ phase: 'blocked', failure: 'revoked', generation: 1 })
+    expect(f.workerHandle).not.toHaveBeenCalled()
   } finally { await f.close() }
 })
 
