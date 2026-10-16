@@ -514,13 +514,13 @@ describe('physical readout retention never wedges an operation',()=>{
     } finally { await f.sqlConnection.close() }
   })
 })
-it('cannot retain an expired original application lease or use prefetched proof beyond its signed expiry in SQL',async()=>{
+it('rejects an expired application lease but keeps prefetched proof during Main processing',async()=>{
   const f=await physicalFixture(),readouts=new InstalledWorkflowPhysicalReadouts()
   expect(()=>readouts.remember({readout:f.readout,placement:f.placement,source:f.source,leaseExpiresAt:'2020-01-01T00:00:00.000Z',
     assertOwnerCurrent:async()=>{},assertCurrent:async()=>{},observe:()=>f.captured.launch,closure:()=>null})).toThrow('unavailable')
   const original=await f.bind()
   vi.spyOn(Date,'now').mockReturnValue(Date.parse(f.readout.expiresAt)+1)
-  await expect(f.sqlConnection.transaction(sql=>f.producer.assertOriginal(sql,f.owner,original))).rejects.toMatchObject({code:'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'})
+  await expect(f.sqlConnection.transaction(sql=>f.producer.assertOriginal(sql,f.owner,original))).resolves.toBeUndefined()
   expect(f.request).toHaveBeenCalledOnce()
   await f.sqlConnection.close()
 })
