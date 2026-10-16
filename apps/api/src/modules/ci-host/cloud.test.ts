@@ -247,7 +247,7 @@ describe('GitHub Actions CI on a public mirror', () => {
   })
 
   it.each(['unit', 'integration'] as const)('declines oversized fragmented %s selections without retaining a start', async suite => {
-    const candidates = Array.from({ length: 400 }, (_, index) =>
+    const candidates = Array.from({ length: 600 }, (_, index) =>
       `apps/api/test/fragment${String(index).padStart(3, '0')}.${suite === 'integration' ? 'integration.' : ''}test.ts`)
     const f = await fixture(Object.fromEntries(candidates.map(file => [file, ''])), { provider: 'circleci' })
     const runId = randomUUID()
@@ -264,6 +264,22 @@ describe('GitHub Actions CI on a public mirror', () => {
     const inventory = f.run('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort()
       .filter(file => suite === 'unit' || file.endsWith('.integration.test.ts'))
     expect(selectByIndexes(inventory, input.slice(input.indexOf('=') + 1))).toEqual(files.slice(0, 1))
+  })
+
+  it.each(['unit', 'integration'] as const)('starts a sparse %s selection on CircleCI that is too long to list index by index', async suite => {
+    const candidates = Array.from({ length: 3000 }, (_, index) =>
+      `apps/api/test/spread${String(index).padStart(4, '0')}.${suite === 'integration' ? 'integration.' : ''}test.ts`)
+    const f = await fixture(Object.fromEntries(candidates.map(file => [file, ''])), { provider: 'circleci' })
+    const files = candidates.filter((_, index) => index % 20 === 7 || index % 400 < 3)
+    expect(files.length).toBeGreaterThan(150)
+    await expect(f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(),
+      repository: 'octo/site', commit: f.commit, suite, scope: 'affected', files })).resolves.toMatchObject({ run: { state: 'running' } })
+    expect(f.circle.triggered).toHaveLength(1)
+    const input = f.circle.triggered[0]!.find(value => value.startsWith(suite === 'unit' ? 'files=' : 'slice='))!
+    expect(input.length).toBeLessThanOrEqual(500)
+    const inventory = f.run('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort()
+      .filter(file => suite === 'unit' || file.endsWith('.integration.test.ts'))
+    expect(selectByIndexes(inventory, input.slice(input.indexOf('=') + 1))).toEqual(files)
   })
 
   it.each([

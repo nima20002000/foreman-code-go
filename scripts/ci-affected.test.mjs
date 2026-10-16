@@ -84,6 +84,14 @@ test('lint checks changed files and typecheck checks packages reached by imports
     [process.execPath, '--test', 'scripts/tool.test.mjs']])
   assert.deepEqual(selectByIndexes(['a', 'b', 'c'], 's:0,2'), ['a', 'c'])
   assert.throws(() => selectByIndexes(['a', 'b', 'c'], '-1'), /Invalid/)
+  const names = Array.from({ length: 100 }, (_, index) => `f${index}`)
+  assert.deepEqual(selectByIndexes(names, 'd:0'), ['f0'])
+  assert.deepEqual(selectByIndexes(names, 'd:0.2,1,a.1,1'), ['f0', 'f1', 'f2', 'f4', 'f15', 'f16', 'f18'])
+  assert.deepEqual(selectByIndexes(names, `d:${(99).toString(36)}`), ['f99'])
+  assert.deepEqual(selectByIndexes(names, 'd:'), [])
+  for (const bad of ['d:-1', 'd:A', 'd:1.', 'd:.1', 'd:1.2.3', `d:${(100).toString(36)}`, 'd:0.2s', 'd:50,1z']) {
+    assert.throws(() => selectByIndexes(names, bad), /Invalid/, bad)
+  }
 })
 
 test('runs affected commands without leaking dispatch selections into nested commands', t => {
