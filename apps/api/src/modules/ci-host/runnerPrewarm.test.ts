@@ -122,7 +122,7 @@ it.each(['fetch', 'checkout'] as const)('reaps a stalled warmup %s before starti
       if (processId === undefined) continue
       try { process.kill(processId, 'SIGKILL') }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+        expect((error as NodeJS.ErrnoException).code).toBe('ESRCH')
       }
     }
     await Promise.all([warmup, real])
