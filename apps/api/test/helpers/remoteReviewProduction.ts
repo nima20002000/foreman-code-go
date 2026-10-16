@@ -265,7 +265,7 @@ export async function remoteReviewProduction(options: {
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown; tool?: unknown;
       phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined;
-      role?: 'Main' | 'Worker'; message?: string | undefined; time?: unknown }> = []
+      role?: 'Main' | 'Worker'; message?: string | undefined; reason?: string | undefined; time?: unknown }> = []
     let failuresSeen = 0
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
@@ -311,7 +311,7 @@ export async function remoteReviewProduction(options: {
           }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
             namespace?: unknown; tool?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
-            phase?: unknown; errorType?: unknown; errorLocation?: unknown }
+            phase?: unknown; errorType?: unknown; errorLocation?: unknown; reason?: unknown }
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
             ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
@@ -323,7 +323,8 @@ export async function remoteReviewProduction(options: {
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
           failuresSeen += 1
-          failures.push({ role, message: typeof event.msg === 'string' ? event.msg.slice(0, 160) : undefined,
+          failures.push({ role, reason: typeof event.reason === 'string' && /^[a-z][a-z0-9_]{1,64}$/.test(event.reason)
+            ? event.reason : undefined, message: typeof event.msg === 'string' ? event.msg.slice(0, 160) : undefined,
             time: (parsed as { time?: unknown }).time, code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
             errorDetail, tool: typeof event.tool === 'string' ? event.tool : undefined,
             namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
