@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { fixture } from './cloud.testSupport.js'
+import { confirmCancellation, fixture } from './cloud.testSupport.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -24,9 +24,15 @@ it.each(['github', 'circleci'] as const)('reads a %s ticket canceled before its 
   const runId = randomUUID()
   await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
     repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
-  await f.cloud.handle({ operation: 'cancel', runId })
+  const activeState = provider === 'github' ? 'starting' : 'running'
+  expect(await f.cloud.handle({ operation: 'cancel', runId }))
+    .toMatchObject({ run: { state: activeState, logBytes: 0 } })
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+    .toMatchObject({ run: { state: activeState, logBytes: 0 }, text: '', nextOffset: 0 })
+  expect(await confirmCancellation(f, runId)).toMatchObject({ run: { state: 'canceled' } })
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
     .toMatchObject({ run: { state: 'canceled', logBytes: 0 }, text: '', nextOffset: 0 })
+  expect(provider === 'github' ? f.github.canceled : f.circle.canceled).toHaveLength(1)
 })
 
 it.each(['github', 'circleci'] as const)('reports pending %s collection when its first log is unavailable', async provider => {

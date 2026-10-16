@@ -24,7 +24,15 @@ it('refreshes a torn activity read using the same public request', async () => {
   expect(await callCiTool({ callTool }, 'run_get', { workspaceId: 'workspace', runId: 'run' }))
     .toEqual({ run: { id: 'run' } })
   expect(callTool).toHaveBeenCalledTimes(2)
-  expect(callTool.mock.calls[0]).toEqual(callTool.mock.calls[1])
+  expect(callTool.mock.calls[0]?.[0]).toEqual({ name: 'run_get',
+    arguments: { workspaceId: 'workspace', runId: 'run' } })
+  expect(callTool.mock.calls[0]?.[0]).toEqual(callTool.mock.calls[1]?.[0])
+  const signals = callTool.mock.calls.map(([, options]) => {
+    expect(options).toMatchObject({ timeout: 180_000, signal: expect.any(AbortSignal) })
+    expect(options.signal.aborted).toBe(false)
+    return options.signal
+  })
+  expect(signals[0]).not.toBe(signals[1])
 })
 
 it('does not retry a mutation or an unrelated read failure', async () => {

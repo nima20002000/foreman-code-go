@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { fixture } from './cloud.testSupport.js'
+import { confirmCancellation, fixture } from './cloud.testSupport.js'
 
 function expectMirrorDispatch(provider: 'github' | 'circleci', command: string[] | undefined) {
   const option = provider === 'github' ? '-R' : '--project'
@@ -34,11 +34,18 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   await expect.poll(refs, { timeout: 5_000 }).not.toContain(`refs/heads/${stale}`)
   await expect.poll(refs, { timeout: 5_000 }).not.toContain('refs/heads/ci/retired-run')
   expect(refs()).toContain('refs/heads/feature/keep')
-  await f.cloud.handle({ operation: 'cancel', runId: first })
+  f.github.listed = [first, second].map((runId, index) => ({ databaseId: index + 8, displayTitle: `ci ${runId}` }))
+  expect(await f.cloud.handle({ operation: 'cancel', runId: first }))
+    .toMatchObject({ run: { state: activeState } })
+  expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
+  expect(await confirmCancellation(f, first)).toMatchObject({ run: { state: 'canceled' } })
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
   f.advance(5 * 60_000)
-  await f.reopen().handle({ operation: 'cancel', runId: second })
+  expect(await confirmCancellation(f, second)).toMatchObject({ run: { state: 'canceled' } })
   await expect.poll(refs, { timeout: 5_000 }).not.toContain(`refs/heads/ci/${f.commit}`)
+  expect(refs()).toContain('refs/heads/feature/keep')
+  f.circle.runView = null
+  Object.assign(f.github, { status: 'in_progress', conclusion: '' })
   await f.reopen().handle({ ...request, runId: randomUUID() })
   expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1))
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
@@ -127,7 +134,11 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
   expect(await f.cloud.handle({ operation: 'cancel', runId: first }))
+    .toMatchObject({ operation: 'cancel', run: { state: activeState } })
+  expect(await confirmCancellation(f, first))
     .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
+  f.circle.runView = null
+  Object.assign(f.github, { status: 'in_progress', conclusion: '' })
   const reopened = f.reopen()
   expect(await reopened.handle({ ...request, runId: second }))
     .toMatchObject({ operation: 'start', run: { state: activeState, provenance: { sourceCommit: f.commit } } })

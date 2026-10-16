@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type pg from 'pg'
+import pg from 'pg'
 import { CiHostRequestSchema, CiRunRecordSchema, type CiDurations, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import { afterEach, expect, it, vi } from 'vitest'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
@@ -8,6 +8,8 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { planIntegrationParts } from './integrationParts.js'
+import { readExecutorSpeeds } from './executorSpeed.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 function deferred() {
   let resolve!: () => void
@@ -105,16 +107,16 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
           slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation === 'read') {
-        const record = records.find(run => run.id === request.runId)!
+        const record = records.find(run => ciExecutionRunId(run) === request.runId)!
         return { operation: 'read', text: '', nextOffset: 0,
-          run: { runId: record.id, state: record.state, step: record.step,
+          run: { runId: request.runId, state: record.state, step: record.step,
             startedAt: record.startedAt ?? record.queuedAt, finishedAt: record.finishedAt,
             exitCode: record.exitCode, message: record.message, logBytes: 0 } }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
       if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
       if (occupied.has(computer.key)) throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
-      const assigned = CiRunRecordSchema.parse(records.find(record => record.id === request.runId))
+      const assigned = CiRunRecordSchema.parse(records.find(record => ciExecutionRunId(record) === request.runId))
       started.push({ computer, request, assigned })
       return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'integration',
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
@@ -130,6 +132,24 @@ const secondHost: HostCiComputer = {
   key: 'device:builder', hostRef: { kind: 'device', mainId: 'main', deviceId: 'builder' },
   label: 'Second builder', priority: -1,
 }
+
+it('uses persisted jsonb host references to measure each build computer independently', async () => {
+  const file = 'apps/api/test/history.integration.test.ts'
+  const rows = [host, secondHost].map((computer, index) => ({
+    record: pg.types.getTypeParser(3802, 'text')(JSON.stringify({ ...queuedRuns(1)[0],
+      gate: true, state: 'passed', files: [file],
+      computer: { hostRef: computer.hostRef, label: computer.label },
+      startedAt: '2026-10-12T00:00:00.000Z',
+      finishedAt: new Date(Date.parse('2026-10-12T00:00:00.000Z') + (index + 1) * 200_000).toISOString(),
+    })),
+    durations: { [file]: 400_000 },
+  }))
+  const pool = { query: async () => ({ rows }) } as unknown as pg.Pool
+  const endpoint = { computers: async () => [host, secondHost] } as HostCiEndpoint
+  const speeds = await readExecutorSpeeds(pool, endpoint)
+  expect(speeds.get(host.key)).toMatchObject({ throughput: 2, conservativeThroughput: 2 })
+  expect(speeds.get(secondHost.key)).toMatchObject({ throughput: 1, conservativeThroughput: 1 })
+})
 
 it.each([false, true])('keeps cloud computers out of a workspace without a mirror, gate=%s', async gate => {
   const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build',
@@ -271,7 +291,10 @@ it('moves an expired cloud dispatch to another computer and preserves the lookup
   expect(f.started).toHaveLength(1)
   expect(f.started[0]!.computer.key).toBe(host.key)
   expect(f.started[0]!.assigned).toMatchObject({ unstartedProviders: ['circleci'],
+    executionHistory: [{ runId: records[0]!.id, hostRef: cloud.hostRef }],
     messageHistory: expect.arrayContaining([reason, expect.stringContaining('queued for another computer')]) })
+  expect(f.started[0]!.request).toMatchObject({ runId: records[0]!.executionRunId })
+  expect(records[0]!.executionRunId).not.toBe(records[0]!.id)
   expect(records[0]!.state).toBe('running')
 })
 
