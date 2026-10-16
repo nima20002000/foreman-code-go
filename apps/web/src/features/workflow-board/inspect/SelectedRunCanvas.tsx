@@ -263,8 +263,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     cis, waits, checks, checking, executionQueue, live])
   const { canvasNodes, presentedNodes, onNodesChange, beginResize, resize, finishResize } =
     useRunCanvasGeometry({ nodes, layout, version, geometry })
-  const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,
-    () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)), [ciSummary, canvasNodes, ciDialogKey])
+  const ciServerNode = useMemo(() => canvasNodes.length ? ciServerFlowNode(canvasNodes, ciSummary,
+    () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)) : undefined, [ciSummary, canvasNodes, ciDialogKey])
   const flowNodes = useMemo(() => ciServerNode ? [...canvasNodes, ciServerNode] : canvasNodes, [canvasNodes, ciServerNode])
   const edges = useMemo<RunEdge[]>(() => {
     const counts = new Map<string, number>()
@@ -311,7 +311,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
         <Background color="var(--border)" gap={24} size={1} />
       </ReactFlow></Choreography.Provider></RunAgentPanels.Provider></ReactFlowProvider>
     </div> : null}
-    <CiServerDialog open={ciDialogOpen} onOpenChange={setCiDialogOpen} scope={scope} jobs={ciRunJobs ?? []} names={names}
+    <CiServerDialog open={ciDialogOpen} onOpenChange={setCiDialogOpen} scope={scope} workflow={{ workspaceId: scope.workspaceId, workflowId: scope.workflowId }} jobs={ciRunJobs ?? []} names={names}
       truncated={!ciDenied && (ciList.data?.truncated ?? false)} error={Boolean(ciDenied || ciList.isError)} loading={ciList.isPending} />
   </section>
 }

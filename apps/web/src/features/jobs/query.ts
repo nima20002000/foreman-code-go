@@ -1,9 +1,13 @@
+import type { WorkflowJobPage } from '@foreman-code/contracts/job-verification'
+import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { jobsClient } from './client'
 import { useBlockingReadError } from '../../shared/api/readFailure'
 import { jobAccessLost, jobReadRetry, loadedChunks } from './model'
 
 export const jobKeys = {
+  workflowHistory: (workspaceId: string, workflowId: string) => ['jobs', workspaceId, 'workflow', workflowId] as const,
+  workflowQueue: (workspaceId: string, workflowId: string) => ['jobs', workspaceId, 'workflow-queue', workflowId] as const,
   definitions: (workspaceId: string) => ['jobs', workspaceId, 'definitions'] as const,
   execution: (workspaceId: string, id: string) => ['jobs', workspaceId, 'execution', id] as const,
   logs: (workspaceId: string, id: string, attemptId: string) => ['jobs', workspaceId, 'logs', id, attemptId] as const,
@@ -36,3 +40,38 @@ export function useJobArtifacts(workspaceId: string, id: string, enabled: boolea
   return { ...query, data: !enabled || blocked ? undefined : query.data }
 }
 
+export function useWorkflowJobHistory(workspaceId: string, workflowId: string, enabled: boolean) {
+  const query = useInfiniteQuery({
+    queryKey: jobKeys.workflowHistory(workspaceId, workflowId),
+    initialPageParam: undefined as NonNullable<WorkflowJobPage['nextCursor']> | undefined,
+    queryFn: ({ signal, pageParam }) => jobsClient.workflowHistory(workspaceId, workflowId,
+      pageParam ? { cursor: pageParam } : {}, { signal }),
+    getNextPageParam: page => page.nextCursor ?? undefined,
+    enabled, retry: jobReadRetry,
+    refetchInterval: query => enabled && !jobAccessLost(query.state.error) ? 5000 : false,
+  })
+  const items = new Map<string, WorkflowJobPage['items'][number]>()
+  for (const page of query.data?.pages ?? []) {
+    for (const item of page.items) items.set(item.execution.id, item)
+  }
+  return { ...query, items: query.isError ? [] : [...items.values()] }
+}
+
+export function useWorkflowJobQueue(workspaceId: string, workflowId: string, enabled: boolean) {
+  const query = useInfiniteQuery({
+    queryKey: jobKeys.workflowQueue(workspaceId, workflowId),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) => jobsClient.queuePage(workspaceId,
+      { workflowId, historyBeforeSequence: pageParam }, { signal }),
+    getNextPageParam: page => page.nextHistoryCursor ?? undefined,
+    enabled, retry: jobReadRetry,
+    refetchInterval: query => enabled && !jobAccessLost(query.state.error) ? 5000 : false,
+  })
+  const tickets = new Map<string, JobQueueTicket>()
+  for (const page of query.data?.pages ?? []) {
+    for (const ticket of page.tickets) {
+      if (!tickets.has(ticket.id)) tickets.set(ticket.id, ticket)
+    }
+  }
+  return { ...query, tickets: query.isError ? [] : [...tickets.values()] }
+}

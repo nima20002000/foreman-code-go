@@ -75,7 +75,7 @@ describe('CI server activity', () => {
 it('places the CI tower outside every valid authored node identity', () => {
   const graph = fixture().draft.graph
   const owner = { ...graph.nodes[0]!, id: 'ci-server', position: { x: 0, y: 0 } }
-  const tower = ciServerFlowNode([owner], ciServerSummary([]), () => undefined)!
+  const tower = ciServerFlowNode([owner], ciServerSummary([]), () => undefined)
   expect(tower.id).not.toBe(owner.id)
   expect(WorkflowDefinitionV3Schema.safeParse({ ...graph, nodes: [owner], edges: [], entryNodeId: owner.id }).success).toBe(true)
   expect(WorkflowDefinitionV3Schema.safeParse({ ...graph, nodes: [{ ...owner, id: tower.id }], edges: [], entryNodeId: tower.id }).success).toBe(false)
