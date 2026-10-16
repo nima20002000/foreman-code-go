@@ -323,3 +323,18 @@ it('reports the requested ticket from the same read as the group that settled', 
       wait: { status: 'settled', tickets: 2, settledTickets: 2 } })
   } finally { await f.close() }
 })
+
+it.each([{}, { waitUntil: 'group-terminal' as const }])(
+  'returns the collected log with the settled record when collection finishes between %j readbacks', async mode => {
+    const f = fixture()
+    try {
+      const collecting = { ...f.read(), state: 'passed' as const, exitCode: 0, collection: 'pending' as const }
+      f.persist({ state: 'passed', exitCode: 0, collection: 'complete' })
+      f.query.mockResolvedValueOnce({ rows: [{ record: collecting, log_tail: '' }] })
+      f.query.mockResolvedValueOnce({ rows: [{ record: f.read(), log_tail: 'npm run integration\n' }] })
+      const result = await f.ci.get(f.caller, { workspaceId: 'workspace', ticketId: f.read().id, ...mode })
+      expect(result.run).toEqual(f.read())
+      expect(result.logTail).toBe('npm run integration\n')
+      if (mode.waitUntil) expect(result).toMatchObject({ wait: { status: 'settled' } })
+    } finally { await f.close() }
+  })
