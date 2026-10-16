@@ -167,3 +167,71 @@ it('increases backoff across ready attempts rejected by Main and resets after su
     expect(f.connectedAt).toEqual([0, 500, 1500, 62_000])
   } finally { await f.close() }
 })
+
+it('increases backoff when Main repeatedly rejects reconciliation after ninety seconds', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(0)
+  const refusals: Array<() => void> = []
+  const f = fixture(() => new Promise<void>((_resolve, reject) => {
+    refusals.push(() => reject(new Error('Inventory read unavailable')))
+  }))
+  try {
+    f.worker.start()
+    await flush()
+    await vi.advanceTimersByTimeAsync(90_000)
+    refusals[0]!()
+    await flush()
+    expect(f.worker.status().phase).toBe('backoff')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(f.connectedAt).toEqual([0, 90_500])
+    await vi.advanceTimersByTimeAsync(90_000)
+    refusals[1]!()
+    await flush()
+    expect(f.presence.mock.calls.some(([view]) => view.phase === 'ready')).toBe(false)
+    expect(f.worker.status().phase).toBe('backoff')
+    await vi.advanceTimersByTimeAsync(999)
+    expect(f.connectedAt).toEqual([0, 90_500])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.connectedAt).toEqual([0, 90_500, 181_500])
+  } finally {
+    for (const refuse of refusals) refuse()
+    await f.close()
+  }
+})
+
+it('counts healthy time from Main finishing delayed reconciliation', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(0)
+  let release!: () => void
+  const reconciliation = new Promise<void>(resolve => { release = resolve })
+  let attempts = 0
+  const f = fixture(async () => {
+    attempts++
+    if (attempts <= 2) throw new Error('Inventory read unavailable')
+    await reconciliation
+  })
+  try {
+    f.worker.start()
+    await flush()
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(f.connectedAt).toEqual([0, 500, 1500])
+    await vi.advanceTimersByTimeAsync(90_000)
+    release()
+    await flush()
+    expect(f.presence.mock.calls.at(-1)?.[0].phase).toBe('ready')
+    await vi.advanceTimersByTimeAsync(59_999)
+    f.sockets.at(-1)!.close()
+    await flush()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(f.connectedAt).toHaveLength(3)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.connectedAt).toEqual([0, 500, 1500, 153_499])
+    await vi.advanceTimersByTimeAsync(60_000)
+    f.sockets.at(-1)!.close()
+    await flush()
+    await vi.advanceTimersByTimeAsync(499)
+    expect(f.connectedAt).toHaveLength(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.connectedAt).toEqual([0, 500, 1500, 153_499, 213_999])
+  } finally { release(); await f.close() }
+})
