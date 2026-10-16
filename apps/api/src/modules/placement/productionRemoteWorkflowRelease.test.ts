@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import type { WorkflowNativeCapture, WorkflowNativeCaptureInput } from '../interactions/workflowNativeCapture.js'
 import type { CapturedReviewNativeSource } from '../interactions/reviewNativeCapture.js'
 import type { remoteNativeManager } from './workerCarrier.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -91,6 +92,10 @@ it('releases real execution bindings after cold closure is committed and acknowl
     expect(f.state.receipt).toEqual(f.readout.receipt)
     expect(f.composition.binding(f.execution.id)).toBeUndefined()
     expect(f.composition.isRemote(f.execution.id)).toBe(false)
+    await f.composition.prepare(f.execution.id)
+    expect(() => f.composition.capture({ owner: f.owner } as WorkflowNativeCaptureInput, {
+      execution: f.execution, source: { type: 'history', history: f.readout.history! }, closureGeneration: '1',
+    } as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
   } finally { await f.sqlConnection.close() }
 })
 
@@ -136,6 +141,10 @@ it.each([false, true])('releases real reviewer source maps only after closed lif
       expect(f.composition.binding(f.execution.id)).toBeUndefined()
       await expect(f.sqlConnection.transaction(sql => f.composition.assertReviewPhysical(sql, capture)))
         .rejects.toMatchObject({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' })
+      await f.composition.prepare(f.execution.id)
+      expect(() => f.composition.capture({ owner: f.owner } as WorkflowNativeCaptureInput, {
+        execution: f.execution, source: { type: 'history', history }, closureGeneration: '1',
+      } as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
     } else {
       expect(f.composition.isRemote(f.execution.id)).toBe(true)
       expect(f.composition.getRemoteNativeOwners()).toEqual([])
