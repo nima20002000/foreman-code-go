@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.101] - 2026-10-16
+
+Multi-computer reliability round: the cross-computer CI scenario (Agents on Main and two laptops, two repositories, Foreman CI on every computer) passes end to end.
+- Remote execution: retained reviewer authority, signal-scoped caches, output persistence and cancellation fixes; Worker update handoff recovery; device link reconnect and readiness fixes.
+- CI: cloud cancellation waits for provider confirmation; fresh execution attempts keep their history; unsupported affected selection fails loudly (CI_SELECTION_UNSUPPORTED); executor speed lookup uses an index; Git credential prompts are reported as sign-in failures.
+- Engine and history: execution authority reads cut from 62 to 10 queries; native history retention gap and oversized event paging fixed; stop and classification fixes.
+- API load: cached MCP catalog with per-request grant checks; batched systemd unit-state queries; cached Syncthing probe.
+- Scenario Agents use gpt-6.1-sol.
+
 ## [0.0.100] - 2026-10-14
 
 Agent loops: an Agent node in a workflow can loop (re-activate) on an interval while its Run is active and stops when the Run ends; "Interval checks" are now called Loops everywhere, and each loop can carry its own prompt (node.interval.prompt) in the UI and through Operator MCP. Workflow schedules, which start Runs, stay separate.
