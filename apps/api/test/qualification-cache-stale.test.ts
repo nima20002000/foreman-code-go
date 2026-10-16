@@ -19,16 +19,29 @@ describe('qualification cache stale-while-revalidate', () => {
     expect(await cache.get('codex', load)).toBe('second')
   })
 
-  it('reports a failed refresh instead of the old success', async () => {
+  it('keeps serving the last success after a failed refresh and retries it soon', async () => {
+    let now = 0
+    const cache = new QualificationCache<string>(300_000, 8, () => now, true)
+    await cache.get('codex', async () => 'first')
+    now = 400_000
+    const refresh = rejectableDeferred<string>()
+    expect(await cache.get('codex', () => refresh.promise)).toBe('first')
+    refresh.reject(new Error('timed out'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(await cache.get('codex', async () => 'unused')).toBe('first')
+    expect(cache.observation('codex')).toMatchObject({ failureCount: 1, lastError: expect.any(String) })
+    now += 16_000
+    expect(await cache.get('codex', async () => 'second')).toBe('first')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(await cache.get('codex', async () => 'unused')).toBe('second')
+  })
+
+  it('reports a failed forced refresh instead of the old success', async () => {
     let now = 0
     const cache = new QualificationCache<string>(1_000, 8, () => now, true)
     await cache.get('codex', async () => 'first')
     now = 2_000
-    const refresh = rejectableDeferred<string>()
-    expect(await cache.get('codex', () => refresh.promise)).toBe('first')
-    refresh.reject(new Error('signed out'))
-    await new Promise(resolve => setTimeout(resolve, 0))
-    await expect(cache.get('codex', async () => 'unused')).rejects.toThrow('signed out')
+    await expect(cache.get('codex', async () => { throw new Error('signed out') }, { refresh: true })).rejects.toThrow('signed out')
   })
 
   it('never serves a stale value after invalidation or without the option', async () => {
