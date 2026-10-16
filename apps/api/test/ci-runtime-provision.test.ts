@@ -9,7 +9,7 @@ import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
 import { createSourceManifest } from '../src/modules/sources/manifest.js'
-import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
+import { ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
 import { describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
 import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparationProfile, builder, oldImage, newImage, commit, newPin,
@@ -426,6 +426,37 @@ it('cancels pending computer Git acquisition when the preparation fixture closes
   }
 })
 
+it.each([
+  ['fatal: could not read Username for https://github.com', 'COMPUTER_GITHUB_REQUIRED', 'Sign in to GitHub'],
+  ["fatal: could not read Username for 'https://github.com': No such device or address",
+    'COMPUTER_GITHUB_REQUIRED', 'Sign in to GitHub'],
+  ["fatal: could not read Password for 'https://example@github.com': No such device or address",
+    'COMPUTER_GITHUB_REQUIRED', 'Sign in to GitHub'],
+  ["fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    'COMPUTER_GITHUB_REQUIRED', 'Sign in to GitHub'],
+  ['fatal: Could not resolve host: github.com', 'SOURCE_GITHUB_UNAVAILABLE', 'DNS lookup failed'],
+  ['fatal: Recv failure: Connection reset by peer', 'SOURCE_GITHUB_UNAVAILABLE', 'connection failed'],
+  ['fatal: The requested URL returned error: 503', 'SOURCE_GITHUB_UNAVAILABLE', 'temporarily unavailable'],
+] as const)('classifies Git acquisition failure without exposing stderr: %s', async (stderr, code, message) => {
+  const directory = await privateFixtureDirectory('ci-git-failure-')
+  try {
+    const ports: GitWorktreePorts = {
+      cloneDirectory: () => join(directory, 'clone'),
+      git: async () => ({ code: 128, stdout: '', stderr: `${stderr}\ncredential-helper-secret` }),
+    }
+    const failure = await ensureCommit(ports, 'example/project', commit, new AbortController().signal)
+      .catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code, message: expect.stringContaining(message) })
+    expect((failure as Error).message).not.toContain('credential-helper-secret')
+    if (code === 'SOURCE_GITHUB_UNAVAILABLE') {
+      expect(failure).toMatchObject({ details: { retryable: true, newCommandRequired: false } })
+      expect((failure as Error).message).not.toContain('Sign in')
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 it.each(['unpublished Agent commit', 'published commit', 'computer without GitHub', 'Main without push access'] as const)(
   'prepares a build computer from GitHub only, through authenticated MCP: %s', async scenario => {
     const directory = await privateFixtureDirectory('ci-github-')
@@ -474,12 +505,12 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
       const settled = await f.settle('p-unit')
       expect(f.calls.publish).toEqual([{ repository: 'octo/site', commit: acceptedCommit }])
       if (scenario === 'computer without GitHub') {
-        expect(settled).toMatchObject({ state: 'failed', message: expect.stringContaining('Connect GitHub on this computer') })
+        expect(settled).toMatchObject({ state: 'failed', message: expect.stringContaining('Sign in to GitHub on this computer') })
         const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
           profileId: 'p-unit' }, 'reader')
         expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(settled)
         expect(await f.workerState()).toMatchObject({ state: 'failed', commit: acceptedCommit,
-          message: expect.stringContaining('Connect GitHub on this computer') })
+          message: expect.stringContaining('Sign in to GitHub on this computer') })
         expect(f.profiles.get('p-unit')).toEqual(originalProfile)
         expect(f.calls.prepare).toEqual([])
         expect(f.calls.bind).toEqual([])

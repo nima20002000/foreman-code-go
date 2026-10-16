@@ -116,7 +116,11 @@ if (args[1] === 'db:up') {
         starts.get(script)!.resolve()
         return { code: 0, stdout: '', stderr: '' }
       }
-      if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
+      if (file === 'systemctl') {
+        const stdout = args.filter(arg => arg.endsWith('.service'))
+          .map(unit => `Id=${unit}\nLoadState=loaded\nActiveState=active\n`).join('\n')
+        return { code: 0, stdout, stderr: '' }
+      }
       return system.run(file, args, options)
     } }
   const runner = new HostCiRunner(join(root, 'runner'), ports, { ...environment, PATH: `${bin}:${process.env.PATH}` })

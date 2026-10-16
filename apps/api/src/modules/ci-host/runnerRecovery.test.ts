@@ -41,7 +41,11 @@ async function fixture() {
         if (control.stopCode === 0) control.state = 'inactive'
         return { code: control.stopCode, stdout: '', stderr: control.stopCode ? 'Manager unavailable' : '' }
       }
-      if (file === 'systemctl') return { code: control.code, stdout: control.state, stderr: '' }
+      if (file === 'systemctl') {
+        const stdout = args.filter(arg => arg.endsWith('.service'))
+          .map(unit => `Id=${unit}\nLoadState=loaded\nActiveState=${control.state}\n`).join('\n')
+        return { code: control.code, stdout, stderr: '' }
+      }
       return { code: 0, stdout: '', stderr: '' }
     },
   }

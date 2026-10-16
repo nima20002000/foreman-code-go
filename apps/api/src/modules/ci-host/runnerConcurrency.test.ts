@@ -82,7 +82,11 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
       if (file === 'systemctl') {
         const unit = args.at(-1)!.replace('.service', '')
         if (args.includes('stop')) activeUnits.delete(unit)
-        return { code: 0, stdout: activeUnits.has(unit) ? 'active\n' : 'inactive\n', stderr: '' }
+        const stdout = args.filter(arg => arg.endsWith('.service')).map(service => {
+          const state = activeUnits.has(service.replace('.service', '')) ? 'active' : 'inactive'
+          return `Id=${service}\nLoadState=loaded\nActiveState=${state}\n`
+        }).join('\n')
+        return { code: 0, stdout, stderr: '' }
       }
       return { code: 0, stdout: '', stderr: '' }
     } }

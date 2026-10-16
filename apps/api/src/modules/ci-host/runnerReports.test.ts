@@ -53,7 +53,9 @@ async function fixture(suite: 'unit' | 'integration', options: {
         launches++
         await options.beforeLaunch?.()
       }
-      return { code: 0, stdout: file === 'systemctl' ? 'active\n' : '', stderr: '' }
+      const stdout = file === 'systemctl' ? args.filter(arg => arg.endsWith('.service'))
+        .map(unit => `Id=${unit}\nLoadState=loaded\nActiveState=active\n`).join('\n') : ''
+      return { code: 0, stdout, stderr: '' }
     } }
   const runner = new HostCiRunner(root, ports, {})
   runners.push(runner)
