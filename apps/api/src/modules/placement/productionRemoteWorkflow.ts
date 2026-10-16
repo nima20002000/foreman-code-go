@@ -377,6 +377,20 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
     && !status.receipt.terminal) {
     const native = remoteActiveNative(status.receipt)
     if (native) {
+      const receipt = status.receipt
+      const reconciled = await VerifiedRemoteEvidence.commit(receipt, authenticated,
+        new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
+          async assertCurrent(sql, intent, placement, connection) {
+            signal.throwIfAborted()
+            await authority(sql, { intent, placement }, connection, 'stop')
+            await assertRemoteReviewerReceipt(sql, receipt)
+          },
+          async publishNative() {
+            signal.throwIfAborted()
+          },
+        }))
+      if (reconciled === 'rejected') throw new DomainError('REMOTE_CLOSURE_RECEIPT_REJECTED',
+        'The remote cleanup status was rejected by its canonical owner.', 409)
       const command = await owner.oneShotConnection().transaction(async sql => {
         await authority(sql, binding, authenticated, 'stop')
         return admitRemoteOwnerControl(sql, owner, binding, { kind: 'stop', native })

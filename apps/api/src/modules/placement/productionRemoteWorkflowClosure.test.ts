@@ -113,6 +113,65 @@ function runningFixture() {
   return f
 }
 
+it.each(['initial turn', 'retried turn'] as const)(
+  'reconciles a Worker acknowledgement missing from Main before stopping its %s', async turn => {
+    const f = runningFixture()
+    if (turn === 'retried turn') {
+      f.state.stored!.native!.turnId = 'previous-turn'
+      f.receipt.nativeTurnRetries = [{ previousTurnId: 'previous-turn', turnId: 'worker-turn' }]
+    }
+    f.receipt.native!.turnId = 'worker-turn'
+    f.receipt.turnEntryAttempted = true
+    f.receipt.sequence++
+    const acknowledged = structuredClone(f.receipt)
+    f.request.mockImplementation(async payload => {
+      if ((payload as { method: string }).method === 'control') {
+        expect(f.state.stored).toEqual(acknowledged)
+        f.receipt.phase = 'confirmed_terminal'
+        f.receipt.stopFence = true
+        f.receipt.sequence++
+        f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'd'.repeat(64) }
+      }
+      return { payload: { status: 'known', receipt: structuredClone(f.receipt) } }
+    })
+    try {
+      await expect(f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner))
+        .resolves.toBe(true)
+      expect(f.request.mock.calls.map(call => (call[0] as { method: string }).method)).toEqual(['status', 'control'])
+      expect(f.request.mock.calls[1]![0]).toMatchObject({ command: {
+        operationId: acknowledged.intent.operationId, attemptId: acknowledged.intent.attemptId,
+        owner: acknowledged.intent.owner, native: acknowledged.native, action: { kind: 'stop' },
+      } })
+      expect(ports.persist.mock.calls.map(call => call[2].receipt)).toEqual([acknowledged, f.receipt])
+      expect(f.state.stored).toEqual(f.receipt)
+      expect(ports.closed).toHaveBeenCalled()
+    } finally { await f.close() }
+  },
+)
+
+it.each(['owner', 'device', 'process'] as const)(
+  'does not reconcile a newer turn from a different %s before cold Stop', async changed => {
+    const f = runningFixture()
+    const saved = structuredClone(f.state.stored)
+    f.receipt.native!.turnId = 'worker-turn'
+    f.receipt.turnEntryAttempted = true
+    f.receipt.sequence++
+    if (changed === 'owner') f.receipt.intent = { ...f.receipt.intent, owner: { grantId: 'different-owner', epoch: '2' } }
+    if (changed === 'device') f.receipt.connection = { ...f.receipt.connection,
+      deviceId: '77777777-7777-4777-8777-777777777777' }
+    if (changed === 'process') f.receipt.native!.processIdentityDigest = 'e'.repeat(64)
+    try {
+      const result = await f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner)
+        .catch((error: unknown) => error)
+      if (changed === 'owner') expect(result).toBe(false)
+      else expect(result).toBeInstanceOf(DomainError)
+      expect(f.request).toHaveBeenCalledTimes(1)
+      expect(f.state.stored).toEqual(saved)
+      expect(ports.persist).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  },
+)
+
 it('sends the same fenced Stop after cold restart until physical closure is confirmed', async () => {
   const f = runningFixture()
   const commands: unknown[] = []
