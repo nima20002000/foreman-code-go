@@ -11,12 +11,13 @@ const SETUP_MS = 90_000
 /** Files measured at or above this run in separate slow-tier parts. */
 export const SLOW_TEST_MS = 60_000
 
-/** Keep systemd files on capable slices, then size ordinary work to four minutes per eligible slot.
+/** Keep systemd files on capable slices and spread full-suite work across eligible slots by measured duration.
  * Slow files have separate parts that can start alongside fast parts. Idle ordinary slots split smaller work
- * while each part still carries at least one setup time of tests. */
+ * in affected selections while each part still carries at least one setup time of tests. */
 export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots,
   idleOrdinary = 0) {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
+  const full = input.scope === 'full'
   const files = [...new Set(affected ? input.files : inventory.files)].sort()
   if (!files.length) return [{ part: null, partition: null, files: [], expectedDurationMs: 0, requiresBuildComputer: false }]
   const measured = files.map(file => inventory.durations[file]).filter((ms): ms is number => ms !== undefined)
@@ -38,10 +39,27 @@ export function planIntegrationParts(input: CiRunInput, inventory: CiIntegration
     const hostCount = hostFiles.length ? Math.min(hostFiles.length, Math.max(1, slots.host)) : 0
     // Slow files each get their own part when slots allow, so the tier lasts as long as its slowest file.
     const ordinaryCount = ordinary.length ? Math.min(ordinary.length, Math.max(1, slots.ordinary - hostCount),
-      Math.max(1, tier === 'slow' ? ordinary.length : wanted)) : 0
-    const count = Math.min(64, input.partitions ?? 64, hostCount + ordinaryCount)
-    return { tierFiles, tier, hostCount, ordinary, count }
+      Math.max(1, full || tier === 'slow' ? ordinary.length : wanted)) : 0
+    const limit = full ? CI_MAX_RUN_TICKETS : 64
+    const count = Math.min(limit, input.partitions ?? limit, hostCount + ordinaryCount)
+    const workMs = tierFiles.reduce((sum, file) => sum + duration(file), 0)
+    return { tierFiles, tier, hostCount, ordinary, count, workMs }
   })
+  if (full) {
+    const limits = plans.map(plan => plan.count)
+    for (const plan of plans) {
+      plan.count = Math.min(plan.count, Number(plan.hostCount > 0) + Number(plan.ordinary.length > 0))
+    }
+    let assigned = plans.reduce((sum, plan) => sum + plan.count, 0)
+    const budget = Math.min(CI_MAX_RUN_TICKETS, slots.ordinary)
+    while (assigned < budget) {
+      const next = plans.filter((plan, index) => plan.count < limits[index]!)
+        .sort((left, right) => right.workMs / right.count - left.workMs / left.count)[0]
+      if (!next) break
+      next.count++
+      assigned++
+    }
+  }
   let remaining = CI_MAX_RUN_TICKETS
   let wanted = plans.reduce((sum, plan) => sum + plan.count, 0)
   return plans.flatMap(({ tierFiles, tier, hostCount, ordinary, count: requested }) => {
