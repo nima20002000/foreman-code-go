@@ -865,14 +865,24 @@ export class CloudCi {
 
   private indexSpec(files: string[], selected: Set<string>) {
     const indexes = files.flatMap((file, index) => selected.has(file) ? [index] : [])
-    const ranges: string[] = []
+    const ranges: Array<[number, number]> = []
     for (let start = 0; start < indexes.length;) {
       let end = start
       while (end + 1 < indexes.length && indexes[end + 1] === indexes[end]! + 1) end++
-      ranges.push(start === end ? `${indexes[start]}` : `${indexes[start]}-${indexes[end]}`)
+      ranges.push([indexes[start]!, indexes[end]!])
       start = end + 1
     }
-    return `s:${ranges.join(',')}`
+    // Runners of older commits only know "s:", so it stays the form whenever it fits a short parameter.
+    const plain = `s:${ranges.map(([first, last]) => first === last ? `${first}` : `${first}-${last}`).join(',')}`
+    if (plain.length <= 400) return plain
+    // "d:" lists each range as its base-36 gap from the previous range's end, plus ".<length - 1>" for runs
+    // (decoded by selectByIndexes in scripts/ci-files.mjs).
+    let next = 0
+    return `d:${ranges.map(([first, last]) => {
+      const gap = (first - next).toString(36)
+      next = last + 1
+      return last === first ? gap : `${gap}.${(last - first).toString(36)}`
+    }).join(',')}`
   }
 
   /** Refuses to publish files that name this fleet: Main's home path and user, and every Tailscale computer's
