@@ -38,7 +38,8 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
     if (reply.operation === 'status') {
       this.statuses.set(canonicalJson(computer), { at: Date.now(), status: reply })
       this.lastKnown.set(canonicalJson(computer), { at: Date.now(), status: reply })
-    } else if (reply.run.state === 'failed' || reply.run.state === 'lost') {
+    } else if (reply.run.state === 'lost') {
+      // A lost run says the computer itself may be gone; a failed test says nothing about its readiness.
       this.invalidate(computer)
     }
   }
