@@ -83,6 +83,7 @@ export function remoteWorkflowProcessDigest(connection: RemoteOperationReceipt['
 }
 export function matchingOriginalRegistryLaunch(registry: NativeProcessRegistry, launch: NativeLaunchObservation): NativeLaunchObservation {
   const observed = registry.snapshot().launches.find(value => value.launchId === launch.launchId)
+    ?? registry.closedRegistration(launch.owner, launch.launchId)
   if (!observed || observed.owner !== launch.owner || observed.bootId !== launch.bootId
     || !isDeepStrictEqual(observed.guardian, launch.guardian) || !isDeepStrictEqual(observed.provider, launch.provider)
     || !isDeepStrictEqual(observed.boundary, launch.boundary)) return unavailable()

@@ -128,6 +128,7 @@ interface InstalledWorkerComposition {
   jobJournal: () => Promise<RemoteOperationJournal>
   systemInput: ReturnType<typeof createVerificationSystemInput>
   journalOpening: Promise<RemoteOperationJournal> | undefined
+  nativeRecordCleanup: Promise<unknown> | undefined
   journal: () => Promise<RemoteOperationJournal>
   current: () => NonNullable<ReturnType<DeviceConnectionSupervisor['currentBinding']>>
   request: (
@@ -171,6 +172,7 @@ export async function createInstalledWorkerDomains(input: InstalledWorkerInput) 
   await configureWorkerComputers(composition)
   await configureWorkerExecution(composition)
   await configureWorkerDrain(composition)
+  startNativeRecordCleanup(composition)
   return {
     extensions: composition.tracked,
     rsyncAvailable: composition.rsync.kind === 'configured',
@@ -188,8 +190,9 @@ export async function createInstalledWorkerDomains(input: InstalledWorkerInput) 
     get workflowAvailable() { return composition.native?.kind === 'configured' }, sourceAvailable: Boolean(composition.receiver),
     close() { return composition.shutdown ??= (async () => {
       composition.lifetime.abort()
-      await Promise.allSettled([composition.activation])
+      await Promise.allSettled([composition.activation, composition.nativeRecordCleanup])
       const failures: unknown[] = []
+      try { composition.registry.closeRetention() } catch (error) { failures.push(error) }
       try { await composition.hostCi.beginDrain() } catch (error) { failures.push(error) }
       try { await composition.ciRuntime.close() } catch (error) { failures.push(error) }
       try { await composition.providerAccounts?.native.close() } catch (error) { failures.push(error) }
@@ -211,6 +214,22 @@ export async function createInstalledWorkerDomains(input: InstalledWorkerInput) 
       if (failures.length) throw new AggregateError(failures, 'Actual installed worker domain cleanup is incomplete.')
     })() },
   }
+}
+
+function startNativeRecordCleanup(composition: InstalledWorkerComposition): void {
+  const cleanup = () => {
+    if (composition.nativeRecordCleanup || composition.lifetime.signal.aborted) return
+    composition.nativeRecordCleanup = (async () => {
+      const journal = await composition.journal()
+      await composition.registry.pruneSettled(owner => composition.lifetime.signal.aborted
+        ? Promise.resolve(false) : journal.isNativeOwnerSettled(owner))
+    })().catch(error => {
+      componentLogger('engine').warn({ err: error }, 'Native closure retention cleanup failed')
+    }).finally(() => { composition.nativeRecordCleanup = undefined })
+  }
+  const timer = setInterval(cleanup, 10 * 60_000)
+  timer.unref()
+  composition.lifetime.signal.addEventListener('abort', () => clearInterval(timer), { once: true })
 }
 
 async function configureWorkerTransfers(composition: InstalledWorkerComposition) {

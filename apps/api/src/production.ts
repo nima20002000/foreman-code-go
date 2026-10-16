@@ -203,6 +203,7 @@ import { postgresCodexChatFiles } from './modules/harnesses/codexFiles/chatAdmis
 import { codexChatHostDirectory, localCodexChatHost } from './modules/harnesses/codexFiles/localHost.js'
 import { productionFileTools } from './modules/files/tools/production.js'
 import { FileRetentionService } from './modules/files/retention.js'
+import { PostgresCommandReceiptRetention } from './modules/commands/receiptRetention.js'
 import { registerFileRetentionRoutes } from './routes/fileRetention.js'
 import { createOperatorExtensions } from './mcp/operator/extensions.js'
 import { NativeConfigurationService } from './modules/harnesses/nativeConfiguration.js'
@@ -2481,6 +2482,8 @@ function configureRuntimeHooks(composition: ProductionComposition) {
   } = composition
   const SNAPSHOT_RELEASE_INTERVAL_MS = 10 * 60_000
   let lastSnapshotRelease = 0
+  const commandReceiptRetention = new PostgresCommandReceiptRetention(database.pool)
+  let lastReceiptCleanup = 0
   composition.reconcile = (report: (error: unknown) => void): Promise<void> => {
     if (composition.closing) return Promise.resolve()
     if (composition.reconciliation) return composition.reconciliation
@@ -2498,6 +2501,10 @@ function configureRuntimeHooks(composition: ProductionComposition) {
       if (composition.closing) return
       await runWorktrees.cleanup(report)
       if (composition.closing) return
+      if (Date.now() - lastReceiptCleanup >= SNAPSHOT_RELEASE_INTERVAL_MS) {
+        lastReceiptCleanup = Date.now()
+        try { await commandReceiptRetention.prune() } catch (error) { report(error) }
+      }
       if (composition.initialized) {
         await appRoutes.refresh()
         if (composition.closing) return

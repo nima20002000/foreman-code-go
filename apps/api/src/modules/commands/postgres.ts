@@ -12,6 +12,8 @@ import type { GraphSqlClient } from '../run-graph/connection.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { commandIdentity, commandReceiptPrincipals } from './identity.js'
+import { expiredCommandResult } from './receiptRetention.js'
+export { pruneCompletedCommandReceipts } from './receiptRetention.js'
 
 function commitWasRejected(error: unknown): boolean {
   if (!(error instanceof pg.DatabaseError) || !error.code) return false
@@ -175,6 +177,13 @@ export class PostgresCommandCoordinator {
           inTransaction = false
           return { value, replayed: true }
         }
+      }
+      if (!receipt) {
+        const expired = await client.query<{ command_id: string }>(`select details->>'commandId' as command_id
+          from management_audit where principal_id=any($1::text[]) and action=$2
+            and details->>'commandId'=$3 and outcome='succeeded' limit 1`,
+        [principals, input.operation, commandId])
+        if (expired.rows.length) throw expiredCommandResult()
       }
 
       // A lifecycle callback can wait for runtime cleanup and database work.
