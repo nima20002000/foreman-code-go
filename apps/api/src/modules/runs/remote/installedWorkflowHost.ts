@@ -516,12 +516,12 @@ class InstalledWorkflowHostRuntime {
             fingerprintCache: this.payloadFingerprints }
           return inspectInstalledCodex(inspectionInput)
         },
-        readFacts: () => {
+        readFacts: signal => {
           const resident = this.operations.get(intent.executionId)
           return workerExecutionFactsReader(this.forBinding(resident?.context.binding ?? context.binding))(
-            resident?.intent ?? intent, placement)
+            resident?.intent ?? intent, placement, signal)
         },
-        assertResident: async (original, binding) => {
+        assertResident: async (original, binding, signal) => {
           const selected = this.operations.get(intent.executionId)
           if (!selected) unavailable('original_resident_requalification_missing')
           const resident = selected!
@@ -539,7 +539,7 @@ class InstalledWorkflowHostRuntime {
             }
           }
           await assertOriginal()
-          await workerExecutionAuthorizer(this.forBinding(binding))(resident.intent, placement, 'read')
+          await workerExecutionAuthorizer(this.forBinding(binding))(resident.intent, placement, 'read', signal)
           await assertOriginal()
         }, suiteRevision }
       const reader = createInstalledCodexQualificationReader(readerInput)
@@ -564,7 +564,7 @@ class InstalledWorkflowHostRuntime {
         owned.host = host
         return host
       }
-      host = this.createExecutionHost(context, log, authorize)
+      host = this.createExecutionHost(context, log)
       this.hosts.set(generation,host)
     }
     owned.host = host
@@ -688,19 +688,18 @@ class InstalledWorkflowHostRuntime {
     return manager
   }
 
-  private createExecutionHost(context: DeviceExtensionContext, log: RemoteOperationJournal,
-    authorize: ReturnType<typeof workerExecutionAuthorizer>) {
+  private createExecutionHost(context: DeviceExtensionContext, log: RemoteOperationJournal) {
     const managers = new ExecutionScopedNativeSessionManagerResolver(configurationContext =>
       this.createManager(configurationContext, log))
     return new RemoteExecutionHost({journal:log,connection:DeviceConnectionIdentitySchema.parse({mainId:context.binding.mainId,deviceId:context.binding.deviceId,
       workerInstallationId:context.binding.workerInstallationId,keyRevision:context.binding.keyRevision,authorizationRevision:context.binding.authorizationRevision,
       bootId:context.binding.bootId,connectionGeneration:context.binding.connectionGeneration}),incarnationId:randomUUID(),managers,
-      authorize:async(intent,placement,action)=>{const resident=this.operations.get(intent.executionId)
+      authorize:async(intent,placement,action,signal)=>{const resident=this.operations.get(intent.executionId)
         if (!resident || !isDeepStrictEqual({ ...resident.intent, owner: intent.owner }, intent)) {
           unavailable('original_operation_binding_changed')
         }
-        await workerExecutionAuthorizer(this.forBinding(resident.context.binding))(intent,placement,action)
-        if(action==='start')this.operation(intent).capture=await this.operation(intent).reader.capture()},
+        await workerExecutionAuthorizer(this.forBinding(resident.context.binding))(intent,placement,action,signal)
+        if(action==='start')this.operation(intent).capture=await this.operation(intent).reader.capture(signal)},
       verifyOwnerRenewal: async (transition, receipt) => {
         const resident = this.operation(receipt.intent)
         if (!resident.native || !resident.session || !isDeepStrictEqual(transition.native, receipt.native)
@@ -725,13 +724,13 @@ class InstalledWorkflowHostRuntime {
         await log.renewReviewer(intent.operationId, policy!)
         resident.reviewAssignment = structuredClone(review)
       },
-      attestRuntimeLeaf:async(intent,placement,request,executionPlacement)=>{
-        const resident=this.operation(intent),capture=await resident.reader.capture()
+      attestRuntimeLeaf:async(intent,placement,request,executionPlacement,signal)=>{
+        const resident=this.operation(intent),capture=await resident.reader.capture(signal)
         if(!executionPlacement||executionPlacement.bindingHash!==capture.facts.executionPlacement.bindingHash
           ||!isDeepStrictEqual(request.configuration,capture.facts.configuration))unavailable('actual_native_placement_required')
         resident.capture=capture
         const approvedRoots = ApprovedRootAllowlistSchema.parse(await this.input.approvedRoots())
-        const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf({sources:this.input.sources,context:{...context,signal: this.signal},approvedRoots,
+        const runtimeLeaf=await attestInstalledWorkflowRuntimeLeaf({sources:this.input.sources,context:{...context,signal: signal ?? this.signal},approvedRoots,
           nativePlacement:capture.facts.executionPlacement,intent,placement,request})
         resident.runtimeLeaf=runtimeLeaf
         resident.runtimeRoots=structuredClone(approvedRoots)
@@ -739,7 +738,7 @@ class InstalledWorkflowHostRuntime {
         this.rememberEntry(resident)
         return runtimeLeaf
       },
-      preflight: async (nativeRequest, access) => {
+      preflight: async (nativeRequest, access, signal) => {
         const log = componentLogger('harness')
         let launcher: string | undefined
         try {
@@ -748,21 +747,21 @@ class InstalledWorkflowHostRuntime {
           const resident = this.operations.get(nativeRequest.executionId)
           if (!resident || !access) unavailable('original_main_lease_required')
           const actual = resident!
-          await authorize(actual.intent, actual.placement, 'start')
-          actual.capture = await actual.reader.capture()
+          await workerExecutionAuthorizer(this.forBinding(actual.context.binding))(actual.intent, actual.placement, 'start', signal)
+          actual.capture = await actual.reader.capture(signal)
           if (!isDeepStrictEqual(nativeRequest.configuration, actual.capture.facts.configuration)) {
             unavailable('accepted_configuration_conflict')
           }
           const relay = await prepareWorkerApplicationAccess({ request: async (namespace, payload, options) =>
             this.forBinding(actual.context.binding)(namespace, payload, options) }, actual.intent, actual.placement,
-          access, this.signal, { currentIntent: () => actual.intent })
+          access, signal, { currentIntent: () => actual.intent })
           const nativeStart: NativeSessionStart = { request: structuredClone(nativeRequest),
             correlationId: `execution:${actual.intent.executionId}`, environment: relay.environment }
           if (actual.nativeStart && !isDeepStrictEqual(actual.nativeStart, nativeStart)) {
             unavailable('original_native_start_changed')
           }
           // Native MCP inspection accepts the managed launcher, which reads routes beside itself.
-          if (!actual.mcp) actual.mcp = await createWorkerMcpEndpoint({ relay, launcher, signal: this.signal })
+          if (!actual.mcp) actual.mcp = await createWorkerMcpEndpoint({ relay, launcher, signal })
           else await actual.mcp.bindRelay(relay)
           actual.applicationAccess = structuredClone(access)
           actual.relay = relay
@@ -833,6 +832,11 @@ class InstalledWorkflowHostRuntime {
           if (resident.reviewTimer) clearTimeout(resident.reviewTimer)
           const observation=matchingOriginalRegistryLaunch(this.registry,resident.native.launch)
           if(observation.lifecycle!=='closed'||observation.closureEvidence!=='cgroup_v2_empty')unavailable('original_physical_closure_missing')
+          if (terminal.result) {
+            await this.recovery.rememberOutput(intent.operationId, remoteWorkflowPhysicalOutput(
+              terminal.result, declaration, terminal.artifactValidationError,
+            ))
+          }
           resident.physicalClosure=observation
           componentLogger('engine').info({ executionId: intent.executionId }, 'Original workflow owner settled')
           await resident.mcp?.close()

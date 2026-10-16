@@ -32,11 +32,11 @@ export interface RemoteExecutionHostPorts {
   connection: DeviceConnectionIdentity
   incarnationId: string
   managers: NativeSessionManagerResolver
-  authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop'): Promise<void>
+  authorize(intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop', signal?: AbortSignal): Promise<void>
   authorizeReview?(intent: DispatchIntent, placement: AcceptedNodePlacement, review: RemoteReviewerRequest): Promise<void>
   /** Host-local credentials and sandbox policy; never copied from main. */
-  attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest, executionPlacement?: NativeExecutionPlacement): Promise<RuntimeLeafAttestation>
-  preflight(request: HarnessExecutionRequest, applicationAccess?: RemoteApplicationAccess): Promise<ChildProcessEnvironment | void>
+  attestRuntimeLeaf(intent: DispatchIntent, placement: AcceptedNodePlacement, request: HarnessExecutionRequest, executionPlacement?: NativeExecutionPlacement, signal?: AbortSignal): Promise<RuntimeLeafAttestation>
+  preflight(request: HarnessExecutionRequest, applicationAccess: RemoteApplicationAccess | undefined, signal: AbortSignal): Promise<ChildProcessEnvironment | void>
   nativeEvidence(intent: DispatchIntent, session: NativeSessionReference, context?: { manager: NativeHarnessSessionManager; request: HarnessExecutionRequest; signal: AbortSignal }): Promise<RemoteNativeIdentity>
   /** W11/provider closure verification; terminal observation alone is insufficient. */
   verifyOwnerRenewal?(transition: RemoteOwnerReconciliation, receipt: RemoteOperationReceipt): Promise<void>
@@ -266,8 +266,15 @@ export class RemoteExecutionHost {
     const intent = DispatchIntentSchema.parse(raw.intent)
     // Main replays the same prepare when a dropped device link lost its reply; the replay joins the original.
     const inFlight = this.inFlightPreparations.get(intent.operationId)
-    if (inFlight && isDeepStrictEqual(inFlight.raw, raw)) return inFlight.task
-    const task = this.track(() => this.prepareOwned(raw))
+    if (inFlight) {
+      if (isDeepStrictEqual(inFlight.raw, raw)) return inFlight.task
+      return Promise.reject(new Error('Remote preparation binding mismatch'))
+    }
+    const controller = new AbortController()
+    this.launchControllers.set(intent.operationId, controller)
+    const task = this.track(() => this.prepareOwned(raw, controller)).finally(() => {
+      this.launchControllers.delete(intent.operationId)
+    })
     this.inFlightPreparations.set(intent.operationId, { raw, task })
     const entries = this.pendingEntries.get(intent.operationId) ?? new Set<Promise<unknown>>()
     entries.add(task)
@@ -285,7 +292,7 @@ export class RemoteExecutionHost {
     for (const controller of this.inspections.get(operationId) ?? []) controller.abort()
     await Promise.allSettled(this.pendingEntries.get(operationId) ?? [])
   }
-  private async prepareOwned(raw: WorkflowPreparation) {
+  private async prepareOwned(raw: WorkflowPreparation, controller: AbortController) {
     const intent = DispatchIntentSchema.parse(raw.intent), placement = readPlacement(raw.placement), request = HarnessExecutionRequestSchema.parse(raw.request)
     const harness = executableHarness(request.configuration.harness.harness)
     const executionPlacement = 'kind' in placement.source && placement.source.kind === 'pending'
@@ -297,9 +304,9 @@ export class RemoteExecutionHost {
       || request.executionId !== intent.executionId || request.runId !== intent.runId || request.workflowNodeId !== intent.nodeId
       || request.workingDirectory !== (executionPlacement?.workingTree.canonicalCwd ?? placement.destination.canonicalCwd)
       || intent.inputDigest !== `sha256:${createHash('sha256').update(canonicalGraphJson(request.input)).digest('hex')}`) throw new Error('Remote launch binding mismatch')
-    await this.ports.authorize(intent, placement, 'start')
+    await this.ports.authorize(intent, placement, 'start', controller.signal)
     assertRuntimeLeafPath(request.runtimeDirectory, placement)
-    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(intent, placement, request, executionPlacement), request.runtimeDirectory, intent, placement, executionPlacement)
+    assertRuntimeLeafBinding(await this.ports.attestRuntimeLeaf(intent, placement, request, executionPlacement, controller.signal), request.runtimeDirectory, intent, placement, executionPlacement)
     this.bindings.set(intent.operationId, { intent, placement })
     await this.ports.journal.accept(intent, this.ports.connection, this.ports.incarnationId)
     const existing = this.residents.get(intent.operationId)
@@ -307,16 +314,14 @@ export class RemoteExecutionHost {
     const reservation = await this.ports.journal.reserveEntry(intent.operationId)
     if (!reservation.reserved) throw new Error('Original native execution requires reconciliation')
     if (this.closing) throw new Error('Worker execution host is shutting down.')
-    const controller = new AbortController()
-    this.launchControllers.set(intent.operationId, controller)
     try {
       const access = raw.applicationAccess
       if (access && (access.executionId !== intent.executionId || access.agentId !== request.configuration.agentId || access.operationId !== intent.operationId
         || access.attemptId !== intent.attemptId || access.bindingHash !== intent.bindingHash)) throw new Error('Wrong main worker MCP lease binding')
-      const environment = await this.ports.preflight(request, access)
+      const environment = await this.ports.preflight(request, access, controller.signal)
       if ((environment?.variables.GRAPHQL_MCP_TOKEN ?? undefined) !== access?.token) throw new Error('Worker must reuse the exact main-owned application lease')
       if (environment && environment.agentId !== request.configuration.agentId) throw new Error('Wrong worker-local credential owner')
-      await this.ports.authorize(intent, placement, 'start')
+      await this.ports.authorize(intent, placement, 'start', controller.signal)
       const before = await this.ports.journal.status(intent.operationId)
       if (before.status !== 'known' || before.receipt.stopFence) throw new Error('Remote launch stopped before native submission')
       const context = { executionId: intent.executionId, agentId: request.configuration.agentId,
@@ -357,7 +362,6 @@ export class RemoteExecutionHost {
       if (receipt.stopFence) await resident.manager.cancel(session)
       return { session, status: await this.ports.journal.status(intent.operationId) }
     } catch (error) { await this.ports.journal.uncertain(intent.operationId, 'Native session preparation acknowledgment unavailable'); throw error }
-    finally { this.launchControllers.delete(intent.operationId) }
   }
   /** Observation of the existing lifetime only; never invokes provider attach,
    * which may start another process even for the same saved native thread. */

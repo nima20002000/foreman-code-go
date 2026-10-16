@@ -89,6 +89,34 @@ async function productionShutdownFixture() {
 }
 
 describe('actual worker native-port adapter', () => {
+  it('aborts operation preflight before awaiting preparation cleanup', async () => {
+    const f = await setup()
+    const entered = deferred()
+    const release = deferred()
+    let preflightSignal: AbortSignal | undefined
+    f.ports.preflight = async (_request, _access, signal) => {
+      preflightSignal = signal
+      entered.resolve()
+      await release.promise
+      signal?.throwIfAborted()
+    }
+    const preparing = f.host.prepare(f)
+    const preparationResult = Promise.allSettled([preparing])
+    await entered.promise
+    await expect(f.host.prepare({ ...f, request: { ...f.request, input: { changed: true } } }))
+      .rejects.toThrow('binding mismatch')
+    const stopping = f.host.abortPreparation(f.intent.operationId)
+    try {
+      expect(preflightSignal).toBeDefined()
+      expect(preflightSignal?.aborted).toBe(true)
+    } finally {
+      release.resolve()
+      await stopping
+      await preparationResult
+    }
+    expect(f.state.starts).toBe(0)
+  })
+
   it.each(['same', 'changed-host', 'unclosed'] as const)(
     'continues only a closed native session on its accepted placement (%s)', async scenario => {
       const f = await setup()

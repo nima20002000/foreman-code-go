@@ -213,44 +213,70 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
       }
       return owners
     },
-    async afterCommit(capture: WorkflowNativeCapture) {
-      const evidence = companions.get(capture)
-      if (!evidence) return
-      acknowledgments.add(channel.verify.read(evidence))
-      // Obsolete observations do not consume the network retry budget.
-      let attempts = 0
-      for (const original of [...acknowledgments]) {
-        if (attempts >= 32) break
-        acknowledgments.delete(original)
-        const executionId = original.verified.receipt.intent.executionId
-        const entries = retained.get(executionId)
-        const entry = entries?.get(original.sourceDigest)
-        try {
-          await physical.acknowledge(original)
-          try { await physical.acknowledgeReply(original) }
-          catch (error) {
-            if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
-              || error.details?.reason !== 'uncommitted_history') throw error
-          }
-          if (entry) entry.acknowledgment = 'sent'
-        } catch (error) {
-          if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
-            if (entry) entry.acknowledgment = 'obsolete'
-            if (latest.get(executionId) !== original.sourceDigest) entries?.delete(original.sourceDigest)
-            continue
-          }
-          // Move a transient failure behind observations that have not had a turn.
-          acknowledgments.add(original)
-        }
-        attempts++
-        if (entry?.acknowledgment === 'sent' && latest.get(executionId) !== original.sourceDigest) {
-          entries?.delete(original.sourceDigest)
-        }
-      }
-    },
+    afterCommit: (capture: WorkflowNativeCapture) => acknowledgeRemoteWorkflowSources({
+      bindings, retained, latest, reviewAcknowledgments, acknowledgments, companions, channel, physical,
+    }, capture),
     assertPhysical: (sql: GraphTransactionSql, owner: RunOwnership,
       captures: WorkflowNativeCapture | readonly WorkflowNativeCapture[]) =>
       assertWorkflowPhysicalBatch(sql, owner, captures, companions, channel.verify, physical),
+  }
+}
+
+async function acknowledgeRemoteWorkflowSources(dependencies: {
+  bindings: Map<string, AcceptedExecutionBinding | null>
+  retained: Map<string, Map<string, RetainedRemoteWorkflowSource>>
+  latest: Map<string, string>
+  reviewAcknowledgments: Map<string, Map<VerifiedRemoteOriginalSource, GraphTransactionSql>>
+  acknowledgments: Set<VerifiedRemoteOriginalSource>
+  companions: WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>
+  channel: ReturnType<typeof createRemoteNativeSourceChannel>
+  physical: RemoteWorkflowPhysicalVerification
+}, capture: WorkflowNativeCapture): Promise<void> {
+  const { bindings, retained, latest, reviewAcknowledgments, acknowledgments, companions, channel, physical } = dependencies
+  if (!bindings.has(capture.execution.id)) return
+  const evidence = companions.get(capture)
+  if (!evidence) return
+  acknowledgments.add(channel.verify.read(evidence))
+  // Obsolete observations do not consume the network retry budget.
+  let attempts = 0
+  for (const original of [...acknowledgments]) {
+    if (attempts >= 32) break
+    acknowledgments.delete(original)
+    const executionId = original.verified.receipt.intent.executionId
+    if (!bindings.has(executionId)) continue
+    const entries = retained.get(executionId)
+    const entry = entries?.get(original.sourceDigest)
+    try {
+      await physical.acknowledge(original)
+      try { await physical.acknowledgeReply(original) }
+      catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
+          || error.details?.reason !== 'uncommitted_history') throw error
+      }
+      if (entry) entry.acknowledgment = 'sent'
+      if (physical.releaseExecution(original)) {
+        retained.delete(executionId)
+        bindings.delete(executionId)
+        latest.delete(executionId)
+        reviewAcknowledgments.delete(executionId)
+        for (const pending of acknowledgments) {
+          if (pending.verified.receipt.intent.executionId === executionId) acknowledgments.delete(pending)
+        }
+        channel.release(executionId)
+      }
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
+        if (entry) entry.acknowledgment = 'obsolete'
+        if (latest.get(executionId) !== original.sourceDigest) entries?.delete(original.sourceDigest)
+        continue
+      }
+      // Move a transient failure behind observations that have not had a turn.
+      acknowledgments.add(original)
+    }
+    attempts++
+    if (entry?.acknowledgment === 'sent' && latest.get(executionId) !== original.sourceDigest) {
+      entries?.delete(original.sourceDigest)
+    }
   }
 }
 
@@ -440,11 +466,11 @@ function createRemoteWorkflowManager(input: ProductionRemoteWorkflowInput, depen
         },
       })
     },
-    observeOriginalSource: async (receipt, source) => {
+    observeOriginalSource: async (receipt, source, signal) => {
       const verified = verifiedReceipts.get(canonicalGraphJson(receipt))
       if (!verified) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'Original native source requires its authenticated committed receipt.', 403)
       verified.assertCurrent()
-      const prepared = await physical.prefetch(receipt, binding.placement, source)
+      const prepared = await physical.prefetch(receipt, binding.placement, source, signal)
       verified.assertCurrent()
       channel.observe(verified.verified, source, verified.assertCurrent)
       const entries = retained.get(receipt.intent.executionId) ?? new Map()

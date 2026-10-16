@@ -106,6 +106,33 @@ describe('remote native history streaming', () => {
     expect(await result).toBe(error)
   })
 
+  it('accepts journaled capacity retries after observing the original native turn', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [], nativeTurnId: 'retry-turn' }))
+    const original = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method, payload, signal) => {
+      const reply = await original(method, payload, signal)
+      return structuredClone(reply)
+    })
+    const session = await f.proxy.createSession(f.start)
+    f.receipt.native!.turnId = 'retry-turn'
+    Object.assign(f.receipt, { nativeTurnRetries: [{ previousTurnId: 'native-turn', turnId: 'retry-turn' }] })
+    f.receipt.sequence++
+    await expect(f.proxy.history(session)).resolves.toMatchObject({ nativeTurnId: 'retry-turn' })
+    f.receipt.native!.turnId = 'foreign-turn'
+    f.receipt.sequence++
+    await expect(f.proxy.history(session)).rejects.toThrow()
+  })
+
+  it('passes the caller lifetime to original-source observation', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const controller = new AbortController()
+    await f.proxy.createSession(f.start, controller.signal)
+    const observedSignal = f.observeOriginalSource.mock.calls[0]?.[2]
+    expect(observedSignal).toBeDefined()
+    controller.abort(new Error('Execution stopped'))
+    expect(observedSignal?.aborted).toBe(true)
+  })
+
   it('disposes a failed startup by stopping its accepted operation without inventing a native session', async () => {
     const f = setup(() => ({ events: [], pendingInteractions: [] }))
     delete f.receipt.native

@@ -72,3 +72,21 @@ describe('authoritative remote result bridge', () => {
     expect(f.state.rejects).toEqual(['invalid_entry_closure'])
   })
 })
+
+it('accepts only an extending journaled capacity retry chain on the original process', async () => {
+  const f = fixture()
+  const { terminal: _terminal, ...running } = receipt
+  void _terminal
+  const first = { ...running, phase: 'running' as const }
+  expect(await VerifiedRemoteEvidence.commit(first, connection, f.port)).toBe('accepted')
+  const retry = { ...first, sequence: first.sequence + 1,
+    native: { ...first.native!, turnId: 'retry-turn' },
+    nativeTurnRetries: [{ previousTurnId: 'turn', turnId: 'retry-turn' }] }
+  expect(await VerifiedRemoteEvidence.commit(retry, connection, f.port)).toBe('accepted')
+  const next = { ...retry, sequence: retry.sequence + 1, native: { ...retry.native, turnId: 'last-turn' },
+    nativeTurnRetries: [...retry.nativeTurnRetries, { previousTurnId: 'retry-turn', turnId: 'last-turn' }] }
+  expect(await VerifiedRemoteEvidence.commit(next, connection, f.port)).toBe('accepted')
+  expect(await VerifiedRemoteEvidence.commit({ ...next, sequence: next.sequence + 1,
+    native: { ...next.native, turnId: 'foreign-turn' } }, connection, f.port)).toBe('rejected')
+  expect(f.state.accepts).toBe(3)
+})

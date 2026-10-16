@@ -21,8 +21,8 @@ export function createInstalledCodexQualificationReader(input: {
   trustedCurrentBinding(): Readonly<DeviceSessionBinding> | null
   trustedCurrentIntent?(): DispatchIntent
   inspect(binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection>
-  readFacts(): Promise<unknown>
-  assertResident?(original: Readonly<DeviceSessionBinding>, current: Readonly<DeviceSessionBinding>): Promise<void>
+  readFacts(signal: AbortSignal): Promise<unknown>
+  assertResident?(original: Readonly<DeviceSessionBinding>, current: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<void>
   suiteRevision: string
   signal: AbortSignal
 }) {
@@ -35,8 +35,8 @@ export function createInstalledCodexQualificationReader(input: {
   }
   const originalIntent = structuredClone(input.intent), originalPlacement = structuredClone(input.placement)
   let retainedInspection: InstalledHarnessInspection | undefined
-  const inspect = async (binding: Readonly<DeviceSessionBinding>): Promise<InstalledHarnessInspection> => {
-    const current = await input.inspect(binding, input.signal)
+  const inspect = async (binding: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<InstalledHarnessInspection> => {
+    const current = await input.inspect(binding, signal)
     const payload = originalPlacement.payload
     if (payload.kind !== 'agent' || current.currentTarget?.target.installationFingerprint === payload.installationFingerprint) {
       return current
@@ -49,28 +49,29 @@ export function createInstalledCodexQualificationReader(input: {
       || old.installation.protocolRevision !== updated.installation.protocolRevision
       || !same(old.target.hostRef, updated.target.hostRef)
       || old.target.applicationInstallationId !== updated.target.applicationInstallationId) return unavailable()
-    await input.assertResident(originalBinding, binding)
+    await input.assertResident(originalBinding, binding, signal)
     const retained = structuredClone(retainedInspection)
     if (!retained.currentTarget) return unavailable()
     return { ...retained, currentTarget: { ...retained.currentTarget, binding: { ...binding } } }
   }
-  const capture = async () => {
-    input.signal.throwIfAborted()
+  const capture = async (effectSignal?: AbortSignal) => {
+    const signal = effectSignal ? AbortSignal.any([input.signal, effectSignal]) : input.signal
+    signal.throwIfAborted()
     const expectedIntent = structuredClone(input.trustedCurrentIntent?.() ?? originalIntent)
     if (!same({ ...expectedIntent, owner: originalIntent.owner }, originalIntent)) return unavailable()
     const live = input.trustedCurrentBinding()
     if (!live || !originalBinding) return unavailable()
     const binding = DeviceSessionBindingSchema.parse(live)
     verifyBinding(binding)
-    const inspection = await inspect(binding)
+    const inspection = await inspect(binding, signal)
     const current = inspection.currentTarget
     if (!current || !same(current.binding, binding)) return unavailable()
-    const facts = ExecutionFactsResultSchema.parse(await input.readFacts())
-    input.signal.throwIfAborted()
+    const facts = ExecutionFactsResultSchema.parse(await input.readFacts(signal))
+    signal.throwIfAborted()
     const afterBinding = input.trustedCurrentBinding()
     if (!afterBinding || !same(afterBinding, binding) || !same(facts.intent, expectedIntent) || !same(facts.placement, originalPlacement)) return unavailable()
-    const after = (await inspect(binding)).currentTarget
-    input.signal.throwIfAborted()
+    const after = (await inspect(binding, signal)).currentTarget
+    signal.throwIfAborted()
     const finalBinding = input.trustedCurrentBinding()
     if (!finalBinding || !same(finalBinding, binding) || !after || !same(after.binding, binding)
       || !same(after.target, current.target) || after.binarySha256 !== current.binarySha256

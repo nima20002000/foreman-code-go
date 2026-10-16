@@ -507,6 +507,10 @@ export class RemoteOperationJournal {
         throw new Error('Capacity retry no longer owns the previous turn')
       }
       if (!retry && receipt.native.turnId && receipt.native.turnId !== turnId) throw new Error('Native turn ownership conflict')
+      if (retry) {
+        const retries = receipt.nativeTurnRetries ??= []
+        retries.push({ previousTurnId: retry.previousTurnId, turnId })
+      }
       receipt.native.turnId = turnId; receipt.sequence++; return receipt
     })
   }
