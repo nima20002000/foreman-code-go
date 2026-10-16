@@ -58,11 +58,14 @@ export class HostCiReads {
 
   close() { this.changes.close() }
 
-  private async readTicket(caller: ManagementPrincipal, scope: Awaited<ReturnType<CiAuthority['resolve']>>,
+  async readTicket(caller: ManagementPrincipal, scope: Awaited<ReturnType<CiAuthority['resolve']>>,
     input: Pick<TicketReadInput, 'ticketId' | 'logTail'>) {
-    const row = (await this.pool.query<{ record: unknown; log_tail: string }>(
-      `select record${input.logTail === false ? '' : ',log_tail'} from ci_runs where id=$1 and workspace_id=$2`,
-      [input.ticketId, scope.workspaceId])).rows[0]
+    let row: { record: unknown; log_tail: string } | undefined
+    if (CiRunRecordSchema.shape.id.safeParse(input.ticketId).success) {
+      row = (await this.pool.query<{ record: unknown; log_tail: string }>(
+        `select record${input.logTail === false ? '' : ',log_tail'} from ci_runs where id=$1 and workspace_id=$2`,
+        [input.ticketId, scope.workspaceId])).rows[0]
+    }
     if (!row) throw await missingCiTicket(this.pool, input.ticketId, scope.workspaceId,
       { principalId: caller.id, executionId: scope.executionId ?? null })
     return row

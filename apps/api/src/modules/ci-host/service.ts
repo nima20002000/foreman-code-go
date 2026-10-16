@@ -577,7 +577,8 @@ export class HostCiService {
     input: { workspaceId?: string | undefined; ticketId: string; commandId?: string | undefined },
     source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord; detached?: { remainingRequesters: number } }> {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
-    const run = await this.read(input.ticketId, scope.workspaceId)
+    const row = await this.reads.readTicket(caller, scope, { ticketId: input.ticketId, logTail: false })
+    const run = CiRunRecordSchema.parse(row.record)
     if (['queued', 'starting', 'running'].includes(run.state)) {
       // A requester of a group that identical requests share only leaves it while others still need it.
       const remainingRequesters = await releaseCiRequester(this.pool, run,
