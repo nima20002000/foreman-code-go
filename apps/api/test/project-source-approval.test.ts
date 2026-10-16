@@ -41,7 +41,7 @@ function fixture() {
     }),
   }
   const locations = {
-    snapshot: vi.fn(async () => location),
+    snapshotAssigned: vi.fn(async () => location),
     revalidateSnapshot: vi.fn(),
   }
   type Dependencies = ConstructorParameters<typeof PostgresSourceService>
