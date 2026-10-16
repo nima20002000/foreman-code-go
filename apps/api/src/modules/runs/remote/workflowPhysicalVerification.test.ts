@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionIdentitySchema } from '@foreman-code/contracts/device-identity'
 import { NativeProcessRegistry, type NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
@@ -249,6 +250,107 @@ async function physicalFixture(options: {
     entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs,closure,retained,
     limitProofReads: (limit: number) => { proofReadLimit = limit } }
 }
+
+// Keep the verifier and retained-reviewer authority readers real; only the SQL boundary is doubled.
+async function retainedReviewerFixture() {
+  const f = await physicalFixture()
+  const base = makeCurrentWorkflowFixture('physical-reviewer', 'approval')
+  const result = { outcome: 'succeeded' as const, output: { text: 'Workflow complete' } }
+  Object.assign(f.execution, { state: 'completed', result, finishedAt: new Date().toISOString() })
+  const history = { ...f.source.history, terminalTurn: {
+    correlationId: `execution:${f.execution.id}`, providerId: 'original-turn', result,
+  } }
+  await f.journal.retainReviewer(f.intent.operationId, {
+    agentId: f.execution.agentId, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }, history)
+  const status = await f.journal.status(f.intent.operationId)
+  if (status.status !== 'known') throw new Error('Expected retained reviewer receipt')
+  f.readout.receipt = status.receipt
+  f.readout.history = history
+  f.source.history = history
+  f.retained.receipt = status.receipt
+  const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: f.execution.agentId }
+  const otherConfigurationIds = Object.fromEntries(Object.entries(base.version.agentConfigurationVersionIds)
+    .filter(([agentId]) => agentId !== base.configurations[0]!.agentId))
+  const configurationIds = { ...otherConfigurationIds,
+    [f.execution.agentId]: f.execution.agentConfigurationVersionId }
+  const entryId = base.version.entryNodeId
+  const version = { ...base.version, entryNodeId: f.execution.workflowNodeId, approval,
+    agentConfigurationVersionIds: configurationIds, definition: { ...base.version.definition,
+      entryNodeId: f.execution.workflowNodeId, approval,
+      nodes: base.version.definition.nodes.map(node => node.id === entryId
+        ? { ...node, id: f.execution.workflowNodeId, agentId: f.execution.agentId } : node),
+      edges: base.version.definition.edges.map(edge => ({ ...edge,
+        source: edge.source === entryId ? f.execution.workflowNodeId : edge.source })),
+    } }
+  const run = { ...base.run, id: f.execution.runId, executionState: 'running', approval,
+    agentConfigurationVersionIds: configurationIds }
+  const configuration = { ...base.configurations[0]!, id: f.execution.agentConfigurationVersionId,
+    agentId: f.execution.agentId }
+  const principal = { id: 'reviewer-principal', name: 'Reviewer', audience: 'worker', agent_id: f.execution.agentId,
+    expires_at: new Date(Date.now() + 60_000), revoked_at: null as Date | null,
+    grants: [{ actions: ['interactions:read', 'interactions:respond'], scope: {
+      workspaceIds: [run.workspaceId], workflowIds: [run.workflowId], runIds: [run.id],
+    } }] }
+  const reviewer = { generation: '1', session: f.session, executionId: f.execution.id }
+  let authorityReads = 0
+  const rows = (values: unknown[]) => ({ rows: values, rowCount: values.length })
+  const baseQuery = f.query.getMockImplementation()!
+  const query = async (text: string, args: unknown[] = []) => {
+    if (text.includes('select r.record as run,v.record as version')) {
+      authorityReads++
+      return rows([{ run, version, execution: f.execution, configuration, reference: reviewer.session, finalized: true }])
+    }
+    if (text.includes('from harness_executions')) return rows([{ record: f.execution, authorized: false }])
+    if (text.includes('c.detached_at is not null as detached')) {
+      return rows([{ generation: reviewer.generation, live: true, detached: false, reference: reviewer.session }])
+    }
+    if (text.startsWith('select 1 from workflow_native_proofs')) return rows([{}])
+    if (text.startsWith('select b.principal_id')) {
+      return rows(args[0] === reviewer.executionId ? [{ principal_id: principal.id }] : [])
+    }
+    if (text.startsWith('select id,name,audience')) return rows([principal])
+    return baseQuery(text, args)
+  }
+  await f.sqlConnection.close()
+  const sqlConnection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, () => {})
+  const original = await f.bind()
+  const verify = () => sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+  return { ...f, sqlConnection, principal, reviewer, verify, authorityReads: () => authorityReads }
+}
+
+describe('retained reviewer authorization for original workflow sources', () => {
+  it('allows a live reviewer after its workflow credential has been promoted', async () => {
+    const f = await retainedReviewerFixture()
+    try {
+      await expect(f.verify()).resolves.toBeUndefined()
+      expect(f.authorityReads()).toBeGreaterThan(0)
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it.each([
+    ['revoked', 'REVIEWER_CREDENTIAL_LOST'],
+    ['expired', 'REVIEWER_CREDENTIAL_LOST'],
+    ['wrong-generation', 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'],
+    ['wrong-session', 'REMOTE_REVIEWER_DENIED'],
+    ['cross-execution', 'REMOTE_REVIEWER_DENIED'],
+  ] as const)('denies a %s reviewer when workflow authorization is absent', async (defect, code) => {
+    const f = await retainedReviewerFixture()
+    try {
+      // Establish that this exact original source can use the fallback before invalidating its authority.
+      await f.verify()
+      if (defect === 'revoked') f.principal.revoked_at = new Date()
+      if (defect === 'expired') f.principal.expires_at = new Date(Date.now() - 1_000)
+      if (defect === 'wrong-generation') f.reviewer.generation = '2'
+      if (defect === 'wrong-session') f.reviewer.session = { ...f.session, nativeSessionId: 'different-session' }
+      if (defect === 'cross-execution') f.reviewer.executionId = 'different-execution'
+      await expect(f.verify()).rejects.toMatchObject({ code,
+        ...(defect === 'wrong-generation' ? { details: { reason: 'execution_authorization' } } : {}),
+      })
+      expect(f.authorityReads()).toBeGreaterThan(0)
+    } finally { await f.sqlConnection.close() }
+  })
+})
 
 it('acknowledges an original history without scanning unrelated retained histories', async () => {
   const f = await physicalFixture()
