@@ -197,7 +197,7 @@ it('allows an installed update after CI source fetching fails without entering r
     await vi.waitFor(async () => {
       const status = await f.handle('ci-runtime-v1', { operation: 'status' })
       expect(status.payload).toMatchObject({ operationId, commit, state: 'failed', prepared: null,
-        message: expect.stringContaining('could not fetch fixture/site from GitHub') })
+        message: 'GitHub git fetch failed. Check repository access and local Git configuration, then retry.' })
     })
     expect(f.preparationEntered()).toBe(false)
     updating = u.value.start()

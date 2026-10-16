@@ -142,21 +142,60 @@ describe('device-only carrier and lifecycle', () => {
     expect(presence.mock.calls.some(([view]) => view.phase === 'ready')).toBe(false)
   })
   it('publishes actual worker versions and frame times without advancing lastSeenAt on database auth reads', async () => {
-    vi.useFakeTimers(); const firstTime = new Date('2026-10-01T06:00:00.000Z'); vi.setSystemTime(firstTime)
+    vi.useFakeTimers()
+    const firstTime = new Date('2026-10-01T06:00:00.000Z')
+    vi.setSystemTime(firstTime)
     const registration: DeviceExtensionRegistration = { namespace: 'probe-v1', version: 1, role: 'client', maxJsonBytes: 1024, maxBinaryBytes: 0 }
     const { endpoint, presence, auth } = makeEndpoint([registration])
-    const raw = new Socket(), task = endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(raw))
-    raw.frame({ ...hello, appVersion: 'worker-observed-42', extensions: [{ ...registration, role: 'server' }] }); await flush()
-    const epoch = raw.sent[0]!.connectionEpoch; raw.frame({ type: 'ready', connectionEpoch: epoch }); await flush()
-    const original = DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0])
-    expect(original).toMatchObject({ appVersion: 'worker-observed-42', protocolVersion: 1, lastSeenAt: firstTime.toISOString() })
-    expect(auth.revalidateDevice).toHaveBeenCalledTimes(2)
-    const secondTime = new Date(firstTime.getTime() + 50); vi.setSystemTime(secondTime)
-    const abort = new AbortController(), pending = endpoint.request(identity.deviceId, 'probe-v1', {}, { signal: abort.signal }); void pending.catch(() => {})
-    await flush(); expect(auth.revalidateDevice.mock.calls.length).toBeGreaterThan(2); expect(presence.mock.calls.at(-1)![0].lastSeenAt).toBe(original.lastSeenAt)
-    abort.abort(); await expect(pending).rejects.toThrow(); raw.frame({ type: 'ping', connectionEpoch: epoch }); await flush()
-    expect(DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0]).lastSeenAt).toBe(secondTime.toISOString())
-    endpoint.close(); await task; await endpoint.join(); expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'offline', lastSeenAt: secondTime.toISOString() })
+    const raw = new Socket()
+    const task = endpoint.accept({ authorization: 'Bearer device' }, adaptDeviceSocket(raw))
+    try {
+      raw.frame({ ...hello, appVersion: 'worker-observed-42', extensions: [{ ...registration, role: 'server' }] })
+      await flush()
+      const epoch = raw.sent[0]!.connectionEpoch
+      raw.frame({ type: 'ready', connectionEpoch: epoch })
+      await flush()
+      const original = DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0])
+      expect(original).toMatchObject({ appVersion: 'worker-observed-42', protocolVersion: 1,
+        lastSeenAt: firstTime.toISOString() })
+      expect(auth.revalidateDevice).toHaveBeenCalledTimes(2)
+
+      vi.setSystemTime(firstTime.getTime() + 50)
+      const recent = new AbortController()
+      const recentRequest = endpoint.request(identity.deviceId, 'probe-v1', {}, { signal: recent.signal })
+      const cancelledRecent = expect(recentRequest).rejects.toMatchObject({ code: 'cancelled' })
+      await flush()
+      expect(auth.revalidateDevice).toHaveBeenCalledTimes(2)
+      expect(raw.sent.filter(frame => frame.type === 'application-open')).toHaveLength(1)
+      expect(presence.mock.calls.at(-1)![0].lastSeenAt).toBe(original.lastSeenAt)
+      recent.abort()
+      await cancelledRecent
+
+      // Move the clock without delivering heartbeats, so request authorization has to refresh.
+      const secondTime = new Date(firstTime.getTime() + 120_001)
+      vi.setSystemTime(secondTime)
+      const stale = new AbortController()
+      const staleRequest = endpoint.request(identity.deviceId, 'probe-v1', {}, { signal: stale.signal })
+      const cancelledStale = expect(staleRequest).rejects.toMatchObject({ code: 'cancelled' })
+      await flush()
+      expect(auth.revalidateDevice).toHaveBeenCalledTimes(3)
+      expect(raw.sent.filter(frame => frame.type === 'application-open')).toHaveLength(2)
+      expect(presence.mock.calls.at(-1)![0].lastSeenAt).toBe(original.lastSeenAt)
+      stale.abort()
+      await cancelledStale
+
+      raw.frame({ type: 'ping', connectionEpoch: epoch })
+      await flush()
+      expect(DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0]).lastSeenAt).toBe(secondTime.toISOString())
+      endpoint.close()
+      await task
+      await endpoint.join()
+      expect(presence.mock.calls.at(-1)![0]).toMatchObject({ phase: 'offline', lastSeenAt: secondTime.toISOString() })
+    } finally {
+      endpoint.close()
+      await task
+      await endpoint.join()
+    }
   })
   it('half-open heartbeat expires within declared deadline', async () => {
     vi.useFakeTimers(); const { endpoint, presence } = makeEndpoint(); const socket = new Socket()
@@ -379,7 +418,10 @@ describe('pinned ws adapter on disposable loopback transport', () => {
       const [received] = await welcomeMessage; const negotiated = JSON.parse(String(received))
       expect(negotiated).toMatchObject({ type: 'welcome', capabilities: { dispatch: false, transfer: false } })
       expect(client.extensions).toBe('')
+      const mainReady = once(client, 'message')
       client.send(JSON.stringify({ type: 'ready', connectionEpoch: negotiated.connectionEpoch }))
+      expect(JSON.parse(String((await mainReady)[0]))).toEqual({ type: 'pong',
+        connectionEpoch: negotiated.connectionEpoch, observedAt: expect.any(String), mainReady: true })
       const pong = once(client, 'message'); client.send(JSON.stringify({ type: 'ping', connectionEpoch: negotiated.connectionEpoch }))
       expect(JSON.parse(String((await pong)[0]))).toEqual({ type: 'pong', connectionEpoch: negotiated.connectionEpoch,
         observedAt: expect.any(String) })
