@@ -180,7 +180,7 @@ async function physicalFixture(options: {
     if(text.includes('execution_native_placements'))return {rows:[{record:f.nativePlacement}],rowCount:1}
     if(text.includes('source_execution_materializations'))return {rows:[{record:f.nativePlacement.materialization,state:f.nativePlacement.materialization.state}],rowCount:1}
     if(text.includes('remote_dispatch_origins'))return {rows:[{connection}],rowCount:1}
-    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:retained.accepted}],rowCount:1}
+    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:retained.accepted,authorized:true}],rowCount:1}
     if(text.includes('workflow_native_entries'))return {rows:[entry],rowCount:1}
     if(text.includes('source_digest from workflow_native_proofs'))return {rows:retained.proof?[{record:retained.proof,source_digest:repeatDigest(retained.proof,4*1024*1024)}]:[],rowCount:retained.proof?1:0}
     if (text.includes('workflow_native_proofs')) {
