@@ -47,3 +47,15 @@ it('checks each Agent succeeds once and has its own product worktree branch', ()
   recorded.runs[1]!.worktrees![0]!.branch = recorded.runs[0]!.worktrees![0]!.branch
   expect(() => verifier.verifyScenario(recorded)).toThrow(/succeeds once[\s\S]*own branch/)
 })
+
+it('accepts an idle configured cloud provider unless that workspace\'s tickets waited in the queue', () => {
+  const recorded = fixture()
+  const circleci = { ...recorded.tickets[0]!.latest.computer!.hostRef, provider: 'circleci' as const }
+  recorded.workspaces[0]!.ciComputers.push(circleci)
+  expect(() => verifier.verifyScenario(recorded)).not.toThrow()
+  const ticket = recorded.tickets[0]!
+  const queued = { ...ticket.timeline[0]!.run, state: 'queued' as const }
+  ticket.timeline.unshift({ observedAt: '2026-01-01T00:00:00.000Z', run: queued },
+    { observedAt: '2026-01-01T00:01:00.000Z', run: queued })
+  expect(() => verifier.verifyScenario(recorded)).toThrow('Configured circleci CI executes work while tickets wait')
+})

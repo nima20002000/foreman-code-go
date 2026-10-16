@@ -6,6 +6,14 @@ import type { TicketObservation } from './crossComputerCiObservation.js'
 
 type Check = (condition: unknown, message: string) => void
 
+
+/** Tickets queued longer than this had to wait for capacity rather than for the next dispatch pass. */
+const CI_QUEUE_WAIT_MS = 30_000
+
+function queuedSpanMs(ticket: TicketObservation) {
+  const queued = ticket.timeline.filter(sample => sample.run.state === 'queued').map(sample => Date.parse(sample.observedAt))
+  return queued.length < 2 ? 0 : Math.max(...queued) - Math.min(...queued)
+}
 function sameTicket(left: CiRunRecord | undefined, right: CiRunRecord) {
   // ci_get adds smokeComputer to the requested ticket; partitions and log records omit that projection.
   return left && isDeepStrictEqual({ ...left, smokeComputer: undefined }, { ...right, smokeComputer: undefined })
@@ -219,9 +227,14 @@ export function verifyScenario(recorded: RecordedScenario): void {
     .map(ticket => JSON.stringify(ticket.latest.computer!.hostRef)))
   check(computers.size >= 2, 'At least two computers execute tickets')
   for (const workspace of recorded.workspaces) {
+    // Dispatch prefers faster executors; an idle provider is a defect only while this workspace's tickets wait.
+    const waited = recorded.tickets.some(ticket => ticket.workspaceId === workspace.workspaceId
+      && queuedSpanMs(ticket) > CI_QUEUE_WAIT_MS)
+    if (!waited) continue
     for (const host of workspace.ciComputers.filter(host => host.kind === 'cloud')) {
       check(recorded.tickets.some(ticket => ticket.workspaceId === workspace.workspaceId
-        && ticket.latest.computer?.hostRef.provider === host.provider), `Configured ${host.provider} CI executes work`)
+        && ticket.latest.computer?.hostRef.provider === host.provider),
+      `Configured ${host.provider} CI executes work while tickets wait`)
     }
   }
   for (const read of recorded.isolation) {
