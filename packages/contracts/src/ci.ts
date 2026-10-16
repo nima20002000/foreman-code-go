@@ -115,6 +115,10 @@ export const CiGetOutputSchema = z.object({
    * recent gate runs that ran its file, so a known flake is recognized instead of root-caused again. It never changes
    * the ticket's result. */
   failureHistory: z.array(CiFailureHistorySchema).max(CI_FAILURE_HISTORY_LIMITS.entries).optional(),
+  failedFiles: CiSelectedFilesSchema.optional().describe('For a failed group, deduplicated reported failed test files '
+    + 'across its parts, independent of testStatus. Pass as ci_run files with scope=affected, the same suite and an '
+    + 'explicit commit; separate files by suite for multi-suite gates. Empty when no failed files were reported; '
+    + 'setup failures may have no test results.'),
   gate: z.object({
     computers: z.array(z.object({ key: z.string(), ticketIds: z.array(IdSchema),
       expectedDurationMs: z.number().nonnegative(), actualDurationMs: z.number().nonnegative().nullable() }).strict()),

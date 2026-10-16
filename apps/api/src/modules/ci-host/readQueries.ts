@@ -134,19 +134,22 @@ export class HostCiReads {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
       const row = await this.readTicket(caller, scope, input)
       const run = CiRunRecordSchema.parse(row.record)
-      const groupRows = (await this.pool.query<{ record: unknown; log_tail: string }>(
-        `select record${input.logTail === false ? '' : ",case when id=$4 then log_tail else '' end as log_tail"}
+      const groupRows = (await this.pool.query<{ record: unknown; log_tail: string; failed_files: string[] }>(
+        `select record,array(select f->>'file' from jsonb_array_elements(test_results->'files') f
+          where f->>'status'='failed') as failed_files
+          ${input.logTail === false ? '' : ",case when id=$4 then log_tail else '' end as log_tail"}
           from ci_runs where group_id=$1 and workspace_id=$2
           and record->'initiator'=$3::jsonb
           order by record->>'suite',record->>'part',(record->'partition'->>'index')::integer,created_at,id`,
         [run.groupId, scope.workspaceId, JSON.stringify(run.initiator),
           ...(input.logTail === false ? [] : [run.id])])).rows.map(row => ({
-          run: CiRunRecordSchema.parse(row.record), logTail: row.log_tail,
+          run: CiRunRecordSchema.parse(row.record), logTail: row.log_tail, failedFiles: row.failed_files ?? [],
         }))
       const group = groupRows.map(row => row.run)
       // Collection can finish between reads; pair the ticket and its log from the same group snapshot.
       const currentRow = groupRows.find(row => row.run.id === run.id) ?? { run, logTail: row.log_tail }
       const current = currentRow.run
+      const groupState = ciGroupState(group)
       const position = current.state === 'queued' ? await this.queuePosition(current.id) : undefined
       const smokeComputer = (await this.host.smokeTargets([current])).get(current.groupId)
       const sharing = await ciGroupSharing(this.pool, scope.workspaceId, current.groupId)
@@ -154,7 +157,8 @@ export class HostCiReads {
         partitions: group.length > 1 ? group : undefined,
         ...(input.logTail === false ? {} : { logTail: currentRow.logTail }),
         queue: position ? { position, reason: ciQueueReason(current) } : null,
-        group: { groupId: current.groupId, state: ciGroupState(group) },
+        group: { groupId: current.groupId, state: groupState },
+        ...(groupState === 'failed' ? { failedFiles: [...new Set(groupRows.flatMap(row => row.failedFiles))].sort() } : {}),
         ...(sharing ? { sharing } : {}),
         ...(current.gate ? { gate: ciGateReport(group) } : {}),
         ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}),
