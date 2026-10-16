@@ -9,7 +9,8 @@ import { RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,typ
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
-import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
+import { deviceRequestTimeoutMs, waitForDeviceRetry } from '../../devices/deviceRequestRetry.js'
+import { deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { RemoteNativeBatchPhysicalVerification, VerifiedRemoteOriginalSource } from '../../placement/remoteNativeSource.js'
 import { readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
@@ -48,7 +49,7 @@ export interface PassiveRemoteNativeOwner {
   nativeOwner: string; native: RemoteNativeIdentity; binding: Readonly<DeviceSessionBinding>; assertCurrent(): void
 }
 interface Prepared {
-  expiresAt: number
+  isExpired(): boolean
   binding: Readonly<DeviceSessionBinding>
   readout: RemoteWorkflowPhysicalReadout
   placement: AcceptedNodePlacement
@@ -177,6 +178,7 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
         || capture.readout.observation.lifecycle !== 'active' || capture.readout.closure) return undefined
       const assertCurrent = () => {
         if (bound.get(original) !== capture) return unavailable('passive_owner')
+        if (Date.parse(capture.readout.expiresAt) <= Date.now()) return unavailable('connection_expired')
         capture.owner.assertOwned(); original.assertCurrent(); capture.assertCurrent(); capture.lifetime.assertCurrent()
         assertSource(capture.readout, original.source, capture.placement)
       }
@@ -278,7 +280,7 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
       same({ ...event, executionId: receipt.intent.executionId }, source.event)))
   if (retained && retainedSource && same(retained.readout.receipt, receipt)
     && same(retained.placement, placement) && same(retained.binding, captured.binding)
-    && retained.expiresAt > Date.now()) {
+    && !retained.isExpired()) {
     retained.assertCurrent()
     assertSource(retained.readout, source, placement)
     const result = Object.freeze({ kind: 'original-remote-physical' as const })
@@ -291,7 +293,7 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   const assertRegisteredConnection = () => {
     signal?.throwIfAborted()
     const current = endpoint.currentBinding(placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : '')
-    if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
+    if (!current || !same(current, captured.binding)
       || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
         workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
         bootId:receipt.connection.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
@@ -299,14 +301,27 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   const assertCurrent = () => {
     assertRegisteredConnection()
     if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
+    // Main's processing time does not age an authenticated reply while its connection remains current.
+    expiresAt = Date.now() + 60_000
   }
-  const request = (payload: unknown) => retryDeviceRequest(async () => {
-    assertRegisteredConnection()
-    const response = await captured.request(payload,
-      { ...(signal ? { signal } : {}), timeoutMs: deviceRequestTimeoutMs })
-    assertRegisteredConnection()
-    return response
-  }, { retry: 'idempotent', signal })
+  const request = async (payload: unknown) => {
+    for (let attempt = 0; ; attempt++) {
+      assertRegisteredConnection()
+      try {
+        const response = await captured.request(payload,
+          { ...(signal ? { signal } : {}), timeoutMs: deviceRequestTimeoutMs })
+        assertRegisteredConnection()
+        return response
+      } catch (error) {
+        assertRegisteredConnection()
+        const failure = deviceApplicationFailure(error)
+        if (!failure.retryable || ['transport', 'DEVICE_LINK_DROPPED', 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE']
+          .includes(failure.code)) throw error
+        // Main being busy must not consume this healthy remote attempt's retry budget.
+        await waitForDeviceRetry(Math.min(2_000, 250 * 2 ** attempt), signal)
+      }
+    }
+  }
   assertRegisteredConnection()
   const reply = await request({ method: 'physical-readout', intent: receipt.intent, placement,
     receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) })
@@ -325,18 +340,27 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
     && readout.observation.closureEvidence === 'linux_boot_changed'
     && same(readout.closure.launch, readout.observation))
+  if (expiresAt <= Date.now()) return unavailable('connection_expired')
   assertCurrent()
   const assertAcknowledgmentCurrent = () => {
     const current = endpoint.currentBinding(captured.binding.deviceId)
-    if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
+    // ACK retires a committed reply, so Main's publication time cannot expire it.
+    if (signal?.aborted || current && !same(current, captured.binding)) {
       throw new DomainError('REMOTE_NATIVE_ACK_OBSOLETE',
         'The captured physical observation can no longer authorize an acknowledgment.', 409)
     }
     assertCurrent()
   }
   const result = Object.freeze({ kind: 'original-remote-physical' as const })
-  const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
-    acknowledge:async(sourceDigest, options)=>{
+  const observation: Prepared = {
+    isExpired: () => expiresAt <= Date.now(),
+    binding: Object.freeze(structuredClone(captured.binding)),
+    readout,
+    placement: structuredClone(placement),
+    source: structuredClone(source),
+    assertCurrent,
+    assertAcknowledgmentCurrent,
+    acknowledge: async (sourceDigest, options) => {
       assertAcknowledgmentCurrent()
       const reply = await request({ method: 'physical-ack', intent: receipt.intent, placement,
         receiptSequence: receipt.sequence, sourceDigest, ...options })

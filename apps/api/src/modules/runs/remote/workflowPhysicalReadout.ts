@@ -17,7 +17,7 @@ import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.j
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
-import { deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
 import { DeviceConnectionError } from '../../devices/deviceWire.js'
 import type { ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
 import { anchored,identity,openChildDirectory,openPrivateRoot } from '../../sources/privateFilesystem.js'
@@ -151,7 +151,13 @@ export async function assertOriginalPhysicalDirectories(input:{source:RemoteWork
     await authorize()
     await inspectSource();await inspectRuntime();await inspectSource();await inspectRuntime()
     await authorize()}
-  catch(error){if(error instanceof DomainError)throw error;input.signal.throwIfAborted();return unavailable()}
+  catch (error) {
+    input.signal.throwIfAborted()
+    if (error instanceof DomainError || error instanceof DeviceApplicationError || transientAuthorizationFailure(error)) {
+      throw error
+    }
+    return unavailable()
+  }
 }
 /** Admission, backpressure, timeout and link failures say nothing about the original reply, so it must stay retained for the retry. */
 function transientAuthorizationFailure(error: unknown): boolean {
