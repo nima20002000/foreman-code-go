@@ -1161,22 +1161,29 @@ class InstalledWorkflowHostRuntime {
         const stopped = await this.stopInitialConstruction(frame, context)
         if (stopped) return stopped
         const resident = this.operations.get(frame.intent.executionId)
+        const stopping = frame.method === 'control' && frame.command.action.kind === 'stop'
         // Only the transport session changed: the original work continues on it, unless Main stops it.
-        const reconnected = resident !== undefined && !resident.preparationRecovery
-          && !(frame.method === 'control' && frame.command.action.kind === 'stop')
+        const reconnected = resident !== undefined && !resident.preparationRecovery && !stopping
           && sameDeviceInstallation(resident.context.binding, context.binding)
-        if (resident && !reconnected && (resident.preparationRecovery || !isDeepStrictEqual(resident.context.binding, context.binding))) {
-          const status = await(await this.journal()).status(frame.intent.operationId)
+        if (resident && !reconnected) {
+          const log = await this.journal()
+          const status = await log.status(frame.intent.operationId)
           const acknowledged = status.status === 'known' && status.receipt.native && resident.native && resident.session
-          if (!acknowledged || resident.preparationRecovery) {
+          const bindingChanged = !isDeepStrictEqual(resident.context.binding, context.binding)
+          const stoppingEntry = stopping && status.status === 'known' && status.receipt.entryAttempted
+          if (resident.preparationRecovery || !acknowledged && (bindingChanged || stoppingEntry)) {
             if (!isDeepStrictEqual(resident.intent, frame.intent) || !isDeepStrictEqual(resident.placement, frame.placement)
               || resident.context.binding.bootId !== context.binding.bootId) unavailable('original_operation_binding_changed')
             const action = frame.method === 'control' && frame.command.action.kind === 'stop' ? 'stop' : 'read'
             await workerExecutionAuthorizer(this.forBinding(context.binding))(frame.intent, frame.placement, action)
             this.current(context.binding)
+            if (stopping) {
+              if (frame.command.operationId !== frame.intent.operationId) unavailable('original_control_operation_changed')
+              await log.control(frame.command)
+            }
             resident.context = context
             await this.closeResidentPreparation(resident, resident.preparationRecovery ? 'preparation_recovery'
-              : `binding_changed:${status.status}:${Boolean(status.status === 'known' && status.receipt.native)}`)
+              : 'unacknowledged_preparation')
             this.current(context.binding)
           }
         }
