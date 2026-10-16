@@ -4,6 +4,7 @@ import { managedMcpChannelFixture } from '../../../test/helpers/managedMcpChanne
 import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { RunGraphError } from '../run-graph/errors.js'
+import { DomainError } from '../errors.js'
 import {
   executionFailureClass, isTransientExecutionCode, isTransientExecutionError, isTransientExecutionResult,
   transientExecutionFailure,
@@ -46,6 +47,35 @@ describe('lost original remote replies', () => {
 })
 
 describe('explicit execution retry classification', () => {
+  it.each([
+    [],
+    [new DomainError('DEVICE_CONNECTION_UNAVAILABLE', 'Connection lost.', 503)],
+    [new Error('Recover native lifetime', {
+      cause: new DomainError('REPEAT_CLEANUP_PENDING', 'Closure is pending.', 409),
+    })],
+    [new AggregateError([
+      new DomainError('APPROVAL_SETTLEMENT_PENDING', 'Approval is pending.', 409),
+      Object.assign(new Error('Connection reset'), { code: 'ECONNRESET' }),
+    ], 'Cleanup is pending.')],
+  ])('keeps temporary cleanup aggregates transient %#', (...errors) => {
+    expect(executionFailureClass(new AggregateError(errors, 'Cleanup unconfirmed.'))).toBe('transient')
+  })
+
+  it('retains a concrete permanent cause in mixed cleanup failures', () => {
+    const error = new AggregateError([
+      new DomainError('REPEAT_CLEANUP_PENDING', 'Closure is pending.', 409),
+      new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT', 'Native identity changed.', 409),
+    ], 'Cleanup failed.')
+    expect(executionFailureClass(error)).toBe('permanent')
+  })
+
+  it('honors an explicit permanent class on a temporary cleanup aggregate', () => {
+    const error = Object.assign(new AggregateError([
+      new DomainError('DEVICE_CONNECTION_UNAVAILABLE', 'Connection lost.', 503),
+    ], 'Cleanup failed.'), { class: 'permanent' })
+    expect(executionFailureClass(error)).toBe('permanent')
+  })
+
   it('retries an uncoded database disconnect wrapped in a graph transaction failure', () => {
     const cause = new Error('Connection terminated unexpectedly')
     const error = new RunGraphError('GRAPH_TRANSACTION_FAILED', { cause })

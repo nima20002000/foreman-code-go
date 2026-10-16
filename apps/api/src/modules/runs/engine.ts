@@ -29,7 +29,7 @@ import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCh
 import type { WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 import { readRunAcceptedPlacements } from '../placement/persistence.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
-import { isTransientExecutionError } from './executionRetryPolicy.js'
+import { executionFailureClass } from './executionRetryPolicy.js'
 
 /** One engine, Run owner, checkpoint thread and repository for all current V3
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
@@ -307,6 +307,7 @@ export class LangGraphWorkflowEngine {
       // The exact task/error and native lifetime remain durable/resident. A
       // consumed approval is not callback failure merely because cleanup or a
       // sibling reviewer still needs to finish; reconcile() retries this thread.
+      this.deferReconciliation(runId, error)
     } finally {
       stopObservingInterrupts?.()
       // Shutdown publishes this barrier before queuing cleanup SQL. A drive may
@@ -403,6 +404,16 @@ export class LangGraphWorkflowEngine {
   /** Bounded current recovery. Never reset an existing checkpoint to initial state. */
   private reconcileCursor = ''
   private readonly reconciliationRetries = new Map<string, { delayMs: number; retryAt: number; failures: number }>()
+  private deferReconciliation(runId: string, error: unknown): { permanent: boolean; failures: number } {
+    const retry = this.reconciliationRetries.get(runId)
+    const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
+    const permanent = executionFailureClass(error) === 'permanent'
+      && !(error instanceof DomainError && error.status >= 500)
+    const failures = (retry?.failures ?? 0) + (permanent ? 1 : 0)
+    this.reconciliationRetries.set(runId, { delayMs, retryAt: Date.now() + delayMs, failures })
+    return { permanent, failures }
+  }
+
   /** Transient recovery failures retry forever with backoff. After this many permanent ones the Run gets a failed
    * cleanup request carrying the real cause, and the next sweep settles it through the ordinary cleanup path. */
   private static readonly permanentReconciliationFailures = 10
@@ -430,18 +441,15 @@ export class LangGraphWorkflowEngine {
           if (this.activeTasks.size >= this.maximumActiveRuns) { this.reconcileCursor = after; return }
           after = candidate.id
           void this.start(candidate.id).then(() => {
-            this.reconciliationRetries.delete(candidate.id)
+            // A successful callback may have yielded settlement and scheduled its next retry.
+            if (this.reconciliationRetries.get(candidate.id) === retry) this.reconciliationRetries.delete(candidate.id)
           }).catch(error => {
             // A retained reviewer can own the Run between engine passes; retry on the next sweep.
             if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
             // A joined drive ends this way on Stop; the Stop and cleanup path settles the Run.
             if (error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
-            const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
-            const permanent = !repeatSettlementPending(error) && !isTransientExecutionError(error)
-              && !(error instanceof DomainError && error.status >= 500)
-            const failures = (retry?.failures ?? 0) + (permanent ? 1 : 0)
-            this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs, failures })
+            const { permanent, failures } = this.deferReconciliation(candidate.id, error)
             onError(error)
             if (permanent && failures % LangGraphWorkflowEngine.permanentReconciliationFailures === 0) {
               return this.failUnrecoverable(candidate.id, error).catch(onError)
