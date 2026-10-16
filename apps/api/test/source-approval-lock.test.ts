@@ -103,6 +103,22 @@ it('rejects a location change during Git inventory before recording approval', a
   expect(f.state.approvals).toBe(0)
 })
 
+it.each([false, true])('captures source bytes without retaining a database connection (repository=%s)', async repository => {
+  const f = fixture(repository)
+  const capture = vi.mocked(captureGitSource).getMockImplementation()!
+  vi.mocked(approvedGitTreePaths).mockResolvedValue([])
+  vi.mocked(captureGitSource).mockImplementationOnce(async request => {
+    expect(f.state.transactions).toBe(0)
+    expect(f.state.connections).toBe(0)
+    return capture(request)
+  })
+  const result = await f.approve()
+  expect(result.value.manifest.git?.commit).toBe(f.input.commit)
+  expect(f.state.approvals).toBe(1)
+  expect(f.state.connections).toBe(0)
+  expect(f.state.transactions).toBe(0)
+})
+
 it('rejects a repository change during Git inventory before recording approval', async () => {
   const f = fixture(true)
   vi.mocked(approvedGitTreePaths).mockImplementation(async () => {

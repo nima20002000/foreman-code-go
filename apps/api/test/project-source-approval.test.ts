@@ -82,6 +82,14 @@ describe('Project source approval', () => {
     expect((await f.service.approveProject(f.principal, f.input)).manifest.executablePolicy).toBe('preserve-approved')
   })
 
+  it('approves the supplied commit with its selected executable policy', async () => {
+    const f = fixture()
+    const commit = 'c'.repeat(40)
+    const result = await f.service.approveProject(f.principal, { ...f.input, commit, executablePolicy: 'strip' })
+    expect(result.manifest.git?.commit).toBe(commit)
+    expect(result.manifest.executablePolicy).toBe('strip')
+  })
+
   it('rejects reuse of the capture command with a changed executable policy', async () => {
     const f = fixture()
     await f.service.approveProject(f.principal, { ...f.input, executablePolicy: 'strip' })
