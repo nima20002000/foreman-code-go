@@ -51,7 +51,8 @@ function joinable(tickets: CiRunRecord[]) {
     && tickets.every(ticket => !['canceled', 'lost'].includes(ticket.state) && !ticket.supersededBy && !ticket.cancellation)
 }
 
-/** Joins the newest identical active group of the workspace inside the admission transaction; null when none.
+/** Joins the newest identical active group of the workspace that another requester asked for, inside the admission
+ * transaction; null when none. A requester repeating its own request with a new commandId gets new tickets.
  * Identical admissions serialize on the request key, so concurrent requests find one group. */
 export async function joinCiRequest(client: pg.ClientBase, workspaceId: string, key: string, requester: CiRequester,
   commandId: string): Promise<{ output: CiRunOutput; groupId: string } | null> {
@@ -69,6 +70,8 @@ export async function joinCiRequest(client: pg.ClientBase, workspaceId: string, 
     const requesters = await readRequesters(client, workspaceId, group.group_id)
     // Every requester of this group left; its cancellation is underway.
     if (requesters.length && !requesters.some(value => value.active)) continue
+    const attached = requesters.length ? requesters.filter(value => value.active) : [tickets[0]!.initiator]
+    if (attached.some(value => sameRequester(value, requester))) continue
     if (!requesters.length) {
       await insertRequester(client, workspaceId, group.group_id, tickets[0]!.initiator, { initiator: true })
     }
