@@ -81,6 +81,9 @@ interface MirrorMaintenance {
 }
 const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
 const mirrorMaintenance = new Map<string, MirrorMaintenance>()
+// Every publication force-pushes main, so a minute-old base only changes the snapshot parent, never the pushed tree.
+const MIRROR_FETCH_REUSE_MS = 60_000
+const mirrorFetchedAt = new Map<string, number>()
 
 /** The public mirror belonging to this workspace, if any. */
 export function workspaceMirrors(pool: pg.Pool): Mirrors {
@@ -694,22 +697,26 @@ export class CloudCi {
     // Fetch without source alternates: their shallow refs are not negotiation haves the mirror clone can walk.
     const fetch = () => run(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`], {})
     let repair: CiMirrorRepair | undefined
-    await fetch().catch(async (error: unknown) => {
-      if (!(error instanceof DomainError) || !/could not read|failed to traverse|did not send all necessary objects|bad object|corrupt/i
-        .test(error.message)) throw error
-      const repairing = performance.now()
-      log.warn({ operation: 'repair CI mirror clone', err: error, mirror, commit, attempt: 1 },
-        'CI mirror clone is unreadable; rebuilding it once')
-      try {
-        await rm(mirrorClone, { recursive: true, force: true })
-        await ensureClone(this.git, mirror, signal)
-        await fetch()
-      } finally {
-        const elapsedMs = performance.now() - repairing
-        updateOperationalFailure('jobs', 'repair CI mirror clone', { elapsedMs })
-        repair = { count: 1, reason: 'CI_MIRROR_CORRUPT', repository: mirror, sourceCommit: commit, elapsedMs }
-      }
-    })
+    const fetchedAt = mirrorFetchedAt.get(mirrorClone)
+    if (fetchedAt === undefined || this.ports.now().getTime() - fetchedAt >= MIRROR_FETCH_REUSE_MS) {
+      await fetch().catch(async (error: unknown) => {
+        if (!(error instanceof DomainError) || !/could not read|failed to traverse|did not send all necessary objects|bad object|corrupt/i
+          .test(error.message)) throw error
+        const repairing = performance.now()
+        log.warn({ operation: 'repair CI mirror clone', err: error, mirror, commit, attempt: 1 },
+          'CI mirror clone is unreadable; rebuilding it once')
+        try {
+          await rm(mirrorClone, { recursive: true, force: true })
+          await ensureClone(this.git, mirror, signal)
+          await fetch()
+        } finally {
+          const elapsedMs = performance.now() - repairing
+          updateOperationalFailure('jobs', 'repair CI mirror clone', { elapsedMs })
+          repair = { count: 1, reason: 'CI_MIRROR_CORRUPT', repository: mirror, sourceCommit: commit, elapsedMs }
+        }
+      })
+      mirrorFetchedAt.set(mirrorClone, this.ports.now().getTime())
+    }
     const reusedSnapshot = await git(['rev-parse', base])
     let fetchMs = performance.now() - fetching
     const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
