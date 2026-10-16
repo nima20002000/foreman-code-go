@@ -9,7 +9,7 @@ export function observationFixture(options: {
   cloud: number
   local: number
   poolSize: number
-  beforeRead?: () => Promise<void>
+  beforeRead?: (runId: string) => Promise<void>
   beforeWrite?: () => Promise<void>
 }) {
   const computers: HostCiComputer[] = Array.from({ length: options.cloud + options.local }, (_, index) => ({
@@ -48,7 +48,7 @@ export function observationFixture(options: {
       cpuCount: 4, memoryBytes: 8 * 2 ** 30, runs: [], slotsUsed: 1, slotsTotal: 1 }
     if (request.operation !== 'read') throw new Error('Unexpected executor operation')
     reads.push(request.runId)
-    await options.beforeRead?.()
+    await options.beforeRead?.(request.runId)
     const record = records.find(record => record.id === request.runId)!
     return { operation: 'read', run: { runId: record.id, state: 'running', step: 'checking',
       startedAt: record.startedAt!, finishedAt: null, exitCode: null, message: null, logBytes: 0 },

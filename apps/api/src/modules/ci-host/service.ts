@@ -21,7 +21,7 @@ import { reportServiceFailure, trackService } from '../diagnostics/serviceHealth
 import { planCiParts, runsOnCircleCi, unitPartOf } from './parts.js'
 import { planIntegrationParts } from './integrationParts.js'
 import { readCiSlots } from './planningCapacity.js'
-import { CiPlanningSnapshot } from './planningSnapshot.js'
+import { CiPlanningSnapshot, isBackgroundYield } from './planningSnapshot.js'
 import { HostCiReads, retryRead } from './readQueries.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from './supersession.js'
@@ -128,7 +128,7 @@ export class HostCiService {
             this.planningEndpoint.observeStatus(computer, reply)
             return reply
           } catch (error) {
-            this.planningEndpoint.invalidate(computer)
+            if (!isBackgroundYield(error)) this.planningEndpoint.invalidate(computer)
             throw error
           }
         }
@@ -142,7 +142,8 @@ export class HostCiService {
           this.planningEndpoint.observeStatus(computer, reply)
           return reply
         } catch (error) {
-          this.planningEndpoint.invalidate(computer)
+          // Yielding to foreground work says nothing about the computer; its last-known readiness stays bounded by age.
+          if (!isBackgroundYield(error)) this.planningEndpoint.invalidate(computer)
           throw error
         } finally {
           for (const row of assigned) {
@@ -1065,14 +1066,19 @@ export class HostCiService {
     const offset = this.observationOffset % Math.max(1, rows.length)
     let pendingCloud = cloud.filter(row => this.observingRuns.has(row.id)).length
     let pendingLocal = local.filter(row => this.observingRuns.has(row.id)).length
+    // Slow provider polls may hold all but one permit, so Worker tickets can always release their slots.
+    const cloudLimit = limit > 1 ? limit - 1 : limit
+    let observingCloud = cloud.filter(row => this.observingRuns.has(row.id) && !this.collectingRuns.has(row.id)).length
     for (let visited = 0; visited < rows.length && this.observingRuns.size - this.collectingRuns.size < limit; visited++) {
       const index = (offset + visited) % rows.length
       const row = rows[index]!
       if (this.observingRuns.has(row.id)) continue
       const isCloud = CiRunRecordSchema.parse(row.record).computer?.hostRef.kind === 'cloud'
-      if (isCloud ? pendingCloud >= 48 : pendingLocal >= 8) continue
-      if (isCloud) pendingCloud++
-      else pendingLocal++
+      if (isCloud ? pendingCloud >= 48 || observingCloud >= cloudLimit : pendingLocal >= 8) continue
+      if (isCloud) {
+        pendingCloud++
+        observingCloud++
+      } else pendingLocal++
       const observation = withoutCiDatabasePriority(() =>
         trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
           () => refresh(row))).finally(() => { this.observingRuns.delete(row.id) })
@@ -1192,6 +1198,8 @@ export class HostCiService {
       && !left.gate && !right.gate
       && left.partition?.tier === right.partition?.tier && left.partition?.tier !== 'slow'
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
+    // Whether a ticket's mirror snapshot is on GitHub does not depend on which cloud slot is tried.
+    const mirrorReady = new Map<string, boolean>()
     const stealsGatePart = gatePartStealer(computers, queued)
     const reservedCloud = reservedCloudSlotKeys(computers, this.reservedCloudSlots)
     const canTakeGatePart = (run: CiRunRecord, computer: HostCiComputer) => {
@@ -1258,7 +1266,8 @@ export class HostCiService {
           || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)
         const computer = order.shift()!
-        const status = this.planningEndpoint.status(computer)
+        // The same bounded snapshot that counted this computer's free slots decides whether it can take the ticket.
+        const status = this.planningEndpoint.dispatchStatus(computer)
         const rejected = this.dispatchRejections.reason(run.id, computer, status)
         const notReady = status?.ready ? undefined
           : status?.reasons.join('; ') || unavailable.get(computer.key) || 'CI status unavailable'
@@ -1291,9 +1300,12 @@ export class HostCiService {
         const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
         const start = this.startRequest(run, { ...selection, ...shards }, durations.get(run.id))
         // A cloud slot is claimed only once the shared mirror snapshot is on GitHub; build computers need no snapshot.
-        if (computer.hostRef.kind === 'cloud' && !this.mirrorPublished(start)) {
-          reasons.push(`${computer.label}: publishing the CI mirror snapshot`)
-          continue
+        if (computer.hostRef.kind === 'cloud') {
+          if (!mirrorReady.has(run.id)) mirrorReady.set(run.id, this.mirrorPublished(start))
+          if (!mirrorReady.get(run.id)) {
+            reasons.push(`${computer.label}: publishing the CI mirror snapshot`)
+            continue
+          }
         }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         assignments.set(run.id, { groupId: run.groupId, computerKey: computer.key })

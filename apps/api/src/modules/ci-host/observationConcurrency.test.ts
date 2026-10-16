@@ -39,3 +39,23 @@ it('observes every cloud and local ticket across bounded passes without starving
     await f.service.close()
   }
 })
+
+it('keeps observing local tickets while slow cloud observations hold their share of the pool', async () => {
+  const cloudGate = rejectableDeferred<void>()
+  const cloudIds = new Set<string>()
+  const f = observationFixture({ cloud: 4, local: 2, poolSize: 4,
+    beforeRead: runId => cloudIds.has(runId) ? cloudGate.promise : Promise.resolve() })
+  for (const record of f.records) if (record.computer?.hostRef.kind === 'cloud') cloudIds.add(record.id)
+  try {
+    await f.warm()
+    for (let pass = 0; pass < 8; pass++) {
+      await f.service.dispatch()
+      await setImmediate()
+    }
+    const localIds = f.records.filter(record => record.computer?.hostRef.kind === 'device').map(record => record.id)
+    expect(localIds.filter(id => f.reads.includes(id))).toEqual(localIds)
+  } finally {
+    cloudGate.resolve()
+    await f.service.close()
+  }
+})
