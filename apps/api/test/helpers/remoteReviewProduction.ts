@@ -407,8 +407,10 @@ export async function remoteReviewProduction(options: {
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
       if (response.isError) {
-        await new Promise(resolve => setTimeout(resolve, 1500)) // DIAG
-        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}\nDIAG Main stderr: ${mainFailure.slice(-3000)}\nDIAG Worker stderr: ${workerFailure.slice(-3000)}`)
+        // Main logs the failed tool asynchronously; give its log line time to arrive so the report names the failing tool.
+        await new Promise(resolve => setTimeout(resolve, 1500))
+        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`
+          + `\nMain stderr: ${mainFailure.slice(-2000)}\nWorker stderr: ${workerFailure.slice(-2000)}`)
       }
       return decodeMcpToolResult(response)
     }
