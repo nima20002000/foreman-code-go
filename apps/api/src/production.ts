@@ -20,7 +20,8 @@ import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
-import { activeCiRuns, circleCiOrgs, cloudCis, workspaceMirrorList, workspaceMirrors } from './modules/ci-host/cloud.js'
+import { activeCiRuns, circleCiOrgs, cloudCis, runningCircleCiOwners, workspaceMirrorList, workspaceMirrors }
+  from './modules/ci-host/cloud.js'
 import { configuredReservedCloudSlots } from './modules/ci-host/cloudSlots.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
@@ -2788,7 +2789,7 @@ async function initializeComputerServices(composition: ProductionComposition, ma
   const cloudOptions = { activeRuns: () => activeCiRuns(database.pool) }
   const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool), cloudOptions)
   const circleOrgs = circleCiOrgs(clouds, machine.installationId, workspaceMirrors(database.pool),
-    workspaceMirrorList(database.pool), cloudOptions)
+    workspaceMirrorList(database.pool), { ...cloudOptions, runningOwners: runningCircleCiOwners(database.pool) })
   const discoverClouds = () => circleOrgs.refresh()
   runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
     id => deviceRuntime.presenceFor(id), commands, clouds)

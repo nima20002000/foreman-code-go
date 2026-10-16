@@ -52,7 +52,7 @@ export const ComputerActivityListSchema = z.object({
   mainId: z.uuid(),
   computers: z.array(ComputerActivitySchema).max(101),
   /** Cloud CI services that are ready or running work. */
-  cloud: z.array(CloudCiActivitySchema).max(8),
+  cloud: z.array(CloudCiActivitySchema).max(64),
   truncated: z.boolean(),
   /** Only global Jobs and Runs readers can infer that a computer has no activity. */
   activityComplete: z.boolean(),

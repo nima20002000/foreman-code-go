@@ -7,14 +7,18 @@ const REFRESH_MS = 10 * 60_000
 
 /** Further CircleCI orgs become CI capacity without configuration: each GitHub organization Main's GitHub login belongs
  * to that has a CircleCI project named like a workspace CI mirror. Orgs are only added; a run started on one must stay
- * readable, and an org that loses its project refuses new starts. */
+ * readable, so orgs with unfinished runs come back after a restart, and an org that loses its project refuses new
+ * starts. */
 export class CircleCiAccounts {
   private readonly accounts = new Map<string, CloudAccount>()
   private refreshing: Promise<void> | undefined
   private refreshedAt = Number.NEGATIVE_INFINITY
 
   constructor(private readonly ports: HostCiPorts, private readonly mirrors: () => Promise<string[]>,
-    private readonly added: (account: CloudAccount) => void, private readonly now: () => number = Date.now) {}
+    private readonly added: (account: CloudAccount) => void,
+    private readonly options: { runningOwners?: () => Promise<string[]>; now?: () => number } = {}) {}
+
+  private now() { return (this.options.now ?? Date.now)() }
 
   /** Starts a discovery pass unless one ran in the last ten minutes; failures keep the known orgs. */
   refresh(): Promise<void> {
@@ -30,6 +34,9 @@ export class CircleCiAccounts {
   }
 
   private async discover() {
+    for (const owner of await this.options.runningOwners?.() ?? []) {
+      if (!this.accounts.has(owner)) this.add({ owner, mirrorNames: new Set() })
+    }
     const mirrors = await this.mirrors()
     if (!mirrors.length) return
     const primaryOwners = new Set(mirrors.map(mirror => mirror.slice(0, mirror.indexOf('/'))))
@@ -39,19 +46,24 @@ export class CircleCiAccounts {
       .filter(owner => owner && !primaryOwners.has(owner))
     for (const owner of owners) {
       const found = new Set<string>()
-      for (const name of names) if (await this.followed(owner, name)) found.add(name)
+      try {
+        for (const name of names) if (await this.followed(owner, name)) found.add(name)
+      } catch (error) {
+        log.warn({ operation: 'discover CircleCI org', owner, err: error }, 'CircleCI org lookup failed; its known state stays')
+        continue
+      }
       const known = this.accounts.get(owner)
       if (known) {
         known.mirrorNames.clear()
         for (const name of found) known.mirrorNames.add(name)
-        continue
-      }
-      if (!found.size) continue
-      const account = { owner, mirrorNames: found }
-      this.accounts.set(owner, account)
-      log.info({ owner, mirrors: [...found] }, 'CircleCI org added as CI capacity')
-      this.added(account)
+      } else if (found.size) this.add({ owner, mirrorNames: found })
     }
+  }
+
+  private add(account: CloudAccount) {
+    this.accounts.set(account.owner, account)
+    log.info({ owner: account.owner, mirrors: [...account.mirrorNames] }, 'CircleCI org added as CI capacity')
+    this.added(account)
   }
 
   private async followed(owner: string, name: string) {

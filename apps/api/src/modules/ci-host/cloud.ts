@@ -105,6 +105,13 @@ export function workspaceMirrorList(pool: pg.Pool): () => Promise<string[]> {
   }
 }
 
+/** GitHub owners of the further CircleCI orgs that hold unfinished runs. */
+export function runningCircleCiOwners(pool: pg.Pool): () => Promise<string[]> {
+  return async () => (await pool.query<{ owner: string }>(`select distinct record#>>'{computer,hostRef,account}' as owner
+    from ci_runs where (state in ('queued','starting','running') or record->>'collection' = 'pending')
+      and record#>>'{computer,hostRef,account}' is not null`)).rows.map(row => row.owner)
+}
+
 /** Main owns ticket completion even when the last attempt ran on a different provider. */
 export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
   const readAt = Date.now()
@@ -172,6 +179,8 @@ export class CloudCi {
   }
 
   computers(priority = 30): HostCiComputer[] {
+    // An org without a copy of any workspace mirror only finishes the runs it already has.
+    if (this.provider.account && !this.provider.account.mirrorNames.size) return []
     const account = this.provider.account?.owner
     return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${cloudCiId(this.provider)}:${slot}`,
       hostRef: { kind: 'cloud' as const, mainId: this.mainId, provider: this.provider.id, ...(account ? { account } : {}), slot },
@@ -1306,10 +1315,12 @@ export function cloudCis(mainId: string, mirrors: Mirrors,
 
 /** Appends a CircleCI service to `clouds` for each further CircleCI org discovery finds; the caller refreshes it. */
 export function circleCiOrgs(clouds: CloudCi[], mainId: string, mirrors: Mirrors, mirrorList: () => Promise<string[]>,
-  options: { ports?: HostCiPorts; activeRuns?: () => Promise<ActiveCiRuns> } = {}): CircleCiAccounts {
+  options: { ports?: HostCiPorts; activeRuns?: () => Promise<ActiveCiRuns>; runningOwners?: () => Promise<string[]> } = {})
+  : CircleCiAccounts {
   const ports = options.ports ?? systemHostCiPorts()
   return new CircleCiAccounts(ports, mirrorList,
-    account => clouds.push(cloudCi(mainId, new CircleCiProvider(ports, {}, account), mirrors, options)))
+    account => clouds.push(cloudCi(mainId, new CircleCiProvider(ports, {}, account), mirrors, options)),
+    { runningOwners: options.runningOwners })
 }
 
 function cloudCi(mainId: string, provider: CloudProvider, mirrors: Mirrors,

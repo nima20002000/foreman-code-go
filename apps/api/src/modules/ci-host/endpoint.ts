@@ -37,8 +37,15 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     private readonly clouds: CloudCi[] = [], private readonly discoverClouds?: () => Promise<void>) {}
 
   async publishMirror(input: CiMirrorInput): Promise<void> {
-    // Publication is shared by provider and slot; readiness remains a dispatch concern.
-    await Promise.all(this.clouds.map(cloud => cloud.publishMirror(input)))
+    // Publication is shared by provider and slot; readiness remains a dispatch concern. Further CircleCI orgs publish
+    // their own mirror copy in the background so a slow copy never holds the other services idle; their start
+    // publishes again if this has not finished.
+    for (const cloud of this.clouds.filter(cloud => cloud.provider.account)) {
+      void cloud.publishMirror(input).catch(error => {
+        log.warn({ err: error, provider: cloud.provider.label, commit: input.commit }, 'CI mirror copy publication failed; its start will retry')
+      })
+    }
+    await Promise.all(this.clouds.filter(cloud => !cloud.provider.account).map(cloud => cloud.publishMirror(input)))
   }
 
   async computers(): Promise<HostCiComputer[]> {
