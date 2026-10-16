@@ -22,6 +22,14 @@ function errorCode(error: unknown): string | undefined {
   return 'code' in error && error.code !== undefined ? String(error.code) : undefined
 }
 
+/** Pending settlement retains the checkpoint and original native lifetime for reconciliation. */
+export function repeatSettlementPending(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && ['APPROVAL_SETTLEMENT_PENDING', 'REPEAT_BOUNDARY_PENDING', 'REPEAT_CLEANUP_PENDING',
+      'WORK_ACTIVATIONS_UNRESOLVED', 'WORK_REQUEST_UNRESOLVED', 'WORK_DENIAL_CONTINUATION_UNRESOLVED',
+    ].includes(String(error.code))
+}
+
 /** Shared classification. Transient: database timeouts and connection loss,
  * device/transport loss, MCP not ready, uncertain start or dispatch, interrupted
  * attempts, Worker restart and the credential failures they cause, and runtime
@@ -31,7 +39,13 @@ function errorCode(error: unknown): string | undefined {
 export function executionFailureClass(error: unknown): FailureClass {
   let coded = false
   return failureClass(error, link => {
-    if (link instanceof ZodError || link instanceof AggregateError) return 'permanent'
+    if (link instanceof ZodError) return 'permanent'
+    if (link instanceof AggregateError) {
+      const classes = link.errors.map(error => executionFailureClass(error))
+      if (classes.includes('permanent')) return 'permanent'
+      return classes.length && classes.every(value => value === 'cancelled') ? 'cancelled' : 'transient'
+    }
+    if (repeatSettlementPending(link)) return 'transient'
     if (isDatabaseTimeout(link) || isDatabasePoolTimeout(link)) return 'transient'
     const code = errorCode(link)
     if (code === undefined) return undefined

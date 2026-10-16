@@ -29,7 +29,8 @@ import type { RepeatRunRepository } from './repeatPostgres.js'
 import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
 import { WorkExecutionFailure } from './workExecutionFailure.js'
-import { isTransientExecutionError, transientExecutionFailure } from './executionRetryPolicy.js'
+import { isTransientExecutionError, repeatSettlementPending, transientExecutionFailure } from './executionRetryPolicy.js'
+export { repeatSettlementPending } from './executionRetryPolicy.js'
 import { ExecutionLimiter } from './limiter.js'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -350,15 +351,6 @@ export function repeatExecutionDirectoryKey(executionId: string): string {
  * Never invoke this to replace an already-written terminal with a different one. */
 export function repeatTerminalNormalizer(version: WorkflowVersionV3, scope: RepeatScope, ref: RepeatNodeRef) {
   return (execution: HarnessExecution): HarnessExecution => normalizeRepeatTerminal(version, scope, ref, execution)
-}
-
-/** Pending settlement is not failure, a new occurrence, a new native acknowledgement,
- * or permission to restart. The existing runtime persists its checkpoint/wait state. */
-export function repeatSettlementPending(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error
-    && ['APPROVAL_SETTLEMENT_PENDING', 'REPEAT_BOUNDARY_PENDING', 'REPEAT_CLEANUP_PENDING',
-      'WORK_ACTIVATIONS_UNRESOLVED', 'WORK_REQUEST_UNRESOLVED', 'WORK_DENIAL_CONTINUATION_UNRESOLVED',
-    ].includes(String(error.code))
 }
 
 /** Adapter to the existing Run lifecycle writers/coordinator. These operations are
@@ -687,7 +679,8 @@ export async function executeRepeatRuntime(input: {
     }
     const current = await readCurrentState()
     if (current.executionState === 'completed') throw error // immutable terminal, cleanup may still be pending
-    const terminalFailure = !preflightComplete || isRuntimeFailure(error) || input.signal.aborted || current.stopRequested
+    const preflightFailure = !preflightComplete && !isTransientExecutionError(error)
+    const terminalFailure = preflightFailure || isRuntimeFailure(error) || input.signal.aborted || current.stopRequested
     if (!terminalFailure) {
       await drain()
       if ((isGraphInterrupt(error) || repeatSettlementPending(error))
