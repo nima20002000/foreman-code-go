@@ -9,7 +9,7 @@ export function gitFailure(code: 'SOURCE_WORKTREE_FAILED' | 'SOURCE_SNAPSHOT_FAI
 
 /** Git stderr is inspected locally but never included in replies: credential helpers may print secrets. */
 export function gitAcquisitionFailure(operation: string, stderr: string) {
-  const authentication = /fatal: Authentication failed|remote: Invalid username or (?:password|token)|could not read Username.*terminal prompts disabled/iu
+  const authentication = /fatal: Authentication failed|remote: Invalid username or (?:password|token)|could not read (?:Username|Password) for /iu
   if (authentication.test(stderr)) {
     return new SourceError('COMPUTER_GITHUB_REQUIRED',
       'Sign in to GitHub on this computer (computer_github_login_start), then retry.')
