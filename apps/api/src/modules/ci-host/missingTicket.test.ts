@@ -12,7 +12,7 @@ import { DomainError } from '../errors.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, type CiAuthority } from '../jobs/ciAuthority.js'
 import { HostCiService, type CiCommits, type HostCiEndpoint } from './service.js'
 
-function fixture(executionId: string | undefined = 'execution') {
+function fixture(executionId: string | null = 'execution') {
   const caller: ManagementPrincipal = {
     id: 'fixture-agent', name: 'Agent', audience: 'worker', agentId: 'agent',
     grants: [{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], scope: { workspaceIds: ['workspace'] } }],
@@ -36,7 +36,7 @@ function fixture(executionId: string | undefined = 'execution') {
   const pool = { query } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async principal => {
     if (!principal.grants.length) throw new DomainError('ACCESS_DENIED', 'CI read denied.', 403)
-    return { principal: { ...principal, id: 'fixture-owner' }, workspaceId: 'workspace', executionId }
+    return { principal: { ...principal, id: 'fixture-owner' }, workspaceId: 'workspace', executionId: executionId ?? undefined }
   } }
   const commands = {
     execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
@@ -110,6 +110,28 @@ it('does not look up recent tickets for a denied caller', async () => {
     const result = await f.call('ci_get', { ticketId: '11111111-1111-4111-8111-111111111111' }, 'denied')
     expect(result.isError).toBe(true)
     expect(JSON.parse(result.content[0]!.text).error.code).toBe('ACCESS_DENIED')
+    expect(f.recent).not.toHaveBeenCalled()
+  } finally { await f.close() }
+})
+
+it('uses principal history when the call has no execution', async () => {
+  const f = fixture(null)
+  try {
+    const result = await f.call('ci_get', { ticketId: '11111111-1111-4111-8111-111111111111' })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content[0]!.text).error.details.recentTickets).toEqual([])
+    expect(f.recent).toHaveBeenCalledExactlyOnceWith('workspace', 'fixture-agent', null)
+  } finally { await f.close() }
+})
+
+it('does not look up history when the requested ticket exists', async () => {
+  const f = fixture()
+  try {
+    const started = await f.call('ci_run', { suite: 'integration', scope: 'full', commit: 'a'.repeat(40) })
+    const { ticketId } = CiRunOutputSchema.parse(JSON.parse(started.content[0]!.text))
+    const result = await f.call('ci_get', { ticketId, logTail: false })
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(result.content[0]!.text).run.id).toBe(ticketId)
     expect(f.recent).not.toHaveBeenCalled()
   } finally { await f.close() }
 })
