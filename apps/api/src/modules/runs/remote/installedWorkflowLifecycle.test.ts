@@ -76,6 +76,7 @@ it('cancels the installed Worker preflight request when Stop arrives', async () 
     return true
   })
   vi.spyOn(f.registry, 'closedRegistration').mockReturnValue(closed)
+  vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
   const entered = deferred()
   const release = deferred()
   let requestSignal: AbortSignal | undefined

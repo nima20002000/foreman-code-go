@@ -24,7 +24,7 @@ it('ends repeated physical database-timeout retries when the execution owner sto
   vi.useFakeTimers()
   const task = proxy.createSession({ correlationId: `execution:${f.intent.executionId}`, request: {
     executionId: f.execution.id, runId: f.execution.runId, workflowNodeId: f.execution.workflowNodeId,
-    workspaceId: 'workspace', configuration, input: {}, workingDirectory: f.execution.workingDirectory,
+    workspaceId: 'workspace', configuration, input: {}, workingDirectory: f.readout.source.workingTree.canonicalCwd,
     runtimeDirectory: f.readout.runtimeLeaf.canonicalRuntimeDirectory,
   } }, controller.signal)
   const outcome = task.then(() => undefined, error => error)
