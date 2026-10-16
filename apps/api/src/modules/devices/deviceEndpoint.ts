@@ -11,6 +11,8 @@ import type { WorkerUpdateStatus } from '@foreman-code/contracts/computer-mainte
 import { readWorkerBundleReadiness, requireWorkerBundleReady } from '../computers/workerBundleReadiness.js'
 import { requiresWorkerBundle } from './workerAdmission.js'
 import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
+import { DomainError } from '../errors.js'
+import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -230,7 +232,17 @@ export class DeviceEndpoint {
     return this.readBundleReadiness(channel)
   }
   async assertWorkerBundleReady(deviceId: string): Promise<void> {
-    requireWorkerBundleReady(await this.workerBundleReadiness(deviceId))
+    requireWorkerBundleReady(await this.workerBundleReadiness(deviceId).catch((error: unknown) => {
+      // Busy Workers keep their DEVICE_BUSY mapping; other transient channel failures get a public retryable code.
+      const failure = deviceApplicationFailure(error)
+      if (!(error instanceof DeviceApplicationError || error instanceof DeviceConnectionError)
+        || failure.class !== 'transient' || ['backpressure', 'DEVICE_BUSY'].includes(failure.code)) throw error
+      const unavailable = new DomainError('WORKER_STATUS_UNAVAILABLE',
+        `The Worker did not report its running bundle (${failure.code}). Retry shortly.`, 503,
+        { retryable: true, reason: failure.code })
+      unavailable.cause = error
+      throw unavailable
+    }))
   }
   private readBundleReadiness(channel: DeviceApplicationChannel): Promise<WorkerBundleReadiness> {
     const pending = this.bundleReads.get(channel)
@@ -243,16 +255,26 @@ export class DeviceEndpoint {
     channel.currentBinding()
     let worker: WorkerUpdateStatus | undefined
     if (channel.capabilities().some(value => value.namespace === COMPUTER_MAINTENANCE_NAMESPACE && value.mainCanRequest)) {
-      const result = await channel.request(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' },
-        { priority: 'foreground', timeoutMs: 10_000 })
-      const reply = MaintenanceReplySchema.parse(result.payload)
-      if (reply.operation === 'status') worker = reply.status.worker
+      worker = await this.readWorkerUpdateStatus(channel)
     }
     const options = this.options.workerArtifacts
     if (!options) throw new Error('Worker artifact location is not configured.')
     const readiness = await readWorkerBundleReadiness(options, worker)
     channel.currentBinding()
     return readiness
+  }
+  /** Only the updater state: the full maintenance status runs version, registry and OS inspections that are slow under load. */
+  private async readWorkerUpdateStatus(channel: DeviceApplicationChannel): Promise<WorkerUpdateStatus | undefined> {
+    const result = await channel.request(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status', scope: 'worker' },
+      { priority: 'foreground', timeoutMs: 10_000 }).catch((error: unknown) => {
+      // A Worker that predates bundle-only status rejects the request; its running bundle is unknown, so it is not ready.
+      if (error instanceof DeviceApplicationError && error.code === 'extension-rejected') return undefined
+      throw error
+    })
+    if (!result) return undefined
+    const reply = MaintenanceReplySchema.parse(result.payload)
+    if (reply.operation === 'worker') return reply.worker ?? undefined
+    return reply.operation === 'status' ? reply.status.worker : undefined
   }
   clockReason(deviceId: string): string | null {
     const presence = this.sessions.get(deviceId)?.presence
