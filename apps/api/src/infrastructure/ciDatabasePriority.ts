@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-const priority = new AsyncLocalStorage<{ signal?: AbortSignal | undefined }>()
+const priority = new AsyncLocalStorage<{ signal?: AbortSignal | undefined; reserved?: false }>()
 
 /** Only CI admission and dispatch may borrow the reserved database connections. */
 export function withCiDatabasePriority<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -12,12 +12,24 @@ export function withoutCiDatabasePriority<T>(work: () => Promise<T>): Promise<T>
 }
 
 export function ciDatabasePriority() {
-  return priority.getStore()
+  const context = priority.getStore()
+  return context?.reserved === false ? undefined : context
+}
+
+export function ciDatabaseDeadline(): AbortSignal | undefined {
+  return priority.getStore()?.signal
+}
+
+/** Executor delivery uses the shared pool but still obeys its dispatch pass's deadline. */
+export function withoutCiDatabaseReservation<T>(work: () => Promise<T>): Promise<T> {
+  const context = priority.getStore()
+  return context ? priority.run({ ...context, reserved: false }, work) : work()
 }
 
 /** Claim cleanup must still run when its dispatch pass has expired. */
 export function withoutCiDatabaseDeadline<T>(work: () => Promise<T>): Promise<T> {
-  return priority.getStore() ? withCiDatabasePriority(work) : work()
+  const context = priority.getStore()
+  return context ? priority.run({ ...context, signal: undefined }, work) : work()
 }
 
 export async function waitForCiDispatch<T>(work: () => Promise<T>): Promise<T> {

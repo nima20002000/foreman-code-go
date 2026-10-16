@@ -2,7 +2,7 @@ import pg from 'pg'
 import { componentLogger } from './logger.js'
 import { acquireDatabaseConnection } from './databaseReadRetry.js'
 import { ignoreError } from '../modules/diagnostics/ignoredError.js'
-import { ciDatabasePriority } from './ciDatabasePriority.js'
+import { ciDatabaseDeadline, ciDatabasePriority } from './ciDatabasePriority.js'
 
 type ConnectCallback = Parameters<pg.Pool['connect']>[0]
 
@@ -15,12 +15,13 @@ class ApplicationPool extends pg.Pool {
   override connect(callback: ConnectCallback): void
   override connect(callback?: ConnectCallback): Promise<pg.PoolClient> | void {
     const context = ciDatabasePriority()
+    const signal = ciDatabaseDeadline()
     const connection = acquireDatabaseConnection(async () => {
-      context?.signal?.throwIfAborted()
+      signal?.throwIfAborted()
       const client = await (context && this.dispatchPool ? this.dispatchPool.connect() : super.connect())
-      if (context?.signal?.aborted) {
+      if (signal?.aborted) {
         client.release()
-        context.signal.throwIfAborted()
+        signal.throwIfAborted()
       }
       return client
     })

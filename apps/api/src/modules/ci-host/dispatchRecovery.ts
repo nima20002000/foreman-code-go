@@ -3,6 +3,7 @@ import type pg from 'pg'
 import { CiHostReplySchema, type CiHostReply, type CiHostStatus,
   type CiRunRecord } from '@foreman-code/contracts'
 import type { SqlQuery } from '../../infrastructure/transaction.js'
+import { withoutCiDatabaseReservation } from '../../infrastructure/ciDatabasePriority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
@@ -35,7 +36,11 @@ async function retainDispatch(client: SqlQuery, run: CiRunRecord, computer: Host
   return saved.rowCount ? next : null
 }
 
-export async function sendCiDispatch(services: DispatchServices, run: CiRunRecord, computer: HostCiComputer) {
+export function sendCiDispatch(services: DispatchServices, run: CiRunRecord, computer: HostCiComputer) {
+  return withoutCiDatabaseReservation(() => sendDispatch(services, run, computer))
+}
+
+async function sendDispatch(services: DispatchServices, run: CiRunRecord, computer: HostCiComputer) {
   const outcome = await withCiTicketLock(services.pool, run.id, async client => {
     const current = await services.read(run.id, run.workspaceId, client)
     if (current.cancellation) return 'pending'
