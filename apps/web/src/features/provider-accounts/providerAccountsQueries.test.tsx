@@ -247,6 +247,39 @@ it('retains native account model metadata and keys a new catalog by the fresh ob
   await waitFor(() => expect(view.result.current.models.data?.models[0]?.id).toBe('model-2'))
 })
 
+it('keeps the previous model catalog available while a newer observation reloads it', async () => {
+  let sequence = 1
+  const gate = deferred<void>()
+  const subject = { subject: 'provider-subject', provenance: 'qualified-native' as const,
+    qualificationId: 'qualified-installation', observedAt: '2026-10-01T12:00:00.000Z' }
+  const binding = { ...accountBinding(), subject }
+  server.use(
+    http.get('/api/provider-accounts/page', () => HttpResponse.json({ target: accountTarget, revision: 1,
+      accounts: [{ ...observedAccount(), observation: { ...observedAccount().observation!, sequence, subject,
+        status: 'signed-in', readiness: 'ready' } }], defaults: [], nextCursor: null })),
+    http.get('/api/provider-accounts/:id/models', async () => {
+      if (sequence === 2) await gate.promise
+      return HttpResponse.json({ binding, generation: 1, observedAt: '2026-10-01T12:00:00.000Z',
+        models: [{ id: `model-${sequence}`, providerId: 'codex', name: 'Scoped model' }] })
+    }),
+  )
+  const view = renderHook(() => {
+    const accounts = useProviderAccounts(true, { provider: 'codex' })
+    const account = accounts.data?.accounts[0]
+    const models = useProviderAccountModels(account?.binding ? { ...account.binding,
+      subject: account.observation?.subject ?? account.binding.subject } : undefined,
+    account?.observation?.generation, account?.observation?.sequence)
+    return { models, accounts }
+  }, { wrapper: wrapper() })
+  await waitFor(() => expect(view.result.current.models.data?.models[0]?.id).toBe('model-1'))
+  sequence = 2
+  await act(async () => { await view.result.current.accounts.refetch() })
+  await waitFor(() => expect(view.result.current.accounts.data?.accounts[0]?.observation?.sequence).toBe(2))
+  expect(view.result.current.models.data?.models[0]?.id).toBe('model-1')
+  gate.resolve()
+  await waitFor(() => expect(view.result.current.models.data?.models[0]?.id).toBe('model-2'))
+})
+
 it('preserves the latest future default while merging fresh observations from an older snapshot', async () => {
   let revision = 2
   let account = { ...observedAccount(), isDefault: false }

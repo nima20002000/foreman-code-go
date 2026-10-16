@@ -8,6 +8,8 @@ import { useMonotonicElapsed } from '../resource-telemetry/useMonotonicElapsed'
 /** How long the last current reading may stand in, dimmed, for a late refresh. */
 const LAST_KNOWN_MS = 60_000
 
+type Held<T> = { value: T; at: number } | null
+
 export interface ComputerReadings {
   /** Current values, or the last current ones while a refresh is late; null when unknown. */
   cpu: number | null
@@ -36,14 +38,16 @@ export function useComputerReadings(target: DeviceProvisioningTarget, online: bo
     && sample.memory.value.totalBytes ? sample.memory.value.bytes / sample.memory.value.totalBytes * 100 : null
   const storage = sample?.storage && sample.presence === 'online'
     && sampleClock(sample, age).freshRemainingMs > 0 ? sample.storage : null
-  // Between readings the values are the last current ones, marked stale, rather than flickering to empty.
-  const now = Date.now(), last = useRef<{ cpu: number | null; memory: number | null; storage: TelemetryStorage | null; at: number }>(null)
-  if (cpuPercent !== null || memoryPercent !== null || storage) last.current = { cpu: cpuPercent, memory: memoryPercent, storage, at: now }
-  const held = online && last.current && now - last.current.at < LAST_KNOWN_MS ? last.current : null
-  const shownStorage = storage ?? held?.storage ?? null
+  // Between readings each metric holds its own last current value, marked stale, rather than flickering to empty.
+  const now = Date.now(), last = useRef<{ cpu: Held<number>; memory: Held<number>; storage: Held<TelemetryStorage> }>({ cpu: null, memory: null, storage: null })
+  if (cpuPercent !== null) last.current.cpu = { value: cpuPercent, at: now }
+  if (memoryPercent !== null) last.current.memory = { value: memoryPercent, at: now }
+  if (storage) last.current.storage = { value: storage, at: now }
+  const hold = <T,>(item: Held<T>) => online && item && now - item.at < LAST_KNOWN_MS ? item.value : null
+  const shownStorage = storage ?? hold(last.current.storage)
   return {
-    cpu: cpuPercent ?? held?.cpu ?? null,
-    memory: memoryPercent ?? held?.memory ?? null,
+    cpu: cpuPercent ?? hold(last.current.cpu),
+    memory: memoryPercent ?? hold(last.current.memory),
     storage: shownStorage,
     storageUsedPercent: shownStorage?.totalBytes
       ? (shownStorage.totalBytes - shownStorage.availableBytes) / shownStorage.totalBytes * 100 : null,

@@ -28,7 +28,7 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
   const pages = useExecutionPages(scope, filters, !unavailable)
   const denied = useProtectedAccessError(pages)
   const verifiedPage = useMemo(() => {
-    if (pages.isError || denied || unavailable) return { items: [], invalid: false }
+    if (denied || unavailable) return { items: [], invalid: false }
     const unique = new Map<string, RunExecutionSummary>()
     try {
       for (const page of pages.data?.pages ?? []) for (const execution of page.items) {
@@ -37,7 +37,7 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
       }
       return { items: [...unique.values()], invalid: false }
     } catch { return { items: [], invalid: true } }
-  }, [pages.data, pages.isError, denied, unavailable, version])
+  }, [pages.data, denied, unavailable, version])
   const listed = verifiedPage.items
   const select = (next: WorkspaceBoardExecutionSelection) => board?.selectInspection({
     ...(inspection.runNodeId ? { runNodeId: inspection.runNodeId } : {}),
@@ -73,7 +73,7 @@ export function ExecutionInspector({ scope, version }: { scope: RepeatGraphScope
         <p>Options come from loaded execution pages only. Load more executions to discover older or later repetitions. An attempt is not a repetition.</p>
       </div> : <p>This saved version has no repeat blocks. Its execution attempts are not manufactured repetition rounds.</p>}
       {denied ? <Alert tone="warning" title="Execution history access is unavailable." /> : pages.isError ? <Alert tone="warning" title="Execution history could not be refreshed.">
-        Previously loaded details are withheld. <Button size="sm" onClick={() => void refreshFirstInspectionPage(cache, executionPagesKey(scope, filters))}>Retry executions</Button>
+        Previously loaded executions stay listed. <Button size="sm" onClick={() => void refreshFirstInspectionPage(cache, executionPagesKey(scope, filters))}>Retry executions</Button>
       </Alert> : null}
       {verifiedPage.invalid ? <Alert tone="warning" title="Execution history does not match the immutable version.">No mismatched execution is displayed.</Alert> : null}
       {pages.isPaused ? <p role="status">Execution history refresh is paused. Loaded pages remain recorded history, not current state.</p>
@@ -110,14 +110,14 @@ function ExactExecution({ scope, version, executionId, nodeId, occurrenceId, rel
   const query = useExecutionQuery(scope, executionId)
   const denied = useProtectedAccessError(query)
   const checked = useMemo(() => {
-    if (!query.data || query.isError || denied) return undefined
+    if (!query.data || denied) return undefined
     try {
       assertExecutionVersion(version, query.data.execution)
       if (nodeId && query.data.execution.workflowNodeId !== nodeId
         || occurrenceId && query.data.execution.occurrence?.occurrenceId !== occurrenceId) return undefined
       return query.data
     } catch { return undefined }
-  }, [query.data, query.isError, denied, version, nodeId, occurrenceId])
+  }, [query.data, denied, version, nodeId, occurrenceId])
   if (query.isPending) return <p role="status">{query.isPaused ? 'Exact execution read is paused. No substitute result is shown.'
     : 'Reading this exact execution, accepted input and result…'}</p>
   if (!checked) return <Alert tone="warning" title="This exact execution is unavailable.">
@@ -158,7 +158,7 @@ function ExecutionBindings({ scope, detail, relationshipId }: { scope: RepeatGra
   const open = useInspectionPresentation((state) => !!state.open[disclosure])
   const query = useBindingPages(scope, detail, open)
   const denied = useProtectedAccessError(query)
-  const bindings = query.isError || denied ? [] : [...new Map(
+  const bindings = denied ? [] : [...new Map(
     (query.data?.pages.flatMap((page) => page.items) ?? []).map((binding) => [binding.bindingId, binding]),
   ).values()]
   const visible = relationshipId ? bindings.filter((binding) => binding.kind !== 'carry' && binding.source.relationshipId === relationshipId) : bindings
@@ -167,7 +167,7 @@ function ExecutionBindings({ scope, detail, relationshipId }: { scope: RepeatGra
     {open ? <>
       {query.isPaused ? <p role="status">Input binding refresh is paused.</p> : query.isPending ? <p role="status">Loading input bindings…</p> : null}
       {query.isError || denied ? <Alert tone="warning" title="Input bindings are unavailable.">
-        No stale bindings are substituted. {!denied ? <Button size="sm" onClick={() => void refreshFirstInspectionPage(cache, bindingsPagesKey(scope, detail))}>Retry bindings</Button> : null}
+        {bindings.length ? 'Previously loaded bindings stay listed. ' : 'No stale bindings are substituted. '}{!denied ? <Button size="sm" onClick={() => void refreshFirstInspectionPage(cache, bindingsPagesKey(scope, detail))}>Retry bindings</Button> : null}
       </Alert> : null}
       <ol>{visible.map((binding) => <li key={binding.bindingId}><p>{binding.kind} · ordinal {binding.ordinal} · <code>{binding.bindingId}</code></p>
         <JsonValue label={`Binding ${binding.bindingId}`} value={binding} /></li>)}</ol>
