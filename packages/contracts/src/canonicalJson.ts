@@ -73,10 +73,9 @@ export function canonicalJsonLocaleOrderLegacy(value: unknown): string {
 export function canonicalGraphJson(value: unknown, maxBytes = 8 * 1024 * 1024): string {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('GRAPH_JSON_LIMIT')
   const seen = new Set<object>(), pieces: string[] = []
-  const encoder = new TextEncoder()
   let visited = 0, bytes = 0
   const push = (text: string) => {
-    bytes += encoder.encode(text).byteLength
+    bytes += utf8ByteLength(text)
     if (bytes > maxBytes) throw new Error('GRAPH_JSON_LIMIT')
     pieces.push(text)
   }
@@ -124,4 +123,20 @@ export function canonicalGraphJson(value: unknown, maxBytes = 8 * 1024 * 1024): 
   }
   visit(value, 0)
   return pieces.join('')
+}
+
+/** Counts UTF-8 bytes without allocating an encoded copy of each JSON fragment. */
+function utf8ByteLength(text: string): number {
+  let bytes = 0
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index)
+    if (code < 0x80) bytes++
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff
+      && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4
+      index++
+    } else bytes += 3
+  }
+  return bytes
 }

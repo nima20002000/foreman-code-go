@@ -12,7 +12,10 @@ import { stripMcpInputSchemas } from '../shared/inputSchemas.js'
 import { retryReadOnlyToolConnections } from '../shared/databaseReadRetry.js'
 import { installOperatorPresentation, type OperatorCatalog } from './presentation.js'
 
-import type { OperatorRequestContext } from './types.js'
+import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { collectBoundTools, sameCatalogDependencies, type BoundTool } from '../shared/catalog.js'
+import { catalogToolAvailable } from './catalogDiscovery.js'
+import type { OperatorRequestContext, OperatorServices } from './types.js'
 import { registerRunGraphTools } from './tools/runGraph.js'
 import { registerRunInspectionTools } from './tools/runInspection.js'
 import { registerWorkflowScheduleTools } from './tools/workflowSchedules.js'
@@ -42,15 +45,56 @@ export function registerOperatorToolGroup(server: McpServer, context: OperatorRe
   }
 }
 
+const catalogPrincipal: ManagementPrincipal = {
+  id: 'mcp-catalog', name: 'MCP catalog', audience: 'operator',
+  grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
+  expiresAt: '9999-12-31T00:00:00.000Z', revokedAt: null,
+}
+interface CatalogContext extends OperatorRequestContext { catalog?: OperatorCatalog | undefined }
+const catalogs = new WeakMap<OperatorServices, { dependencies: unknown[]; tools: BoundTool<CatalogContext>[] }>()
+
+/** The service composition owns the immutable schemas, independent of caller grants. */
+export function operatorToolCatalog(services: OperatorServices): readonly BoundTool<CatalogContext>[] {
+  const dependencies = [...Object.values(services), ...Object.values(services.extensions ?? {}),
+    ...Object.values(services.harnessSettings ?? {}), services.workflows?.current, services.workflows?.schedules,
+    services.runs?.inspection, services.runs?.history, services.runs?.subagents,
+    services.harnessInstances?.qualificationSupported]
+  let cached = catalogs.get(services)
+  if (!cached || !sameCatalogDependencies(cached.dependencies, dependencies)) {
+    const tools = collectBoundTools<CatalogContext>({ services, principal: catalogPrincipal }, (collector, bound) =>
+      registerOperatorDefinitions(collector, bound, extra => bound.catalog?.(extra) ?? Promise.resolve([])))
+    cached = { dependencies, tools }
+    catalogs.set(services, cached)
+  }
+  return cached.tools
+}
+
+export function operatorRequestTools(context: OperatorRequestContext, catalog?: OperatorCatalog) {
+  const request: CatalogContext = { ...context, principal: authorizationPrincipal(context.principal), catalog }
+  return operatorToolCatalog(context.services).filter(tool => catalogToolAvailable(request, tool.name)).map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    register: (server: McpServer) => tool.register(server, request),
+  }))
+}
+
 export function registerOperatorTools(server: McpServer, context: OperatorRequestContext, catalog?: OperatorCatalog): void {
-  context = { ...context, principal: authorizationPrincipal(context.principal) }
+  for (const tool of operatorRequestTools(context, catalog)) tool.register(server)
+}
+
+function registerOperatorDefinitions(server: McpServer, context: OperatorRequestContext, catalog?: OperatorCatalog): void {
   const group = (name: OperatorToolGroup) => registerOperatorToolGroup(server, context, OPERATOR_TOOL_GROUPS[name], catalog)
   group('bugReports')
   group('resourceTelemetry')
   group('harnessRegistry')
-  if (context.services.workspaceRoots) registerWorkspaceRootAdoptionTool(server, context.services.workspaceRoots, context.principal, context.services.commands)
+  if (context.services.workspaceRoots) {
+    registerWorkspaceRootAdoptionTool(server, context.services.workspaceRoots, context.principal,
+      context.services.commands, () => context.principal)
+  }
   group('workspaceRoots')
-  if (context.services.harnessInstances) registerHostHarnessOverrideTools(server, context.services.harnessInstances, context.principal)
+  if (context.services.harnessInstances) {
+    registerHostHarnessOverrideTools(server, context.services.harnessInstances, context.principal, () => context.principal)
+  }
   group('sources')
   registerJobTools(server, context)
   registerCiTools(server, context)

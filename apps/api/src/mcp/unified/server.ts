@@ -1,7 +1,7 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { paginateToolLists } from '../toolListPagination.js'
-import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
@@ -12,7 +12,7 @@ import type { BugReportService } from '../../modules/bug-reports/service.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import { registerAppTools } from '../app/server.js'
 import { registerCiTools } from '../shared/ciTools.js'
-import { registerOperatorTools } from '../operator/server.js'
+import { operatorRequestTools, operatorToolCatalog } from '../operator/server.js'
 import { installOperatorPresentation, type OperatorCatalog } from '../operator/presentation.js'
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
@@ -51,21 +51,6 @@ async function collectTools(register: (server: McpServer) => unknown): Promise<T
   return tools
 }
 
-const CATALOG_PRINCIPAL: ManagementPrincipal = {
-  id: 'graphql-mcp-catalog', name: 'Foreman Code MCP catalog', audience: 'operator',
-  grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
-  expiresAt: '9999-12-31T00:00:00.000Z', revokedAt: null,
-}
-const operatorCatalogs = new WeakMap<OperatorServices, Promise<ToolDefinition[]>>()
-/** Every Operator tool these services can serve, as an unrestricted Operator would see it. */
-function operatorCatalog(services: OperatorServices): Promise<ToolDefinition[]> {
-  let catalog = operatorCatalogs.get(services)
-  if (!catalog) {
-    catalog = collectTools((server) => registerOperatorTools(server, { principal: CATALOG_PRINCIPAL, services }))
-    operatorCatalogs.set(services, catalog)
-  }
-  return catalog
-}
 function agentCatalog(): Array<{ name: string; description: string }> {
   return Object.entries(GRAPHQL_AGENT_TOOLS).map(([name, definition]) => ({ name, description: definition.description }))
 }
@@ -96,22 +81,16 @@ export interface McpRequestRegistration {
   operator?: Promise<OperatorRequestTools>
 }
 
-/** Definitions and handlers live for one request, including its current grants. */
+/** Schemas are shared; handlers retain this request's grants, signal and full discovery callback. */
 function requestOperatorTools(context: GraphqlMcpContext, registration: McpRequestRegistration): Promise<OperatorRequestTools> {
-  let pending = registration.operator
-  if (!pending) {
+  if (!registration.operator) {
     const registered: OperatorRequestTools = { tools: [] }
-    pending = collectTools(server => registerOperatorTools(server, {
-      principal: context.principal, services: context.operator!,
+    registered.tools = operatorRequestTools({ principal: context.principal, services: context.operator!,
       ...(context.signal ? { signal: context.signal } : {}),
-    }, callbackContext => registered.catalog?.(callbackContext) ?? Promise.resolve([])))
-      .then(tools => {
-        registered.tools = tools
-        return registered
-      })
-    registration.operator = pending
+    }, callbackContext => registered.catalog?.(callbackContext) ?? Promise.resolve([]))
+    registration.operator = Promise.resolve(registered)
   }
-  return pending
+  return registration.operator
 }
 
 const ToolCall = z.object({ jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
@@ -130,7 +109,7 @@ export async function roleDeniedToolCall(context: GraphqlMcpContext, body: unkno
     && !hasWorkerAction(context.principal, 'bug_reports:report')
   if (roleAllowed && enabled && context.role !== 'operator' && !workerReportDenied) return undefined
   const catalog = [
-    ...(context.operator ? await operatorCatalog(context.operator) : []),
+    ...(context.operator ? operatorToolCatalog(context.operator) : []),
     ...(context.interactions ? await agentCatalog() : []),
   ]
   if (!catalog.some((tool) => tool.name === name)) return undefined
