@@ -121,6 +121,7 @@ it.each([false, true])('releases real reviewer source maps only after closed lif
     f.readout.history = history
     f.execution.state = 'completed'
     f.execution.result = result
+    f.execution.finishedAt = new Date().toISOString()
     f.lane.correlation = assignment.correlationId
     f.lane.provider_id = 'review-turn'
     if (closed) f.closeNative()
