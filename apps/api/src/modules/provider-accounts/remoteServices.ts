@@ -176,7 +176,8 @@ export function createRemoteAccountServices(input: {
       const account = (await repository(binding.target).read(sql)).accounts.find(value => value.id === accountId)
       return account?.binding ? { ...account.binding, subject: account.observation?.subject ?? account.binding.subject } : undefined
     },
-    async resolve(binding: ProviderAccountBinding, sql?: GraphSqlClient) {
+    async resolve(binding: ProviderAccountBinding, sql?: GraphSqlClient, signal?: AbortSignal) {
+      signal?.throwIfAborted()
       const reader = sql ?? input.pool
       const store = repository(binding.target)
       const snapshot = sql ? await store.lock(sql) : await store.read(reader)
@@ -213,7 +214,8 @@ export function createRemoteAccountServices(input: {
         const request = ProviderAccountWorkerRequestSchema.parse({ version: 1, target: binding.target, connection,
           request: { kind: 'status', binding } })
         // Admission and recovery read only the accepted slot over its authenticated runtime channel.
-        const result = await channel.request(request)
+        const result = await channel.request(request, signal ? { signal } : undefined)
+        signal?.throwIfAborted()
         const current = input.endpoint().captureRequest(device.deviceId, PROVIDER_ACCOUNT_WORKER_NAMESPACE)
         if (!current || !isDeepStrictEqual(current.binding, captured) || result.bytes !== undefined) {
           throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'The owning Worker connection changed.', 409)
@@ -225,7 +227,9 @@ export function createRemoteAccountServices(input: {
           throw new DomainError('PROVIDER_ACCOUNT_PRINCIPAL_UNAVAILABLE', 'The accepted Worker principal is unproved or changed.', 409)
         }
         const reported = observation
+        signal?.throwIfAborted()
         observation = await withTransaction(input.pool, async (client) => {
+          signal?.throwIfAborted()
           const currentDevice = await assertDeviceHostInstallation(client, binding.target.hostRef, binding.target.applicationInstallationId)
           if (!currentDevice || currentDevice.keyRevision !== binding.target.keyRevision
             || currentDevice.authorizationRevision !== binding.target.authorizationRevision) {

@@ -48,7 +48,7 @@ export class PostgresJobOutputAdmission {
     return this.frames.run(Object.freeze({...binding}),perform)
   }
   /** Called by the actual canonical allocation/finalization authority, on its SQL transaction. */
-  async assertContext(sql: JobSql, input: Pick<JobOutputPublicationInput,'workspaceId'|'executionId'|'attemptId'|'owner'>, execution: JobExecutionRecord) {
+  async assertContext(sql: JobSql, input: Pick<JobOutputPublicationInput,'workspaceId'|'executionId'|'attemptId'|'owner'>, execution: JobExecutionRecord, sourceValidation: 'manifest' | 'identity' = 'manifest') {
     const target=execution.acceptedSpec.target
     if (target.hostRef.kind!=='device' || !target.registration) throw new DomainError('JOB_OUTPUT_DEVICE_REQUIRED','Remote output admission requires its actual accepted device.',403)
     const binding=this.current(target.hostRef.deviceId)
@@ -102,12 +102,24 @@ export class PostgresJobOutputAdmission {
     if (!bound || bound.revoked_at || !acceptedRoot || !isDeepStrictEqual(acceptedRoot.binding,root)
       || acceptedRoot.selection.rootPolicyId!==source.rootPolicyId || acceptedRoot.selection.rootPolicyRevision!==source.rootPolicyRevision)
       throw new DomainError('JOB_OUTPUT_ROOT_REVOKED','The exact approved root binding is missing, changed or revoked.',403)
-    const snapshot=(await sql.query<{record:unknown;availability:string}>(`select record,availability from source_snapshots
+    const snapshot = (await sql.query<{
+      record?: unknown; availability: string; workspace_id: string; main_id: string;
+      snapshot_id: string; approved_source_id: string; manifest_digest: string; commit: string | null;
+    }>(`select availability,record->>'workspaceId' as workspace_id,record->>'mainId' as main_id,
+        record->'manifest'->>'snapshotId' as snapshot_id,record->'manifest'->>'approvedSourceId' as approved_source_id,
+        record->'manifest'->>'manifestDigest' as manifest_digest,record->'manifest'->'git'->>'commit' as commit
+        ${sourceValidation === 'manifest' ? ',record' : ''} from source_snapshots
       where workspace_id=$1 and snapshot_id=$2 and approved_source_id=$3 and manifest_digest=$4 for share`,
     [execution.workspaceId,root.snapshotId,execution.acceptedSpec.source.approvedSourceId,root.manifestDigest])).rows[0]
-    if (!snapshot || snapshot.availability!=='retained') throw new DomainError('JOB_OUTPUT_SOURCE_UNAVAILABLE','The original approved source is unavailable.',410)
-    const approved=ApprovedSourceSchema.parse(snapshot.record)
-    if (approved.manifest.git?.commit!==execution.acceptedSpec.source.commit) throw new DomainError('JOB_OUTPUT_SOURCE_CONFLICT','The original approved source commit does not match.',409)
+    if (!snapshot || snapshot.availability !== 'retained') {
+      throw new DomainError('JOB_OUTPUT_SOURCE_UNAVAILABLE', 'The original approved source is unavailable.', 410)
+    }
+    if (sourceValidation === 'manifest') ApprovedSourceSchema.parse(snapshot.record)
+    if (snapshot.workspace_id !== execution.workspaceId || snapshot.main_id !== binding.mainId
+      || snapshot.snapshot_id !== root.snapshotId || snapshot.approved_source_id !== execution.acceptedSpec.source.approvedSourceId
+      || snapshot.manifest_digest !== root.manifestDigest || snapshot.commit !== execution.acceptedSpec.source.commit) {
+      throw new DomainError('JOB_OUTPUT_SOURCE_CONFLICT', 'The original approved source identity does not match.', 409)
+    }
     // Resample after every lock wait. A stored credential/session snapshot never grants access.
     if (device.credential_expires_at.getTime()<=this.clock().getTime() || !isDeepStrictEqual(this.current(binding.deviceId),binding)) throw new DomainError('JOB_OUTPUT_DEVICE_REVOKED','Device authority changed while waiting.',403)
     return {binding,root,receipt,credentialExpiresAt:device.credential_expires_at,source}
@@ -189,7 +201,7 @@ export class PostgresJobOutputAdmission {
     await this.transaction(async sql=>{
       const result=await sql.query<{result:unknown}>(`select result from management_command_receipts where operation=$1 and result #>> '{intent,transferId}'=$2`,[OPERATION,intent.transferId])
       if(result.rows.length!==1)throw new DomainError('JOB_OUTPUT_ADMISSION_MISSING','This transfer identity was not issued by main.',403)
-      const record=JobOutputAdmissionSchema.parse(result.rows[0]!.result),current=await this.authority.authorizePublication(sql,record.input),facts=await this.assertContext(sql,record.input,current.execution)
+      const record=JobOutputAdmissionSchema.parse(result.rows[0]!.result),current=await this.authority.authorizePublication(sql,record.input),facts=await this.assertContext(sql,record.input,current.execution,'identity')
       await this.match(sql,record,record.input,current.execution,facts,false)
       if(!isDeepStrictEqual(record.intent,intent) || !isDeepStrictEqual(outputTransferContext(facts.binding),context))throw new DomainError('JOB_OUTPUT_TRANSFER_CONFLICT','Transfer identity or current connection differs from main admission.',403)
     })

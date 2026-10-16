@@ -46,7 +46,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     scope(principal: ManagementPrincipal, target: DeviceProvisioningTarget): Promise<ProviderAccountsService>
     targets(principal: ManagementPrincipal): Promise<ProviderAccountTarget[]>
     locate?(accountId: string, sql?: GraphSqlClient): Promise<ProviderAccountBinding | undefined>
-    resolve?(binding: ProviderAccountBinding, sql?: GraphSqlClient): Promise<ResolvedProviderAccount | null>
+    resolve?(binding: ProviderAccountBinding, sql?: GraphSqlClient, signal?: AbortSignal): Promise<ResolvedProviderAccount | null>
   }
   bindRouting(routing: NonNullable<ProviderAccountsService['routing']>): void { this.routing = routing }
 
@@ -721,15 +721,17 @@ export class ProviderAccountsService implements ProviderAccountResolver {
   }
 
   async resolve(provider: AccountProvider, accountId?: string,
-    options?: { sql?: GraphSqlClient; allowDefault?: boolean;
+    options?: { sql?: GraphSqlClient; allowDefault?: boolean; signal?: AbortSignal;
       acceptedBinding?: AcceptedProviderAccountBinding }): Promise<ResolvedProviderAccount | null> {
+    options?.signal?.throwIfAborted()
     if (options?.acceptedBinding?.kind === 'legacy-profile') {
       const originalId = options.acceptedBinding.accountId
       if (accountId && accountId !== originalId) {
         throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'Accepted work uses its original profile.', 409)
       }
       if (!originalId) return null
-      return this.resolve(provider, originalId, { ...(options.sql ? { sql: options.sql } : {}), allowDefault: false })
+      return this.resolve(provider, originalId, { ...(options.sql ? { sql: options.sql } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}), allowDefault: false })
     }
     const accepted = options?.acceptedBinding
     if (accepted && (accepted.provider !== provider || (accountId && accepted.accountId !== accountId))) {
@@ -738,7 +740,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
     if (accepted?.kind === 'slot' && !sameDeviceProvisioningTarget(accepted.target, await this.repository.target(options?.sql))) {
       if (!this.routing?.resolve) throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT',
         'The owning Worker account resolver is unavailable.', 409)
-      return this.routing.resolve(accepted, options?.sql)
+      return this.routing.resolve(accepted, options?.sql, options?.signal)
     }
     accountId = accepted?.accountId ?? accountId
     const snapshot = options?.sql ? await this.repository.lock(options.sql) : await this.repository.read()
@@ -749,7 +751,7 @@ export class ProviderAccountsService implements ProviderAccountResolver {
         throw new DomainError('PROVIDER_ACCOUNT_MISMATCH', 'The Worker account belongs to another provider.', 409)
       }
       if (remote && this.routing.resolve) {
-        const resolved = await this.routing.resolve(accepted ?? remote, options?.sql)
+        const resolved = await this.routing.resolve(accepted ?? remote, options?.sql, options?.signal)
         if (!accepted && resolved?.binding && resolved.observation?.subject) {
           return { ...resolved, binding: { ...resolved.binding, subject: resolved.observation.subject } }
         }

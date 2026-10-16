@@ -148,10 +148,7 @@ export async function readStartReceipt(sql: GraphTransactionSql, principalId: st
   return run
 }
 
-async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationService,
-  input: RunStartV3Input, signal: AbortSignal,
-  placements?: PreparedRunPlacementAdmission,
-  accounts?: AcceptedProviderAccountBindings): Promise<AccountStartLocation> {
+async function readPreparationInputs(pool: pg.Pool, input: RunStartV3Input, signal: AbortSignal) {
   signal.throwIfAborted()
   const client = await pool.connect()
   try {
@@ -174,39 +171,49 @@ async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationServic
     const configurations = configs.rows.map((row) => readImmutableAgentConfiguration(row, {
       workspaceId: input.workspaceId, id: version.agentConfigurationVersionIds[row.agent_id]!, agentId: row.agent_id,
     }))
-    const accountBindings: Record<string, AcceptedProviderAccountBinding> = {}
-    if (accounts) {
-      for (const configuration of configurations) {
-        const binding = await accounts.prepare(configuration.harness, configuration.harnessProfileSelection)
-        if (binding) accountBindings[configuration.id] = binding
-        signal.throwIfAborted()
-      }
-    }
-    signal.throwIfAborted()
-    for (const configuration of configurations) assertClaudeFullAccess(configuration.harness)
-    ExecutableWorkflowV3Schema.parse({ version, configurations })
-    for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, version.approval,
-      version.approval.handler === 'orchestrator' && configuration.agentId === version.approval.designatedOrchestratorAgentId)
-    if (version.approval.handler === 'orchestrator') validateReviewerBootstrap(version.definition, version.approval,
-      configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
     const before = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
     const row = before.rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
-    // The lease is idle. No G1 transaction or admission lock spans filesystem I/O.
-    signal.throwIfAborted()
-    // Placement insertion verifies every Agent/configuration and its current
-    // destination at commit. Jobs still execute in the workspace directory.
-    const useAssignedLocation = placements !== undefined && !workflowRequiresWorkspaceDirectory(version.definition)
-    const location = useAssignedLocation
-      ? await locations.snapshotAssigned(client, input.workspaceId, input.expectedLocationRevision, signal)
-      : await locations.snapshot(client, input.workspaceId, input.expectedLocationRevision,
-        requiredLocationAccess(configurations), signal)
-    signal.throwIfAborted()
-    const after = await client.query<PreparedRepeatStartLocation['row']>(`select ${locationColumns} from workspaces where id=$1`, [input.workspaceId])
-    if (!sameWorkflowValue(row, after.rows[0])) return conflict('LOCATION_REVISION_CONFLICT', 'The location changed during validation.')
-    signal.throwIfAborted()
-    return { row, location, ...(accounts ? { accountBindings } : {}) }
+    return { version, configurations, row }
   } finally { client.release() }
+}
+
+async function prepareLocation(pool: pg.Pool, locations: WorkspaceLocationService,
+  input: RunStartV3Input, signal: AbortSignal,
+  placements?: PreparedRunPlacementAdmission,
+  accounts?: AcceptedProviderAccountBindings): Promise<AccountStartLocation> {
+  const saved = await readPreparationInputs(pool, input, signal)
+  const { version, configurations, row } = saved
+  const accountBindings: Record<string, AcceptedProviderAccountBinding> = {}
+  if (accounts) {
+    for (const configuration of configurations) {
+      const binding = await accounts.prepare(configuration.harness, configuration.harnessProfileSelection, { signal })
+      if (binding) accountBindings[configuration.id] = binding
+      signal.throwIfAborted()
+    }
+  }
+  signal.throwIfAborted()
+  for (const configuration of configurations) assertClaudeFullAccess(configuration.harness)
+  ExecutableWorkflowV3Schema.parse({ version, configurations })
+  for (const configuration of configurations) assertNativeWorkflowConfiguration(configuration.harness, version.approval,
+    version.approval.handler === 'orchestrator' && configuration.agentId === version.approval.designatedOrchestratorAgentId)
+  if (version.approval.handler === 'orchestrator') validateReviewerBootstrap(version.definition, version.approval,
+    configurations.find((config) => config.agentId === version.approval.designatedOrchestratorAgentId)?.harness, version.entryNodeId)
+  const useAssignedLocation = placements !== undefined && !workflowRequiresWorkspaceDirectory(version.definition)
+  const location = useAssignedLocation
+    ? await locations.snapshotAssigned(pool, input.workspaceId, input.expectedLocationRevision, signal)
+    : await locations.snapshot(pool, input.workspaceId, input.expectedLocationRevision,
+      requiredLocationAccess(configurations), signal)
+  signal.throwIfAborted()
+  const after = await readPreparationInputs(pool, input, signal)
+  if (!sameWorkflowValue(row, after.row)) {
+    return conflict('LOCATION_REVISION_CONFLICT', 'The location changed during validation.')
+  }
+  if (!sameWorkflowValue(saved, after)) {
+    return conflict('RUN_START_PREPARATION_CONFLICT', 'Saved Start inputs changed during preparation.')
+  }
+  signal.throwIfAborted()
+  return { row, location, ...(accounts ? { accountBindings } : {}) }
 }
 
 async function prepareStart(pool: pg.Pool, locations: WorkspaceLocationService, input: RunStartV3Input,

@@ -19,7 +19,7 @@ export interface ResolvedProviderAccount {
 }
 export interface ProviderAccountResolver {
   resolve(provider: AccountProvider, accountId?: string,
-    options?: { sql?: GraphSqlClient; allowDefault?: boolean;
+    options?: { sql?: GraphSqlClient; allowDefault?: boolean; signal?: AbortSignal;
       acceptedBinding?: AcceptedProviderAccountBinding }): Promise<ResolvedProviderAccount | null>
 }
 /** Native paths stay inside the owning host; only sanitized observations cross this port. */
