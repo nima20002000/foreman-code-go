@@ -126,18 +126,21 @@ it('honors persisted MCP build participation and priority while retaining assign
       await call(reader, 'ci_get', { workspaceId, ticketId, waitSeconds, logTail: false }))
     const getRunning = async (ticketId: string) => {
       const deadline = performance.now() + 5000
+      await ci!.dispatch()
       let output = await get(ticketId)
       // ci_get waits on persisted ticket changes; dispatch and live observation can finish separately.
       while (['queued', 'starting', 'running'].includes(output.run.state)
         && (output.run.state !== 'running' || output.run.observation?.status !== 'available')) {
         const remaining = deadline - performance.now()
         expect(remaining, JSON.stringify(output)).toBeGreaterThan(0)
-        output = await get(ticketId, remaining / 1000)
+        // A completed change can precede this next-change request; re-read within one dispatch cadence.
+        output = await get(ticketId, Math.min(1, remaining / 1000))
       }
       expect(output.run).toMatchObject({ state: 'running', observation: { status: 'available' } })
       return output
     }
     const getSettled = async (ticketId: string) => {
+      await ci!.dispatch()
       const output = CiGetOutputSchema.parse(await call(reader, 'ci_get', {
         workspaceId, ticketId, waitUntil: 'group-terminal', waitSeconds: 5, logTail: false,
       }))
