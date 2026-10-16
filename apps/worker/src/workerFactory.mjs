@@ -181,7 +181,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         },
         launcherSource: new URL('../artifacts/graphql-mcp.mjs', import.meta.url),
         ciStartupPending: async () => startupCi.pending || (await updater?.status())?.state === 'restarting',
-        ...(updater ? { workerUpdate: { status: () => updater.status(), start: () => updater.start({ retry: true }),
+        ...(updater ? { workerUpdate: { status: () => updater.status(), start: options => updater.start(options),
           outcome: (task, deadlineAt) => updater.maintenanceOutcome(task, deadlineAt) } } : {}),
         configuration: selection,
         ...(managedSetup?.state !== 'failed' ? { refreshWorkflowConfiguration } : {}),

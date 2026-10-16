@@ -349,7 +349,7 @@ export class ComputerMaintenance {
           throw new DomainError('WORKER_UPDATE_UNAVAILABLE',
             'Worker updates are available only on paired computers with an installed updater.', 409)
         }
-        return this.ports.workerUpdate.start()
+        return this.ports.workerUpdate.start({ retry: request.retry ?? true })
       }
       case 'update-harnesses': {
         const changes: string[] = []

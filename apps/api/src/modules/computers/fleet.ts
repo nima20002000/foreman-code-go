@@ -307,7 +307,7 @@ export class FleetMaintenanceService {
     const delivery = { manifests: fingerprint, commandId, pending: true, retryAt: this.now() + SYNC_RETRY_MS }
     this.workerUpdates.set(key, delivery)
     try {
-      await this.startOn(target, { kind: 'update-worker' }, commandId)
+      await this.startOn(target, { kind: 'update-worker', retry: false }, commandId)
       delivery.pending = false
     } catch (error) {
       ignoreError('lifecycle', 'prompt Worker manifest update', { host: target.hostRef, nextRetryMs: Math.max(0, delivery.retryAt - this.now()) })(error)

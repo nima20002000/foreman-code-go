@@ -6,7 +6,9 @@ import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WorkerUpdater, downloadWorkerArtifact } from '../../../../worker/src/update.mjs'
 import { ComputerMaintenance } from './maintenance.js'
-import { fakeComputer } from '../../../test/helpers/fleetSync.js'
+import { fakeComputer, fakeFleet } from '../../../test/helpers/fleetSync.js'
+import { COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
+import { WorkerError } from '../../../../worker/src/diagnostics.mjs'
 import * as artifacts from './workerArtifacts.js'
 import { DeviceConnectionError } from '../devices/deviceWire.js'
 
@@ -81,6 +83,58 @@ it('reports two builds differing only by commit as current without download, dra
   expect(f.launchSupervisor).not.toHaveBeenCalled()
   const restarted = await new WorkerUpdater(f.options).initialize()
   expect(await restarted.start()).toBe('Worker 1.0.0 is current.')
+})
+
+it.each([false, true])('fleet respects permanent failure protection and retries transient failures (%s)', async transient => {
+  const f = await fixture()
+  f.manifest.files.push({ ...f.manifest.files[0]!, path: 'src/extra.mjs' })
+  let drains = 0
+  const updater = await new WorkerUpdater({ ...f.options, drain: async () => {
+    drains++
+    throw new WorkerError(transient ? 'worker_update_drain_deadline_exceeded' : 'worker_update_failed')
+  } }).initialize()
+  try {
+    await expect(updater.start()).rejects.toMatchObject({
+      code: transient ? 'worker_update_drain_deadline_exceeded' : 'worker_update_failed',
+    })
+    const computer = fakeComputer()
+    computer.ports.workerUpdate = {
+      status: () => updater.status(),
+      start: (options = { retry: true }) => updater.start(options),
+    }
+    const finishMaintenance = async () => {
+      await computer.maintenance.drain()
+      const status = await computer.maintenance.status(AbortSignal.timeout(2000))
+      expect(status.tasks.some(task => task.state === 'running')).toBe(false)
+    }
+    let now = Date.now()
+    const fleet = fakeFleet(computer, () => now)
+    Object.assign(fleet.sources, { workerManifestSha256s: async () => [f.release().manifestSha256] })
+    fleet.endpoint.capabilities = () => [
+      { namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true },
+      { namespace: WORKER_UPDATE_NAMESPACE, mainCanRequest: false },
+    ]
+    await fleet.fleet.syncChangedSources()
+    await finishMaintenance()
+    expect(drains).toBe(transient ? 2 : 1)
+    // Retrying fleet convergence after Main restarts preserves the updater's persisted classification.
+    now += 5 * 60_000
+    await fleet.createFleet().syncChangedSources()
+    await finishMaintenance()
+    expect(drains).toBe(transient ? 3 : 1)
+    if (transient) return
+    f.manifest.commit = 'd'.repeat(40)
+    await fleet.createFleet().syncChangedSources()
+    await finishMaintenance()
+    expect(drains).toBe(1)
+    f.manifest.files.push({ ...f.manifest.files[0]!, path: 'src/changed.mjs' })
+    await fleet.createFleet().syncChangedSources()
+    await finishMaintenance()
+    expect(drains).toBe(2)
+    await computer.maintenance.start({ kind: 'update-worker' })
+    await finishMaintenance()
+    expect(drains).toBe(3)
+  } finally { await updater.close() }
 })
 
 it('updates changed Worker bytes at the same product version and retains CI smoke configuration', async () => {

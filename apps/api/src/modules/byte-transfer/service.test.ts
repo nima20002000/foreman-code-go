@@ -38,6 +38,41 @@ async function fixture(bytes = Buffer.from('abcdefgh')) {
     beforeDataSync: (callback: () => Promise<void>) => { beforeDataSync = callback } }
 }
 describe('bounded authenticated transfer staging', () => {
+  it('retires an abandoned hour-long input transfer at the idle deadline during update drain', async () => {
+    const f = await fixture()
+    f.intent.expiresAt = new Date(Date.parse(f.intent.expiresAt) + 59 * 60_000).toISOString()
+    await f.service.start(f.intent, f.context)
+    await f.service.append(f.intent.transferId, f.context, f.chunk(0))
+    f.time(BYTE_TRANSFER_POLICY.maxIdleMs - 1)
+    expect(await f.service.isRuntimeQuiescent()).toBe(false)
+    f.time(1)
+    expect(await f.service.isRuntimeQuiescent()).toBe(true)
+    expect(await f.service.inventory()).toEqual([])
+    await expect(readFile(join(f.root, `${f.intent.transferId}.part`))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(f.service.start(f.intent, f.context)).rejects.toThrow()
+  })
+
+  it('keeps a live writer closed to updates even when its last progress becomes idle', async () => {
+    const f = await fixture()
+    f.intent.expiresAt = new Date(Date.parse(f.intent.expiresAt) + 59 * 60_000).toISOString()
+    await f.service.start(f.intent, f.context)
+    let release!: () => void
+    let entered!: () => void
+    const writing = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.beforeDataSync(async () => { entered(); await gate })
+    const append = f.service.append(f.intent.transferId, f.context, f.chunk(0))
+    await writing
+    try {
+      f.time(BYTE_TRANSFER_POLICY.maxIdleMs)
+      expect(await f.service.isRuntimeQuiescent()).toBe(false)
+      expect(await f.service.inventory()).toHaveLength(1)
+    } finally {
+      release()
+      await expect(append).rejects.toThrow('Transfer expired')
+    }
+  })
+
   it('keeps live writes and readers busy while finished old-epoch transfers permit Worker updates', async () => {
     const f = await fixture()
     expect(await f.service.isRuntimeQuiescent()).toBe(true)
