@@ -192,6 +192,29 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
 
 const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })
 
+/** Records the most ci_runs heap pages any single transaction of the wrapped reads touched. */
+function measuredCiPages(pool: pg.Pool) {
+  const pages = { max: 0 }
+  const measured = { connect: async () => {
+    const client = await pool.connect()
+    return {
+      async query<R extends pg.QueryResultRow>(text: string, values?: unknown[]) {
+        const result = await client.query<R>(text, values)
+        try {
+          const read = (await client.query<{ pages: number }>(
+            "select pg_stat_get_xact_blocks_fetched('ci_runs'::regclass)::integer as pages")).rows[0]!.pages
+          pages.max = Math.max(pages.max, read)
+        } catch { /* ignore: a failed transaction already fails the measured read */ }
+        return result
+      },
+      on: client.on.bind(client),
+      removeListener: client.removeListener.bind(client),
+      release: client.release.bind(client),
+    }
+  } } as unknown as pg.Pool
+  return { pool: measured, pages }
+}
+
 describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
   afterEach(() => { vi.useRealTimers() })
 
@@ -402,6 +425,28 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(RunActivitiesPageSchema.parse(http.json())).toEqual(history)
     } finally { await f.close() }
   }, 120000)
+
+  it('reads a Run’s CI activity without reading the workspace’s unrelated CI tickets', async () => {
+    const f = await fixture()
+    try {
+      const ticket = await f.submit({ suite: 'install' })
+      // Other Runs' finished tickets accumulate in the workspace: every full integration run adds a hundred.
+      await f.database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,log_tail)
+        select u.id,t.workspace_id,u.id,'canceled',t.record||jsonb_build_object('id',u.id::text,'groupId',u.id::text,
+            'state','canceled','initiator',t.record->'initiator'||jsonb_build_object('executionId','unrelated-'||u.id::text)),
+          (select string_agg(md5(u.id::text||g::text),'') from generate_series(1,40) g)
+        from ci_runs t cross join (select gen_random_uuid() as id from generate_series(1,3000)) u where t.id=$1`,
+      [ticket.ticketId])
+      await f.database.pool.query('analyze ci_runs')
+      const measured = measuredCiPages(f.database.pool)
+      const runs = new RunManagementService(measured.pool, f.graph.commands, {} as never, {} as never,
+        new WorkspaceLocationService(f.database.pool, f.graph.commands))
+      const details = await runs.get(f.reader.principal, f.graph.scope.workspaceId, f.graph.run.id)
+      expect(details.activitySnapshot?.queued).toContainEqual(ciRef(ticket.ticketId, f.executionId))
+      // The unrelated tickets span hundreds of heap pages; the Run's own ticket needs a handful.
+      expect(measured.pages.max).toBeLessThan(100)
+    } finally { await f.close() }
+  })
 
   it('lists a Run’s CI with the requesting Agent and filtered test results through MCP and HTTP', async () => {
     const f = await fixture()
