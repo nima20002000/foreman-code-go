@@ -80,6 +80,7 @@ import { jobSourceCapacityWaitMigration } from './jobSourceCapacityWaitMigration
 import { jobQueueCompletionMigration } from './jobQueueCompletionMigration.js'
 import { agentCiActivityMigration } from './agentCiActivityMigration.js'
 import { runActivityCommitOrderMigration } from './runActivityCommitOrderMigration.js'
+import { runActivityCommitLockMigration } from './runActivityCommitLockMigration.js'
 import { jobSelectionTimeMigration } from './jobSelectionTimeMigration.js'
 import { jobsMigration } from './jobsMigration.js'
 import { currentMultiNodeAgentMigration } from './currentMultiNodeAgentMigration.js'
@@ -978,6 +979,7 @@ export const migrations = [
   commandReceiptRetentionMigration,
   ciExecutionHistoryMigration,
   ciGateSpeedIndexMigration,
+  runActivityCommitLockMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
