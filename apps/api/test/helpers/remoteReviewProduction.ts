@@ -265,7 +265,7 @@ export async function remoteReviewProduction(options: {
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown; tool?: unknown;
       phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined;
-      role?: 'Main' | 'Worker'; message?: string; time?: unknown }> = []
+      role?: 'Main' | 'Worker'; message?: string | undefined; time?: unknown }> = []
     let failuresSeen = 0
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {

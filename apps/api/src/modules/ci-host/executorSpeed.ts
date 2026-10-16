@@ -80,7 +80,7 @@ interface SpeedRow {
   test_results?: { files?: { file: string; durationMs?: number | null }[] } | null
   durations?: CiDurations | null
 }
-interface SpeedCache { at: number; pending?: Promise<Map<string, number | ExecutorThroughput>>
+interface SpeedCache { at: number; pending?: Promise<Map<string, number | ExecutorThroughput>> | undefined
   speeds?: Map<string, number | ExecutorThroughput> }
 const caches = new WeakMap<pg.Pool, SpeedCache>()
 
