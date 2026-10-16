@@ -1,6 +1,6 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { Client, SdkError, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect } from 'vitest'
 import { z } from 'zod'
 import { ApiErrorSchema, withAdvancedDefaults, type Agent } from '@foreman-code/contracts'
@@ -68,6 +68,7 @@ export async function connectCiOperator(endpoint: string, token: string): Promis
 
 function transientCiTransportError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
+  if (error instanceof SdkHttpError) return error.status === 502 || error.status === 503
   const code = 'code' in error ? error.code : undefined
   if (['REQUEST_TIMEOUT', 'CONNECTION_CLOSED', 'NOT_CONNECTED',
     'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET',
@@ -110,7 +111,7 @@ export async function callCiTool(client: CiClient, name: string, args: Record<st
 export async function callCiToolResult(client: CiClient, name: string, args: Record<string, unknown>,
   options: CiToolOptions = {}) {
   const deadline = options.deadline ?? Date.now() + 5 * 60_000
-  const read = /_(get|list|read)(_v\d+)?$/.test(name)
+  const read = name === 'workflow_node_placement_choices' || /_(get|list|read)(_v\d+)?$/.test(name)
   const replayable = read || (typeof args.commandId === 'string' && args.commandId.length > 0)
   const connection = connections.get(client)
   const result = await waitForCi(`MCP ${name}`, async () => {
