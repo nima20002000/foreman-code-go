@@ -70,7 +70,22 @@ function deferSourceClosure(
 
 async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: CompletedSource | undefined,
   only?: string) {
-  return pool.query<CompletedSource>(`select m.materialization_id,m.state='closed' as already_closed,
+  return pool.query<CompletedSource>(`with candidates as materialized (
+      select m.materialization_id,m.state,m.record,m.worktree_cleanup,m.execution_id
+      from source_execution_materializations m
+      join source_storage_reservations s on s.reservation_id=m.reservation_id
+      where (m.state<>'closed' or (
+        s.state='retained' and (
+          (s.record->>'referenceReclaimed' is distinct from 'true' and (
+            s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+            or (m.record#>'{receipt,sharedTree}' is not null
+              and m.record#>>'{receipt,binding,deviceId}' is null)
+          ))
+          or (m.record#>'{receipt,worktree}' is not null
+            and m.worktree_cleanup->>'state' is distinct from 'removed')
+        )
+      ))
+    ) select m.materialization_id,m.state='closed' as already_closed,
       m.record,m.worktree_cleanup,e.record as execution,
       exists(select 1 from source_preparation_reconciliations c
         where c.operation_id::text=m.record->>'operationId' and c.status='closed') as preparation_closed,
@@ -84,21 +99,12 @@ async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: Complete
             and (c.expected_reference is null or c.expected_reference=n.reference)
             and not exists(select 1 from execution_native_closures newer
               where newer.execution_id=c.execution_id and newer.generation>c.generation))) as settlement_pending
-    from source_execution_materializations m
-    join harness_executions e on e.id=m.execution_id
+    from candidates m
+    join lateral (
+      select record,run_id,id from harness_executions where id=m.execution_id offset 0
+    ) e on true
     join runs r on r.id=e.run_id
-    join source_storage_reservations s on s.reservation_id=m.reservation_id
-    where (m.state<>'closed' or (
-        s.state='retained' and (
-          (s.record->>'referenceReclaimed' is distinct from 'true' and (
-            s.reserved_bytes=(s.record->>'reservedBytes')::bigint
-            or (m.record#>'{receipt,sharedTree}' is not null
-              and m.record#>>'{receipt,binding,deviceId}' is null)
-          ))
-          or (m.record#>'{receipt,worktree}' is not null
-            and m.worktree_cleanup->>'state' is distinct from 'removed')
-        )
-      )) and e.record->>'state'='completed'
+    where e.record->>'state'='completed'
       and ($1::uuid is null or (m.state='closed',m.materialization_id)>($2::boolean,$1::uuid))
       and ($4::uuid is null or m.materialization_id=$4::uuid)
     order by m.state='closed',m.materialization_id limit $3`,

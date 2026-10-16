@@ -96,7 +96,11 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
 from run_activity a
 left join harness_executions e on e.id=a.harness_execution_id and e.run_id=a.run_id
 left join runs r on r.id=a.run_id
-left join ci_runs cq on a.kind='ci_state_changed' and cq.id::text=a.payload->>'ticketId'
+left join ci_runs cq on a.kind='ci_state_changed'
+  and cq.id=case when a.kind='ci_state_changed'
+    and a.payload->>'ticketId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    then (a.payload->>'ticketId')::uuid end
+  and cq.id::text=a.payload->>'ticketId'
   and cq.workspace_id=r.workspace_id and cq.record#>>'{initiator,executionId}'=e.id
   and cq.record->>'id'=cq.id::text and cq.record->>'workspaceId'=r.workspace_id
   and cq.group_id::text=a.payload#>>'{ci,groupId}' and cq.id::text=a.payload#>>'{ci,id}'

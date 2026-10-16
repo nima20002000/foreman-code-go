@@ -328,6 +328,12 @@ it('visits later cleanup candidates after more than one page of persistent retai
   const f = await fixture()
   try {
     const original = await addOccurrence(f, 'completed')
+    const live = await addOccurrence(f, 'running')
+    const reclaimed = await addOccurrence(f, 'completed')
+    await f.pool.query("update source_execution_materializations set state='closed' where materialization_id=$1",
+      [reclaimed.record.receipt.materializationId])
+    await f.pool.query("update source_storage_reservations set state='reclaimed' where reservation_id=$1",
+      [reclaimed.reservation.reservationId])
     const count = 105
     for (let index = 0; index < count; index++) {
       const materializationId = `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
@@ -348,6 +354,8 @@ it('visits later cleanup candidates after more than one page of persistent retai
     } }, error => { throw error })
     expect(visited[0]).toBe(original.record.receipt.materializationId)
     expect(new Set(visited).size).toBe(count + 1)
+    expect(visited).not.toContain(live.record.receipt.materializationId)
+    expect(visited).not.toContain(reclaimed.record.receipt.materializationId)
     expect(visited.at(-1)).toBe(`00000000-0000-4000-8000-${(count - 1).toString(16).padStart(12, '0')}`)
     expect((await f.pool.query("select count(*) from source_storage_reservations where state='retained'")).rows[0].count)
       .toBe(String(count))
