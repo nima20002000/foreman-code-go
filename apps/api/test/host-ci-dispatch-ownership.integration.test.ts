@@ -41,6 +41,18 @@ function loseStartReply(f: { control: { onStart: (...args: never[]) => Promise<v
   }
 }
 
+/** The partition plan a dispatch pass persists after throughput planning: one patch per sibling with its weights. */
+function isPartitionPlan(values: unknown) {
+  if (!Array.isArray(values) || typeof values[0] !== 'string' || !values[0].startsWith('[')) return false
+  try {
+    const plan = JSON.parse(values[0]) as unknown
+    return Array.isArray(plan) && (plan as { patch?: { partition?: { weights?: unknown } } }[])
+      .some(item => item.patch?.partition?.weights !== undefined)
+  } catch {
+    return false
+  }
+}
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(done => { resolve = done })
@@ -64,12 +76,15 @@ async function fixture(executor?: HostCiEndpoint) {
     available: boolean
     onStart(computer: HostCiComputer, request: CiHostRequest): Promise<void>
     onStatus(computer: HostCiComputer): Promise<void>
+    /** Runs before the service persists a throughput-planned partition plan. */
+    onPlan(): Promise<void>
     hideRuns: boolean
     onCancel(): Promise<void>
   } = {
     available: false,
     onStart: async () => {},
     onStatus: async () => {},
+    onPlan: async () => {},
     onCancel: async () => {},
     hideRuns: false,
   }
@@ -111,8 +126,19 @@ async function fixture(executor?: HostCiEndpoint) {
     resolve: async (_repository: string, _branch: string, commit: string | undefined) => commit ?? 'a'.repeat(40),
     capabilities: async () => ({ parts: false, integrationPartitions: true, affected: true }),
   }
+  // The service's own pool lets a test hold a dispatch pass just before it persists a partition plan.
+  const servicePool = new Proxy(pool, { get(target, property) {
+    if (property === 'query') {
+      return async (...args: unknown[]) => {
+        if (isPartitionPlan(args[1])) await control.onPlan()
+        return (target.query as (...input: unknown[]) => Promise<unknown>).apply(target, args)
+      }
+    }
+    const member: unknown = Reflect.get(target, property, target)
+    return typeof member === 'function' ? member.bind(target) : member
+  } })
   const createService = () => {
-    const service = new HostCiService(pool, commands, new RunCiAuthority(pool), commits, executor ?? endpoint)
+    const service = new HostCiService(servicePool, commands, new RunCiAuthority(pool), commits, executor ?? endpoint)
     vi.spyOn(service, 'start').mockImplementation(() => {})
     return service
   }
@@ -608,15 +634,10 @@ it.each([2, 3])('preserves direct cancellation during throughput planning with %
   const release = deferred()
   let dispatch: Promise<void> | undefined
   try {
-    const statuses = new Map<string, number>()
-    f.control.onStatus = async computer => {
-      const count = (statuses.get(computer.key) ?? 0) + 1
-      statuses.set(computer.key, count)
-      // Capacity is read first; the next status read measures partition throughput.
-      if (count === 2) {
-        entered.resolve()
-        await release.promise
-      }
+    // Throughput planning ends by persisting the slice plan; hold the pass there.
+    f.control.onPlan = async () => {
+      entered.resolve()
+      await release.promise
     }
     f.control.available = true
     const tickets = CiRunOutputSchema.parse(await f.value('ci_run', {
@@ -653,14 +674,10 @@ it.each([
   const release = deferred()
   let dispatch: Promise<void> | undefined
   try {
-    const statuses = new Map<string, number>()
-    f.control.onStatus = async computer => {
-      const count = (statuses.get(computer.key) ?? 0) + 1
-      statuses.set(computer.key, count)
-      if (count === 2) {
-        entered.resolve()
-        await release.promise
-      }
+    // Throughput planning ends by persisting the slice plan; hold the pass there.
+    f.control.onPlan = async () => {
+      entered.resolve()
+      await release.promise
     }
     f.control.available = true
     const tickets = CiRunOutputSchema.parse(await f.value('ci_run', {
