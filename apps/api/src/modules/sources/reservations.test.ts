@@ -7,6 +7,7 @@ import { sourceStorageCapacityFixture } from '../../../test/helpers/sourceStorag
 const idleUsage = {
   bytes: '0', verification_bytes: '0', pending_bytes: '0', preparing: '0',
   materializations: '0', verification_materializations: '0',
+  retained_bytes: '0', verification_retained_bytes: '0',
 }
 
 function reservationSql(ownerKind: SourceReservation['ownerKind'], usage = idleUsage): GraphSqlClient {
@@ -35,6 +36,37 @@ it('admits the first reservation even when the available memory measurement is z
   await expect(new PostgresSourceReservations().reserve(reservationSql(request.ownerKind), request, { capacity }))
     .resolves.toMatchObject(request)
 })
+
+it.each([
+  { usage: { ...idleUsage, preparing: '2' }, exhausted: ['preparations'] },
+  { usage: { ...idleUsage, materializations: '2' }, exhausted: ['materializations'] },
+  { usage: { ...idleUsage, bytes: String(950 * 2 ** 20), retained_bytes: String(600 * 2 ** 20),
+    pending_bytes: String(350 * 2 ** 20), materializations: '1' }, exhausted: ['retained_bytes'] },
+])('classifies temporary reservation pressure as retryable: $exhausted', async ({ usage, exhausted }) => {
+  const request = { scopeId: randomUUID(), ownerKind: 'materialization' as const,
+    ownerId: randomUUID(), reservedBytes: 200 * 2 ** 20 }
+  await expect(new PostgresSourceReservations().reserve(reservationSql(request.ownerKind, usage), request,
+    { capacity: sourceStorageCapacityFixture() })).rejects.toMatchObject({
+    code: 'SOURCE_CAPACITY', details: { retryable: true, scopeId: request.scopeId, exhausted,
+      usage: { requestedBytes: request.reservedBytes }, limits: { bytes: 2 ** 30 } },
+  })
+})
+
+it.each([
+  { usage: { ...idleUsage, bytes: String(900 * 2 ** 20), retained_bytes: String(900 * 2 ** 20) },
+    availableBytes: 4 * 2 ** 30, exhausted: ['retained_bytes'] },
+  { usage: { ...idleUsage, preparing: '2' }, availableBytes: 1100 * 2 ** 20,
+    exhausted: ['available_bytes', 'preparations'] },
+])('keeps hard disk exhaustion permanent even with slot pressure: $exhausted',
+  async ({ usage, availableBytes, exhausted }) => {
+    const request = { scopeId: randomUUID(), ownerKind: 'materialization' as const,
+      ownerId: randomUUID(), reservedBytes: 200 * 2 ** 20 }
+    await expect(new PostgresSourceReservations().reserve(reservationSql(request.ownerKind, usage), request,
+      { capacity: sourceStorageCapacityFixture({ availableBytes }) })).rejects.toMatchObject({
+      code: 'SOURCE_CAPACITY', details: { retryable: false, exhausted },
+    })
+  },
+)
 
 it.each([
   { ...idleUsage, preparing: '1' },
