@@ -25,6 +25,7 @@ import { remoteWorkflowProcessDigest, remoteWorkflowSourceDigest, remoteWorkflow
   readPhysicalReadout, hasNativeClosure } from './workflowPhysicalReadout.js'
 import { DomainError } from '../../errors.js'
 import { assertRemoteReviewerReceipt } from '../../placement/remoteReviewerAuthority.js'
+import { readRetainedRemoteReviewer } from '../../interactions/retainedRemoteReviewer.js'
 import type { ReviewNativeProofRecord } from '../../interactions/reviewNativeProof.js'
 import { transferContextForBinding } from '../../byte-transfer/carrier.js'
 import type { TransferContext } from '@foreman-code/contracts/byte-transfer'
@@ -474,11 +475,17 @@ async function readRemoteBindingRows(sql: GraphTransactionSql, capture: Bound, r
         and p.audience='worker' and p.agent_id=b.agent_id) as authorized
     from harness_executions e where e.id=$1 and e.run_id=$2 for share of e`,
   [intent.executionId, intent.runId, lifetime.review ? 'reviewer' : 'workflow'])).rows[0]
+  const execution = HarnessExecutionSchema.safeParse(executionRow?.record)
+  // Finalizing a completed workflow promotes its original process credential for reviews.
+  const reviewer = !executionRow?.authorized && !lifetime.review && receipt.retainedReviewer && !receipt.terminal
+    && execution.success && execution.data.state === 'completed'
+    && same(execution.data.result, receipt.retainedReviewer.result)
+    ? await readRetainedRemoteReviewer(sql, execution.data) : undefined
+  const reviewerAuthorized = reviewer?.generation === lifetime.closureGeneration && same(reviewer?.session, readout.session)
   const committedPublication = retained && [...capture.publications].some(didGraphTransactionCommit)
-  if (!committedPublication && !receipt.stopFence && !executionRow?.authorized) {
+  if (!committedPublication && !receipt.stopFence && !executionRow?.authorized && !reviewerAuthorized) {
     return unavailable('execution_authorization')
   }
-  const execution = HarnessExecutionSchema.safeParse(executionRow?.record)
   if (!execution.success || execution.data.id !== lifetime.execution.id
     || execution.data.agentId !== lifetime.execution.agentId || execution.data.attempt !== intent.technicalAttempt
     || execution.data.workflowNodeId !== intent.nodeId || execution.data.workingDirectory !== native.workingTree.canonicalCwd
