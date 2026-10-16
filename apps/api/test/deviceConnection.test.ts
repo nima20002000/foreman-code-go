@@ -150,6 +150,7 @@ describe('device-only carrier and lifecycle', () => {
     const epoch = raw.sent[0]!.connectionEpoch; raw.frame({ type: 'ready', connectionEpoch: epoch }); await flush()
     const original = DevicePresenceSchema.parse(presence.mock.calls.at(-1)![0])
     expect(original).toMatchObject({ appVersion: 'worker-observed-42', protocolVersion: 1, lastSeenAt: firstTime.toISOString() })
+    expect(auth.revalidateDevice).toHaveBeenCalledTimes(2)
     const secondTime = new Date(firstTime.getTime() + 50); vi.setSystemTime(secondTime)
     const abort = new AbortController(), pending = endpoint.request(identity.deviceId, 'probe-v1', {}, { signal: abort.signal }); void pending.catch(() => {})
     await flush(); expect(auth.revalidateDevice.mock.calls.length).toBeGreaterThan(2); expect(presence.mock.calls.at(-1)![0].lastSeenAt).toBe(original.lastSeenAt)

@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
+import { deviceApplicationFailure } from './deviceApplicationError.js'
 
 const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0, failSource: false }))
 vi.mock('../ci-host/runner.js', async original => {
@@ -148,8 +149,14 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
     expect(u.activity).toEqual(['download', 'ci-smoke'])
     const next = namespace === 'ci-host-v1'
       ? { ...request, runId: randomUUID() } : { ...request, operationId: randomUUID() }
-    await expect(f.handle(namespace, next))
+    const denied = f.handle(namespace, next)
+    await expect(denied)
       .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
+    await denied.catch(error => {
+      expect(deviceApplicationFailure(error)).toEqual({
+        code: 'WORKER_RUNTIME_DRAINING', class: 'transient', retryable: true,
+      })
+    })
     f.release()
     await updating
     expect(u.activity).toEqual(['download', 'ci-smoke', 'stage', 'restart'])

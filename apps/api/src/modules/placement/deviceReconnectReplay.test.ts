@@ -83,9 +83,12 @@ describe('in-flight native requests across a dropped device link', () => {
     const f = fixture()
     f.dropDuringFirstDelivery(() => {})
     const result = f.manager.capabilities()
+    let completed = false
+    void result.then(() => { completed = true }, () => { completed = true })
     const settled = expect(result).rejects.toMatchObject({ code: 'DEVICE_LINK_DROPPED', status: 503,
       message: expect.stringMatching(/connection to the computer dropped/) })
     await vi.advanceTimersByTimeAsync(60_000)
+    expect(completed).toBe(false)
     expect(f.deliver).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(30_000)
     await settled
