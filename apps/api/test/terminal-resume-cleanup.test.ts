@@ -88,6 +88,35 @@ describe('terminal resume cleanup', () => {
     expect(f.native.finishRun).toHaveBeenCalled()
   })
 
+  it.each(['failed', 'canceled'] as const)(
+    'keeps a settled %s Run closed across repeated resumes', async (outcome) => {
+      const f = fixture()
+      f.complete()
+      f.run.outcome = outcome
+      f.run.result = outcome === 'failed' ? {
+        outcome,
+        error: {
+          code: 'ROOT_OWNER_PREPARATION_CONFLICT',
+          message: 'Root owner preparation failed with status 409.',
+          retryable: false,
+        },
+      } : { outcome }
+      f.run.finishedAt = '2026-10-01T00:00:00.000Z'
+      const settled = await f.runs.getRepeatSnapshot()
+      const readSettledRun = async () => {
+        expect(await f.runs.getRepeatSnapshot()).toEqual(settled)
+      }
+      f.native.cancelRun.mockImplementation(readSettledRun)
+      f.native.finishRun.mockImplementation(readSettledRun)
+      f.onTerminal.mockImplementation(readSettledRun)
+
+      for (let resume = 0; resume < 3; resume++) {
+        await f.engine.resume(f.run.id)
+        expect(await f.runs.getRepeatSnapshot()).toEqual(settled)
+      }
+    },
+  )
+
   it('still finishes pending cleanup on a terminal run', async () => {
     const f = fixture()
     f.complete()
