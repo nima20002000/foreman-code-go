@@ -4,15 +4,22 @@ import { faultWorkflowFixture, expectSuccessfulFaultRecovery } from './helpers/f
 import { readOperationalFailures } from '../src/modules/diagnostics/operationalFailures.js'
 import { deferred } from './helpers/deferred.js'
 import { readUntil } from './helpers/observableCondition.js'
-import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.runIf(postgresEnabled)('workflow reporting under database contention', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
+  let database: Awaited<ReturnType<typeof agent3Database>>
   beforeAll(async () => {
-    fixture = await faultWorkflowFixture()
+    database = await agent3Database()
+    // A competing transaction must not consume the pool capacity needed to report its timeout.
+    database.pool.options.max = 1
+    fixture = await faultWorkflowFixture({ database })
     await fixture.prepareEntry()
   }, 10_000)
-  afterAll(async () => { await fixture?.close() }, 10_000)
+  afterAll(async () => {
+    try { await fixture?.close() }
+    finally { await database?.close() }
+  }, 10_000)
 
   // A Run lock held until Agent reporting has hit its statement deadline must retry reporting and expose the database delay in operational diagnostics.
   it('finishes while a separate transaction locks its Run during Agent reporting', async () => {
