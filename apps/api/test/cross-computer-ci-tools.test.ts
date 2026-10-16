@@ -24,6 +24,8 @@ it('refreshes a torn activity read using the same public request', async () => {
   expect(await callCiTool({ callTool }, 'run_get', { workspaceId: 'workspace', runId: 'run' }))
     .toEqual({ run: { id: 'run' } })
   expect(callTool).toHaveBeenCalledTimes(2)
+  expect(callTool.mock.calls[0]?.[0]).toEqual({ name: 'run_get',
+    arguments: { workspaceId: 'workspace', runId: 'run' } })
   expect(callTool.mock.calls[0]).toEqual(callTool.mock.calls[1])
 })
 

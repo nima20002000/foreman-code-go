@@ -27,6 +27,7 @@ it.each(['github', 'circleci'] as const)('reads a %s ticket canceled before its 
   await f.cloud.handle({ operation: 'cancel', runId })
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
     .toMatchObject({ run: { state: 'canceled', logBytes: 0 }, text: '', nextOffset: 0 })
+  expect(provider === 'github' ? f.github.canceled : f.circle.canceled).toHaveLength(1)
 })
 
 it.each(['github', 'circleci'] as const)('reports pending %s collection when its first log is unavailable', async provider => {

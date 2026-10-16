@@ -39,6 +39,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   f.advance(5 * 60_000)
   await f.reopen().handle({ operation: 'cancel', runId: second })
   await expect.poll(refs, { timeout: 5_000 }).not.toContain(`refs/heads/ci/${f.commit}`)
+  expect(refs()).toContain('refs/heads/feature/keep')
   await f.reopen().handle({ ...request, runId: randomUUID() })
   expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1))
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)

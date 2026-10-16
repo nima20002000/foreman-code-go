@@ -63,6 +63,7 @@ it('cancels pending publication promptly and never triggers its workflow after t
     expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
       .toMatchObject({ run: { state: 'canceled' } })
     expect(f.dispatched).toHaveLength(0)
+    expect(f.circle.triggered).toHaveLength(0)
   } finally {
     release()
     await start
