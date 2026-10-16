@@ -2,7 +2,7 @@ import type { Client } from '@modelcontextprotocol/client'
 import { CiGetOutputSchema, CiLogsOutputSchema, CiRunRecordSchema } from '@foreman-code/contracts'
 import { expect } from 'vitest'
 import { z } from 'zod'
-import { callCiTool } from './crossComputerCiSetup.js'
+import { callCiTool, type CiToolOptions } from './crossComputerCiSetup.js'
 
 const TerminalStateSchema = CiRunRecordSchema.shape.state.extract(['passed', 'failed', 'canceled', 'lost'])
 export const AgentCiReportSchema = z.object({
@@ -34,13 +34,14 @@ export function ciTerminal(state: string): boolean {
   return TerminalStateSchema.safeParse(state).success
 }
 
-export async function readCiLog(client: Pick<Client, 'callTool'>, scope: { workspaceId: string; ticketId: string }) {
+export async function readCiLog(client: Pick<Client, 'callTool'>, scope: { workspaceId: string; ticketId: string },
+  options: CiToolOptions = {}) {
   let cursor = 0
   let text = ''
   for (let pageNumber = 0; pageNumber < 1024; pageNumber++) {
     const page = CiLogsOutputSchema.parse(await callCiTool(client, 'ci_logs_read', {
       ...scope, afterOffset: cursor, maxBytes: 65_536,
-    }))
+    }, options))
     expect(page.parts).toBeUndefined()
     expect(page.nextOffset).toBeGreaterThanOrEqual(cursor)
     expect(page.nextOffset).toBeLessThanOrEqual(page.logBytes)

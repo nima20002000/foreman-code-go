@@ -1,6 +1,6 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { Client, SdkError, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect } from 'vitest'
 import { z } from 'zod'
 import { ApiErrorSchema, withAdvancedDefaults, type Agent } from '@foreman-code/contracts'
@@ -12,21 +12,76 @@ import { CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema, SavedMana
   type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { buildCrossComputerCiGraph, ciHarness, createCiTasks, type ScenarioAgent } from './crossComputerCiGraph.js'
 import type { ScenarioComputer, ScenarioWorkspace } from './crossComputerCiInput.js'
-import { waitForCi } from './crossComputerCiWait.js'
+import { CiWaitTimeout, waitForCi } from './crossComputerCiWait.js'
 
 type SavedCiWorkflow = z.infer<typeof CurrentWorkflowReadResultSchema>
 
+type CiClient = Pick<Client, 'callTool'>
+export type OwnedCiProfile = Pick<HarnessProfileSelection, 'instanceId' | 'target'>
+export type CiToolOptions = { deadline?: number; timeoutMs?: number }
+type CiConnection = {
+  generation: number
+  pending: Promise<void> | undefined
+  reconnect: (signal: AbortSignal, timeout: number) => Promise<void>
+}
+const connections = new WeakMap<CiClient, CiConnection>()
+
+async function boundedCiRequest<T>(label: string, deadline: number, timeoutMs: number,
+  request: (signal: AbortSignal, timeout: number) => Promise<T>): Promise<T> {
+  const timeout = Math.min(timeoutMs, deadline - Date.now())
+  if (timeout <= 0) throw new CiWaitTimeout(`Timed out waiting for ${label}.`)
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = Date.now() >= deadline ? new CiWaitTimeout(`Timed out waiting for ${label}.`)
+        : new SdkError(SdkErrorCode.RequestTimeout, `${label} request timed out.`)
+      reject(error)
+      controller.abort(error)
+    }, timeout)
+  })
+  try {
+    return await Promise.race([request(controller.signal, timeout), expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function connectCiOperator(endpoint: string, token: string): Promise<Client> {
   const client = new Client({ name: 'Cross-computer CI acceptance', version: '1' })
-  try {
-    await client.connect(new StreamableHTTPClientTransport(new URL(endpoint), {
+  const connect = (signal: AbortSignal, timeout: number) => client.connect(
+    new StreamableHTTPClientTransport(new URL(endpoint), {
       requestInit: { headers: { authorization: `Bearer ${token}` } },
-    }))
+    }), { signal, timeout })
+  try {
+    await boundedCiRequest('MCP connection', Date.now() + 60_000, 60_000, connect)
   } catch (error) {
     await client.close()
     throw error
   }
+  connections.set(client, { generation: 0, pending: undefined, reconnect: async (signal, timeout) => {
+    await client.close()
+    await connect(signal, timeout)
+  } })
   return client
+}
+
+function transientCiTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const code = 'code' in error ? error.code : undefined
+  if (['REQUEST_TIMEOUT', 'CONNECTION_CLOSED', 'NOT_CONNECTED',
+    'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(String(code))) return true
+  // Fetch and SDK send failures preserve the underlying socket error as their cause.
+  return (error instanceof TypeError || code === 'SEND_FAILED') && transientCiTransportError(error.cause)
+}
+
+async function reconnectCiClient(connection: CiConnection, generation: number, deadline: number) {
+  if (connection.generation !== generation) return
+  connection.pending ??= boundedCiRequest('MCP reconnection', deadline, 60_000, connection.reconnect)
+    .then(() => { connection.generation++ })
+    .finally(() => { connection.pending = undefined })
+  await boundedCiRequest('MCP reconnection', deadline, 60_000, async () => connection.pending)
 }
 
 export function toolErrorCode(result: Awaited<ReturnType<Client['callTool']>>): string | null {
@@ -43,25 +98,52 @@ export function toolErrorCode(result: Awaited<ReturnType<Client['callTool']>>): 
   return parsed.success ? parsed.data.error.code : null
 }
 
-export async function callCiTool(client: Pick<Client, 'callTool'>, name: string, args: Record<string, unknown>) {
-  const result = await callCiToolResult(client, name, args)
+export async function callCiTool(client: CiClient, name: string, args: Record<string, unknown>,
+  options: CiToolOptions = {}) {
+  const result = await callCiToolResult(client, name, args, options)
   const code = result.isError ? toolErrorCode(result) : null
   const detail = result.isError ? JSON.stringify(result.structuredContent ?? result.content).slice(0, 2000) : ''
   expect(result.isError, `Public MCP operation ${name} failed${code ? ` (${code})` : ''}: ${detail}`).not.toBe(true)
   return decodeMcpToolResult(result)
 }
 
-export async function callCiToolResult(client: Pick<Client, 'callTool'>, name: string, args: Record<string, unknown>) {
-  return waitForCi(`MCP ${name}`, () => client.callTool({ name, arguments: args }, { timeout: 180_000 }), result => {
-    const code = result.isError ? toolErrorCode(result) : null
-    const read = /_(get|list|read)(_v\d+)?$/.test(name)
+export async function callCiToolResult(client: CiClient, name: string, args: Record<string, unknown>,
+  options: CiToolOptions = {}) {
+  const deadline = options.deadline ?? Date.now() + 5 * 60_000
+  const read = /_(get|list|read)(_v\d+)?$/.test(name)
+  const replayable = read || (typeof args.commandId === 'string' && args.commandId.length > 0)
+  const connection = connections.get(client)
+  const result = await waitForCi(`MCP ${name}`, async () => {
+    const generation = connection?.generation ?? 0
+    try {
+      return await boundedCiRequest(`MCP ${name}`, deadline, options.timeoutMs ?? 180_000, async (signal, timeout) => {
+        await connection?.pending
+        signal.throwIfAborted()
+        return client.callTool({ name, arguments: args }, { signal, timeout })
+      })
+    } catch (error) {
+      if (!replayable || !transientCiTransportError(error)) throw error
+      if (connection) {
+        try {
+          await reconnectCiClient(connection, generation, deadline)
+        } catch (reconnectError) {
+          if (!transientCiTransportError(reconnectError)) throw reconnectError
+        }
+      }
+      return null
+    }
+  }, value => {
+    if (!value) return false
+    const code = value.isError ? toolErrorCode(value) : null
     const retry = code === 'DEVICE_BUSY'
       || (code === 'ACTIVITY_SNAPSHOT_CONFLICT' && ['run_get', 'run_activities_get_v1'].includes(name))
       || (code === 'DATABASE_READ_TIMEOUT' && read)
       || code === 'COMMAND_DATABASE_TIMEOUT' || code === 'COMMAND_LOCK_TIMEOUT'
       || (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start')
-    return !retry
-  }, { deadline: Date.now() + 5 * 60_000 })
+      || (name === 'run_stop' && ['WORKFLOW_STOP_SETTLEMENT_PENDING', 'WORKFLOW_STOP_OWNER_UNCERTAIN'].includes(code ?? ''))
+    return !(replayable && retry)
+  }, { deadline })
+  return result!
 }
 
 export async function expectCiDenied(client: Client, name: string, args: Record<string, unknown>) {
@@ -70,7 +152,8 @@ export async function expectCiDenied(client: Client, name: string, args: Record<
   expect(toolErrorCode(result)).toBe('ACCESS_DENIED')
 }
 
-export async function qualifyCiProfile(client: Client, computer: ScenarioComputer): Promise<HarnessProfileSelection> {
+export async function qualifyCiProfile(client: Client, computer: ScenarioComputer,
+  owned: Map<string, OwnedCiProfile>): Promise<HarnessProfileSelection> {
   const inventory = await waitForCi(`${computer.name} harness readiness`, async () =>
     HarnessRegistryReadbackSchema.parse(await callCiTool(client, 'harness_registry_get', { ...computer.hostRef })),
   value => Boolean(value.hostMetadata && value.installations.some(item => item.driverId === 'codex'
@@ -88,8 +171,11 @@ export async function qualifyCiProfile(client: Client, computer: ScenarioCompute
     harnessInstallationId: installation.harnessInstallationId,
     installationFingerprint: installation.installationFingerprint!,
   }
+  const instanceId = randomUUID()
+  // Keep ownership even when the save commits but its response is lost.
+  owned.set(instanceId, { instanceId, target })
   const profile = HostHarnessOverrideSaveResultSchema.parse(await callCiTool(client, 'harness_instance_save', {
-    commandId: randomUUID(), instanceId: randomUUID(), expectedRevision: 0,
+    commandId: randomUUID(), instanceId, expectedRevision: 0,
     target, presetId: 'local-default:codex', enabled: true, configuration: ciHarness,
   })).value
   const checked = HostHarnessInstanceCheckResultSchema.parse(await callCiTool(client, 'harness_instance_check', {
@@ -97,11 +183,13 @@ export async function qualifyCiProfile(client: Client, computer: ScenarioCompute
   }))
   expect(checked.proof.qualified, `${computer.name} Codex profile qualification`).toBe(true)
   expect(checked.value.configuration).toEqual(withAdvancedDefaults(ciHarness))
-  return { instanceId: checked.value.instanceId, instanceRevision: checked.value.instanceRevision, target }
+  const selection = { instanceId: checked.value.instanceId, instanceRevision: checked.value.instanceRevision, target }
+  owned.set(instanceId, selection)
+  return selection
 }
 
 /** Disables the invocation's profiles so later restarts do not recheck every scenario profile ever created. */
-export async function disableCiProfiles(client: Client, profiles: Iterable<HarnessProfileSelection>) {
+export async function disableCiProfiles(client: Client, profiles: Iterable<OwnedCiProfile>) {
   for (const profile of profiles) {
     const { target } = profile
     const listed = HostHarnessOverrideListSchema.parse(await callCiTool(client, 'harness_instances_list', {
