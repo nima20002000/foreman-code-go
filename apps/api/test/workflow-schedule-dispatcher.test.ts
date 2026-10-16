@@ -4,7 +4,7 @@ import { decideDueSchedule, planDueSchedule } from '../src/modules/schedules/dis
 import { WorkflowScheduleDispatcher, type ScheduleDispatcherPort } from '../src/modules/schedules/dispatcher.js'
 import { scheduleRejectionReason } from '../src/modules/schedules/postgresDispatcher.js'
 import { DomainError } from '../src/modules/errors.js'
-import { deferred } from './helpers/deferred.js'
+import { deferred, rejectableDeferred } from './helpers/deferred.js'
 
 const settings = { workspaceId: 'schedule-workspace', workflowId: 'schedule-workflow', revision: 1,
   timezone: 'UTC', enabled: true, policy: 'latest_saved', nextOccurrenceAt: '2030-01-07T10:00:00.000Z' }
@@ -179,5 +179,16 @@ describe('SCH-04 process loop', () => {
       await vi.advanceTimersByTimeAsync(5_000)
       expect(work.dispatch).toHaveBeenCalledTimes(2)
     } finally { vi.useRealTimers() }
+  })
+  it('reports a transient scan failure and still stops cleanly while that scan is in flight', async () => {
+    const scan = rejectableDeferred<never>()
+    const reportError = vi.fn()
+    const transient = new Error('Connection terminated due to connection timeout')
+    const loop = new WorkflowScheduleDispatcher({ listDueSchedules: () => scan.promise, dispatch: vi.fn() }, { reportError })
+    loop.start()
+    const stopped = loop.stop()
+    scan.reject(transient)
+    await expect(stopped).resolves.toBeUndefined()
+    expect(reportError).toHaveBeenCalledExactlyOnceWith(transient)
   })
 })
