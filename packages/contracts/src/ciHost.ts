@@ -12,7 +12,7 @@ export const CI_HOST_START_PROTOCOL_VERSION = 3
 export const CI_LOG_MAX_BYTES = 65_536
 export const CI_UNIT_SHARD_LIMIT = 32
 export const CI_HEAVY_WEB_SHARDS = 2
-export const CI_MAX_RUN_TICKETS = CI_UNIT_SHARD_LIMIT * 2 + CI_HEAVY_WEB_SHARDS + 1
+export const CI_MAX_RUN_TICKETS = 256
 
 export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export type CiSuite = z.infer<typeof CiSuiteSchema>
@@ -43,7 +43,8 @@ export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | unde
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
-export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(1).max(64),
+export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(),
+  count: z.number().int().min(1).max(CI_MAX_RUN_TICKETS),
   /** Slow files wait for the rest of the request; affected requests require those parts to pass. */
   tier: z.enum(['fast', 'slow']).optional(),
   slowFiles: z.array(z.string().min(1).max(300)).max(300).optional(),
@@ -51,7 +52,7 @@ export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(
   targetDurationMs: z.number().positive().finite().optional(),
   weights: z.array(z.number().positive().finite()).optional(),
   /** User-systemd files require these capable slices; ordinary files can fill remaining capacity in any slice. */
-  hostIndexes: z.array(z.number().int().nonnegative()).min(1).max(64).optional() }).strict()
+  hostIndexes: z.array(z.number().int().nonnegative()).min(1).max(CI_MAX_RUN_TICKETS).optional() }).strict()
   .refine(value => value.index < value.count, 'The partition index must be below its count.')
   .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
   .refine(value => !value.hostIndexes || (new Set(value.hostIndexes).size === value.hostIndexes.length
