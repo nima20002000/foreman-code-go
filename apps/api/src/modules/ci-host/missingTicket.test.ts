@@ -19,7 +19,7 @@ function fixture(executionId: string | null = 'execution') {
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
   }
   const records: CiRunRecord[] = []
-  const recent = vi.fn(async (..._identity: unknown[]) => ({ rows: records.slice(0, 1).map(record => ({
+  const recent = vi.fn(async (...identity: unknown[]) => ({ identity, rows: records.slice(0, 1).map(record => ({
     record, created_at: '2026-10-16T03:09:00.000Z', states: ['running', 'passed'],
   })) }))
   const query = vi.fn(async (sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> => {
