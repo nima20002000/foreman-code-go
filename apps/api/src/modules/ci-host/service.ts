@@ -35,7 +35,7 @@ import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
-import { readExecutorSpeeds } from './executorSpeed.js'
+import { invalidateExecutorSpeeds, readExecutorSpeeds } from './executorSpeed.js'
 import { readCiGateReservation, readQueuedCiRuns } from './queuedRuns.js'
 import { expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
@@ -808,6 +808,7 @@ export class HostCiService {
         savedLogTail,
         run.supersededBy ?? null, run.state, JSON.stringify(run), setupRequeue],
       next, run.cancellation ?? audit, client)
+    if (terminal && run.gate && run.suite === 'integration') invalidateExecutorSpeeds(this.pool)
     if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message: messages.message },
       'CI ticket queued for another computer')
     return Boolean(saved.rowCount)
@@ -1186,7 +1187,7 @@ export class HostCiService {
     // Reserve four GitHub slots while checks that can dispatch wait, including integration already using GitHub.
     const dispatchableCheck = (run: CiRunRecord) => run.suite !== 'integration' && !gateQueueBlock(run, gate)
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(dispatchableCheck) ? 4 : 0))
-    queued = await weighCiPartitions(this.pool, this.endpoint, queued, computers.flatMap(computer =>
+    queued = await weighCiPartitions(this.pool, this.planningEndpoint, queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)), (id, workspaceId) => this.read(id, workspaceId))
     queued.sort((left, right) => (left.priority === right.priority
       && !left.gate && !right.gate

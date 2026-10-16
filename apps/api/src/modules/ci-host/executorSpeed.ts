@@ -1,12 +1,17 @@
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
-import { CiDurationsSchema, CiRunRecordSchema, CiTestResultsSchema, type CiDurations,
-  type CiRunRecord } from '@foreman-code/contracts'
+import type { CiDurations, CiRunRecord } from '@foreman-code/contracts'
 import type { HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
 const SAMPLES = 10
 const MIN_FACTOR = 0.5
 const MAX_FACTOR = 3
+/** A cached estimate is reused this long even when no ticket reports finishing (collected durations land late). */
+const CACHE_MS = 30_000
+
+/** The only run fields speed estimation reads. */
+export type ExecutorSpeedRun = Pick<CiRunRecord, 'id' | 'gate' | 'suite' | 'state' | 'computer' | 'startedAt'
+  | 'finishedAt' | 'files' | 'plannedHostKey' | 'expectedDurationMs' | 'speedFactor'>
 
 export interface ExecutorThroughput {
   factor: number
@@ -27,7 +32,7 @@ export function executorSpeedKey(computer: HostCiComputer): string {
 
 /** Recent passed parts, newest first, measure file work per wall time. Cloud slowdown estimates undo the
  * previously applied factor and exclude parts planned for a different executor. */
-export function estimateExecutorSpeeds(runs: readonly CiRunRecord[],
+export function estimateExecutorSpeeds(runs: readonly ExecutorSpeedRun[],
   computers: readonly HostCiComputer[], durations: ReadonlyMap<string, CiDurations> = new Map())
   : Map<string, number | ExecutorThroughput> {
   const samples = new Map<string, number[]>()
@@ -70,24 +75,63 @@ function median(values: readonly number[]): number {
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2
 }
 
-/** Reads recent passed gate integration parts and estimates each current executor's speed. */
+interface SpeedRow {
+  record: ExecutorSpeedRun
+  test_results?: { files?: { file: string; durationMs?: number | null }[] } | null
+  durations?: CiDurations | null
+}
+interface SpeedCache { at: number; pending?: Promise<Map<string, number | ExecutorThroughput>>
+  speeds?: Map<string, number | ExecutorThroughput> }
+const caches = new WeakMap<pg.Pool, SpeedCache>()
+
+/** Forget the cached estimate; a finished gate integration part changes the measurements. */
+export function invalidateExecutorSpeeds(pool: pg.Pool) {
+  caches.delete(pool)
+}
+
+/** Reads recent passed gate integration parts and estimates each current executor's speed. Concurrent callers
+ * share one read and later ones reuse it until a gate part finishes. */
 export async function readExecutorSpeeds(pool: pg.Pool, endpoint: HostCiEndpoint)
   : Promise<Map<string, number | ExecutorThroughput>> {
-  const rows = (await pool.query<{ record: unknown; durations?: unknown; test_results?: unknown }>(
-    `select record,durations,test_results from ci_runs
+  const cached = caches.get(pool)
+  if (cached?.pending) return cached.pending
+  if (cached?.speeds && Date.now() - cached.at < CACHE_MS) return cached.speeds
+  const entry: SpeedCache = { at: Date.now() }
+  caches.set(pool, entry)
+  entry.pending = loadExecutorSpeeds(pool, endpoint).then(speeds => {
+    entry.speeds = speeds
+    entry.at = Date.now()
+    return speeds
+  }).catch(error => {
+    if (caches.get(pool) === entry) caches.delete(pool)
+    throw error
+  }).finally(() => { entry.pending = undefined })
+  return entry.pending
+}
+
+async function loadExecutorSpeeds(pool: pg.Pool, endpoint: HostCiEndpoint)
+  : Promise<Map<string, number | ExecutorThroughput>> {
+  // Only file names and durations of the reports are needed, so the database projects them.
+  const rows = (await pool.query<SpeedRow>(
+    `select jsonb_build_object('id',record->'id','gate',record->'gate','suite',record->'suite',
+        'state',record->'state','computer',record->'computer','startedAt',record->'startedAt',
+        'finishedAt',record->'finishedAt','files',record->'files','plannedHostKey',record->'plannedHostKey',
+        'expectedDurationMs',record->'expectedDurationMs','speedFactor',record->'speedFactor') as record,
+      case when test_results is null then null else jsonb_build_object('files',
+        (select coalesce(jsonb_agg(jsonb_build_object('file',file->'file','durationMs',file->'durationMs')),'[]'::jsonb)
+          from jsonb_array_elements(test_results->'files') as file)) end as test_results,
+      durations from ci_runs
     where state='passed' and record->>'suite'='integration' and record->>'gate'='true'
       and record->>'finishedAt' is not null order by created_at desc limit 300`)).rows
-  const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
   const durations = new Map<string, CiDurations>()
-  for (const [index, row] of rows.entries()) {
-    const results = row.test_results ? CiTestResultsSchema.parse(row.test_results) : null
-    const measured = results ? Object.fromEntries(results.files.map(file => [file.file, file.durationMs ?? 0])) : null
-    const run = runs[index]!
-    if (measured && run.files.length && run.files.every(file => (measured[file] ?? 0) > 0)) {
-      durations.set(run.id, measured)
+  for (const row of rows) {
+    const measured = row.test_results?.files
+      ? Object.fromEntries(row.test_results.files.map(file => [file.file, file.durationMs ?? 0])) : null
+    if (measured && row.record.files.length && row.record.files.every(file => (measured[file] ?? 0) > 0)) {
+      durations.set(row.record.id, measured)
     } else if (row.durations) {
-      durations.set(run.id, CiDurationsSchema.parse(row.durations))
+      durations.set(row.record.id, row.durations)
     }
   }
-  return estimateExecutorSpeeds(runs, await endpoint.computers(), durations)
+  return estimateExecutorSpeeds(rows.map(row => row.record), await endpoint.computers(), durations)
 }
