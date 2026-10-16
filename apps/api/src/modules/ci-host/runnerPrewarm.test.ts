@@ -67,8 +67,29 @@ async function computer(stall?: 'fetch' | 'checkout') {
   fixtures.push({ root, runner })
   const request = { operation: 'start', runId: randomUUID(), repository: 'example/project', commit: 'a'.repeat(40),
     suite: 'install', scope: 'full', warmup: true }
-  return { root, runner, request, launches, pidFile, childPidFile }
+  return { root, runner, ports, request, launches, pidFile, childPidFile }
 }
+
+it('removes warmups rejected when memory drops after reservation, including retries with new IDs', async () => {
+  const f = await computer()
+  let memory = f.ports.memoryBytes
+  f.ports.availableMemoryBytes = () => memory
+  const command = f.ports.run
+  f.ports.run = async (file, args, options) => {
+    if (file === 'git' && args.includes('fetch')) memory = 1
+    return command(file, args, options)
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    memory = f.ports.memoryBytes
+    const runId = randomUUID()
+    await expect(f.runner.handle({ ...f.request, runId })).rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+    await expect(f.runner.handle({ operation: 'status' })).resolves.toMatchObject({ slotsUsed: 0, runs: [] })
+    await expect(f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 100 }))
+      .rejects.toMatchObject({ code: 'CI_RUN_UNKNOWN' })
+    expect(existsSync(join(f.root, 'runs', runId))).toBe(false)
+  }
+  expect(f.launches).toEqual([])
+})
 
 it.each(['fetch', 'checkout'] as const)('reaps a stalled warmup %s before starting real CI', async stall => {
   const f = await computer(stall)
