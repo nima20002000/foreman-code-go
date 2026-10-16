@@ -316,7 +316,7 @@ it('reports the requested ticket from the same read as the group that settled', 
     // The ticket row is read first; the group read that follows already sees the collection finish.
     f.query.mockImplementationOnce(async () => ({ rows: [{ record: { ...stale, state: 'passed', exitCode: 0,
       collection: 'pending' }, log_tail: '' }] }))
-    f.query.mockImplementationOnce(async () => ({ rows: [{ record: f.read() }, { record: sibling }] }))
+    f.query.mockImplementationOnce(async () => ({ rows: [{ record: f.read(), log_tail: '' }, { record: sibling, log_tail: '' }] }))
     const result = await f.ci.get(f.caller, { workspaceId: 'workspace', ticketId: f.read().id, logTail: false,
       waitUntil: 'group-terminal' })
     expect(result).toMatchObject({ run: { collection: 'complete' },
