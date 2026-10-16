@@ -237,7 +237,7 @@ it('does not rewalk unchanged cache trees on cleanup passes until the hourly ref
   expect(scans).toBe(2)
 })
 
-it('rescans a cache as soon as its writer settles and preserves oldest-first eviction', async () => {
+it('rescans a cache on the next five-minute pass after its writer settles and preserves oldest-first eviction', async () => {
   const f = await fixture()
   const ticket = await run(f.root, { state: 'running' })
   const oldest = join(f.root, 'cache/fixture/site/pnpm-store/old')
@@ -250,6 +250,8 @@ it('rescans a cache as soon as its writer settles and preserves oldest-first evi
   await expect(access(oldest)).resolves.toBeUndefined()
   await sparseFile(newest, 3 * 2 ** 30, '2026-10-03T00:00:00Z')
   await writeFile(join(ticket.directory, 'exit'), '0\n')
+  await f.runner.handle({ operation: 'status' })
+  f.advance(5 * 60_000)
   await f.runner.handle({ operation: 'status' })
   await f.runner.beginDrain()
   await expect(access(oldest)).rejects.toMatchObject({ code: 'ENOENT' })

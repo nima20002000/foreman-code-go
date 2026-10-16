@@ -319,9 +319,9 @@ export class HostCiRunner {
     }
     this.cacheSweepPending = (async () => {
       const now = this.ports.now().getTime()
-      // Writer transitions trigger fresh walks; external changes are picked up by the hourly scan.
-      const revision = this.cacheRevision
-      if (revision !== this.sweptCacheRevision || now - this.cacheSweepAt >= 60 * 60_000) {
+      // At most one walk per 5 minutes, and only after a writer transition; external changes wait for the hourly scan.
+      const revision = this.cacheRevision, elapsed = now - this.cacheSweepAt
+      if (revision !== this.sweptCacheRevision && elapsed >= 5 * 60_000 || elapsed >= 60 * 60_000) {
         await sweepHostCiCache(this.root, { activeRepositories })
         this.cacheSweepAt = now
         this.sweptCacheRevision = revision
