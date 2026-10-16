@@ -26,7 +26,7 @@ export class QualificationCache<T> {
   private readonly values = new Map<string, Entry<T>>()
   private closing = false
   constructor(private readonly ttlMs = 300_000, private readonly maximum = 128, private readonly now = Date.now,
-    // Serve an expired success while one refresh runs; failures and invalidation never serve stale values.
+    // Serve an expired success while one refresh runs and keep it after a failed refresh; invalidation never serves stale values.
     private readonly staleWhileRevalidate = false) {
     if (ttlMs < 0 || maximum < 1) throw new Error('Invalid qualification cache limits.')
   }
@@ -83,7 +83,9 @@ export class QualificationCache<T> {
         loaded.lastError = 'The native readiness check could not complete.'
         if (previous) logger.warn({ component: 'harness', failureCount: loaded.failureCount,
           refreshCount: loaded.refreshCount, lastError: loaded.lastError }, 'Native readiness refresh failed')
-        settle(Math.min(this.ttlMs, 15_000), false)
+        // A failed background refresh keeps the last success and retries soon; other failures are cached as rejections.
+        if (stale && !loaded.invalidated) loaded.value = stale
+        settle(Math.min(this.ttlMs, 15_000), Boolean(stale) && !loaded.invalidated)
       })
     }
     const selected = entry
