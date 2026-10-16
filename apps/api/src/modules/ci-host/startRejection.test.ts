@@ -97,9 +97,9 @@ function fixture(lostReplies: number, rejection: string | null) {
   } }
   const commands = {
     execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
-      await input.authorize?.()
-      await input.prepare?.()
       const client = pool as unknown as pg.PoolClient
+      await input.authorize?.(client)
+      await input.prepare?.()
       await input.preparedMutation?.validate(client)
       return { value: await input.perform(client), replayed: false }
     },
