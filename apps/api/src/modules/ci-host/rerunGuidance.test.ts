@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import Fastify from 'fastify'
 import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
-  type CiRunRecord, type CiTestResults } from '@foreman-code/contracts'
+  type CiTestResults } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, expect, it, vi } from 'vitest'
 import { registerGraphqlMcp } from '../../mcp/unified/transport.js'
@@ -12,12 +12,6 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { CI_RUN_ACTIONS, CI_GET_ACTIONS, type CiAuthority } from '../jobs/ciAuthority.js'
 import { HostCiService, type CiCommits, type HostCiEndpoint } from './service.js'
-
-// Exercise the edited contracts without depending on generated package output.
-vi.mock('@foreman-code/contracts', async importOriginal => ({
-  ...await importOriginal<typeof import('@foreman-code/contracts')>(),
-  ...await import('../../../../../packages/contracts/src/ci.js'),
-}))
 
 afterEach(() => { vi.restoreAllMocks() })
 
