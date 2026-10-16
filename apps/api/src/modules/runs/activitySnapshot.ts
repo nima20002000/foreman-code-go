@@ -173,7 +173,8 @@ export async function readRunActivitySnapshot(sql: Queryable, scope: RunActivity
     const execution = before.executions.find((entry) => entry.id === row.harness_execution_id)
     // Run-level audit rows retain their genuine Run owner; never borrow the latest execution.
     const job = before.jobs.find((entry) => entry.id === row.job_execution_id)
-    const ci = before.cis.find(entry => entry.id === publicItem.refs.ciTicketId)
+    const ci = before.cis.find(entry => entry.id === publicItem.refs.ciTicketId
+      && entry.execution_id === row.harness_execution_id)
     let owner: WorkRef = { kind: 'run', ...scope }
     if (ci) owner = ciRef(ci)
     else if (execution) owner = ref(execution)

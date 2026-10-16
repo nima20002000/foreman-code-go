@@ -144,7 +144,9 @@ export class RunHistoryService {
       if (snapshot.workspaceId !== input.workspaceId || snapshot.workflowId !== input.workflowId
         || snapshot.runId !== input.runId || snapshot.workflowVersionId !== row.workflow_version_id) storedDataInvalid()
       const ci = await client.query(`select 1 from ci_runs c join harness_executions e
-        on e.id=c.record#>>'{initiator,executionId}'
+        on (e.id=c.record#>>'{initiator,executionId}'
+          or exists(select 1 from ci_group_requesters q where q.workspace_id=c.workspace_id
+            and q.group_id=c.group_id and q.execution_id=e.id))
         where e.run_id=$1 and c.workspace_id=$2 limit 1`, [input.runId, input.workspaceId])
       const versionRow = (await client.query<{ record: unknown }>(
         'select record from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3',

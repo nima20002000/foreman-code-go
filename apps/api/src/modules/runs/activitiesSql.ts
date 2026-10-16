@@ -101,7 +101,9 @@ left join ci_runs cq on a.kind='ci_state_changed'
     and a.payload->>'ticketId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     then (a.payload->>'ticketId')::uuid end
   and cq.id::text=a.payload->>'ticketId'
-  and cq.workspace_id=r.workspace_id and cq.record#>>'{initiator,executionId}'=e.id
+  and cq.workspace_id=r.workspace_id and (cq.record#>>'{initiator,executionId}'=e.id
+    or exists(select 1 from ci_group_requesters q where q.workspace_id=cq.workspace_id
+      and q.group_id=cq.group_id and q.execution_id=e.id))
   and cq.record->>'id'=cq.id::text and cq.record->>'workspaceId'=r.workspace_id
   and cq.group_id::text=a.payload#>>'{ci,groupId}' and cq.id::text=a.payload#>>'{ci,id}'
   and cq.record->>'suite'=a.payload#>>'{ci,suite}'
