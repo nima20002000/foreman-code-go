@@ -163,7 +163,11 @@ it('queues a run while every computer is busy and starts it on the first one tha
       message: expect.stringContaining('all CI slots in use (1/1)') })
     expect(waiting.queue).toEqual({ position: 1, reason: waiting.run.message })
     f.finish(first.ticketId, 0, 'ok\n')
+    // The pass that notices the finished run settles it in the background; only the pass after it sees the freed slot.
     await f.ci.dispatch()
+    await f.ci.drain()
+    await f.ci.dispatch()
+    await f.ci.drain()
     const moved = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
     expect(moved.run).toMatchObject({ state: 'running', computer: { label: f.started[0]!.computer }, message: null })
     expect((await f.call(f.operator, 'ci_logs_read', { ticketId: second.ticketId })).isError).not.toBe(true)
