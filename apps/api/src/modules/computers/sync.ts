@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type pg from 'pg'
 import { COMPUTER_SYNC_NAMESPACE, ComputerSyncReadInputSchema, ComputerSyncStatusSchema, ComputerSyncUpdateInputSchema,
@@ -18,6 +19,8 @@ import { SyncRepository, type SyncWorkspace, type SyncComputerIdentity } from '.
 export class ComputerSyncService {
   private readonly repository: SyncRepository
   private identities: SyncComputerIdentity[] = []
+  private readonly identityRequests = new Map<string, { target: DeviceProvisioningTarget; request: Promise<SyncIdentity> }>()
+  private knownPeerIds = new Set<string>()
   private readonly lifetime = new AbortController()
   private queued = 0
   private pending: Promise<unknown> = Promise.resolve()
@@ -120,6 +123,8 @@ export class ComputerSyncService {
       this.assertOpen()
       const failures: unknown[] = []
       this.identities = await this.repository.identities()
+      this.knownPeerIds = new Set(this.identities.map(peer => peer.identity.deviceId))
+      this.identityRequests.clear()
       const workspaces = await this.repository.workspaces()
       for (const workspace of workspaces) {
         this.assertOpen()
@@ -191,18 +196,29 @@ export class ComputerSyncService {
         await this.computer(member.target, { operation: 'configure', workspaceId: workspace.id,
           enabled: member.enabled && Boolean(selected) && Boolean(hub), peers: remotePeers,
           preserveUnknownPeers: member.target.hostRef.kind === 'main' && missingIdentity,
-          knownPeerIds: this.identities.map(peer => peer.identity.deviceId) })
+          knownPeerIds: [...this.knownPeerIds] })
       } catch (error) { failures.push(error) }
     }
     return failures
   }
 
-  private async identity(target: DeviceProvisioningTarget): Promise<SyncIdentity> {
-    const cached = this.identities.find(peer => sameDeviceProvisioningTarget(peer.target, target))
-    if (cached) return cached.identity
+  private identity(target: DeviceProvisioningTarget): Promise<SyncIdentity> {
+    const key = buildComputerKey(target)
+    const pending = this.identityRequests.get(key)
+    if (pending && sameDeviceProvisioningTarget(pending.target, target)) return pending.request
+    const request = this.refreshIdentity(target)
+    this.identityRequests.set(key, { target, request })
+    return request
+  }
+
+  private async refreshIdentity(target: DeviceProvisioningTarget): Promise<SyncIdentity> {
     const identity = SyncIdentitySchema.parse(await this.computer(target, { operation: 'identity' }))
+    const cached = this.identities.find(peer => sameDeviceProvisioningTarget(peer.target, target))
+    if (cached && isDeepStrictEqual(cached.identity, identity)) return identity
     await this.repository.saveIdentity(target, identity)
-    this.identities.push({ target, identity })
+    if (cached) cached.identity = identity
+    else this.identities.push({ target, identity })
+    this.knownPeerIds.add(identity.deviceId)
     return identity
   }
   private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest,
