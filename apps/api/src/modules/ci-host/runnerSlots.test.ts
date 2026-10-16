@@ -99,6 +99,13 @@ if (args[1] === 'install') {
             { cwd, env: { ...env, FIXTURE_PARALLEL: String(parallel) } }) })
         return { code: 0, stdout: '', stderr: '' }
       }
+      if (file === 'systemctl' && args.includes('show')) {
+        const stdout = args.filter(arg => arg.endsWith('.service')).map(unit => {
+          const state = activeUnits.has(unit.replace(/\.service$/, '')) ? 'active' : 'inactive'
+          return `Id=${unit}\nLoadState=loaded\nActiveState=${state}\n`
+        }).join('\n')
+        return { code: 0, stdout, stderr: '' }
+      }
       if (file === 'systemctl') {
         const unit = args.at(-1)!.replace(/\.service$/, '')
         if (args.includes('stop')) {

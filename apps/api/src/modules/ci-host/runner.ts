@@ -618,8 +618,12 @@ export class HostCiRunner {
       } catch (error) {
         const current = await this.readMeta(meta.runId)
         if (!current.cancellationRequested && error instanceof DomainError && error.code === 'CI_HOST_BUSY') {
-          await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
-            message: error.message })
+          if (current.warmup) {
+            await rm(directory, { recursive: true, force: true })
+          } else {
+            await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
+              message: error.message })
+          }
           this.trackCacheWriter(meta.runId)
           throw error
         }
