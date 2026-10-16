@@ -1,4 +1,4 @@
-import type { CiHostReply, CiHostRequest, CiHostStatus } from '@foreman-code/contracts'
+import type { CiHostReply, CiHostRequest, CiHostRun, CiHostStatus } from '@foreman-code/contracts'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
@@ -10,6 +10,15 @@ const REFRESHING_MS = 30_000
 /** The device channel was busy with foreground work; the computer itself was not found unready. */
 export const isBackgroundYield = (error: unknown) =>
   error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield'
+
+const TERMINAL = new Set(['passed', 'failed', 'canceled'])
+
+function releaseRun(status: CiHostStatus, run: CiHostRun): CiHostStatus {
+  const held = status.runs.find(candidate => candidate.runId === run.runId)
+  if (!held || TERMINAL.has(held.state) || held.state === 'lost') return status
+  return { ...status, ...status.slotsUsed === undefined ? {} : { slotsUsed: Math.max(0, status.slotsUsed - 1) },
+    runs: status.runs.map(candidate => candidate.runId === run.runId ? run : candidate) }
+}
 
 interface StatusSnapshot {
   at: number
@@ -45,6 +54,12 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
     } else if (reply.run.state === 'lost') {
       // A lost run says the computer itself may be gone; a failed test says nothing about its readiness.
       this.invalidate(computer)
+    } else if (TERMINAL.has(reply.run.state)) {
+      // A finished run frees its slot now; a held status must not keep it busy until the next read.
+      const key = canonicalJson(computer)
+      for (const held of [this.statuses.get(key), this.lastKnown.get(key)]) {
+        if (held?.status) held.status = releaseRun(held.status, reply.run)
+      }
     }
   }
 
