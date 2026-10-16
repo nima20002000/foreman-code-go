@@ -28,6 +28,7 @@ import { handoffOutput } from './workHandoffSiblings.js'
  * and physical source preparation are synthetic. No device or CI job is contacted. */
 export async function handoffPlacementFixture(options: { checkOutcome?: 'qualified' | 'failed' } = {}) {
   const failedCheck = options.checkOutcome === 'failed'
+  const completion = Promise.withResolvers<void>()
   const definition = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
   definition.version.definition.nodes = definition.version.definition.nodes.map(node => {
     const agent = { ...node }
@@ -50,6 +51,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   try {
     base = await currentOperatorIntegration({ fixture: definition, insertRun: false,
       approvalNodeIds: [], workerParallelism: 3,
+      onRunTerminal: async () => { completion.resolve() },
       outputFor: handoffOutput,
       admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, digest) => {
         if (!placement) throw new Error('Placement fixture is not ready.')
@@ -140,7 +142,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
           && installation.hostRef.deviceId === deviceId ? 'reconnected' : installation.connectionGeneration,
       })))
     }
-    return { base, saved, startInput, coordinator, workers, placement,
+    return { base, saved, startInput, coordinator, workers, placement, finished: completion.promise,
       async start() {
         const result = await base.client.callTool({ name: 'run_start', arguments: startInput })
         if (result.isError) throw new Error(JSON.stringify(result))
