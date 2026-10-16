@@ -158,7 +158,8 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     } as unknown as RepeatNativeObservationStore,
   })
   return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination,
-    observeOriginal, begin, restore, continuation, create, startTurn, beginWait, requestCleanup }
+    observeOriginal, begin, restore, continuation, create, startTurn, beginWait, requestCleanup,
+    completeExecution: () => { execution = { ...execution, state: 'completed' } } }
 }
 
 it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
@@ -205,6 +206,30 @@ it.each(['running', 'waiting'] as const)(
     }
   },
 )
+
+it('skips an execution that completes between listing and waiting when preserving for restart', async () => {
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
+  try {
+    f.beginWait.mockImplementationOnce(async () => {
+      f.completeExecution()
+      throw new DomainError('EXECUTION_NOT_WAITABLE', 'The execution is terminal or has no active-time budget.', 409)
+    })
+    await expect(f.coordinator.preserveActiveForRestart(f.owner)).resolves.toBe(false)
+    expect(f.beginWait).toHaveBeenCalledWith(f.interaction.executionId)
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
+
+it('still fails restart preservation when a still-running execution cannot begin waiting', async () => {
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
+  try {
+    f.beginWait.mockRejectedValueOnce(new DomainError('EXECUTION_NOT_WAITABLE', 'has no active-time budget.', 409))
+    await expect(f.coordinator.preserveActiveForRestart(f.owner)).rejects.toMatchObject({ code: 'EXECUTION_NOT_WAITABLE' })
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
 
 it('waits for the orphaned Main writer before observing the original remote turn', async () => {
   vi.useFakeTimers()
