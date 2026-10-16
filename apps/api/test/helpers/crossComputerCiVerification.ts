@@ -101,8 +101,9 @@ function verifyRequestChain(recorded: RecordedScenario, workflow: RecordedScenar
   if (task.seedFailure) check(groups.length >= 2 && groupFailed(groups[0]!), 'Seeded failure is fixed through CI')
   for (const [index, group] of groups.entries()) {
     const previous = groups[index - 1]
-    const scope = previous ? 'affected' : task.scope
-    const files = previous ? failedFiles(recorded, previous, check) : task.files
+    let scope = task.scope
+    if (previous) scope = workflow.project === 'demo' ? 'full' : 'affected'
+    const files = previous && scope === 'affected' ? failedFiles(recorded, previous, check) : task.files
     const runs = group.partitions ?? [group.run]
     check(runs.every(run => run.workspaceId === workflow.workspaceId && run.repository === workflow.repository),
       `group ${group.run.groupId} belongs to its requesting workspace and repository`)
@@ -223,7 +224,7 @@ export function verifyScenario(recorded: RecordedScenario): void {
       suiteExecutions.some(execution => execution.id === owner)), 'Every CI request has one assigned requester')
   }
   const graphql = recorded.workflows.filter(workflow => workflow.project === 'graphql')
-  const full = groups.filter(group => group.run.scope === 'full')
+  const full = groups.filter(group => group.run.scope === 'full' && group.run.suite === 'integration')
   check(full.reduce((count, group) => count + requesters(group).length, 0) === (graphql.length ? 1 : 0)
     && full.every(group => group.run.suite === 'integration'
     && graphql.some(workflow => workflow.workspaceId === group.run.workspaceId)), 'The round has one full integration request for graphql')

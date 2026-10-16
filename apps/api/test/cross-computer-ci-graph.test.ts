@@ -89,13 +89,18 @@ it('plans twelve initial requests, one full integration burst and one seeded fil
   const tasks = (['graphql', 'demo'] as const).flatMap(project => [1, 2].flatMap(index =>
     scenario.createCiTasks(project, index, `workflow-${index}`).map(task => ({ project, ...task }))))
   expect(tasks).toHaveLength(12)
-  expect(tasks.filter(value => value.task.scope === 'full')).toMatchObject([
+  expect(tasks.filter(value => value.suite === 'integration' && value.task.scope === 'full')).toMatchObject([
     { project: 'graphql', suite: 'integration' },
   ])
   expect(tasks.filter(value => value.task.seedFailure)).toMatchObject([
-    { project: 'demo', suite: 'unit', task: { scope: 'affected' } },
+    { project: 'demo', suite: 'unit', task: { scope: 'full' } },
   ])
-  expect(tasks.filter(value => value.project === 'demo').every(value => value.suite === 'unit')).toBe(true)
+  expect(tasks.filter(value => value.project === 'demo')).toHaveLength(6)
+  for (const { suite, task } of tasks.filter(value => value.project === 'demo')) {
+    expect(suite).toBe('unit')
+    expect(task.scope).toBe('full')
+    expect(task.files[0]).toMatch(/^test\/ci-scratch-[a-z-]+-workflow-[12]\.test\.mjs$/)
+  }
   for (const { suite, task } of tasks) {
     expect(task.files).toHaveLength(1)
     expect(CiRunInputSchema.safeParse({ suite, scope: task.scope, commit: 'b'.repeat(40),
@@ -114,8 +119,8 @@ it('uses fresh scratch paths in each workflow so later rounds execute their own 
   expect(first.some(file => second.includes(file))).toBe(false)
 })
 
-it('keeps retry instructions limited to failed files and the final request lifecycle', () => {
-  const worker = assignment(1, 'unit')
+it('keeps graphql retry instructions limited to failed files and the final request lifecycle', () => {
+  const worker = assignment(1, 'integration')
   worker.task!.seedFailure = true
   const { graph } = buildCrossComputerCiGraph(base, [assignment(0, null), worker])
   const node = graph.nodes[1]!
@@ -125,4 +130,24 @@ it('keeps retry instructions limited to failed files and the final request lifec
   expect(node.initialPrompt).toContain('scope affected')
   expect(node.initialPrompt).toContain('deliberately')
   expect(node.initialPrompt).toContain('final request')
+})
+
+
+it.each([1, 2])('gives demo Agents executable node tests and full-suite retries in workflow %s', workflowIndex => {
+  const tasks = scenario.createCiTasks('demo', workflowIndex, `workflow-${workflowIndex}`)
+  const workers = tasks.map(({ suite, task }, index) => ({ ...assignment(index + 1, suite), task }))
+  const { graph } = buildCrossComputerCiGraph(base, [assignment(0, null), ...workers])
+  for (const node of graph.nodes.slice(1)) {
+    if (node.kind === 'job') throw new Error('Expected a CI Agent')
+    expect(node.initialPrompt).toContain('node:test')
+    expect(node.initialPrompt).toContain('node:assert')
+    expect(node.initialPrompt).toContain('scope full, omit files')
+    expect(node.initialPrompt).toContain('rerun suite unit with scope full, omit files')
+    expect(node.initialPrompt).not.toContain('Vitest')
+    expect(node.initialPrompt).not.toContain('scope affected')
+    expect(node.initialPrompt).not.toContain('full integration burst')
+  }
+  const seeded = graph.nodes[1]!
+  if (seeded.kind === 'job') throw new Error('Expected a CI Agent')
+  expect(seeded.initialPrompt.includes('deliberately implement trim-only')).toBe(workflowIndex === 1)
 })

@@ -267,3 +267,41 @@ it('backs off a refused recovery retry even when healthy status remains unchange
     await f.close()
   }
 })
+
+it.each([
+  { scope: 'affected' },
+  { scope: 'affected', files: ['test/selection.test.mjs'] },
+  { files: ['test/selection.test.mjs'] },
+  { files: [] },
+])('rejects unsupported explicit selection through MCP: %j', async selection => {
+  const f = fixture(0, 'CI_HOST_BUSY')
+  try {
+    const input = { suite: 'unit', commit: 'a'.repeat(40), ...selection }
+    const denied = await f.call('ci_run', input, 'denied')
+    expect(denied).toMatchObject({ isError: true, value: { error: { code: 'ACCESS_DENIED' } } })
+    const result = await f.call('ci_run', input)
+    expect(result).toMatchObject({ isError: true, value: { error: {
+      code: 'CI_SELECTION_UNSUPPORTED',
+      message: expect.stringMatching(/no affected test selection.*scope full/i),
+    } } })
+    expect(f.rows.size).toBe(0)
+    expect(f.attempts()).toBe(0)
+  } finally {
+    await f.close()
+  }
+})
+
+it.each([{}, { scope: 'full' }])('persists full scope without a selector through MCP: %j', async selection => {
+  const f = fixture(0, 'CI_HOST_BUSY')
+  try {
+    const started = await f.call('ci_run', { suite: 'unit', commit: 'a'.repeat(40), ...selection })
+    expect(started.isError).not.toBe(true)
+    const { ticketId } = CiRunOutputSchema.parse(started.value)
+    expect(f.rows.get(ticketId)?.record).toMatchObject({ scope: 'full', files: [] })
+    const result = await f.call('ci_get', { ticketId, logTail: false })
+    expect(result.isError).not.toBe(true)
+    expect(CiGetOutputSchema.parse(result.value).run).toMatchObject({ id: ticketId, scope: 'full', files: [] })
+  } finally {
+    await f.close()
+  }
+})

@@ -50,8 +50,9 @@ export function createCiTasks(project: ScenarioProject, workflowIndex: number, w
     const change = changes[index]!
     const suffix = suite === 'integration' ? '.integration.test.ts' : '.test.ts'
     const task: ScenarioTask = {
-      scope: project === 'graphql' && suite === 'integration' && workflowIndex === 1 ? 'full' : 'affected',
-      files: [`apps/api/test/ci-scratch-${change.name}-${workflowId}${suffix}`],
+      scope: project === 'demo' || suite === 'integration' && workflowIndex === 1 ? 'full' : 'affected',
+      files: [project === 'demo' ? `test/ci-scratch-${change.name}-${workflowId}.test.mjs`
+        : `apps/api/test/ci-scratch-${change.name}-${workflowId}${suffix}`],
       change: change.change,
       seedFailure: project === 'demo' && workflowIndex === 1 && index === 0,
     }
@@ -83,15 +84,27 @@ function agentPrompt({ suite, task }: ScenarioAgent): string {
       + 'The workflow will then start all CI Agents in parallel. Do not request CI or change files.'
   }
   if (!task) throw new Error('Every suite Agent needs a file change and CI task.')
-  const selection = task.scope === 'full' ? 'scope full, omit files (the round’s only full integration burst)'
-    : `scope affected, files ${JSON.stringify(task.files)}`
+  const demo = suite === 'unit'
+  let selection = `scope affected, files ${JSON.stringify(task.files)}`
+  if (task.scope === 'full') {
+    selection = 'scope full, omit files'
+    if (suite === 'integration') selection += ' (the round’s only full integration burst)'
+  }
+  const testFramework = demo ? 'node:test file using node:assert/strict' : 'Vitest file'
   const seed = task.seedFailure
     ? 'In your first commit deliberately implement trim-only, keeping the collapse-whitespace test correct. '
-      + 'After its CI failure, fix the helper in the same file, commit and push, then rerun only the failed files. '
     : ''
+  const retry = demo
+    ? 'If CI fails, read the failed ticket logs and test results, fix only your own helper/test, commit and push, '
+      + 'then rerun suite unit with scope full, omit files, current published HEAD and a new commandId. '
+      + 'This repository has no affected test selection. Wait for that group the same way. '
+    : 'If parts fail, read each failed ticket once with ci_get testStatus ["failed"]; union its failed files from tests.files. '
+      + 'For lint/typecheck without structured results use the failed run.files; if no failed files are available, report failure. '
+      + 'Fix only your own helper/test if needed, commit and push changes. Rerun ONLY those failed files with scope affected, '
+      + 'the same suite, current published HEAD and a new commandId; never rerun a whole suite. Wait for that group the same way. '
   return 'Read context_get and ci_computers_list. Use native tools in your assigned product-managed worktree/branch; '
     + 'do not create another worktree or switch branches. '
-    + `Change only ${JSON.stringify(task.files)}: add a self-contained Vitest file with the helper and tests. ${task.change} `
+    + `Change only ${JSON.stringify(task.files)}: add a self-contained ${testFramework} with the helper and tests. ${task.change} `
     + 'Do not change product code, existing tests or configuration. '
     + seed
     + 'Use git add for only that file, git commit, then git push origin HEAD to publish only your Agent branch. '
@@ -101,11 +114,8 @@ function agentPrompt({ suite, task }: ScenarioAgent): string {
     + 'Wait with ONE ci_get call on any ticket: waitUntil "group-terminal", waitSeconds 1800 and logTail false. '
     + 'Repeat that same call only while its wait.status is still-running; do not poll tickets one by one. '
     + 'When wait.status is settled, its partitions (or run, for a single ticket) hold every ticket’s final state. '
-    + 'If parts fail, read each failed ticket once with ci_get testStatus ["failed"]; union its failed files from tests.files. '
-    + 'For lint/typecheck without structured results use the failed run.files; if no failed files are available, report failure. '
-    + 'Fix only your own helper/test if needed, commit and push changes. Rerun ONLY those failed files with scope affected, '
-    + 'the same suite, current published HEAD and a new commandId; never rerun a whole suite. Wait for that group the same way. '
-    + 'Repeat only for observed failed files; do not retry canceled/lost work or request CI after a passed group. '
+    + retry
+    + 'Repeat only after observed failures; do not retry canceled/lost work or request CI after a passed group. '
     + 'Report the final request only: record its top-level ticket’s observed states in order, then read ci_logs_read '
     + 'for that ticket and choose one nonempty line. '
     + 'Report only observed facts. Your final answer must be one JSON object, without markdown: '

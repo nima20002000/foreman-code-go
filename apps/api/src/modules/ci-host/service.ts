@@ -424,6 +424,10 @@ export class HostCiService {
     if (smokeTarget && !supportsSelection) {
       throw new DomainError('CI_SMOKE_UNSUPPORTED', 'CI smoke requires a repository with affected test selection.', 409)
     }
+    if (!supportsSelection && (input.scope === 'affected' || input.files !== undefined)) {
+      throw new DomainError('CI_SELECTION_UNSUPPORTED',
+        'This repository has no affected test selection. Request scope full and omit files.', 409)
+    }
     const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'
     const deriveFiles = selectionScope === 'affected' && input.files === undefined
     const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }

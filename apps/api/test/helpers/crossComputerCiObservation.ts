@@ -3,9 +3,9 @@ import type { Client } from '@modelcontextprotocol/client'
 import { CiGetOutputSchema, CiListOutputSchema, type CiListOutput, type CiRunRecord,
   type CiLogsOutputSchema } from '@foreman-code/contracts'
 import type { RunPlacementGetResult } from '@foreman-code/contracts/placement-readback'
-import { RunActivitiesPageSchema, SavedRunDetailsSchema,
+import { RunActivitiesPageSchema, SavedRunDetailsSchema, WorkHandoffResultSchema,
   type RunActivityPublic, type SavedRunDetails, type RunExecutionsPage } from '@foreman-code/contracts/wave25'
-import type { z } from 'zod'
+import { z } from 'zod'
 import { callCiTool, type PreparedCiWorkflow } from './crossComputerCiSetup.js'
 import { ciGroupRequestedBy, ciTerminal, type CiReadback } from './crossComputerCiReadback.js'
 import { waitForCi } from './crossComputerCiWait.js'
@@ -94,10 +94,30 @@ function recordCiGroup(workflow: RunningCiWorkflow, readback: CiReadback, observ
   observation.groups.set(readback.run.groupId, readback)
 }
 
+function failIfWaitingWithoutProgress(details: SavedRunDetails) {
+  if (details.run.executionState !== 'waiting') return
+  const findings = details.executions.filter(execution => execution.state === 'completed').flatMap(execution => {
+    const output = execution.result?.output
+    const envelope = z.object({ text: z.string() }).safeParse(output)
+    const raw = envelope.success ? envelope.data.text : output
+    const serializedHandoff = typeof raw === 'string' && raw.trimStart().startsWith('{')
+    const value: unknown = serializedHandoff ? JSON.parse(raw) : raw
+    const handoff = WorkHandoffResultSchema.safeParse(value)
+    return handoff.success ? handoff.data.data.remainingFindings : []
+  })
+  const directionWait = findings.length > 0 || details.activity.some(event => event.kind === 'work_direction_wait')
+  const active = details.executions.some(execution => ['queued', 'starting', 'running'].includes(execution.state))
+  if (directionWait || !active) {
+    const reason = directionWait ? 'waiting for direction' : 'waiting with no active execution'
+    throw new Error(`Run ${details.run.id} is ${reason}. Remaining findings: ${JSON.stringify(findings)}`)
+  }
+}
+
 async function observeWorkflow(client: Client, workflow: RunningCiWorkflow, observation: ScenarioObservation) {
   const scope = { workspaceId: workflow.workspace.workspaceId, runId: workflow.runId }
   const details = SavedRunDetailsSchema.parse(await callCiTool(client, 'run_get', { ...scope, detail: 'full' }))
   observation.runs.set(workflow.runId, details)
+  failIfWaitingWithoutProgress(details)
   for (const execution of details.executions) {
     const states = observation.agentStates.get(execution.id) ?? []
     if (states.at(-1)?.state !== execution.state) {
@@ -144,10 +164,7 @@ export async function pollCiScenario(client: Client, workflows: RunningCiWorkflo
   let publicationDeadline: number | undefined
   let nextCheckpoint = 0
   await waitForCi('workflow completion and CI publication', async () => {
-    const results = await Promise.allSettled(workflows.map(workflow => observeWorkflow(client, workflow, observation)))
-    for (const result of results) {
-      if (result.status === 'rejected') throw result.reason
-    }
+    await Promise.all(workflows.map(workflow => observeWorkflow(client, workflow, observation)))
     if (Date.now() >= nextCheckpoint) {
       await persist()
       nextCheckpoint = Date.now() + 30_000
