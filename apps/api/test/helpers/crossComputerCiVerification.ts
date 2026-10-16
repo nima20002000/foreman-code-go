@@ -80,9 +80,15 @@ function verifyActivity(recorded: RecordedScenario, workflow: RecordedScenario['
     }
     if (item.refs.ciTicketId) {
       const ticket = tickets.find(value => value.ticketId === item.refs.ciTicketId)
-      check(ticket, `activity ${item.id} ticket belongs to its own run`)
-      check(item.refs.executionId === ticket?.initiatingExecutionId, `activity ${item.id} has the right executionId`)
-      check(item.actor && 'agentId' in item.actor && item.actor.agentId === ticket?.agentId,
+      const shared = recorded.tickets.find(value => value.ticketId === item.refs.ciTicketId)
+      const group = shared ? recorded.groups[shared.latest.groupId] : undefined
+      const execution = executions.find(value => value.id === item.refs.executionId)
+      const joined = group && execution && group.run.workspaceId === workflow.workspaceId
+        && ciGroupRequestedBy(group, execution.id)
+      check(ticket || joined, `activity ${item.id} ticket belongs to its own run`)
+      check(item.refs.executionId === ticket?.initiatingExecutionId || joined,
+        `activity ${item.id} has the right executionId`)
+      check(item.actor && 'agentId' in item.actor && item.actor.agentId === execution?.agentId,
         `activity ${item.id} has the right owner`)
     }
   }
@@ -93,7 +99,8 @@ function verifyActivity(recorded: RecordedScenario, workflow: RecordedScenario['
     }
   }
   for (const ticket of tickets) {
-    const events = items.filter(item => item.kind === 'job_work' && item.refs.ciTicketId === ticket.ticketId)
+    const events = items.filter(item => item.kind === 'job_work' && item.refs.ciTicketId === ticket.ticketId
+      && item.refs.executionId === ticket.initiatingExecutionId)
       .sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : 1)
     const queued = events.findIndex(item => item.status === 'queued')
     const terminal = events.findIndex(item => ['completed', 'failed', 'canceled'].includes(item.status))

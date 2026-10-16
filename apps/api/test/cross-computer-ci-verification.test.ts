@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
+import { CiGetOutputSchema, CiListOutputSchema, CiRunRecordSchema } from '@foreman-code/contracts'
+import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import * as verifier from './helpers/crossComputerCiVerification.js'
 
 function fixture(): Parameters<typeof verifier.verifyScenario>[0] {
@@ -58,4 +60,70 @@ it('accepts an idle configured cloud provider unless that workspace\'s tickets w
   ticket.timeline.unshift({ observedAt: '2026-01-01T00:00:00.000Z', run: queued },
     { observedAt: '2026-01-01T00:01:00.000Z', run: queued })
   expect(() => verifier.verifyScenario(recorded)).toThrow('Configured circleci CI executes work while tickets wait')
+})
+
+function joinedFixture() {
+  const recorded = fixture()
+  for (const ticket of recorded.tickets) {
+    ticket.latest = CiRunRecordSchema.parse(ticket.latest)
+    ticket.timeline = ticket.timeline.map(sample => ({ ...sample, run: CiRunRecordSchema.parse(sample.run) }))
+  }
+  for (const log of Object.values(recorded.groupLogs)) {
+    for (const part of log.parts ?? []) part.run = CiRunRecordSchema.parse(part.run)
+  }
+  for (const [id, group] of Object.entries(recorded.groups)) recorded.groups[id] = CiGetOutputSchema.parse(group)
+  const workflow = recorded.workflows[0]!
+  const details = recorded.runs[0]!
+  const original = details.executions[0]!
+  const executionId = 'joined-execution'
+  const agentId = 'joined-agent'
+  const nodeId = 'joined-node'
+  workflow.assignments.push({ ...workflow.assignments[0]!, agentId, nodeId })
+  details.executions.push({ ...original, id: executionId, agentId, workflowNodeId: nodeId,
+    workingDirectory: '/projects/joined' })
+  details.worktrees!.push({ ...details.worktrees![0]!, executionId,
+    workingDirectory: '/projects/joined', branch: 'agent/joined' })
+  const page = recorded.executions[workflow.runId]![0]!
+  page.items.push({ ...page.items[0]!, executionId, agentId, workflowNodeId: nodeId,
+    worktree: { ...page.items[0]!.worktree!, branch: 'agent/joined' } })
+  const placement = structuredClone(recorded.placements[original.id]!)
+  placement.nodeId = nodeId
+  if (placement.readback.evidence !== 'accepted') throw new Error('Expected accepted placement')
+  placement.readback.placement.nodeId = nodeId
+  recorded.placements[executionId] = placement
+  recorded.reports[executionId] = recorded.reports[original.id]
+  const groupId = recorded.tickets[0]!.latest.groupId
+  const group = recorded.groups[groupId]!
+  recorded.groups[groupId] = CiGetOutputSchema.parse({ ...group, sharing: { requesters: [
+    { ...group.run.initiator, initiator: true, active: true },
+    { principalId: 'joined-principal', executionId, initiator: false, active: true },
+  ] } })
+  const listed = recorded.ciLists[workflow.runId]!
+  recorded.ciLists[workflow.runId] = CiListOutputSchema.parse({ ...listed, jobs: [...listed.jobs,
+    { ...listed.jobs[0]!, requester: { executionId, agentId, nodeId, nodeName: 'Joined Agent' } },
+  ] })
+  const items = recorded.activities[workflow.runId]!
+  const joined = items.map((item, index) => ({ ...item, id: `joined-activity-${index}`,
+    sequence: String(items.length + index + 1),
+    actor: { agentId, nodeId, agentName: 'Joined Agent', nodeName: 'Joined Agent' },
+    refs: { ...item.refs, executionId } }))
+  recorded.activities[workflow.runId] = RunActivitiesPageSchema.parse({
+    scope: items[0]!.scope, items: [...items, ...joined], mode: 'initial',
+    highWater: String(items.length + joined.length), retainedFrom: '1',
+    nextCursor: 'cursor', olderCursor: null, hasMore: false,
+  }).items
+  return recorded
+}
+
+it('counts a shared group once per requester using ci_get, ci_list and activity responses', () => {
+  expect(() => verifier.verifyScenario(joinedFixture())).not.toThrow()
+})
+
+it.each(['missing', 'extra'] as const)('rejects a %s joined request in the ci_get sharing readback', change => {
+  const recorded = joinedFixture()
+  const group = recorded.groups[recorded.tickets[0]!.latest.groupId]!
+  if (change === 'missing') group.sharing!.requesters.pop()
+  else group.sharing!.requesters.push({ principalId: 'extra-principal', executionId: 'extra-execution',
+    initiator: false, active: true })
+  expect(() => verifier.verifyScenario(recorded)).toThrow('No lost or duplicated CI requests')
 })
