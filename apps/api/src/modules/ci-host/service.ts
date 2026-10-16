@@ -32,6 +32,7 @@ import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.j
 import { saveQueuedCiRun, ciMessages, withCiTicketLock, structuralCiStartRejection, type CiTicketSql } from './dispatch.js'
 import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
 import { CiDispatchRejections } from './dispatchRejections.js'
+import { CiPrewarm } from './prewarm.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
@@ -107,11 +108,13 @@ export class HostCiService {
   /** Cloud slots kept free for non-gate tickets while a gate is queued or running. */
   private readonly reservedCloudSlots: number
   private readonly reads: HostCiReads
+  private readonly prewarm: CiPrewarm
 
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly authority: CiAuthority, private readonly commits: CiCommits,
     endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots, options: { reservedCloudSlots?: number } = {}) {
     this.reservedCloudSlots = options.reservedCloudSlots ?? 0
+    this.prewarm = new CiPrewarm(endpoint)
     this.planningEndpoint = new CiPlanningSnapshot(endpoint)
     this.endpoint = {
       computers: async () => {
@@ -181,7 +184,7 @@ export class HostCiService {
   /** Resolves when dispatch, superseded cleanup, observations and readiness reads have finished, including work they start. */
   async drain() {
     for (;;) {
-      const pending = [this.dispatching, this.superseding,
+      const pending = [this.dispatching, this.superseding, this.prewarm.drain(),
         ...this.observingRuns.values(), ...this.observingComputers.values()]
         .filter((work): work is Promise<void> => work !== undefined)
       if (!pending.length) return
@@ -1232,6 +1235,7 @@ export class HostCiService {
       .finally(() => { this.superseding = undefined })
     const computers = await this.endpoint.computers()
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
+    void withoutCiDatabasePriority(async () => this.prewarm.schedule(computers, parsed))
     this.dispatchRejections.retain(parsed)
     this.refreshComputerStatuses(computers)
     const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(

@@ -127,6 +127,8 @@ const CiHostStartSchema = z.object({
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
   expectedDurationMs: z.number().nonnegative().finite().optional(),
   buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
+  /** Idle preparation reuses a persistent checkout without reserving CI capacity. */
+  warmup: z.boolean().optional(),
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
@@ -138,6 +140,8 @@ const CiHostStartSchema = z.object({
   : validCiSelection(value) && value.integrationShards === undefined,
   'Gate jobs require full integration scope, assigned files and a shard count; other selections require affected scope.')
   .refine(validCiPart, 'The part and partition must belong to the requested suite.')
+  .refine(value => !value.warmup || value.suite === 'install' && !value.gate && !value.part && !value.partition,
+    'Warm-ups only prepare dependencies.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status'),
     buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
@@ -172,6 +176,7 @@ export const CiTransportSchema = z.object({
 }).strict()
 const CiHostRunSchema = z.object({
   runId: CiHostRunIdSchema, state: CiHostRunStateSchema, step: z.string().max(80).nullable(),
+  warmup: z.boolean().optional(),
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
@@ -191,6 +196,7 @@ export const CiHostStatusSchema = z.object({
   startProtocolVersion: z.number().int().positive().optional(),
   /** Supports bounded directory cleanup selected from Main's persisted terminal tickets. */
   cleanupSupported: z.boolean().optional(),
+  prewarmSupported: z.boolean().optional(),
   removedRunIds: z.array(CiHostRunIdSchema).max(1000).optional(),
   cpuCount: z.number().int().positive(), memoryBytes: z.number().int().positive(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -29,7 +29,9 @@ const CI_UNIT_RUNTIME_SECONDS = 3 * 60 * 60
 
 type Command = { code: number; stdout: string; stderr: string; /** The command was killed for exceeding its timeout, so its exit code says nothing about the command's subject. */ timedOut?: boolean }
 export interface HostCiPorts {
-  run(file: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<Command>
+  run(file: string, args: readonly string[], options?: {
+    cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal | undefined
+  }): Promise<Command>
   now(): Date
   cpus: number
   memoryBytes: number
@@ -43,13 +45,17 @@ function withoutCliTelemetry(file: string, environment: NodeJS.ProcessEnv): Node
 
 export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env): HostCiPorts {
   return {
-    run: (file, args, options = {}) => new Promise(resolve => {
-      execFile(file, [...args], { cwd: options.cwd, env: withoutCliTelemetry(file, options.env ?? environment), timeout: options.timeoutMs ?? 600_000,
-        maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
-        const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
-        resolve({ code, stdout, stderr, ...(error && (error as { killed?: boolean }).killed ? { timedOut: true } : {}) })
+    run: (file, args, options = {}) => {
+      const env = withoutCliTelemetry(file, options.env ?? environment)
+      if (options.signal) return runPreparationCommand(file, args, { ...options, env, signal: options.signal })
+      return new Promise<Command>(resolve => {
+        execFile(file, [...args], { cwd: options.cwd, env, timeout: options.timeoutMs ?? 600_000,
+          maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+          const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
+          resolve({ code, stdout, stderr, ...(error && (error as { killed?: boolean }).killed ? { timedOut: true } : {}) })
+        })
       })
-    }),
+    },
     now: () => new Date(),
     cpus: availableParallelism(),
     memoryBytes: totalmem(),
@@ -59,6 +65,62 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
       return available === undefined ? freemem() : Number(available) * 1024
     },
   }
+}
+
+/** Cancellation kills the process group and resolves only after the child and its pipes close. */
+function runPreparationCommand(file: string, args: readonly string[], options: {
+  cwd?: string; env: NodeJS.ProcessEnv; timeoutMs?: number; signal: AbortSignal
+}): Promise<Command> {
+  return new Promise(resolve => {
+    if (options.signal.aborted) return resolve({ code: 1, stdout: '', stderr: 'CI preparation canceled.' })
+    const child = spawn(file, [...args], { cwd: options.cwd, env: options.env,
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    let failure: Error | undefined
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    const signalGroup = (signal: NodeJS.Signals) => {
+      if (!child.pid) return
+      try {
+        process.kill(-child.pid, signal)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+          log.warn({ err: error }, 'CI preparation process could not be stopped')
+        }
+      }
+    }
+    const stop = () => {
+      signalGroup('SIGTERM')
+      killTimer ??= setTimeout(() => signalGroup('SIGKILL'), 250)
+    }
+    const timer = setTimeout(() => {
+      timedOut = true
+      stop()
+    }, options.timeoutMs ?? 600_000)
+    options.signal.addEventListener('abort', stop, { once: true })
+    if (options.signal.aborted) stop()
+    const collect = (text: string, chunk: string) => {
+      const output = text + chunk
+      if (output.length <= 16 * 1024 * 1024) return output
+      failure = new Error('CI preparation command output exceeded its buffer limit.')
+      stop()
+      return text
+    }
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = collect(stdout, chunk) })
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = collect(stderr, chunk) })
+    child.once('error', error => { failure = error })
+    child.once('close', code => {
+      clearTimeout(timer)
+      if (killTimer) {
+        signalGroup('SIGKILL')
+        clearTimeout(killTimer)
+      }
+      options.signal.removeEventListener('abort', stop)
+      resolve({ code: failure ? 1 : code ?? 1, stdout, stderr: failure?.message ?? stderr,
+        ...(timedOut ? { timedOut: true } : {}) })
+    })
+  })
 }
 
 interface RunMeta {
@@ -71,6 +133,7 @@ interface RunMeta {
   slot?: number
   expectedDurationMs?: number
   isolatedDatabase?: boolean
+  warmup?: boolean
   gate?: boolean; integrationShards?: number
   serviceUnit?: string
   cancellationRequested?: boolean
@@ -82,7 +145,8 @@ type StartRequest = { runId: string; repository: string; commit: string; suite: 
   part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
   scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
   expectedDurationMs?: number | undefined; baseCommit?: string | undefined; gate?: boolean | undefined;
-  integrationShards?: number | undefined; buildAllowancePercent?: number | undefined; notice?: string | undefined }
+  integrationShards?: number | undefined; buildAllowancePercent?: number | undefined; notice?: string | undefined;
+  warmup?: boolean | undefined }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
 const serviceUnit = (meta: RunMeta) => meta.serviceUnit ?? `${unitName(meta.runId)}.service`
@@ -99,8 +163,10 @@ export function hostCiDirectory() {
 export class HostCiRunner {
   private readonly preparing = new Map<string, Promise<void>>()
   private readonly starts = new Map<string, Promise<CiHostRun>>()
+  private readonly warmupAborts = new Map<string, AbortController>()
   private readonly reading = new Map<string, number>()
   private startQueue = Promise.resolve()
+  private pendingRealStarts = 0
   private startingRun: CiHostRun | null = null
   private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
@@ -129,13 +195,7 @@ export class HostCiRunner {
     const request = CiHostRequestSchema.parse(raw)
     if (request.operation === 'status') {
       if (!request.cleanupRunIds) return this.status(request.buildAllowancePercent)
-      const removedRunIds = await sweepCiRunDirectories({ root: this.root, runIds: request.cleanupRunIds,
-        isInUse: runId => this.reading.has(runId) || this.preparing.has(runId) || this.starts.has(runId),
-        withRun: async (runId, work) => {
-          await this.refresh(runId)
-          return withHostCiRunLock(this.runDirectory(runId), work, { nonBlocking: true })
-        } })
-      for (const runId of removedRunIds) this.settledRuns.delete(runId)
+      const removedRunIds = await this.removeRunDirectories(request.cleanupRunIds)
       return CiHostReplySchema.parse({ ...await this.status(request.buildAllowancePercent), removedRunIds })
     }
     if (request.operation === 'start') return CiHostReplySchema.parse({ operation: 'start', run: await this.start(request) })
@@ -212,6 +272,17 @@ export class HostCiRunner {
 
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
 
+  private async removeRunDirectories(runIds: string[]) {
+    const removed = await sweepCiRunDirectories({ root: this.root, runIds,
+      isInUse: runId => this.reading.has(runId) || this.preparing.has(runId) || this.starts.has(runId),
+      withRun: async (runId, work) => {
+        await this.refresh(runId)
+        return withHostCiRunLock(this.runDirectory(runId), work, { nonBlocking: true })
+      } })
+    for (const runId of removed) this.settledRuns.delete(runId)
+    return removed
+  }
+
   /** A persistent checkout keeps its installed dependencies between the parts that hold its slot in turn. */
   private slotSource(repository: string, slot: number) {
     return join(this.root, 'slots', ...repository.split('/'), String(slot), 'src')
@@ -286,22 +357,27 @@ export class HostCiRunner {
       const run = await this.refreshRetained(runId, unitStates)
       if (run) runs.push(run)
     }
+    for (const run of runs) {
+      if (run.warmup && !['starting', 'running', 'queued'].includes(run.state)) {
+        await this.removeRunDirectories([run.runId])
+      }
+    }
     const active: RunMeta[] = []
     for (const run of runs) {
-      if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(run.runId))
+      if (run && !run.warmup && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(run.runId))
     }
     // Repository preparation precedes metadata; status must still acknowledge the accepted start.
-    const pendingStart = startingRun && !runs.some(run => run?.runId === startingRun.runId)
+    const pendingStart = startingRun && !startingRun.warmup && !runs.some(run => run?.runId === startingRun.runId)
     if (pendingStart) runs.push(startingRun)
     this.cleanCaches()
     const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
     const resources = allowedCiResources({ cpuCount: this.ports.cpus,
       memoryBytes: this.ports.memoryBytes, availableMemoryBytes }, buildAllowancePercent)
     const capacity = this.capacity(active, { availableMemoryBytes, buildAllowancePercent })
-    const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))
-    const finishedRuns = runs.filter(run => run && !['starting', 'running'].includes(run.state))
+    const activeRuns = runs.filter(run => run && !run.warmup && ['starting', 'running'].includes(run.state))
+    const finishedRuns = runs.filter(run => run && !run.warmup && !['starting', 'running'].includes(run.state))
     return CiHostReplySchema.parse({ operation: 'status', ready: !reasons.length, reasons,
-      startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION, cleanupSupported: true,
+      startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION, cleanupSupported: true, prewarmSupported: true,
       ...resources, buildAllowancePercent,
       slotsUsed: capacity.slotsUsed + Number(Boolean(pendingStart)), slotsTotal: capacity.slotsTotal,
       runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
@@ -354,7 +430,7 @@ export class HostCiRunner {
     const unitStates = await this.retainedUnitStates(names)
     for (const runId of names) {
       const run = await this.refreshRetained(runId, unitStates)
-      if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
+      if (run && !run.warmup && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
     return active
   }
@@ -370,7 +446,8 @@ export class HostCiRunner {
       })
       if (meta && ['starting', 'running'].includes(meta.state)) {
         log.warn({ err: error, runId }, 'A live CI run could not be fully read; keeping its slot reserved')
-        return { runId, state: meta.state, step: null, exitCode: meta.exitCode, startedAt: meta.startedAt,
+        return { runId, ...(meta.warmup ? { warmup: true } : {}),
+          state: meta.state, step: null, exitCode: meta.exitCode, startedAt: meta.startedAt,
           finishedAt: meta.finishedAt, logBytes: 0, message: this.runMessage(meta) }
       }
       log.warn({ err: error, runId }, 'Skipping an incomplete or damaged CI run record')
@@ -381,10 +458,16 @@ export class HostCiRunner {
   private start(request: StartRequest) {
     const existing = this.starts.get(request.runId)
     if (existing) return existing
+    if (!request.warmup) this.pendingRealStarts++
+    if (request.warmup) this.warmupAborts.set(request.runId, new AbortController())
     const pending = this.startRun(request).catch(error => {
       this.invalidateReadiness()
       throw error
-    }).finally(() => { this.starts.delete(request.runId) })
+    }).finally(() => {
+      this.starts.delete(request.runId)
+      if (!this.preparing.has(request.runId)) this.warmupAborts.delete(request.runId)
+      if (!request.warmup) this.pendingRealStarts--
+    })
     this.starts.set(request.runId, pending)
     return pending
   }
@@ -402,13 +485,50 @@ export class HostCiRunner {
     let reserved: RunMeta | CiHostRun
     try {
       this.startingRepository = request.repository
-      reserved = await this.reserveRun(request)
+      if (!request.warmup) await this.stopWarmups()
+      reserved = request.warmup
+        ? await this.existingWarmup(request) ?? await this.reserveRun(request)
+        : await this.reserveRun(request)
     } finally {
       this.startingRun = null
       this.startingRepository = undefined
       release()
     }
     return 'repository' in reserved ? this.prepareRun(request, reserved) : reserved
+  }
+
+  private warmupBusy(request: StartRequest): CiHostRun {
+    return { runId: request.runId, warmup: true, state: 'queued', step: null, exitCode: null,
+      startedAt: this.ports.now().toISOString(), finishedAt: null, logBytes: 0, message: 'Real CI has priority.' }
+  }
+
+  private async existingWarmup(request: StartRequest): Promise<CiHostRun | undefined> {
+    if (this.pendingRealStarts || (await this.active()).length) return this.warmupBusy(request)
+    const directory = join(this.root, 'runs')
+    for (const runId of existsSync(directory) ? await readdir(directory) : []) {
+      const run = await this.refreshRetained(runId)
+      if (!run?.warmup) continue
+      const meta = await this.readMeta(runId)
+      if (meta.repository === request.repository && meta.commit === request.commit
+        && ['passed', 'failed'].includes(run.state)) return run
+      if (['starting', 'running'].includes(run.state)) {
+        return meta.repository === request.repository && meta.commit === request.commit ? run : this.warmupBusy(request)
+      }
+    }
+  }
+
+  private async stopWarmups() {
+    const directory = join(this.root, 'runs')
+    for (const runId of existsSync(directory) ? await readdir(directory) : []) {
+      const run = await this.refreshRetained(runId)
+      if (!run?.warmup || !['starting', 'running'].includes(run.state)) continue
+      await this.cancel(runId)
+      await this.starts.get(runId)
+      const stopped = await this.cancel(runId)
+      if (['starting', 'running'].includes(stopped.state)) {
+        throw new DomainError('CI_HOST_BUSY', 'Waiting for background CI preparation to stop.', 409)
+      }
+    }
   }
 
   private async reserveRun(request: StartRequest): Promise<RunMeta | CiHostRun> {
@@ -419,6 +539,7 @@ export class HostCiRunner {
     }
     if (existsSync(join(directory, 'cancel-requested'))) return this.canceledBeforeStart(request.runId)
     this.startingRun = { runId: request.runId, state: 'starting', step: 'dispatch',
+      ...(request.warmup ? { warmup: true } : {}),
       startedAt: this.ports.now().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null }
     const active = await this.active()
     if (active.some(run => run.gate) || request.gate && active.length) {
@@ -440,6 +561,7 @@ export class HostCiRunner {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt, slot,
+      ...(request.warmup ? { warmup: true } : {}),
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
       resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget },
       ...(request.expectedDurationMs !== undefined ? { expectedDurationMs: request.expectedDurationMs } : {}),
@@ -459,11 +581,12 @@ export class HostCiRunner {
 
   private async prepareRun(request: StartRequest, meta: RunMeta) {
     const directory = this.runDirectory(meta.runId)
+    const signal = this.warmupAborts.get(meta.runId)?.signal
     const allowance = { buildAllowancePercent: request.buildAllowancePercent ?? 100 }
     const ready = await withHostCiRunLock(directory, async () => {
       try {
         if (!await this.cancelPreparation(meta.runId)) {
-          await this.withRepository(request.repository, () => this.prepareRepository(request))
+          await this.withRepository(request.repository, () => this.prepareRepository(request, signal))
         }
         if (await this.cancelPreparation(meta.runId)) return false
         const databaseSuite = ['unit', 'integration'].includes(request.suite)
@@ -481,6 +604,9 @@ export class HostCiRunner {
             `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); this commit needs exclusive database capacity.`, 409)
         }
         meta.resources = { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget }
+        if (meta.warmup) {
+          meta.resources = { cpuCount: 1, memoryBytes: Math.min(2 ** 31, capacity.memoryBytes) }
+        }
         meta.isolatedDatabase = isolatedDatabase
         if (request.gate) {
           meta.integrationShards = Math.min(request.integrationShards!,
@@ -492,8 +618,12 @@ export class HostCiRunner {
       } catch (error) {
         const current = await this.readMeta(meta.runId)
         if (!current.cancellationRequested && error instanceof DomainError && error.code === 'CI_HOST_BUSY') {
-          await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
-            message: error.message })
+          if (current.warmup) {
+            await rm(directory, { recursive: true, force: true })
+          } else {
+            await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
+              message: error.message })
+          }
           this.trackCacheWriter(meta.runId)
           throw error
         }
@@ -514,14 +644,19 @@ export class HostCiRunner {
       } else {
         await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null, message)
       }
-    }).finally(() => this.preparing.delete(meta.runId))
+    }).finally(() => {
+      this.preparing.delete(meta.runId)
+      this.warmupAborts.delete(meta.runId)
+    })
     this.preparing.set(meta.runId, preparing)
     return this.refresh(request.runId)
   }
 
-  private async git(args: readonly string[], cwd?: string) {
+  private async git(args: readonly string[], cwd?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const result = await this.ports.run('git', [...gitAuth, ...args], { ...(cwd ? { cwd } : {}),
-      env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' } })
+      env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' }, signal })
+    signal?.throwIfAborted()
     if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1) ?? ''}`)
     return result.stdout
   }
@@ -546,10 +681,11 @@ export class HostCiRunner {
   }
 
   private async launchRun(meta: RunMeta) {
+    const signal = this.warmupAborts.get(meta.runId)?.signal
     const source = await this.withRepository(meta.repository, async () => {
       const current = await this.readMeta(meta.runId)
       if (current.state !== 'starting' || current.cancellationRequested) return
-      return this.checkout(meta)
+      return this.checkout(meta, signal)
     })
     if (!source) return
     await this.selectFiles(meta, source)
@@ -569,33 +705,42 @@ export class HostCiRunner {
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
     const started = await this.ports.run('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unitName(meta.runId)}`,
       `--property=MemoryMax=${resources.memoryBytes}`, `--property=CPUQuota=${resources.cpuCount * 100}%`,
-      `--property=RuntimeMaxSec=${CI_UNIT_RUNTIME_SECONDS}`, '--property=TimeoutStopSec=30',
+      `--property=RuntimeMaxSec=${CI_UNIT_RUNTIME_SECONDS}`, `--property=TimeoutStopSec=${meta.warmup ? 2 : 30}`,
+      ...(meta.warmup ? ['--property=Nice=19', '--property=CPUWeight=1', '--property=IOWeight=1',
+        '--property=IOSchedulingClass=idle'] : []),
       '--property=KillMode=control-group',
       `--property=ExecStopPost=/bin/bash ${JSON.stringify(stoppedScript).replaceAll('%', '%%')}`,
       '--property=UMask=0022', `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
-    { env: this.environment, timeoutMs: 30_000 })
+    { env: this.environment, timeoutMs: 30_000, signal })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
     const launched = await this.readMeta(meta.runId)
     if (launched.state === 'starting') await this.writeMeta({ ...launched, state: 'running' })
   }
 
-  private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit' | 'scope' | 'files'>) {
+  private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit' | 'scope' | 'files'>,
+    signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const clone = join(this.root, 'git', ...request.repository.split('/'))
     if (!existsSync(join(clone, '.git'))) {
       await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
       await mkdir(clone, { recursive: true, mode: 0o700 })
-      await this.git(['init', '--quiet', clone])
-      await this.git(['remote', 'add', 'origin', `https://github.com/${request.repository}.git`], clone)
+      try {
+        await this.git(['init', '--quiet', clone], clone, signal)
+        await this.git(['remote', 'add', 'origin', `https://github.com/${request.repository}.git`], clone, signal)
+      } catch (error) {
+        await rm(clone, { recursive: true, force: true })
+        throw error
+      }
     }
     const history = (request.scope ?? 'affected') === 'affected' && request.files === undefined
     const missing = (await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`],
-      { cwd: clone, env: this.environment })).code !== 0
+      { cwd: clone, env: this.environment, signal })).code !== 0
     // A complete clone that already holds the commit has its history: parts of one commit fetch it once.
-    const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone)).trim() === 'true'
+    const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone, signal)).trim() === 'true'
     if (missing || shallow) {
       let depth = ['--depth=1']
       if (history) depth = shallow ? ['--unshallow'] : []
-      await this.git(['fetch', '--quiet', '--no-tags', ...depth, 'origin', request.commit], clone)
+      await this.git(['fetch', '--quiet', '--no-tags', ...depth, 'origin', request.commit], clone, signal)
     }
   }
 
@@ -609,30 +754,32 @@ export class HostCiRunner {
   }
 
   /** Resets the run's slot checkout to its commit, or falls back to a fresh checkout in the run directory. */
-  private async checkout(meta: RunMeta): Promise<string> {
+  private async checkout(meta: RunMeta, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted()
     const clone = join(this.root, 'git', ...meta.repository.split('/'))
     if (meta.slot !== undefined) {
       const source = this.slotSource(meta.repository, meta.slot)
       try {
         if (existsSync(join(source, '.git'))) {
-          await this.git(['checkout', '--quiet', '--force', '--detach', meta.commit], source)
+          await this.git(['checkout', '--quiet', '--force', '--detach', meta.commit], source, signal)
         } else {
           await rm(source, { recursive: true, force: true })
           await mkdir(join(source, '..'), { recursive: true, mode: 0o700 })
-          await this.git(['worktree', 'prune'], clone)
-          await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone)
+          await this.git(['worktree', 'prune'], clone, signal)
+          await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone, signal)
         }
         // Only installed dependencies survive: untracked files, caches and build outputs of earlier commits
         // (including outputs of sources this commit deleted) must not leak into this part.
-        await this.git(['clean', '-ffdxq', '-e', 'node_modules'], source)
+        await this.git(['clean', '-ffdxq', '-e', 'node_modules'], source, signal)
         return source
       } catch (error) {
+        signal?.throwIfAborted()
         const reason = error instanceof Error ? error.message : String(error)
         await appendFile(join(this.runDirectory(meta.runId), 'log'),
           `[ci-checkout] persistent checkout unusable (${reason.slice(0, 500)}); using a fresh checkout\n`, { mode: 0o600 })
         // The next part on this slot starts from a new checkout instead of failing the same way.
         await rm(join(source, '..'), { recursive: true, force: true })
-        await this.git(['worktree', 'prune'], clone)
+        await this.git(['worktree', 'prune'], clone, signal)
         delete meta.slot
         const current = await this.readMeta(meta.runId)
         delete current.slot
@@ -640,7 +787,7 @@ export class HostCiRunner {
       }
     }
     const source = join(this.runDirectory(meta.runId), 'src')
-    await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone)
+    await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone, signal)
     return source
   }
 
@@ -794,7 +941,13 @@ export class HostCiRunner {
     const databaseResources = this.databaseResources(meta)
     const cache = join(this.root, 'cache', ...meta.repository.split('/'))
     const prerequisites = command !== '' && command !== 'true' && capabilities.parts
-    const contracts = prerequisites && existsSync(join(source, 'scripts/ci-contracts.mjs'))
+    const contracts = (prerequisites || meta.warmup) && existsSync(join(source, 'scripts/ci-contracts.mjs'))
+    let install: string[] = []
+    if (existsSync(join(source, 'pnpm-lock.yaml'))) {
+      install = pnpmInstall(cache, join(run, 'watchdog-message.json'), { offlineOnly: meta.warmup === true })
+    } else if (!meta.warmup) {
+      install = [`${pm} install || finish $?`]
+    }
     let integrationEnvironment = ''
     if (meta.suite === 'integration' && capabilities.integrationPartitions) {
       const durations = meta.durations ?? {}
@@ -855,8 +1008,7 @@ export class HostCiRunner {
       `exec {cache_usage}<${quote(cache)}`,
       'flock -s "$cache_usage" || finish $?',
       'step install',
-      ...(existsSync(join(source, 'pnpm-lock.yaml')) ? pnpmInstall(cache, join(run, 'watchdog-message.json'))
-        : [`${pm} install || finish $?`]),
+      ...install,
       // pnpm script commands can reinstall dependencies, so preparation must wait for installation.
       ...(prerequisites ? [`SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare`
         + ` >${quote(join(run, 'preparation.log'))} 2>&1 & preparation_pid=$!`] : []),
@@ -1045,7 +1197,8 @@ export class HostCiRunner {
       logIgnoredError('jobs', 'read completed CI progress',
         Object.assign(new Error('The completed CI step record is missing.'), { code: 'ENOENT' }), { runId })
     }
-    const run = { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
+    const run = { runId, ...(meta.warmup ? { warmup: true } : {}),
+      state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,
       message: this.runMessage(meta) }
     const version = settled && meta.cleaned && !preparing ? await metaVersion() : null
@@ -1092,6 +1245,7 @@ export class HostCiRunner {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         // The first marker keeps the cancellation timestamp stable on retries.
       }
+      this.warmupAborts.get(runId)?.abort(new Error('Background CI preparation preempted.'))
       if (!meta) return this.refresh(runId)
       if (meta.state === 'queued') {
         await withHostCiRunLock(directory, () => this.finish(runId, 'canceled', null, 'Canceled before execution.'))
