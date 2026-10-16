@@ -264,7 +264,7 @@ export async function remoteReviewProduction(options: {
     if (mainService) await execute(provider.binary, ['--version'], { env: logEnvironment })
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
-      phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
+      phase?: unknown; tool?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (mainService) {
@@ -309,7 +309,7 @@ export async function remoteReviewProduction(options: {
           }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
             namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
-            phase?: unknown; errorType?: unknown; errorLocation?: unknown }
+            phase?: unknown; errorType?: unknown; errorLocation?: unknown; tool?: unknown }
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
             ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
@@ -320,7 +320,7 @@ export async function remoteReviewProduction(options: {
           const errorDetail = code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
-          failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
+          failures.push({ code, tool: event.tool, phase: event.phase, errorType: event.errorType ?? event.err?.type,
             errorDetail,
             namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
               ? event.namespace : undefined,
@@ -407,7 +407,8 @@ export async function remoteReviewProduction(options: {
     async function value(name: string, args: Record<string, unknown>) {
       const response = await call(name, args)
       if (response.isError) {
-        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
+        await new Promise(resolve => setTimeout(resolve, 1500)) // DIAG
+        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}\nDIAG Main stderr: ${mainFailure.slice(-3000)}\nDIAG Worker stderr: ${workerFailure.slice(-3000)}`)
       }
       return decodeMcpToolResult(response)
     }
