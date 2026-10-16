@@ -35,7 +35,7 @@ export async function genericCiRepository(options: { lockfile?: string; integrat
       ...(settings.cwd ? { cwd: settings.cwd } : {}), env: { ...environment, ...settings.env },
     }),
   }
-  const processes = new Set<Promise<unknown>>()
+  const processes = new Map<string, Promise<CommandResult>>()
   const completions = new Map<string, Deferred<CommandResult>>()
   try {
     await mkdir(origin)
@@ -92,14 +92,24 @@ process.exit(result.status ?? 1)
         const script = args.at(-1)!
         const runId = basename(dirname(script))
         const completion = system.run('bash', [script], { cwd, env: environment })
-        processes.add(completion)
+        processes.set(runId, completion)
         void completion.then(result => {
           completions.get(runId)!.resolve(result)
-          processes.delete(completion)
+          processes.delete(runId)
         })
         return { code: 0, stdout: '', stderr: '' }
       }
-      if (file === 'systemctl') return { code: 0, stdout: processes.size ? 'active' : 'inactive', stderr: '' }
+      if (file === 'systemctl') {
+        const units = args.filter(arg => arg.startsWith('foreman-ci-') && arg.endsWith('.service'))
+        const runId = (unit: string) => unit.slice('foreman-ci-'.length, -'.service'.length)
+        // A successful stop reply confirms the fixture process has closed, like the systemd command.
+        if (args.includes('stop')) await Promise.all(units.map(unit => processes.get(runId(unit))))
+        const stdout = args.includes('show') ? units.map(unit => {
+          const active = processes.has(runId(unit))
+          return `Id=${unit}\nLoadState=${active ? 'loaded' : 'not-found'}\nActiveState=${active ? 'active' : 'inactive'}\n`
+        }).join('\n') : ''
+        return { code: 0, stdout, stderr: '' }
+      }
       return system.run(file, args, settings)
     } }
     const runner = new HostCiRunner(join(root, 'runner'), ports, environment)
@@ -129,11 +139,11 @@ process.exit(result.status ?? 1)
       },
       async close() {
         await runner.beginDrain()
-        await Promise.all(processes)
+        await Promise.all(processes.values())
         await rm(root, { recursive: true, force: true })
       } }
   } catch (error) {
-    await Promise.all(processes)
+    await Promise.all(processes.values())
     await rm(root, { recursive: true, force: true })
     throw error
   }
