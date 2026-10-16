@@ -264,7 +264,8 @@ export async function remoteReviewProduction(options: {
     if (mainService) await execute(provider.binary, ['--version'], { env: logEnvironment })
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown; tool?: unknown;
-      phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
+      phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined;
+      role?: 'Main' | 'Worker'; message?: string; time?: unknown }> = []
     let failuresSeen = 0
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
@@ -278,7 +279,7 @@ export async function remoteReviewProduction(options: {
       await new Promise<void>((resolve, reject) => {
         stopped.once('error', reject)
         stopped.once('exit', code => {
-          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Production Main cleanup failed: ${mainFailure}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`))
+          if (signal === 'SIGTERM' && code !== 0) reject(new Error(`Production Main cleanup failed: ${mainFailure}\nNative failure codes: ${JSON.stringify(failures.slice(-16))}`))
           else resolve()
         })
         stopped.kill(signal)
@@ -322,7 +323,8 @@ export async function remoteReviewProduction(options: {
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
           failuresSeen += 1
-          failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
+          failures.push({ role, message: typeof event.msg === 'string' ? event.msg.slice(0, 160) : undefined,
+            time: (parsed as { time?: unknown }).time, code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
             errorDetail, tool: typeof event.tool === 'string' ? event.tool : undefined,
             namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
               ? event.namespace : undefined,
