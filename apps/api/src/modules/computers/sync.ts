@@ -13,11 +13,11 @@ import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { assertBuildComputerTarget, buildComputerKey } from '../settings/buildComputers.js'
 import type { ComputerAccountsEndpoint } from './accounts.js'
 import { SyncthingComputer } from './syncthingComputer.js'
-import { SyncRepository, type SyncWorkspace } from './syncRepository.js'
+import { SyncRepository, type SyncWorkspace, type SyncComputerIdentity } from './syncRepository.js'
 
 export class ComputerSyncService {
   private readonly repository: SyncRepository
-  private readonly identities = new Map<string, { target: DeviceProvisioningTarget; identity: SyncIdentity }>()
+  private identities: SyncComputerIdentity[] = []
   private readonly lifetime = new AbortController()
   private queued = 0
   private pending: Promise<unknown> = Promise.resolve()
@@ -119,6 +119,7 @@ export class ComputerSyncService {
       if (target) await this.assertTarget(this.pool, target)
       this.assertOpen()
       const failures: unknown[] = []
+      this.identities = await this.repository.identities()
       const workspaces = await this.repository.workspaces()
       for (const workspace of workspaces) {
         this.assertOpen()
@@ -143,7 +144,7 @@ export class ComputerSyncService {
     // Native context reads must remain usable while optional shared-file setup is pending or the computer is slow.
     const bound = AbortSignal.timeout(10_000)
     try {
-      const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }, bound))
+      const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status', workspaceId }, bound))
       return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
     } catch (error) {
       if (bound.aborted || this.lifetime.signal.aborted) return null
@@ -170,37 +171,38 @@ export class ComputerSyncService {
       }
     }
     const hub = peers.find(peer => peer.target.hostRef.kind === 'main')
+    const known = members.flatMap(member => {
+      const peer = this.identities.find(value => sameDeviceProvisioningTarget(value.target, member.target))
+      return member.enabled && peer ? [peer] : []
+    })
     const missingIdentity = members.some(member => member.enabled
-      && !peers.some(peer => sameDeviceProvisioningTarget(peer.target, member.target)))
+      && !known.some(peer => sameDeviceProvisioningTarget(peer.target, member.target)))
     for (const member of members) {
       this.assertOpen()
       const selected = peers.find(peer => sameDeviceProvisioningTarget(peer.target, member.target))
-      // Replacing an incomplete membership list would disconnect an enabled offline peer after restart.
-      if (member.enabled && (!selected || !hub
-        || (member.target.hostRef.kind === 'main' && missingIdentity))) {
+      if (member.enabled && (!selected || !hub)) {
         continue
       }
-      // Keep known offline peers in Main's folder so reconnects can resume without a manual accept step.
-      const known = [...this.identities.values()].filter(peer => members.some(value => value.enabled
-        && sameDeviceProvisioningTarget(value.target, peer.target)))
       const remotePeers = member.target.hostRef.kind === 'main'
         ? known.filter(peer => peer.target.hostRef.kind === 'device').map(peer => ({
           deviceId: peer.identity.deviceId, address: peer.identity.address }))
         : hub ? [{ deviceId: hub.identity.deviceId, address: hub.identity.address }] : []
       try {
         await this.computer(member.target, { operation: 'configure', workspaceId: workspace.id,
-          enabled: member.enabled && Boolean(selected) && Boolean(hub), peers: remotePeers })
+          enabled: member.enabled && Boolean(selected) && Boolean(hub), peers: remotePeers,
+          preserveUnknownPeers: member.target.hostRef.kind === 'main' && missingIdentity,
+          knownPeerIds: this.identities.map(peer => peer.identity.deviceId) })
       } catch (error) { failures.push(error) }
     }
     return failures
   }
 
   private async identity(target: DeviceProvisioningTarget): Promise<SyncIdentity> {
-    const key = buildComputerKey(target)
-    const cached = this.identities.get(key)
-    if (cached && sameDeviceProvisioningTarget(cached.target, target)) return cached.identity
+    const cached = this.identities.find(peer => sameDeviceProvisioningTarget(peer.target, target))
+    if (cached) return cached.identity
     const identity = SyncIdentitySchema.parse(await this.computer(target, { operation: 'identity' }))
-    this.identities.set(key, { target, identity })
+    await this.repository.saveIdentity(target, identity)
+    this.identities.push({ target, identity })
     return identity
   }
   private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest,
@@ -216,7 +218,7 @@ export class ComputerSyncService {
     if (!endpoint?.capabilities(target.hostRef.deviceId).some(value => value.namespace === COMPUTER_SYNC_NAMESPACE
       && value.mainCanRequest)) throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or needs an app update.', 409)
     return (await endpoint.request(target.hostRef.deviceId, COMPUTER_SYNC_NAMESPACE, { target, request },
-      { signal })).payload
+      { signal, timeoutMs: 150_000 })).payload
   }
   private async assertTarget(sql: Pick<pg.Pool, 'query'>, target: DeviceProvisioningTarget) {
     if (target.hostRef.mainId !== this.mainId) throw new DomainError('COMPUTER_NOT_FOUND', 'Computer belongs to another Main.', 404)

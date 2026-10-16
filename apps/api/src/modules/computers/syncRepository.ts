@@ -1,16 +1,29 @@
 import type pg from 'pg'
+import { SyncIdentitySchema, type SyncIdentity } from '@foreman-code/contracts/computer-accounts'
 import { DeviceProvisioningTargetSchema, sameDeviceProvisioningTarget,
   type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { buildComputerKey } from '../settings/buildComputers.js'
 
 export interface SyncWorkspace { id: string; name: string; active: boolean; targets: DeviceProvisioningTarget[] }
+export interface SyncComputerIdentity { target: DeviceProvisioningTarget; identity: SyncIdentity }
 export interface SyncPreference { revision: number; enabled: boolean }
 export class SyncRepository {
   constructor(private readonly pool: pg.Pool, readonly mainId: string) {}
   get mainTarget(): DeviceProvisioningTarget {
     return { hostRef: { kind: 'main', mainId: this.mainId }, applicationInstallationId: this.mainId,
       keyRevision: null, authorizationRevision: null }
+  }
+  async identities(): Promise<SyncComputerIdentity[]> {
+    const result = await this.pool.query<{ target: unknown; identity: unknown }>(
+      `select target,identity from computer_sync_identities where target#>>'{hostRef,mainId}'=$1`, [this.mainId])
+    return result.rows.map(row => ({ target: DeviceProvisioningTargetSchema.parse(row.target),
+      identity: SyncIdentitySchema.parse(row.identity) }))
+  }
+  async saveIdentity(target: DeviceProvisioningTarget, identity: SyncIdentity): Promise<void> {
+    await this.pool.query(`insert into computer_sync_identities(host_key,target,identity) values($1,$2::jsonb,$3::jsonb)
+      on conflict(host_key,target) do update set identity=excluded.identity`,
+    [buildComputerKey(target), JSON.stringify(target), JSON.stringify(identity)])
   }
   async workspaces(): Promise<SyncWorkspace[]> {
     const workspaces = (await this.pool.query<{ id: string; name: string; active: boolean }>(

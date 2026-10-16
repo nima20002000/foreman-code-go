@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, opendir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -128,11 +128,13 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
     },
     conflicts: async (path, signal) => {
       const names: string[] = []
+      let remaining = 10_000
       const walk = async (directory: string, relative: string) => {
         signal?.throwIfAborted()
-        for (const entry of await readdir(directory, { withFileTypes: true })) {
+        for await (const entry of await opendir(directory)) {
           signal?.throwIfAborted()
-          if (names.length >= 100) return
+          if (names.length >= 100 || remaining <= 0) return
+          remaining--
           if (entry.name === '.stversions' || entry.name === '.stfolder') continue
           const name = relative ? `${relative}/${entry.name}` : entry.name
           if (entry.isFile() && entry.name.includes('.sync-conflict-')) names.push(name)
