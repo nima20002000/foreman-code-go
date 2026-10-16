@@ -1174,6 +1174,27 @@ export class HostCiService {
     }
   }
 
+  /** Each computer's slot total, unavailability reason and gate shards from its dispatch status; raises `used` to the
+   * slots the computer itself reports busy. */
+  private dispatchCapacity(computers: HostCiComputer[], used: Map<string, number>) {
+    const totals = new Map<string, number>()
+    const unavailable = new Map<string, string>()
+    const gateShards = new Map<string, number>()
+    for (const computer of computers) {
+      const status = this.planningEndpoint.dispatchStatus(computer)
+      const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
+      totals.set(computer.key, status?.ready ? slots : 0)
+      if (!status?.ready) unavailable.set(computer.key, status?.reasons.join('; ') || 'Worker CI status unavailable')
+      if (status) {
+        used.set(computer.key, Math.max(used.get(computer.key) ?? 0, status.slotsUsed ?? 0))
+        if (status.ready) {
+          gateShards.set(computer.key, buildComputerIntegrationShards(status, computer.buildAllowancePercent))
+        }
+      }
+    }
+    return { totals, unavailable, gateShards }
+  }
+
   private async dispatchOnce() {
     this.superseding ??= withoutCiDatabasePriority(() => this.cancelSuperseded())
       .catch(error => log.warn({ err: error }, 'Superseded CI cleanup failed; retrying'))
@@ -1195,21 +1216,7 @@ export class HostCiService {
       return [run.id, { groupId: run.groupId, computerKey: row.host_key }]
     }))
     const { gate, reservedHosts } = await readCiGateReservation(this.pool)
-    const totals = new Map<string, number>()
-    const unavailable = new Map<string, string>()
-    const gateShards = new Map<string, number>()
-    for (const computer of computers) {
-      const status = this.planningEndpoint.dispatchStatus(computer)
-      const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
-      totals.set(computer.key, status?.ready ? slots : 0)
-      if (!status?.ready) unavailable.set(computer.key, status?.reasons.join('; ') || 'Worker CI status unavailable')
-      if (status) {
-        used.set(computer.key, Math.max(used.get(computer.key) ?? 0, status.slotsUsed ?? 0))
-        if (status.ready) {
-          gateShards.set(computer.key, buildComputerIntegrationShards(status, computer.buildAllowancePercent))
-        }
-      }
-    }
+    const { totals, unavailable, gateShards } = this.dispatchCapacity(computers, used)
     const freeSlots = (computer: HostCiComputer) => Math.max(0,
       (totals.get(computer.key) ?? 1) - (used.get(computer.key) ?? 0))
     const releaseSlot = (computer: HostCiComputer) => {
