@@ -19,8 +19,7 @@ export async function openGitHubSource(ports: GitWorktreePorts, reference: Refer
     clone = await ensureCommit(ports, reference.repository, reference.commit, signal)
   } catch (error) {
     signal.throwIfAborted()
-    throw new SourceError('COMPUTER_GITHUB_REQUIRED', `This computer could not fetch ${reference.repository} from GitHub. `
-      + 'Connect GitHub on this computer (computer_github_login_start), then retry.', { cause: error })
+    throw error
   }
   const files = new Map<string, Uint8Array>()
   let metadata: Uint8Array | undefined

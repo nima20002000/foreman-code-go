@@ -4,6 +4,7 @@ import { readServiceHealth } from '../diagnostics/serviceHealth.js'
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmStaging.js'
 import { syncFingerprint } from './syncFingerprint.js'
+import { matchesMcpDefinition } from './mcpDefinitions.js'
 import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
 import { MaintenanceCommandStore } from './maintenanceCommandStore.js'
 import type { MaintenancePorts } from './maintenancePorts.js'
@@ -492,8 +493,7 @@ export class ComputerMaintenance {
     }
   }
 
-  /** Adds Main's servers this computer lacks and removes the ones it received from Main earlier that Main has since
-   * removed. Servers the computer has on its own are never touched. */
+  /** Reconciles Main's managed definitions while preserving servers installed independently on this computer. */
   private async syncMcp(harness: MaintainedHarness, servers: readonly SyncedMcpServer[], managed: Set<string>, step: Step,
     signal: AbortSignal, skipped: readonly string[], saveOwnership: () => Promise<void>): Promise<string> {
     const previous = [...managed]
@@ -504,8 +504,9 @@ export class ComputerMaintenance {
       return ''
     }
     if (!servers.length && !previous.length) return ''
-    const existing = new Set(await this.mcpNames(harness, binary, signal))
+    const existing = await this.mcpDefinitions(harness, binary, signal)
     const added: string[] = []
+    const updated: string[] = []
     const removed: string[] = []
     const kept: string[] = []
     for (const name of previous) {
@@ -522,7 +523,13 @@ export class ComputerMaintenance {
       } else kept.push(name)
     }
     for (const server of servers) {
-      if (existing.has(server.name)) continue
+      const replacing = existing.has(server.name)
+      if (replacing && (!managed.has(server.name) || matchesMcpDefinition(server, existing.get(server.name)))) continue
+      if (replacing) {
+        await step(binary, harness === 'codex' ? ['mcp', 'remove', server.name]
+          : ['mcp', 'remove', '--scope', 'user', server.name], `${harness} mcp remove ${server.name}`,
+        { timeoutMs: 30_000 })
+      }
       // Reserve only absent native entries before installation so interruption preserves ownership.
       managed.add(server.name)
       await saveOwnership()
@@ -534,34 +541,42 @@ export class ComputerMaintenance {
           ? ['mcp', 'add', server.name, '--url', server.url, ...(server.bearerTokenEnvVar ? ['--bearer-token-env-var', server.bearerTokenEnvVar] : [])]
           : ['mcp', 'add', server.name, '--', server.command, ...server.args], label, { timeoutMs: 30_000, allowFailure: true })
         if (result.code !== 0) {
-          if (!(await this.mcpNames(harness, binary, signal)).includes(server.name)) throw new Error(`${label} failed.`)
-          managed.add(server.name)
-          added.push(`${server.name} (sign in on this computer)`)
+          const readback = await this.mcpDefinitions(harness, binary, signal)
+          const waitingForSignIn = /timed out waiting for OAuth callback/iu.test(result.stderr)
+          if (!waitingForSignIn || !matchesMcpDefinition(server, readback.get(server.name))) {
+            throw new Error(`${label} failed.`)
+          }
+          ;(replacing ? updated : added).push(`${server.name} (sign in on this computer)`)
           continue
         }
       } else {
         const definition = server.transport === 'http' ? { type: 'http', url: server.url } : { type: 'stdio', command: server.command, args: server.args }
         await step(binary, ['mcp', 'add-json', '--scope', 'user', server.name, JSON.stringify(definition)], `claude mcp add-json ${server.name}`)
       }
-      managed.add(server.name)
-      added.push(server.name)
+      const readback = await this.mcpDefinitions(harness, binary, signal)
+      if (!matchesMcpDefinition(server, readback.get(server.name))) {
+        throw new Error(`${LABELS[harness]} MCP ${server.name} readback does not match the requested definition. Retry sync.`)
+      }
+      ;(replacing ? updated : added).push(server.name)
     }
     // A server that could not be removed stays managed, so the next sync tries again.
     if (kept.length) throw new Error(`Could not remove ${kept.join(', ')}`)
-    const summary = [added.length ? `Added ${added.join(', ')}` : '', removed.length ? `Removed ${removed.join(', ')}` : '']
+    const summary = [added.length ? `Added ${added.join(', ')}` : '', updated.length ? `Updated ${updated.join(', ')}` : '',
+      removed.length ? `Removed ${removed.join(', ')}` : '']
       .filter(Boolean).join(' · ')
     return summary || 'Already in sync'
   }
 
-  private async mcpNames(harness: MaintainedHarness, binary: string, signal: AbortSignal): Promise<string[]> {
+  private async mcpDefinitions(harness: MaintainedHarness, binary: string, signal: AbortSignal): Promise<Map<string, unknown>> {
     if (harness === 'codex') {
       const listed = await this.ports.run(binary, ['mcp', 'list', '--json'], { signal, timeoutMs: 60_000 })
       if (listed.code !== 0) {
         throw new Error('Codex could not list its MCP servers. Update or reinstall Codex on this computer, then retry sync.')
       }
-      return (JSON.parse(listed.stdout) as { name?: unknown }[]).flatMap(entry => typeof entry.name === 'string' ? [entry.name] : [])
+      const entries = JSON.parse(listed.stdout) as { name: string; transport: unknown }[]
+      return new Map(entries.map(entry => [entry.name, entry.transport]))
     }
-    return Object.keys(await claudeUserMcpServers(this.ports))
+    return new Map(Object.entries(await claudeUserMcpServers(this.ports)))
   }
 
   private async syncPlugins(plugins: readonly string[], marketplaces: readonly SyncedMarketplace[], managed: Set<string>,
