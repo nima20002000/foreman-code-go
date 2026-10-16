@@ -67,6 +67,9 @@ export const RemoteOperationReceiptSchema = z.object({
   sequence: z.number().int().positive(), phase: RemoteOperationPhaseSchema,
   interaction: RemoteInteractionTargetSchema.optional(), native: RemoteNativeIdentitySchema.optional(), terminal: RemoteTerminalEvidenceSchema.optional(),
   entryAttempted: z.boolean(), turnEntryAttempted: z.boolean(), turnInput: z.object({ correlationId: z.string().min(1), promptDigest: PlacementDigestSchema, sessionMode: z.enum(['regular', 'plan']).default('regular') }).strict().optional(), stopFence: z.boolean(), controls: z.array(RemoteOwnerControlSchema).max(128),
+  nativeTurnRetries: z.array(z.object({
+    previousTurnId: z.string().min(1), turnId: z.string().min(1),
+  }).strict()).optional(),
   uncertainty: z.string().max(500).optional(),
   retainedReviewer: z.object({ agentId: z.string().min(1), expiresAt: z.string().datetime(),
     workflowTurnId: z.string().min(1), result: z.lazy(() => ExecutionResultSchema) }).strict().optional(),
@@ -96,6 +99,22 @@ export function remoteActiveNative(receipt: RemoteOperationReceipt): RemoteNativ
   if (!receipt.native || !turn) return receipt.native
   if (!turn.providerId) return { sessionId: receipt.native.sessionId, processIdentityDigest: receipt.native.processIdentityDigest }
   return { ...receipt.native, turnId: turn.providerId }
+}
+/** A changed turn belongs to the same process only through its append-only retry journal. */
+export function remoteNativeContinues(original: RemoteNativeIdentity, receipt: RemoteOperationReceipt,
+  previousRetries: NonNullable<RemoteOperationReceipt['nativeTurnRetries']> = []): boolean {
+  const observed = receipt.native
+  if (!observed || original.sessionId !== observed.sessionId
+    || original.processIdentityDigest !== observed.processIdentityDigest) return false
+  const retries = receipt.nativeTurnRetries ?? []
+  if (previousRetries.some((retry, index) => retry.previousTurnId !== retries[index]?.previousTurnId
+    || retry.turnId !== retries[index]?.turnId)) return false
+  let turnId = original.turnId
+  for (const retry of retries.slice(previousRetries.length)) {
+    if (turnId !== undefined && retry.previousTurnId !== turnId) return false
+    turnId = retry.turnId
+  }
+  return original.turnId === undefined && retries.length === 0 || turnId === observed.turnId
 }
 export const RemoteOperationStatusSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('known'), receipt: RemoteOperationReceiptSchema }).strict(),

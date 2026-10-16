@@ -134,6 +134,7 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
   bind(original: VerifiedRemoteOriginalSource, prepared: PreparedRemoteWorkflowPhysical, owner: RunOwnership, lifetime: RemoteWorkflowMainLifetime): void
   /** Caller invokes only after durable canonical publication, outside G1. */
   acknowledge(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
+  releaseExecution(original: VerifiedRemoteOriginalSource): boolean
   /** Requires every original event in this reply to have durably published. */
   acknowledgeReply(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
   artifactTerminalContext(sql:GraphTransactionSql,owner:RunOwnership,original:VerifiedRemoteOriginalSource,capture:WorkflowNativeCapture,proof:WorkflowNativeProofRecord):Promise<TransferContext>
@@ -201,6 +202,16 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
       original.assertCurrent();capture.assertCurrent()
       return capture.acknowledge(original.sourceDigest,
         [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
+    },
+    releaseExecution(original) {
+      const capture = bound.get(original)
+      if (!capture?.readout.receipt.terminal
+        || ![...capture.terminalPublications].some(didGraphTransactionCommit)) return false
+      const terminalReplyAcknowledged = original.source.type === 'boundary' || original.source.type === 'history'
+        || [...capture.replyPublications].some(didGraphTransactionCommit)
+      if (!terminalReplyAcknowledged) return false
+      histories.delete(capture.readout.receipt.intent.operationId)
+      return true
     },
     async acknowledgeReply(original) {
       const capture=bound.get(original)

@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
-import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@foreman-code/contracts/remote-execution'
+import { RemoteOperationReceiptSchema, remoteNativeContinues, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
 export interface RemoteCommitFacts {
@@ -64,7 +64,7 @@ function rejectionReason(receipt: RemoteOperationReceipt, authenticated: DeviceC
     || placement.registration?.workerInstallationId !== receipt.connection.workerInstallationId
     || placement.registration?.keyRevision !== receipt.connection.keyRevision
     || placement.registration?.authorizationRevision !== receipt.connection.authorizationRevision) return 'wrong_placement'
-  if (authority.native !== null && !sameOriginalNative(authority.native, receipt.native)) return 'conflicting_native'
+  if (authority.native !== null && !remoteNativeContinues(authority.native, receipt, authority.lastReceipt?.nativeTurnRetries)) return 'conflicting_native'
   if (authority.terminal !== null && !isDeepStrictEqual(receipt.terminal, authority.terminal)) return 'conflicting_terminal'
   const entryClosed = hasPositiveRemoteEntryClosure(receipt)
   const notStarted = hasPositiveRemoteNonEntryClosure(receipt)
@@ -82,7 +82,3 @@ function sameRegisteredWorker(a: DeviceConnectionIdentity, b: DeviceConnectionId
     && a.keyRevision === b.keyRevision && a.authorizationRevision === b.authorizationRevision
 }
 
-function sameOriginalNative(original: RemoteNativeIdentity, observed: RemoteNativeIdentity | undefined) {
-  return !!observed && original.sessionId === observed.sessionId && original.processIdentityDigest === observed.processIdentityDigest
-    && (original.turnId === undefined || original.turnId === observed.turnId)
-}

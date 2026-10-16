@@ -10,7 +10,7 @@ import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.
 import { assertOriginalPhysicalDirectories, matchingOriginalRegistryLaunch,
   type InstalledWorkflowPhysicalReadouts } from './workflowPhysicalReadout.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
-import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
+import { pagePhysicalReadout, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { hasPositiveRemoteNonEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { randomUUID } from 'node:crypto'
@@ -144,6 +144,7 @@ export async function recoverInstalledWorkflowReply(input: {
   const capture = recovered.capture
   const result = status.receipt.terminal?.result
   const output = result ? await input.recovery.readOutput(frame.intent.operationId) : undefined
+  if (result && !output) throw new Error('Original workflow recovery output is missing')
   if (output && !isDeepStrictEqual(output.result, result)) throw new Error('Original workflow recovery result changed')
   const history: NativeHistory = { events: [], pendingInteractions: [],
     ...(status.receipt.native?.turnId ? { nativeTurnId: status.receipt.native.turnId } : {}),
@@ -167,7 +168,7 @@ export async function recoverInstalledWorkflowReply(input: {
       runtimeLeaf: capture.runtimeLeaf, source: capture.source,
       ...(historyReply || result ? { history: historyReply ? nativeHistoryPageSource(historyReply) : history } : {}),
       closure: { ownerClosed: true, launch: recovered.closed },
-      ...(result ? { output: output ?? { kind: 'text-only', result } } : {}) })
+      ...(result ? { output } : {}) })
     const assertOwnerCurrent = async () => {
       input.assertCurrent()
       await input.authorize('read')
@@ -189,8 +190,14 @@ export async function recoverInstalledWorkflowReply(input: {
     return { payload: pagePhysicalReadout(await input.physical.read(frame), frame.metadata) }
   }
   if (frame.method === 'physical-ack') {
+    const readout = frame.retire ? await input.physical.read(frame, input.signal) : undefined
+    const terminalSource = frame.sourceDigest === remoteWorkflowSourceDigest({ type: 'boundary' })
+      || readout?.history && frame.sourceDigest === remoteWorkflowSourceDigest({
+        type: 'history', history: remoteWorkflowNativeHistory(readout.history),
+      })
     const ack = await input.physical.ack(frame)
-    if (ack.status === 'retired' && status.receipt.sequence === frame.receiptSequence) {
+    if (frame.retire && terminalSource && status.receipt.terminal && readout?.closure?.ownerClosed
+      && ack.status === 'retired' && status.receipt.sequence === frame.receiptSequence) {
       await journal.retireSettled(frame.intent, frame.receiptSequence)
       input.physical.purge(frame.intent.operationId)
     }

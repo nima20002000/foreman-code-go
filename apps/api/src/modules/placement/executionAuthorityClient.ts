@@ -6,10 +6,10 @@ import type { RemoteReviewerRequest } from '@foreman-code/contracts/remote-execu
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
 /** Worker composition supplies the established W07 channel request, not fetch to
  * a public HTTP route. The main's response carries correlation, never a permit. */
-export function workerExecutionAuthorizer(request: (namespace: string, payload: unknown) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
-  return async (intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop') => {
+export function workerExecutionAuthorizer(request: (namespace: string, payload: unknown, options?: { signal?: AbortSignal }) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
+  return async (intent: DispatchIntent, placement: AcceptedNodePlacement, action: 'start' | 'read' | 'control' | 'stop', signal?: AbortSignal) => {
     const input = ExecutionAuthorityRequestSchema.parse({ version: 1, intent, placement, action })
-    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
+    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input, signal ? { signal } : undefined)
     if (reply.bytes?.byteLength) denied()
     const { cleanupOnly, ...result } = ExecutionAuthorityResultSchema.parse(reply.payload)
     if (!sameWorkflowValue(result, { version: 1, action, operationId: intent.operationId, attemptId: intent.attemptId,
@@ -41,10 +41,10 @@ export function workerReviewerAuthorizer(request: (namespace: string, payload: u
   }
 }
 
-export function workerExecutionFactsReader(request: (namespace: string, payload: unknown) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
-  return async (intent: DispatchIntent, placement: AcceptedNodePlacement) => {
+export function workerExecutionFactsReader(request: (namespace: string, payload: unknown, options?: { signal?: AbortSignal }) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
+  return async (intent: DispatchIntent, placement: AcceptedNodePlacement, signal?: AbortSignal) => {
     const input = ExecutionFactsRequestSchema.parse({ method: 'read-facts', authorization: { version: 1, action: 'read', intent, placement } })
-    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
+    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input, signal ? { signal } : undefined)
     if (reply.bytes?.byteLength) denied()
     const result = ExecutionFactsResultSchema.parse(reply.payload)
     if (!sameWorkflowValue(result.intent, intent) || !sameWorkflowValue(result.placement, placement)
