@@ -74,7 +74,11 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     const running = await f.waitFor(reader, started.ticketId, output => output.run.state === 'running')
     expect(running.run).toMatchObject({ id: started.ticketId, state: 'running', computer: { label: 'laptop' },
       message: null, unstartedProviders: [provider] })
-    f.finish(started.ticketId, 0, 'Completed on another computer.\n')
+    const executionRunId = running.run.executionRunId
+    expect(executionRunId).toEqual(expect.any(String))
+    expect(executionRunId).not.toBe(started.ticketId)
+    if (!executionRunId) throw new Error('Expected a reassigned execution ID')
+    f.finish(executionRunId, 0, 'Completed on another computer.\n')
     const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
       ticketId: started.ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
     }))
@@ -82,8 +86,10 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
       .toEqual(finished.run)
     expect(dispatches).toEqual([started.ticketId])
-    expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === started.ticketId))
+    expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === executionRunId))
       .toHaveLength(1)
+    expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === started.ticketId))
+      .toHaveLength(0)
   } finally {
     releaseRead()
     await f.close()
