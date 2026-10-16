@@ -305,6 +305,31 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
     } finally { await f.close() }
   }, 120000)
 
+  it('keeps valid CI ticket links when neighboring activity has invalid ticket identifiers', async () => {
+    const f = await fixture()
+    try {
+      const ticket = await f.submit()
+      const initial = await f.activity()
+      const linked = initial.items.filter(item => item.refs.ciTicketId === ticket.ticketId)
+      expect(linked).toHaveLength(1)
+      expect(linked[0]?.ci).toMatchObject({ id: ticket.ticketId, state: 'queued' })
+      for (const ticketId of ['invalid-ticket', '', `{${ticket.ticketId}}`, null]) {
+        await f.database.pool.query(`insert into run_activity
+          (run_id,source,kind,harness_execution_id,occurred_at,payload)
+          select run_id,source,kind,harness_execution_id,clock_timestamp(),
+            jsonb_set(payload,'{ticketId}',$2::jsonb)
+          from run_activity where run_id=$1 and payload->>'ticketId'=$3 order by sequence limit 1`,
+        [f.request.runId, JSON.stringify(ticketId), ticket.ticketId])
+      }
+      const history = await f.activity()
+      expect(history.items.filter(item => item.refs.ciTicketId === ticket.ticketId)).toEqual(linked)
+      const http = await f.app.inject({ method: 'GET', headers: { authorization: `Bearer ${f.reader.token}` },
+        url: `/api/management/workspaces/${f.request.workspaceId}/runs/${f.request.runId}/activities?limit=100` })
+      expect(http.statusCode).toBe(200)
+      expect(RunActivitiesPageSchema.parse(http.json())).toEqual(history)
+    } finally { await f.close() }
+  }, 120000)
+
   it('lists a Run’s CI with the requesting Agent and filtered test results through MCP and HTTP', async () => {
     const f = await fixture()
     try {
