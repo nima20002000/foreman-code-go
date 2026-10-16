@@ -12,7 +12,6 @@ minimumReleaseAgeIgnoreMissingTime: false
 
 allowBuilds:
   esbuild: true
-  fs-ext: true
   msgpackr-extract: false
   msw: true
 

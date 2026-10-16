@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire, isBuiltin } from 'node:module';
 import {
   assertWorkerSnapshotSource, rsyncWriterEntrypoint, schemaWorkerEntrypoint,
-  verificationScripts, workerContractAliases, workerEntryPoints, workerNativeLoaders,
+  verificationScripts, workerContractAliases, workerEntryPoints,
 } from './worker-snapshot-policy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -65,7 +65,7 @@ if (runtime && (runtime.format !== 1 || runtime.runtime !== 'node' || runtime.pl
   || !/^[A-F0-9]{40}$/.test(runtime.trustedRelease?.primarySignerFingerprint))) throw new Error('Reviewed runtime does not match target');
 // Fresh directories only: never mix files from another release or ship credentials.
 const output = resolve(outputDirectory); await mkdir(output, { mode: 0o700 }); await mkdir(join(output, 'src'));
-const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'], loader: workerNativeLoaders,
+const buildOptions = { absWorkingDir: root, outdir: join(output, 'src'), outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node22', metafile: true, sourcemap: false, packages: 'bundle', external: ['sharp'],
   alias: workerContractAliases(JSON.parse(snapshotSource('packages/contracts/package.json')).exports),
   plugins: [{ name: 'committed-source-snapshot', setup(builder) {
     builder.onResolve({ filter: /.*/ }, input => { assertWorkerDependency(input.path); });
