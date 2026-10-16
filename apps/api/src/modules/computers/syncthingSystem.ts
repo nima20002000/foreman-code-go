@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { SyncIdentitySchema, TailscaleAddressSchema, type SyncIdentity } from '@foreman-code/contracts/computer-accounts'
 import { systemPorts } from './accountProbe.js'
+import { createSyncthingAvailability } from './syncthingAvailability.js'
 import { DomainError } from '../errors.js'
 
 export interface SyncthingPorts {
@@ -24,6 +25,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
   const state = join(home, '.local', 'state', 'foreman-code', 'syncthing')
   const rootPath = join(home, '.local', 'share', 'foreman-code', 'shared-files')
   const processPorts = systemPorts(environment)
+  const availability = createSyncthingAvailability(processPorts, UNIT)
   let prepared: { at: number; metadata: string; identity: SyncIdentity } | undefined
   const preparationMetadata = async (binary: string): Promise<string | null> => {
     try {
@@ -68,15 +70,6 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
     const text = await response.text()
     return text ? JSON.parse(text) as unknown : null
   }
-  const available: SyncthingPorts['available'] = async signal => {
-    signal?.throwIfAborted()
-    const installed = Boolean(await processPorts.find('syncthing'))
-    signal?.throwIfAborted()
-    const timeout = AbortSignal.timeout(10_000)
-    const running = installed && (await processPorts.run('systemctl', ['--user', 'is-active', UNIT],
-      signal ? AbortSignal.any([signal, timeout]) : timeout)).code === 0
-    return { installed, running }
-  }
   const install = async (signal?: AbortSignal, assertCurrent: () => void = () => {}) => {
     const check = () => { signal?.throwIfAborted(); assertCurrent() }
     check()
@@ -120,7 +113,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
     return target
   }
   return {
-    rest, available,
+    rest, available: availability.read,
     mkdir: async (path, signal) => {
       signal?.throwIfAborted()
       await mkdir(path, { recursive: true, mode: 0o700 })
@@ -149,7 +142,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
       check()
       const installed = await processPorts.find('syncthing')
       if (prepared && installed && Date.now() >= prepared.at && Date.now() - prepared.at < 30_000
-        && await preparationMetadata(installed) === prepared.metadata && (await available(signal)).running) {
+        && await preparationMetadata(installed) === prepared.metadata && (await availability.probe(signal)).running) {
         check()
         return structuredClone(prepared.identity)
       }
@@ -176,6 +169,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
       await run('systemctl', ['--user', 'daemon-reload'], signal)
       check()
       await run('systemctl', ['--user', 'enable', '--now', UNIT], signal)
+      availability.invalidate()
       let ready = false
       for (let attempt = 0; attempt < 40; attempt++) {
         check()

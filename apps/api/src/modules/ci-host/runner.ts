@@ -19,6 +19,7 @@ import { pnpmInstall, shellQuote } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
 import { readCiReport } from './reports.js'
 import { withHostCiRunLock } from './runnerLock.js'
+import { readCiUnitStates, type CiUnitState } from './unitStates.js'
 import { sweepCiRunDirectories } from './directoryRetention.js'
 import { sweepHostCiCache } from './cacheCleanup.js'
 
@@ -84,6 +85,8 @@ type StartRequest = { runId: string; repository: string; commit: string; suite: 
   integrationShards?: number | undefined; buildAllowancePercent?: number | undefined; notice?: string | undefined }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
+const serviceUnit = (meta: RunMeta) => meta.serviceUnit ?? `${unitName(meta.runId)}.service`
+const unitStateKey = (meta: RunMeta) => `${meta.runId}:${meta.state}:${meta.startedAt}:${serviceUnit(meta)}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
 const gitAuth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential']
 
@@ -278,8 +281,9 @@ export class HostCiRunner {
     const runs = []
     const directory = join(this.root, 'runs')
     const names = existsSync(directory) ? (await readdir(directory)).sort() : []
+    const unitStates = await this.retainedUnitStates(names)
     for (const runId of names) {
-      const run = await this.refreshRetained(runId)
+      const run = await this.refreshRetained(runId, unitStates)
       if (run) runs.push(run)
     }
     const active: RunMeta[] = []
@@ -346,17 +350,19 @@ export class HostCiRunner {
     const directory = join(this.root, 'runs')
     if (!existsSync(directory)) return []
     const active = []
-    for (const runId of await readdir(directory)) {
-      const run = await this.refreshRetained(runId)
+    const names = await readdir(directory)
+    const unitStates = await this.retainedUnitStates(names)
+    for (const runId of names) {
+      const run = await this.refreshRetained(runId, unitStates)
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
     return active
   }
 
   /** A damaged terminal record must not abort status for the rest of the computer; a live run keeps its slot. */
-  private async refreshRetained(runId: string): Promise<CiHostRun | null> {
+  private async refreshRetained(runId: string, unitStates?: ReadonlyMap<string, CiUnitState>): Promise<CiHostRun | null> {
     try {
-      return await this.refresh(runId)
+      return await this.refresh(runId, unitStates)
     } catch (error) {
       const meta = await this.readMeta(runId).catch((metaError: unknown) => {
         log.warn({ err: metaError, runId }, 'The CI run metadata is unreadable')
@@ -910,20 +916,31 @@ export class HostCiRunner {
     if (result.code !== 0) throw new Error(`CI database cleanup failed: ${result.stderr.trim().slice(0, 500)}`)
   }
 
-  private async unitState(meta: RunMeta): Promise<'active' | 'stopped' | 'unknown'> {
-    const unit = meta.serviceUnit ?? `${unitName(meta.runId)}.service`
-    const result = await this.ports.run('systemctl', ['--user', 'is-active', unit], { env: this.environment })
-    const state = result.stdout.trim()
-    if ([0, 3].includes(result.code)) {
-      if (['active', 'activating', 'reloading', 'deactivating'].includes(state)) return 'active'
-      if (['inactive', 'failed'].includes(state)) return 'stopped'
+  private async retainedUnitStates(runIds: string[]): Promise<Map<string, CiUnitState>> {
+    const pending: RunMeta[] = []
+    for (const runId of runIds) {
+      if (this.settledRuns.has(runId)) continue
+      let meta: RunMeta
+      try {
+        meta = await this.readMeta(runId)
+      } catch {
+        // ignore: refreshRetained reports damaged records while preserving healthy runs.
+        continue
+      }
+      if (['starting', 'running'].includes(meta.state) && !meta.cancellationRequested
+        && !this.preparing.has(runId) && !this.starts.has(runId)
+        && !existsSync(join(this.runDirectory(runId), 'exit'))) pending.push(meta)
     }
-    // Collected transient units have no record. A successful manager query must establish that absence.
-    const detail = await this.ports.run('systemctl', ['--user', 'show',
-      '--property=LoadState', '--property=ActiveState', unit], { env: this.environment })
-    if (detail.code === 0 && detail.stdout.split('\n').includes('LoadState=not-found')
-      && detail.stdout.split('\n').includes('ActiveState=inactive')) return 'stopped'
-    return 'unknown'
+    const states = await readCiUnitStates(this.ports, pending.map(serviceUnit), this.environment)
+    return new Map(pending.map(meta => [unitStateKey(meta), states.get(serviceUnit(meta))!]))
+  }
+
+  private async unitState(meta: RunMeta, states?: ReadonlyMap<string, CiUnitState>): Promise<CiUnitState> {
+    const unit = serviceUnit(meta)
+    // Launch may update metadata while the batched manager query is in flight.
+    const cached = states?.get(unitStateKey(meta))
+    if (cached !== undefined) return cached
+    return (await readCiUnitStates(this.ports, [unit], this.environment)).get(unit)!
   }
 
   private async finishFromExit(meta: RunMeta): Promise<boolean> {
@@ -943,7 +960,7 @@ export class HostCiRunner {
     return true
   }
 
-  private async reconcile(meta: RunMeta, preparing: boolean): Promise<void> {
+  private async reconcile(meta: RunMeta, preparing: boolean, unitStates?: ReadonlyMap<string, CiUnitState>): Promise<void> {
     if (!['starting', 'running'].includes(meta.state) || preparing) return
     if (await this.finishFromExit(meta)) return
     if (meta.cancellationRequested) {
@@ -952,7 +969,7 @@ export class HostCiRunner {
       if (stop.code !== 0) await this.writeMeta({ ...meta,
         message: 'Cancellation requested; the CI unit has not confirmed it stopped.' })
     }
-    const state = await this.unitState(meta)
+    const state = await this.unitState(meta, meta.cancellationRequested ? undefined : unitStates)
     if (state === 'stopped') {
       // The unit can publish its exit status while the systemd query is in flight.
       if (await this.finishFromExit(meta)) return
@@ -966,7 +983,7 @@ export class HostCiRunner {
   }
 
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
-  async refresh(runId: string): Promise<CiHostRun> {
+  async refresh(runId: string, unitStates?: ReadonlyMap<string, CiUnitState>): Promise<CiHostRun> {
     const metaVersion = async () => {
       const info = await stat(join(this.runDirectory(runId), 'meta.json'))
       return info && `${info.ino}:${info.size}:${info.mtimeMs}`
@@ -982,16 +999,16 @@ export class HostCiRunner {
     })
     if (!meta) return this.canceledBeforeStart(runId)
     const directory = this.runDirectory(runId)
-    // Settled runs have nothing to reconcile. Each lock spawns a flock process, and status polls read every run.
+    // Status polls read every run; settled runs need no reconciliation lock.
     const settled = !['starting', 'running'].includes(meta.state)
     if (settled) this.trackCacheWriter(runId)
     else this.trackCacheWriter(runId, meta.repository)
     const reconciled = settled || await withHostCiRunLock(directory, async () => {
-      await this.reconcile(await this.readMeta(runId), preparing)
+      await this.reconcile(await this.readMeta(runId), preparing, unitStates)
       return true
     }, { nonBlocking: true })
     if (!settled) meta = await this.readMeta(runId)
-    if (!reconciled && meta.state === 'starting' && meta.serviceUnit && await this.unitState(meta) === 'active') {
+    if (!reconciled && meta.state === 'starting' && meta.serviceUnit && await this.unitState(meta, unitStates) === 'active') {
       // A live launcher can still be writing metadata after systemd accepted the service.
       meta = { ...meta, state: 'running' }
     }
