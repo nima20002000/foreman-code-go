@@ -4,7 +4,7 @@ import type { ReadObservation } from '@foreman-code/contracts'
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import type pg from 'pg'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema,
   integrationPartition, requiresUserSystemd,
@@ -59,6 +59,9 @@ type Mirrors = (workspaceId: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
+/** The snapshot Main last pushed as each mirror's main. Main is the mirrors' only writer of main, so the next publication
+ * builds on it instead of fetching it back from GitHub. */
+const pushedMains = new Map<string, string>()
 const pendingPublications = new Map<string, Promise<void>>()
 const cloudOperations = new Map<string, Promise<unknown>>()
 /** Final provider log downloads by run; null once a download has failed. */
@@ -148,7 +151,7 @@ export class CloudCi {
     const mirror = this.accountMirror(input.mirror)
     if (!mirror) return
     await this.publish(input.repository, mirror, input.commit,
-      input.defaultBranch, input.baseCommit, input.durations ?? {})
+      input.defaultBranch, input.baseCommit, input.durations ?? {}, false)
   }
 
   /** This org's copy of a workspace mirror: the same repository name under the org's GitHub owner; null when the org
@@ -433,7 +436,7 @@ export class CloudCi {
     try {
       const publication = await this.publish(request.repository, mirror, request.commit,
         deriveFiles && !request.baseCommit ? request.defaultBranch ?? 'main' : undefined,
-        deriveFiles ? request.baseCommit : undefined, request.durations ?? {})
+        deriveFiles ? request.baseCommit : undefined, request.durations ?? {}, request.partition !== undefined)
       if (request.deferMirror) {
         return await this.serializeRun(request.runId, async () => {
           const latest = await this.read(request.runId)
@@ -654,12 +657,16 @@ export class CloudCi {
     }
   }
 
-  /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
+  /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. A start
+   * that splits its files on the runner (`exact`) needs a snapshot with exactly its learned durations; any other start
+   * only orders its files by them, so it reuses whichever snapshot of the commit is already there. */
   private async publish(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
-    baseCommit: string | undefined, durations: CiDurations) {
-    const key = `${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n${canonicalJson(durations)}`
+    baseCommit: string | undefined, durations: CiDurations, exact: boolean) {
+    const prefix = `${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n`
+    const key = `${prefix}${canonicalJson(durations)}`
     const publications = this.publications(repository, mirror)
     let published = publications.get(key)
+      ?? (exact ? undefined : [...publications].find(([candidate]) => candidate.startsWith(prefix))?.[1])
     if (!published) {
       const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
       const queuedAt = performance.now()
@@ -702,7 +709,8 @@ export class CloudCi {
     const sourceObjects = resolve(clone, objects.stdout.trim())
     // Snapshot objects reference source objects, so they live in a daily store beside the mirror clone, never in it:
     // the clone's refs then reach only objects it owns. Yesterday's store stays readable for late partitions.
-    const store = join(this.root, 'snapshot-objects', ...mirror.split('/'))
+    // Shared by every service publishing this mirror, so each can build on the main another one pushed.
+    const store = join(dirname(this.root), 'snapshot-objects', ...mirror.split('/'))
     const day = (offset: number) => new Date(this.ports.now().getTime() - offset).toISOString().slice(0, 10)
     const snapshotObjects = join(store, day(0))
     await mkdir(snapshotObjects, { recursive: true, mode: 0o700 })
@@ -726,7 +734,13 @@ export class CloudCi {
     // Fetch without source alternates: their shallow refs are not negotiation haves the mirror clone can walk.
     const fetch = () => run(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`], {})
     let repair: CiMirrorRepair | undefined
-    await fetch().catch(async (error: unknown) => {
+    const mirrorKey = `${dirname(this.root)}\n${mirror}`
+    let main = pushedMains.get(mirrorKey)
+    if (main && (await this.git.git(['cat-file', '-e', `${main}^{commit}`], { cwd: mirrorClone, signal,
+      env: { GIT_ALTERNATE_OBJECT_DIRECTORIES: [snapshotObjects, resolve(mirrorClone, '.git', 'objects')].join(delimiter) } })).code !== 0) {
+      main = undefined
+    }
+    if (!main) await fetch().catch(async (error: unknown) => {
       if (!(error instanceof DomainError) || !/could not read|failed to traverse|did not send all necessary objects|bad object|corrupt/i
         .test(error.message)) throw error
       const repairing = performance.now()
@@ -742,11 +756,11 @@ export class CloudCi {
         repair = { count: 1, reason: 'CI_MIRROR_CORRUPT', repository: mirror, sourceCommit: commit, elapsedMs }
       }
     })
-    const reusedSnapshot = await git(['rev-parse', base])
+    const reusedSnapshot = main ?? await git(['rev-parse', base])
     let fetchMs = performance.now() - fetching
     const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
     const workflows = ['.github/workflows/ci.yml', '.circleci/config.yml']
-    const entries = (await git(['ls-tree', base, '--', ...workflows])).split('\n')
+    const entries = (await git(['ls-tree', reusedSnapshot, '--', ...workflows])).split('\n')
       .filter(entry => /^100[0-7]{3} blob [a-f0-9]+\t/.test(entry))
     if (!entries.some(entry => entry.endsWith(`\t${workflow}`))) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE',
@@ -801,7 +815,7 @@ export class CloudCi {
       if (tree === await git(['rev-parse', `${parent}^{tree}`])) return git(['rev-parse', parent])
       return git(['commit-tree', tree, '-p', parent, '-m', `Snapshot ${source.slice(0, 12)}`], identity)
     }
-    let parent = base
+    let parent = reusedSnapshot
     let comparison: { branch: string; commit: string } | undefined
     let runnerBaseCommit: string | undefined
     let head: string | undefined
@@ -812,7 +826,7 @@ export class CloudCi {
         const checking = performance.now()
         await this.guard(clone, baseCommit, signal)
         guardMs += performance.now() - checking
-        parent = await snapshotOf(baseCommit, base)
+        parent = await snapshotOf(baseCommit, reusedSnapshot)
         runnerBaseCommit = parent
       }
     } else if (defaultBranch) {
@@ -833,7 +847,7 @@ export class CloudCi {
         await this.guard(clone, sourceBase, signal)
         await this.guard(clone, head, signal)
         guardMs += performance.now() - checking
-        parent = await snapshotOf(sourceBase, base)
+        parent = await snapshotOf(sourceBase, reusedSnapshot)
         if (commit !== head) runnerBaseCommit = parent
         comparison = { branch: `ci-default/${commit}`, commit: await snapshotOf(head, parent) }
       }
@@ -846,8 +860,10 @@ export class CloudCi {
     const workflowRef = `ci-snapshot/${snapshot}`
     const snapshotMs = Math.max(0, performance.now() - snapshotting - (guardMs - initialGuardMs) - branchFetchMs)
     const pushing = performance.now()
+    pushedMains.delete(mirrorKey)
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
+    pushedMains.set(mirrorKey, snapshot)
     const timings = { queueMs, sourceMs, fetchMs, guardMs, snapshotMs, pushMs: performance.now() - pushing,
       totalMs: performance.now() - started + queueMs }
     const mirrorPublication: NonNullable<CiHostRun['mirrorPublication']> = {
