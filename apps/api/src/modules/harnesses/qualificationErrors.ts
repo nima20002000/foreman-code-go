@@ -1,6 +1,7 @@
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from './errors.js'
 import { deviceBusyFailure } from '../devices/deviceBusyError.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
 /** Translate expected native readiness errors at the domain boundary, not all application errors. */
 export function qualificationError(error: unknown): DomainError {
@@ -26,4 +27,13 @@ export function qualificationError(error: unknown): DomainError {
     return new DomainError('HARNESS_CHECK_TIMEOUT', 'The native check timed out. Try again.', 503)
   }
   return new DomainError('HARNESS_QUALIFICATION_FAILED', 'The native check could not complete. Check the server logs.', 503)
+}
+
+/** The checked target moved while the check ran: a retry on the settled inventory, never a verdict on the harness. */
+export function staleQualification(error: unknown): boolean {
+  if (error instanceof AggregateError) {
+    return error.errors.length > 0 && error.errors.every(staleQualification)
+  }
+  return (error instanceof DomainError || error instanceof DeviceApplicationError)
+    && ['HARNESS_INVENTORY_STALE', 'HARNESS_QUALIFICATION_TARGET_CHANGED'].includes(error.code)
 }
