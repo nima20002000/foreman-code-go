@@ -5,9 +5,13 @@ export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}
 /** Installs into the checkout's own node_modules from the shared store. A persistent slot already holds the
  * previous part's dependencies, so this is incremental. The workspace's import method (clone-or-copy) keeps the
  * checkout's files independent of the store, so a suite that mutates dependencies cannot corrupt the store. */
-export function pnpmInstall(cache: string, messageFile: string): string[] {
+export function pnpmInstall(cache: string, messageFile: string, options: { offlineOnly?: boolean } = {}): string[] {
   const install = `corepack pnpm install --frozen-lockfile --config.confirm-modules-purge=false`
     + ` --store-dir ${shellQuote(join(cache, 'pnpm-store'))} --cache-dir ${shellQuote(join(cache, 'pnpm-metadata'))}`
+  if (options.offlineOnly) return [
+    `export npm_config_cache_dir=${shellQuote(join(cache, 'pnpm-metadata'))}`,
+    `${install} --offline || finish $?`,
+  ]
   return [
     `export npm_config_cache_dir=${shellQuote(join(cache, 'pnpm-metadata'))}`,
     // Warm checkouts install independently; only an online store refill needs the repository lock.

@@ -19,7 +19,8 @@ import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
 /** What each CI tool does. Agents act on this text, so keep it short and true to the code. */
 export const CI_TOOL_DESCRIPTIONS = {
   ci_run: 'Run one suite (install, typecheck, lint, unit, build or integration) of the workspace GitHub repository on '
-    + 'build computers and cloud runners. Commit: the given one; otherwise an Agent\u2019s edited files (published to GitHub '
+    + 'build computers and cloud runners. Enabled idle build computers pre-warm queued commits offline in persistent '
+    + 'checkouts without holding CI slots; real CI takes priority. Commit: the given one; otherwise an Agent\u2019s edited files (published to GitHub '
     + 'first, snapshot up to 32 MiB) or its Run-start commit; otherwise the default branch head. scope defaults to affected: '
     + 'the files you pass, or the files changed since baseCommit (a full SHA ancestor) or since the merge-base with the '
     + 'default branch; infrastructure changes run everything, with the reason in message. '
