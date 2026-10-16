@@ -182,7 +182,7 @@ describe('byte-bounded native history pages', () => {
 
   it('recovers terminal metadata through bounded UTF-8 continuations with its original result', async () => {
     const result = { outcome: 'succeeded' as const, output: { text: '漢😀"\\'.repeat(40_000) } }
-    const history: NativeHistory = { events: [event(0)], pendingInteractions: [], terminalResult: result,
+    const history: NativeHistory = { events: [event(1)], pendingInteractions: [], terminalResult: result,
       terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result },
       gap: { fromSequence: 0, toSequence: 0, reason: 'retention' } }
     const first = pageNativeHistory(history, -1)
