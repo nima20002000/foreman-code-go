@@ -169,7 +169,7 @@ function fixture(lostReplies: number, rejection: string | null) {
 }
 
 const rejections = ['CI_HOST_BUSY', 'COMPUTER_GITHUB_REQUIRED', 'CI_CLOUD_UNAVAILABLE',
-  'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'CI_MIRROR_PRIVATE_DATA', 'WORKER_RUNTIME_DRAINING']
+  'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'WORKER_RUNTIME_DRAINING']
 
 it.each(rejections.flatMap(code => [0, 1, 2].map(lostReplies => ({ code, lostReplies }))))(
   'requeues $code after $lostReplies lost replies and starts the MCP ticket on the next dispatch', async input => {
@@ -208,6 +208,21 @@ it.each(rejections.flatMap(code => [0, 1, 2].map(lostReplies => ({ code, lostRep
     }
   },
 )
+
+it('fails the MCP ticket instead of requeueing it when the mirror refuses private data', async () => {
+  const f = fixture(0, 'CI_MIRROR_PRIVATE_DATA')
+  try {
+    const started = await f.call('ci_run', { suite: 'unit', scope: 'full', commit: 'a'.repeat(40) })
+    const { ticketId } = CiRunOutputSchema.parse(started.value)
+    for (let pass = 0; pass < 4; pass++) await f.dispatch()
+    expect(f.attempts()).toBe(1)
+    const result = await f.call('ci_get', { ticketId, logTail: false })
+    expect(result.isError).not.toBe(true)
+    expect(CiGetOutputSchema.parse(result.value).run).toMatchObject({ state: 'failed', step: null })
+  } finally {
+    await f.close()
+  }
+})
 
 it('retains the MCP ticket assignment when all start outcomes remain unknown', async () => {
   const f = fixture(0, null)
