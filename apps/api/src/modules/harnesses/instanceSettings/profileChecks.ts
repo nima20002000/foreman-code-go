@@ -19,7 +19,7 @@ import { harnessHostKey, type HarnessInstanceSettingsRepository } from './reposi
 import type { NativeQualificationRetention } from '../installedNativeQualificationRetention.js'
 import type { HostHarnessProfileEvidenceRepository } from './profileRepository.js'
 import type { HarnessInstallationRecord } from '../installationRegistry.js'
-import { qualificationError } from '../qualificationErrors.js'
+import { qualificationError, staleQualification } from '../qualificationErrors.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from '../claudeSdk/profileRevision.js'
 
 export interface AutomaticHostProfileCheck {
@@ -155,7 +155,7 @@ export class HostHarnessInstanceProfileChecks {
       const result = await this.qualifyAutomatically(input, checkId, authorize, signal)
       if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, signal)
     } catch (error) {
-      if (this.stopping.signal.aborted) throw error
+      if (this.stopping.signal.aborted || staleQualification(error)) throw error
       const failure = qualificationError(error)
       await this.settings.readAuthorized(async client => {
         await assertDeviceHostInstallation(client, value.target.hostRef, value.target.applicationInstallationId)
@@ -249,6 +249,11 @@ export class HostHarnessInstanceProfileChecks {
         batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
         input.signal.throwIfAborted()
+        if (staleQualification(error)) {
+          // The Worker no longer matches the requested target; the monitor retries once its inventory settles.
+          failures.push(error)
+          return
+        }
         const failure = qualificationError(error)
         await this.settings.readAuthorized(async client => {
           await input.authorize(client)

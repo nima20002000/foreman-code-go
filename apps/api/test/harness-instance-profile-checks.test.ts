@@ -8,6 +8,7 @@ import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses
 import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks, nativeProfileCheckId } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
 import { DomainError } from '../src/modules/errors.js'
+import { DeviceApplicationError } from '../src/modules/devices/deviceApplicationError.js'
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import type { HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
@@ -290,6 +291,19 @@ describe('automatic installation profile checks', () => {
     expect(proof.failure).toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
     expect(proof.failure!.message).not.toContain('Native check failed')
     expect(f.service.pending(f.saved)).toBe(false)
+    await f.service.close()
+  })
+  it('does not record a stale Worker target as the updated profile verdict', async () => {
+    const f = updatedFixture()
+    f.qualify.mockRejectedValueOnce(new DeviceApplicationError('HARNESS_QUALIFICATION_TARGET_CHANGED'))
+    await expect(f.service.recheckInstallation(f.request)).rejects.toThrow('Automatic harness profile checks failed')
+    expect(f.append).not.toHaveBeenCalled()
+    const updated = f.qualify.mock.calls[0]![0]
+    expect(await f.service.failure(updated)).toBeUndefined()
+    expect(f.service.pending(updated)).toBe(false)
+    f.qualify.mockRejectedValueOnce(new DomainError('CODEX_MODEL_UNAVAILABLE', 'Model unavailable.', 422))
+    await expect(f.service.recheckInstallation(f.request)).rejects.toThrow('Automatic harness profile checks failed')
+    expect(await f.service.failure(updated)).toMatchObject({ code: 'CODEX_MODEL_UNAVAILABLE' })
     await f.service.close()
   })
   it('releases each updated profile after its own check while another profile remains pending', async () => {

@@ -6,21 +6,13 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import { commandInputHash } from '../commands/postgres.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
-import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { deviceBackpressured } from '../devices/deviceBusyError.js'
 import { DomainError } from '../errors.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import { staleQualification } from './qualificationErrors.js'
 import { harnessHostKey } from './instanceSettings/repository.js'
 import type { HostHarnessInstanceProfileChecks } from './instanceSettings/profileChecks.js'
 import type { ProductionHarnessRegistry } from './productionRegistry.js'
-
-function staleQualification(error: unknown): boolean {
-  if (error instanceof AggregateError) {
-    return error.errors.length > 0 && error.errors.every(staleQualification)
-  }
-  return (error instanceof DomainError || error instanceof DeviceApplicationError)
-    && ['HARNESS_INVENTORY_STALE', 'HARNESS_QUALIFICATION_TARGET_CHANGED'].includes(error.code)
-}
 
 /** Passive inventory changes schedule owned qualification; they never qualify an installation themselves. */
 export class HarnessInstallationMonitor {
