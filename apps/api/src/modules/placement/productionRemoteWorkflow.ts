@@ -78,6 +78,16 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
   const artifactTerminals = new WeakMap<WorkflowNativeCapture, VerifiedRemoteOriginalSource>()
   const latest = new Map<string, string>()
   const retained = new Map<string, Map<string, RetainedRemoteWorkflowSource>>()
+  const releaseExecution = (executionId: string) => {
+    retained.delete(executionId)
+    bindings.delete(executionId)
+    latest.delete(executionId)
+    reviewAcknowledgments.delete(executionId)
+    for (const original of acknowledgments) {
+      if (original.verified.receipt.intent.executionId === executionId) acknowledgments.delete(original)
+    }
+    channel.release(executionId)
+  }
   const requireProducer = () => {
     const producer = input.producer()
     if (!producer) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual placement producer is unavailable.', 503)
@@ -89,8 +99,10 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
   const prepare = (executionId: string) => prepareRemoteWorkflowBinding(input, bindings, executionId)
   return {
     prepare,
-    confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
-      return confirmRemoteWorkflowClosedExecution(input, prepare, physical, authority, executionId, signal, owner)
+    async confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
+      const closed = await confirmRemoteWorkflowClosedExecution(input, prepare, physical, authority, executionId, signal, owner)
+      if (closed) releaseExecution(executionId)
+      return closed
     },
     binding(executionId: string) { return bindings.get(executionId) },
     async prepareContext(context: NativeManagerResolutionContext): Promise<NativeManagerResolutionContext> {
@@ -135,7 +147,10 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
         pending.delete(original)
         if (!didGraphTransactionCommit(sql)) continue
         try {
-          await physical.acknowledge(original)
+          if (await acknowledgeRemoteWorkflowSource(physical, original)) {
+            releaseExecution(executionId)
+            return
+          }
           retained.get(executionId)?.delete(original.sourceDigest)
         } catch (error) {
           if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
@@ -214,7 +229,7 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
       return owners
     },
     afterCommit: (capture: WorkflowNativeCapture) => acknowledgeRemoteWorkflowSources({
-      bindings, retained, latest, reviewAcknowledgments, acknowledgments, companions, channel, physical,
+      bindings, retained, latest, acknowledgments, companions, channel, physical, releaseExecution,
     }, capture),
     assertPhysical: (sql: GraphTransactionSql, owner: RunOwnership,
       captures: WorkflowNativeCapture | readonly WorkflowNativeCapture[]) =>
@@ -222,17 +237,28 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
   }
 }
 
+async function acknowledgeRemoteWorkflowSource(physical: RemoteWorkflowPhysicalVerification,
+  original: VerifiedRemoteOriginalSource): Promise<boolean> {
+  await physical.acknowledge(original)
+  try { await physical.acknowledgeReply(original) }
+  catch (error) {
+    if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
+      || error.details?.reason !== 'uncommitted_history') throw error
+  }
+  return physical.releaseExecution(original)
+}
+
 async function acknowledgeRemoteWorkflowSources(dependencies: {
   bindings: Map<string, AcceptedExecutionBinding | null>
   retained: Map<string, Map<string, RetainedRemoteWorkflowSource>>
   latest: Map<string, string>
-  reviewAcknowledgments: Map<string, Map<VerifiedRemoteOriginalSource, GraphTransactionSql>>
+  releaseExecution(executionId: string): void
   acknowledgments: Set<VerifiedRemoteOriginalSource>
   companions: WeakMap<WorkflowNativeCapture, RemoteNativeSourceEvidence>
   channel: ReturnType<typeof createRemoteNativeSourceChannel>
   physical: RemoteWorkflowPhysicalVerification
 }, capture: WorkflowNativeCapture): Promise<void> {
-  const { bindings, retained, latest, reviewAcknowledgments, acknowledgments, companions, channel, physical } = dependencies
+  const { bindings, retained, latest, releaseExecution, acknowledgments, companions, channel, physical } = dependencies
   if (!bindings.has(capture.execution.id)) return
   const evidence = companions.get(capture)
   if (!evidence) return
@@ -247,24 +273,11 @@ async function acknowledgeRemoteWorkflowSources(dependencies: {
     const entries = retained.get(executionId)
     const entry = entries?.get(original.sourceDigest)
     try {
-      await physical.acknowledge(original)
-      try { await physical.acknowledgeReply(original) }
-      catch (error) {
-        if (!(error instanceof DomainError) || error.code !== 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
-          || error.details?.reason !== 'uncommitted_history') throw error
-      }
+      const settled = await acknowledgeRemoteWorkflowSource(physical, original)
       if (entry) entry.acknowledgment = 'sent'
-      if (physical.releaseExecution(original)) {
-        retained.delete(executionId)
-        bindings.delete(executionId)
-        latest.delete(executionId)
-        reviewAcknowledgments.delete(executionId)
-        for (const pending of acknowledgments) {
-          if (pending.verified.receipt.intent.executionId === executionId) acknowledgments.delete(pending)
-        }
-        channel.release(executionId)
-      }
+      if (settled) releaseExecution(executionId)
     } catch (error) {
+      if (!bindings.has(executionId)) continue
       if (error instanceof DomainError && error.code === 'REMOTE_NATIVE_ACK_OBSOLETE') {
         if (entry) entry.acknowledgment = 'obsolete'
         if (latest.get(executionId) !== original.sourceDigest) entries?.delete(original.sourceDigest)
@@ -414,6 +427,7 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
     }))
   if (committed === 'rejected') throw new DomainError('REMOTE_CLOSURE_RECEIPT_REJECTED',
     'The original closure receipt was rejected by its canonical owner.', 409)
+  if (original) await physical.acknowledgeClosed(original)
   return true
 }
 

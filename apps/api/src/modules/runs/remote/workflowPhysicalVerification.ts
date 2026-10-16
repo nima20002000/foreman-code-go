@@ -135,6 +135,8 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
   /** Caller invokes only after durable canonical publication, outside G1. */
   acknowledge(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
   releaseExecution(original: VerifiedRemoteOriginalSource): boolean
+  /** Retires a physical observation after its cold closure receipt has committed on Main. */
+  acknowledgeClosed(prepared: PreparedRemoteWorkflowPhysical): Promise<RemoteWorkflowPhysicalAck>
   /** Requires every original event in this reply to have durably published. */
   acknowledgeReply(original:VerifiedRemoteOriginalSource):Promise<RemoteWorkflowPhysicalAck>
   artifactTerminalContext(sql:GraphTransactionSql,owner:RunOwnership,original:VerifiedRemoteOriginalSource,capture:WorkflowNativeCapture,proof:WorkflowNativeProofRecord):Promise<TransferContext>
@@ -202,6 +204,16 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
       original.assertCurrent();capture.assertCurrent()
       return capture.acknowledge(original.sourceDigest,
         [...capture.terminalPublications].some(didGraphTransactionCommit) ? { retire: true } : undefined)
+    },
+    async acknowledgeClosed(value) {
+      const capture = prepared.get(value)
+      if (!capture?.readout.receipt.terminal || !capture.readout.closure?.ownerClosed
+        || !hasNativeClosure(capture.readout.observation)
+        || !same(capture.readout.closure.launch, capture.readout.observation)) return unavailable('uncaptured_closure')
+      capture.assertAcknowledgmentCurrent()
+      const ack = await capture.acknowledge(remoteWorkflowSourceDigest({ type: 'boundary' }))
+      histories.delete(capture.readout.receipt.intent.operationId)
+      return ack
     },
     releaseExecution(original) {
       const capture = bound.get(original)
@@ -663,7 +675,8 @@ async function recordRemotePublications(sql: GraphTransactionSql, original: Veri
   // the transaction that sees the matching saved result may retire the Worker.
   if (capture.publications.has(sql) && execution.state === 'completed' && receipt.terminal
     && (receipt.terminal.result ? same(execution.result, receipt.terminal.result)
-      : receipt.terminal.kind === 'cancelled' && execution.result?.outcome === 'canceled')) {
+      : receipt.terminal.kind === 'cancelled' && (execution.result?.outcome === 'canceled'
+        || lifetime.review && receipt.retainedReviewer && same(execution.result, receipt.retainedReviewer.result)))) {
     capture.terminalPublications.add(sql)
   }
   if(readout.history && capture.publications.has(sql)) {
