@@ -4,46 +4,62 @@ import { CiRunRecordSchema } from '@foreman-code/contracts'
 import { expireOverdueCiRuns } from '../src/modules/ci-host/deadlines.js'
 import { withTransaction } from '../src/infrastructure/transaction.js'
 import { sweepStateDeadlines } from '../src/modules/diagnostics/stateDeadlines.js'
+import { RunActivitiesService } from '../src/modules/runs/activities.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
-import { deferred } from './helpers/deferred.js'
+import { deferred, rejectableDeferred } from './helpers/deferred.js'
 import { measuredCiPages } from './helpers/measuredCiPages.js'
 import { graphFixture } from './eng04-graph-composition-fixture.js'
 
-it('records Run activity while a Run writer holds the Run and then writes activity, without deadlocking', async () => {
+it('publishes independent Run activity before a held Run writer and delivers both in commit order', async () => {
   const db = await currentDatabase()
   const graph = await graphFixture(db, { form: 'single' })
-  const locked = deferred<number>()
+  const locked = rejectableDeferred<void>()
   const write = deferred()
-  const activityStarted = deferred<number>()
   const insert = `insert into run_activity(run_id,source,kind,occurred_at,payload)
-    values($1,'backend','run_cleanup_checked',clock_timestamp(),'{"failed":false}'::jsonb)`
+    values($1,'backend','run_cleanup_checked',clock_timestamp(),jsonb_build_object('failed',$2::boolean))`
+  let writer: Promise<void> | undefined
   try {
-    const writer = withTransaction(db.pool, async client => {
-      await client.query('select id from runs where id=$1 for update', [graph.run.id])
-      locked.resolve((await client.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid)
-      await write.promise
-      await client.query(insert, [graph.run.id])
+    const activities = new RunActivitiesService(db.pool)
+    const read = (cursor?: string) => activities.read(graph.writer.principal, {
+      workspaceId: graph.scope.workspaceId, runId: graph.run.id, limit: 100, ...(cursor ? { cursor } : {}),
     })
-    const results = Promise.allSettled([writer, (async () => {
-      await locked.promise
-      await withTransaction(db.pool, async client => {
-        activityStarted.resolve((await client.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid)
-        await client.query(insert, [graph.run.id])
-      })
-    })()])
-    try {
-      const writerPid = await locked.promise
-      const activityPid = await activityStarted.promise
-      await expect.poll(async () => (await db.pool.query<{ blocked: boolean }>(
-        'select $1 = any(pg_blocking_pids($2)) as blocked', [writerPid, activityPid])).rows[0]!.blocked).toBe(true)
-    } finally {
-      write.resolve()
-    }
-    expect(await results).toEqual([{ status: 'fulfilled', value: undefined }, { status: 'fulfilled', value: undefined }])
+    const initial = await read()
+    writer = withTransaction(db.pool, async client => {
+      await client.query('select id from runs where id=$1 for update', [graph.run.id])
+      locked.resolve()
+      await write.promise
+      await client.query(insert, [graph.run.id, true])
+    }).catch((error: unknown) => { locked.reject(error); throw error })
+    const result = Promise.allSettled([writer])
+    await locked.promise
+    await withTransaction(db.pool, async client => {
+      await client.query("select set_config('statement_timeout','500ms',true)")
+      await client.query(insert, [graph.run.id, false])
+      expect((await read(initial.nextCursor)).items).toEqual([])
+    })
+    const during = await read(initial.nextCursor)
+    expect(during.items).toMatchObject([{ kind: 'recovery', status: 'completed' }])
+    expect((await read(during.nextCursor)).items).toEqual([])
+    write.resolve()
+    expect(await result).toEqual([{ status: 'fulfilled', value: undefined }])
+    const after = await read(during.nextCursor)
+    expect(after.items).toMatchObject([{ kind: 'recovery', status: 'failed' }])
+    const delivered = [...during.items, ...after.items]
+    expect(new Set(delivered.map(item => item.id)).size).toBe(2)
+    expect(BigInt(after.items[0]!.sequence)).toBeGreaterThan(BigInt(during.highWater))
+    expect((await read(after.nextCursor)).items).toEqual([])
+    const persisted = (await db.pool.query<{ sequence: string; payload: { failed: boolean } }>(`
+      select sequence::text,payload from run_activity
+      where run_id=$1 and sequence>$2 and kind='run_cleanup_checked' order by run_activity.sequence`,
+    [graph.run.id, initial.highWater])).rows
+    expect(persisted.map(row => row.payload.failed)).toEqual([false, true])
+    expect(persisted.map(row => row.sequence)).toEqual(delivered.map(item => item.sequence))
   } finally {
     write.resolve()
-    await graph.app.close()
-    await db.close()
+    try { await writer } finally {
+      await graph.app.close()
+      await db.close()
+    }
   }
 }, 60_000)
 
