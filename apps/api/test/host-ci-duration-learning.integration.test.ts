@@ -1,6 +1,7 @@
 import { CiGetOutputSchema, CiRunOutputSchema, integrationPartition } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
+import { ciReadWhen } from './helpers/ciReadWhen.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
 it('denies callers without CI grants and asks for a GitHub repository first', async () => {
@@ -101,7 +102,9 @@ it.each(['full', 'affected'] as const)('automatically sizes %s integration via M
     // Idle slots split the work until each part keeps one setup time of tests: one file per part.
     expect(started.partitions).toHaveLength(scope === 'full' ? 20 : 6)
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
-    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    // Background observation stamps each running partition on its own schedule; read once all of them have it.
+    const read = await ciReadWhen(f.pool, async () => CiGetOutputSchema.parse(await f.value(reader, 'ci_get',
+      { ticketId: started.ticketId })), output => output.partitions!.every(run => run.observation?.status === 'available'))
     expect(read.partitions!.every(run => run.expectedDurationMs === 210_000)).toBe(true)
     expect(read.partitions!.every(run => run.state === 'running')).toBe(true)
     expect(read.partitions!.every(run => run.computer?.hostRef.kind === 'cloud')).toBe(true)
