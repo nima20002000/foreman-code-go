@@ -44,7 +44,7 @@ it('keeps a live run with an unreadable log counted and listed instead of treati
     const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 8, memoryBytes: 16 * 2 ** 30,
       availableMemoryBytes: () => 16 * 2 ** 30,
       run: async (file, args) => ({ code: 0, stderr: '',
-        stdout: file === 'systemctl' && args.includes('is-active') ? 'active\n' : '' }) })
+        stdout: file === 'systemctl' && args.includes('show') ? 'Id=live.service\nLoadState=loaded\nActiveState=active\n' : '' }) })
     const status = await runner.handle({ operation: 'status' })
     if (status.operation !== 'status') throw new Error('Expected CI status')
     expect(status.runs.map(run => [run.runId, run.state])).toEqual([[runId, 'running']])

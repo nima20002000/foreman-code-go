@@ -181,3 +181,17 @@ it('refreshes preparation after the clock moves backwards', async () => {
   expect(await f.ports.prepare()).toEqual(first)
   expect(f.calls.some(call => call.args.includes('daemon-reload'))).toBe(true)
 })
+
+it('invalidates cached availability when preparation restarts the service', async () => {
+  const f = await fixture()
+  await f.ports.prepare()
+  f.calls.length = 0
+  await Promise.all(Array.from({ length: 5 }, () => f.ports.available()))
+  expect(f.calls.filter(call => call.args.includes('is-active'))).toHaveLength(1)
+  f.stop()
+  await f.ports.prepare()
+  f.calls.length = 0
+  expect(await f.ports.available()).toEqual({ installed: true, running: true })
+  await f.ports.available()
+  expect(f.calls.filter(call => call.args.includes('is-active'))).toHaveLength(1)
+})

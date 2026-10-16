@@ -30,7 +30,7 @@ async function fixture(options: {
     run: async (file, args) => {
       if (file !== 'systemctl') throw new Error(`Unexpected command: ${file}`)
       if (args.includes('stop')) return { code: 0, stdout: '', stderr: '' }
-      if (args.includes('is-active')) {
+      if (args.includes('show')) {
         // The unit completes after reconciliation's first exit read, before the manager replies.
         if (options.exitCode !== null) {
           if (options.watchdogMessage) {
@@ -40,11 +40,9 @@ async function fixture(options: {
           }
           await writeFile(join(directory, 'exit'), `${options.exitCode}\n`)
         }
-        return { code: options.collected ? 4 : 3,
-          stdout: options.collected ? 'unknown\n' : 'inactive\n', stderr: '' }
-      }
-      if (args.includes('show')) {
-        return { code: 0, stdout: 'LoadState=not-found\nActiveState=inactive\n', stderr: '' }
+        const loadState = options.collected ? 'not-found' : 'loaded'
+        const unit = args.find(arg => arg.endsWith('.service'))
+        return { code: 0, stdout: `Id=${unit}\nLoadState=${loadState}\nActiveState=inactive\n`, stderr: '' }
       }
       throw new Error(`Unexpected systemctl operation: ${args.join(' ')}`)
     },

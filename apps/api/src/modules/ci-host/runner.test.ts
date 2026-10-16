@@ -169,8 +169,12 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
         notifyUnitStarted()
         return { code: 0, stdout: '', stderr: '' }
       }
-      if (file === 'systemctl' && args.includes('is-active')) {
-        return { code: 0, stdout: units.has(args.at(-1)!.replace('.service', '')) ? 'active\n' : 'inactive\n', stderr: '' }
+      if (file === 'systemctl' && args.includes('show')) {
+        const stdout = args.filter(arg => arg.endsWith('.service')).map(unit => {
+          const state = units.has(unit.replace('.service', '')) ? 'active' : 'inactive'
+          return `Id=${unit}\nLoadState=loaded\nActiveState=${state}\n`
+        }).join('\n')
+        return { code: 0, stdout, stderr: '' }
       }
       if (file === 'systemctl' && args.includes('stop')) {
         const child = units.get(args.at(-1)!.replace('.service', ''))
