@@ -685,6 +685,32 @@ describe('remote native history streaming', () => {
     expect(recovered.terminalTurn).toEqual(history.terminalTurn)
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
+  it('continues past retention followed by an oversized event without losing later events or the result', async () => {
+    const initial = Array.from({ length: 147 }, (_, sequence) => event(sequence))
+    let history: NativeHistory = {
+      events: initial, pendingInteractions: [], firstRetainedSequence: 0, nextSequence: 147,
+    }
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const skipped: DeviceHistoryGap[] = []
+    const stream = f.proxy.startTurn(session, {
+      prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async gap => { skipped.push(gap) },
+    })
+    for (const frame of initial) expect((await stream.next()).value).toEqual(frame)
+
+    history = terminal([event(442, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1)), event(443)])
+    expect((await stream.next()).value).toEqual(event(443))
+    expect((await stream.next()).done).toBe(true)
+    expect(skipped).toEqual([
+      { fromSequence: 147, toSequence: 441, reason: 'retention' },
+      { fromSequence: 442, toSequence: 442, reason: 'event_too_large' },
+    ])
+    expect(f.cursors).toEqual([-1, 146, 441, 442])
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn).toEqual(history.terminalTurn)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+
   it('streams and reconciles terminal answers larger than a history page using the original result', async () => {
     const history = terminal([event(0)])
     const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }

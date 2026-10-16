@@ -80,8 +80,9 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   for (const event of candidates) {
     const eventBytes = Buffer.byteLength(JSON.stringify(event)) + 1
     if (events.length >= 1024 || bytes + eventBytes > limit) {
-      if (events.length === 0) {
-        value.gap ??= { fromSequence: event.sequence, toSequence: event.sequence, reason: 'event_too_large' }
+      // One page can describe only one skipped range; return an existing gap before skipping this event.
+      if (events.length === 0 && !value.gap) {
+        value.gap = { fromSequence: event.sequence, toSequence: event.sequence, reason: 'event_too_large' }
         cursor = event.sequence
       }
       break
