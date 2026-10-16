@@ -41,7 +41,7 @@ function fixture() {
     }),
   }
   const locations = {
-    snapshot: vi.fn(async () => location),
+    snapshotAssigned: vi.fn(async () => location),
     revalidateSnapshot: vi.fn(),
   }
   type Dependencies = ConstructorParameters<typeof PostgresSourceService>
@@ -80,6 +80,14 @@ describe('Project source approval', () => {
   it('keeps the default policy for callers without a selection', async () => {
     const f = fixture()
     expect((await f.service.approveProject(f.principal, f.input)).manifest.executablePolicy).toBe('preserve-approved')
+  })
+
+  it('approves the supplied commit with its selected executable policy', async () => {
+    const f = fixture()
+    const commit = 'c'.repeat(40)
+    const result = await f.service.approveProject(f.principal, { ...f.input, commit, executablePolicy: 'strip' })
+    expect(result.manifest.git?.commit).toBe(commit)
+    expect(result.manifest.executablePolicy).toBe('strip')
   })
 
   it('rejects reuse of the capture command with a changed executable policy', async () => {

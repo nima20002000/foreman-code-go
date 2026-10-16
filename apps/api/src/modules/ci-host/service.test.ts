@@ -40,6 +40,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
       if (typeof parameters![5] === 'string') logTail = parameters![5]
       return { rows: [], rowCount: 1 }
     }
+    if (sql.includes('from ci_group_requesters')) return { rows: [] }
     if (sql.includes('durations from ci_runs')) return { rows: [] }
     if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key, record }] }
     return { rows: [{ record, log_tail: logTail, host_key: computer.key }] }
@@ -431,6 +432,15 @@ it('refreshes submitted CI in the background without status reads and stops on c
   }
 })
 
+it.each(['lint', 'integration'] as const)('returns contract-valid persisted %s status for an unshared group', async suite => {
+  const f = fixture(suite)
+  const result = CiGetOutputSchema.parse(await f.create().get(caller, { ticketId: f.read().record.id }))
+  expect(result.run).toEqual(f.read().record)
+  expect(result.sharing).toBeUndefined()
+  expect(result.logTail).toBe('persisted log\n')
+  expect(f.endpoint.request).not.toHaveBeenCalled()
+})
+
 it.each(['lint', 'integration'] as const)('serves authenticated MCP %s polling from persisted data while fleet dispatch is blocked', async suite => {
   const f = fixture(suite)
   const ci = f.create()
@@ -460,6 +470,7 @@ it.each(['lint', 'integration'] as const)('serves authenticated MCP %s polling f
     const response = await poll('reader')
     expect(response.statusCode).toBe(200)
     const message = JSON.parse(response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+    expect(message.result, JSON.stringify(message.result)).not.toMatchObject({ isError: true })
     const result = CiGetOutputSchema.parse(decodeMcpToolResult(message.result))
     expect(result.run).toEqual(f.read().record)
     expect(result.logTail).toBe('persisted log\n')

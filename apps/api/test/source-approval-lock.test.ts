@@ -8,6 +8,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { approvedGitTreePaths, captureGitSource } from '../src/modules/sources/capture.js'
 import { createSourceManifest } from '../src/modules/sources/manifest.js'
 import { DomainError } from '../src/modules/errors.js'
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 
 vi.mock('../src/modules/sources/capture.js', () => ({
   approvedGitTreePaths: vi.fn(), captureGitSource: vi.fn(), qualifiedGit: vi.fn(),
@@ -52,11 +53,16 @@ function fixture(repository = false) {
   vi.spyOn(commands, 'execute').mockImplementation(async request => ({
     value: await request.perform({ query } as unknown as pg.PoolClient), replayed: false,
   }))
-  const locations = { snapshot: async (_sql: unknown, _workspace: string, revision: number) => {
+  const locations = { snapshotAssigned: async (_sql: unknown, _workspace: string, revision: number) => {
     if (revision !== location.locationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'Location changed.', 409)
     return { ...location }
   }, revalidateSnapshot: vi.fn(async () => undefined) }
   const store = { storageIdentity: async () => ({ device: 'fixture', mountId: 'fixture' }),
+    storageCapacity: async () => {
+      expect(state.transactions).toBe(0)
+      expect(state.connections).toBe(0)
+      return sourceStorageCapacityFixture({ filesystem: await store.storageIdentity() })
+    },
     withCaptureLock: async (_id: string, work: () => Promise<unknown>) => work(),
     manifest: async () => null, retainedCaptureBytes: async () => 0 }
   type Dependencies = ConstructorParameters<typeof PostgresSourceService>
@@ -101,6 +107,22 @@ it('rejects a location change during Git inventory before recording approval', a
   })
   await expect(f.approve()).rejects.toMatchObject({ code: 'LOCATION_REVISION_CONFLICT' })
   expect(f.state.approvals).toBe(0)
+})
+
+it.each([false, true])('captures source bytes without retaining a database connection (repository=%s)', async repository => {
+  const f = fixture(repository)
+  const capture = vi.mocked(captureGitSource).getMockImplementation()!
+  vi.mocked(approvedGitTreePaths).mockResolvedValue([])
+  vi.mocked(captureGitSource).mockImplementationOnce(async request => {
+    expect(f.state.transactions).toBe(0)
+    expect(f.state.connections).toBe(0)
+    return capture(request)
+  })
+  const result = await f.approve()
+  expect(result.value.manifest.git?.commit).toBe(f.input.commit)
+  expect(f.state.approvals).toBe(1)
+  expect(f.state.connections).toBe(0)
+  expect(f.state.transactions).toBe(0)
 })
 
 it('rejects a repository change during Git inventory before recording approval', async () => {

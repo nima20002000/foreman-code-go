@@ -36,20 +36,23 @@ test('does not erase an existing source tree after a broken repository probe', a
   assert.equal(await readFile(join(source, 'retained'), 'utf8'), 'retained')
 })
 
-test('does not create a release or retry an authentication failure', async t => {
-  const root = await fixture(t)
-  const failure = Object.assign(new Error('HTTP 401: authentication required'), { code: 1 })
-  const calls = []
-  const waits = []
-  const run = async (binary, args) => {
-    calls.push([binary, ...args])
-    if (args[1] === 'view') throw failure
-  }
-  await assert.rejects(publishWorkerArtifactsToGitHub({ directory: root, name: 'example/project',
-    commit: 'a'.repeat(40), artifacts: [], run, sleep: async ms => waits.push(ms) }), error => error === failure)
-  assert.equal(calls.length, 1)
-  assert.deepEqual(waits, [])
-})
+for (const status of [401, 403]) {
+  test(`does not create a release or retry an HTTP ${status} authentication failure`, async t => {
+    const root = await fixture(t)
+    const failure = Object.assign(new Error(`HTTP ${status}: authentication required`), { code: 1 })
+    const calls = []
+    const waits = []
+    const run = async (binary, args) => {
+      calls.push([binary, ...args])
+      if (binary === 'gh' && args[0] === 'api') throw failure
+      throw new Error(`Unexpected publication command: ${binary} ${args.join(' ')}`)
+    }
+    await assert.rejects(publishWorkerArtifactsToGitHub({ directory: root, name: 'example/project',
+      commit: 'a'.repeat(40), artifacts: [], run, sleep: async ms => waits.push(ms) }), error => error === failure)
+    assert.deepEqual(calls, [['gh', 'api', `repos/example/project/releases/tags/worker-${'a'.repeat(40)}`]])
+    assert.deepEqual(waits, [])
+  })
+}
 
 test('fails with a named prerequisite error when tracked startup status is missing', async t => {
   const root = await fixture(t)
