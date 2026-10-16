@@ -1,32 +1,13 @@
 import type pg from 'pg'
 import type { CiHostRequest, CiRunRecord } from '@foreman-code/contracts'
 import { withTransaction } from '../../infrastructure/transaction.js'
-import { ciDatabasePriority, waitForCiDispatch } from '../../infrastructure/ciDatabasePriority.js'
+import { queueCiDatabaseWork } from '../../infrastructure/ciDatabasePriority.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { claimCiDispatch } from './dispatch.js'
 import { CI_BUSY_TICKET } from './deadlines.js'
 import type { HostCiComputer } from './serviceTypes.js'
 
 const log = componentLogger('jobs')
-const slotClaims = new WeakMap<pg.Pool, Promise<void>>()
-
-/** Queue claims before leasing a connection, leaving the other reserved connection for admission and readiness. */
-function queueSlotClaim<T>(pool: pg.Pool, work: () => Promise<T>): Promise<T> {
-  return waitForCiDispatch(async () => {
-    const previous = slotClaims.get(pool) ?? Promise.resolve()
-    let release!: () => void
-    const pending = new Promise<void>(resolve => { release = resolve })
-    slotClaims.set(pool, pending)
-    await previous
-    try {
-      ciDatabasePriority()?.signal?.throwIfAborted()
-      return await work()
-    } finally {
-      release()
-      if (slotClaims.get(pool) === pending) slotClaims.delete(pool)
-    }
-  })
-}
 
 /** Cloud slots a gate leaves free for non-gate tickets, such as fix verifications, unless the product sets another count. */
 export const DEFAULT_RESERVED_CLOUD_SLOTS = 4
@@ -78,7 +59,7 @@ export function withoutReservedCloudSlots(computers: HostCiComputer[], count: nu
  * working from an older capacity snapshot cannot start a second ticket on a busy slot. */
 export function claimCiSlot(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
   request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | 'busy' | null> {
-  return queueSlotClaim(pool, () => claimSlot(pool, run, computer, request))
+  return queueCiDatabaseWork(pool, () => claimSlot(pool, run, computer, request), 'claim')
 }
 
 async function claimSlot(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,

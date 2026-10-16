@@ -16,7 +16,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
 import type { WorkerBundleReadiness } from '@foreman-code/contracts/computer-maintenance'
 import { workerBundleErrorMessage } from '../computers/workerBundleReadiness.js'
-import { withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
+import { withCiDatabaseReservation, withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
 
 const log = componentLogger('jobs')
 
@@ -58,6 +58,10 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
           'Cloud CI recovery sweep failed')
       })
     }
+    return withCiDatabaseReservation(this.pool, () => this.readComputers())
+  }
+
+  private async readComputers(): Promise<HostCiComputer[]> {
     const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
       build_enabled: boolean; build_priority: number; build_allowance_percent: number }>(
       'select host_key,target,build_enabled,build_priority,build_allowance_percent from build_computer_preferences')).rows
