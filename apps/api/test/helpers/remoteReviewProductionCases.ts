@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect } from 'vitest'
 import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, NativeSessionLaneSchema, ReviewJobSchema,
-  withAdvancedDefaults } from '@foreman-code/contracts'
+  withAdvancedDefaults, type HarnessExecution } from '@foreman-code/contracts'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
@@ -83,6 +83,10 @@ async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<voi
   } catch (error) {
     console.error('Remote review production failure', error)
     console.error('Remote review production error codes', fixture.failures())
+    const executions = await fixture.db.pool.query<{ record: HarnessExecution }>(
+      'select record from harness_executions order by created_at')
+    console.error('Remote review execution failures', executions.rows.flatMap(({ record }) => record.result?.error
+      ? [{ executionId: record.id, state: record.state, error: record.result.error }] : []))
     console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
       record->'error' as error,record->>'retryAfter' as retry_after,
       record->>'providerTurnOrMessageId' as provider_turn,record->>'attempt' as attempt,
