@@ -46,6 +46,10 @@ it.each(['starting', 'running'] as const)('requeues permanent CircleCI lookup fa
     }
     const reads = f.control.reads
     f.advance(75_000)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
+    f.control.error = ''
+    f.control.outcome = 'canceled'
+    f.advance(75_001)
     await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
       message: expect.stringContaining('queued for another computer') } })
     expect(f.control.reads).toBeGreaterThan(reads)
@@ -69,6 +73,10 @@ it.each(['starting', 'running'] as const)('keeps an unreadable CircleCI pipeline
     await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state } })
     f.control.cancelError = ''
     f.advance(4_001)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
+    f.control.error = ''
+    f.control.outcome = 'canceled'
+    f.advance(75_001)
     await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
       message: expect.stringContaining('queued for another computer') } })
     expect(f.control.canceled.length).toBeGreaterThanOrEqual(3)

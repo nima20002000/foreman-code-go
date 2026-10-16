@@ -1,4 +1,5 @@
-import type pg from 'pg'
+import pg from 'pg'
+import { ownedTestDatabaseUrl } from '../../../test/helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -83,4 +84,34 @@ it('returns bounded cleanup pages without losing candidates at a page boundary',
   expect(await ciDirectoryCleanupCandidates(pool, host, now)).toEqual(ids.slice(0, 1000))
   expect(await ciDirectoryCleanupCandidates(pool, host, now, { offset: 1000 })).toEqual(ids.slice(1000))
   expect(await ciDirectoryCleanupCandidates(pool, host, now, { offset: 2000 })).toEqual([])
+})
+
+it.each([false, true])('selects and removes the execution directory after reassignment, setup retry: %s', async setupRetry => {
+  const f = await fixture()
+  const host = { hostRef: { kind: 'cloud' as const, mainId: 'fixture-main', provider: 'github' as const, slot: 0 },
+    label: 'Cloud executor' }
+  const ticketId = randomUUID()
+  const retryId = randomUUID()
+  const now = Date.parse('2026-10-16T00:00:00.000Z')
+  const client = new pg.Client({ connectionString: ownedTestDatabaseUrl() })
+  await client.connect()
+  try {
+    await client.query('create temporary table ci_runs (id text primary key, state text, record jsonb)')
+    const retained = Array.from({ length: 201 }, () => ({ id: randomUUID(), state: 'passed',
+      record: { computer: host, finishedAt: new Date(now).toISOString() } }))
+    const record = { computer: host, finishedAt: '2026-10-01T00:00:00.000Z', executionRunId: f.options.runIds[0],
+      ...(setupRetry ? { setupRetry: { runId: retryId,
+        failedComputer: { kind: 'cloud', mainId: 'fixture-main', provider: 'circleci', slot: 0 }, reason: 'Setup failed' } } : {}) }
+    await client.query(`insert into ci_runs (id,state,record)
+      select id,state,record from jsonb_to_recordset($1::jsonb) as x(id text,state text,record jsonb)`,
+    [JSON.stringify([...retained, { id: ticketId, state: 'passed', record }])])
+    const candidates = await ciDirectoryCleanupCandidates(client, host, now)
+    expect(candidates).toEqual(f.options.runIds)
+    expect(candidates).not.toContain(ticketId)
+    expect(candidates).not.toContain(retryId)
+    expect(await sweepCiRunDirectories({ ...f.options, runIds: candidates })).toEqual(f.options.runIds)
+    await expect(access(f.directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    await client.end()
+  }
 })

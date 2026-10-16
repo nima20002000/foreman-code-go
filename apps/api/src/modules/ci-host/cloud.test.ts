@@ -777,6 +777,12 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.circle.canceled).toEqual([])
     f.advance(5_000)
     await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: 'starting', computer: { label: 'CircleCI' } } })
+    expect(f.circle.canceled).toEqual(['run-1'])
+    f.circle.lookupError = ''
+    f.circle.runView = { phase: 'ended', current_outcome: 'canceled', workflows: [] }
+    f.advance(75_001)
+    await main.service.dispatch()
     expect(await main.read()).toMatchObject({ run: { state: 'queued', computer: null,
       startedAt: null, finishedAt: null, exitCode: null, unstartedProviders: ['circleci'],
       messageHistory: expect.arrayContaining([expect.stringContaining('queued for another computer')]) } })
@@ -858,6 +864,11 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.circle.triggered).toHaveLength(1)
     expect(f.circle.canceled).toEqual([])
     f.advance(75_000)
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null } })
+    expect(f.circle.canceled).toEqual(['run-1'])
+    f.circle.lookupError = ''
+    f.circle.runView = { phase: 'ended', current_outcome: 'canceled', workflows: [] }
+    f.advance(75_001)
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'queued', finishedAt: null } })
     expect(f.circle.canceled).toEqual(['run-1'])
     expect(f.circle.triggered).toHaveLength(1)
