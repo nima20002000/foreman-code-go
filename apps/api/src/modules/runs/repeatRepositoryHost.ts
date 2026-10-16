@@ -1,4 +1,4 @@
-import { AgentConfigurationVersionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, SourceCapacityErrorDetailsSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, RunWorktreeSchema,
   CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
@@ -116,14 +116,20 @@ export class RepeatRepositoryFactory {
       return await this.services.preparePlacementExecution?.(owner, run, execution)
     } catch (error) {
       owner.assertOwned()
+      if (error instanceof DomainError && error.code === 'SOURCE_CAPACITY' && error.details?.retryable === true) {
+        throw error
+      }
       const permanent = error instanceof DomainError && error.status >= 400 && error.status < 500
         && error.status !== 408 && error.status !== 429 && error.details?.retryable !== true
       if (permanent) {
         if (execution.state === 'queued' && !execution.nativeSessionId) {
           const current = this.stores.get(owner)
           if (!current) return repeatConflict('REPEAT_NATIVE_HOST_REQUIRED')
+          const details = error.code === 'SOURCE_CAPACITY' && error.details
+            ? SourceCapacityErrorDetailsSchema.parse(error.details) : undefined
           await current.store.failPreparation(execution.id, { outcome: 'failed', error: {
             code: error.code, message: error.message, retryable: false,
+            ...(details ? { details } : {}),
           } })
         }
         throw error

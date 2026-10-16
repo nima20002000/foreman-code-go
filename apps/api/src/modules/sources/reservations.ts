@@ -1,4 +1,5 @@
 import type { JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
+import type { SourceCapacityErrorDetails } from '@foreman-code/contracts'
 import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { readJobRuntimeProfileVersion } from '../jobs/runtimeProfileVersion.js'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
@@ -118,10 +119,13 @@ export class PostgresSourceReservations {
     // Verification and other materializations (Agent worktrees) are separate pools for bytes and for count, so
     // running Agents never occupy the computer's CI slots.
     const totals = (await sql.query<{ bytes: string; verification_bytes: string; pending_bytes: string;
+      retained_bytes: string; verification_retained_bytes: string;
       preparing: string; materializations: string;
       verification_materializations: string }>(`select
       coalesce(sum(reserved_bytes) filter(where not verification),0) as bytes,
       coalesce(sum(reserved_bytes) filter(where verification),0) as verification_bytes,
+      coalesce(sum(reserved_bytes) filter(where state='retained' and not verification),0) as retained_bytes,
+      coalesce(sum(reserved_bytes) filter(where state='retained' and verification),0) as verification_retained_bytes,
       coalesce(sum(reserved_bytes) filter(where state in ('preparing','owned','uncertain')),0) as pending_bytes,
       count(*) filter(where state='preparing') as preparing,
       count(*) filter(where owner_kind='materialization' and state in ('preparing','owned','uncertain') and not verification) as materializations,
@@ -131,6 +135,7 @@ export class PostgresSourceReservations {
         where r.owner_kind='materialization' and s.operation_id=r.owner_id and s.spec ? 'verification') as verification
         from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed') usage`, [request.scopeId])).rows[0]!
     const usedBytes = capacity.verification ? Number(totals.verification_bytes) : Number(totals.bytes)
+    const retainedBytes = Number(capacity.verification ? totals.verification_retained_bytes : totals.retained_bytes)
     const activeMaterializations = Number(capacity.verification ? totals.verification_materializations : totals.materializations)
     const pendingBytes = Number(totals.pending_bytes)
     const preparing = Number(totals.preparing)
@@ -142,7 +147,7 @@ export class PostgresSourceReservations {
     const materializationLimit = capacity.verification ? capacity.materializations
       : Math.max(capacity.materializations, minimumConcurrency)
     // Free space already excludes retained files. Outstanding writers remain fully charged in both pools.
-    const exhausted: string[] = []
+    const exhausted: SourceCapacityErrorDetails['exhausted'] = []
     if (usedBytes + request.reservedBytes > capacity.bytes) exhausted.push('retained_bytes')
     if (pendingBytes + request.reservedBytes > limits.availableBytes) exhausted.push('available_bytes')
     if (preparing >= preparationLimit) exhausted.push('preparations')
@@ -150,10 +155,17 @@ export class PostgresSourceReservations {
       exhausted.push('materializations')
     }
     if (exhausted.length) {
+      // Active writers release their slots and staging charge after physical closure.
+      // A request that cannot fit alongside retained files still requires operator action.
+      const retryable = retainedBytes + request.reservedBytes <= capacity.bytes
+        && request.reservedBytes <= limits.availableBytes
       throw new DomainError('SOURCE_CAPACITY',
         'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409, {
+          scopeId: request.scopeId,
+          retryable,
           exhausted,
-          usage: { usedBytes, pendingBytes, preparing, activeMaterializations, requestedBytes: request.reservedBytes },
+          usage: { usedBytes, retainedBytes, pendingBytes, preparing, activeMaterializations,
+            requestedBytes: request.reservedBytes },
           limits: { bytes: capacity.bytes, availableBytes: limits.availableBytes,
             preparing: preparationLimit, materializations: materializationLimit },
           measured: { cpuCount: measured.cpuCount, availableMemoryBytes: measured.availableMemoryBytes,
