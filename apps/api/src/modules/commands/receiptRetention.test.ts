@@ -2,12 +2,14 @@ import { expect, it } from 'vitest'
 import * as commands from './postgres.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { NativeConversationControlCommands } from '../conversations/nativeControlCommands.js'
 
 interface Receipt {
   principalId: string
   operation: string
   commandId: string
   createdAt: number
+  completedAt?: number
   status: string | null
   hasAcceptedControl: boolean
   hasAcknowledgment: boolean
@@ -44,6 +46,7 @@ it('expires completed retry snapshots after thirty days while retaining fresh, u
   const kept = [
     receipt('fresh', { createdAt: now - 29 * 86_400_000 }),
     receipt('boundary', { createdAt: now - 30 * 86_400_000 }),
+    receipt('recently-completed', { completedAt: now - 86_400_000 }),
     receipt('pending', { operation: 'agent_chat_control', status: 'pending' }),
     receipt('uncertain', { operation: 'operator_chat_control', status: 'uncertain' }),
     receipt('unacknowledged', { operation: 'agent_chat_control', status: 'completed', hasAcceptedControl: true }),
@@ -90,6 +93,22 @@ it('never performs an old command again when its response was removed but its su
       performed = true
       return { updated: true }
     },
+  })).rejects.toMatchObject({ code: 'COMMAND_RESULT_EXPIRED', status: 409 })
+  expect(performed).toBe(false)
+})
+
+it('reports an expired native control response without repeating its effect', async () => {
+  const principal: ManagementPrincipal = { id: 'operator', name: 'Operator', audience: 'operator', grants: [],
+    expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
+  const responses = [[], [], [{ command_id: 'old-control' }]]
+  const pool = { query: async () => ({ rows: responses.shift() ?? [], rowCount: 0 }) } as unknown as pg.Pool
+  const controls = new NativeConversationControlCommands(pool, {
+    operation: 'operator_chat_control', parse: value => value, prefix: 'CHAT', label: 'Chat',
+  })
+  let performed = false
+  await expect(controls.execute(principal, 'http', 'conversation', 'old-control', {}, async () => {
+    performed = true
+    return { completed: true }
   })).rejects.toMatchObject({ code: 'COMMAND_RESULT_EXPIRED', status: 409 })
   expect(performed).toBe(false)
 })

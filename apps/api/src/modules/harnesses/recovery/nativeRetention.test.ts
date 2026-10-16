@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -27,7 +27,7 @@ function archive(root: string, owner: string, age: number) {
     closureEvidence: 'linux_boot_changed' }
   const directory = privateDirectory(join(root, 'closed'))
   const path = join(directory, `${ownerKey}-${launchId}.json`)
-  writeRecord(path, observation)
+  writeFileSync(path, JSON.stringify(observation), { mode: 0o600 })
   const modified = new Date(Date.now() - age)
   utimesSync(path, modified, modified)
   return { path, observation }
