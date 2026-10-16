@@ -7,6 +7,7 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflo
   ManualRunStartResultSchema, type WorkflowDefinitionV3, type WorkflowVersionV3 }
   from '@foreman-code/contracts/wave25'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { modelRequestDirectories } from './helpers/modelRequestDirectories.js'
 import { completedRun, installationUpdateFixture, latestEvidence, pinnedPlacements, profileReader, profiles }
   from './helpers/harnessInstallationUpdate.js'
 
@@ -66,10 +67,9 @@ describe('profile-scoped Start after a Worker harness installation update', () =
       modelsBlocked = true
       await fixture.provider.updatePayload()
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
-        new Set(calls.slice(callsBefore).filter(call => call.method === 'model/list')
-          .map(call => call.workingDirectory)).size === 2, 'two parallel profile checks')
-      const directories = [...new Set(checking.slice(callsBefore)
-        .filter(call => call.method === 'model/list').map(call => call.workingDirectory as string))]
+        modelRequestDirectories(calls.slice(callsBefore), fixture.stateDirectory).length === 2,
+      'two parallel profile checks')
+      const directories = modelRequestDirectories(checking.slice(callsBefore), fixture.stateDirectory)
       expect(directories).toHaveLength(2)
       await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
       await fixture.provider.allowModelDirectories(directories)
