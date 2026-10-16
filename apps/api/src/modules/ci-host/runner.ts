@@ -26,7 +26,7 @@ const log = componentLogger('jobs')
 const REPORT_COLLECTION_WINDOW_MS = 5 * 60_000
 const CI_UNIT_RUNTIME_SECONDS = 3 * 60 * 60
 
-type Command = { code: number; stdout: string; stderr: string }
+type Command = { code: number; stdout: string; stderr: string; /** The command was killed for exceeding its timeout, so its exit code says nothing about the command's subject. */ timedOut?: boolean }
 export interface HostCiPorts {
   run(file: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<Command>
   now(): Date
@@ -46,7 +46,7 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
       execFile(file, [...args], { cwd: options.cwd, env: withoutCliTelemetry(file, options.env ?? environment), timeout: options.timeoutMs ?? 600_000,
         maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
-        resolve({ code, stdout, stderr })
+        resolve({ code, stdout, stderr, ...(error && (error as { killed?: boolean }).killed ? { timedOut: true } : {}) })
       })
     }),
     now: () => new Date(),

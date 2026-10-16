@@ -3,6 +3,8 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
+import { GitHubActionsProvider } from './cloudProviders.js'
+import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 
 it.each(['github', 'circleci'] as const)(
   'answers every %s slot readiness while one recovery sweep is blocked', async provider => {
@@ -37,3 +39,28 @@ it.each(['github', 'circleci'] as const)(
     expect(JSON.parse(await readFile(path, 'utf8')).cancellation.canceledIds).toHaveLength(1)
   },
 )
+
+it('shares one readiness probe between concurrent slots and keeps the last good answer when a refresh fails', async () => {
+  const f = await fixture()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const probe = vi.spyOn(f.cloud.provider, 'ready').mockResolvedValue(true)
+    expect(await Promise.all([f.cloud.ready(), f.cloud.ready(), f.cloud.ready()])).toEqual([true, true, true])
+    expect(probe).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(Date.now() + 61_000)
+    probe.mockRejectedValue(new Error('gh auth status timed out'))
+    expect(await Promise.all([f.cloud.ready(), f.cloud.ready(), f.cloud.ready()])).toEqual([true, true, true])
+    expect(probe).toHaveBeenCalledTimes(2)
+
+    probe.mockResolvedValue(false)
+    expect(await f.cloud.ready()).toBe(false)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('reports a timed out login probe as a failed check, not a logged-out account', async () => {
+  const ports: HostCiPorts = { ...systemHostCiPorts(), run: async () => ({ code: 1, stdout: '', stderr: '', timedOut: true }) }
+  await expect(new GitHubActionsProvider(ports).ready()).rejects.toThrow(/timed out/)
+})
