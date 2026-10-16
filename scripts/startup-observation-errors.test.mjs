@@ -44,7 +44,8 @@ for (const status of [401, 403]) {
     const waits = []
     const run = async (binary, args) => {
       calls.push([binary, ...args])
-      if (args[1] === 'view') throw failure
+      if (binary === 'gh' && args[0] === 'api') throw failure
+      throw new Error(`Unexpected publication command: ${binary} ${args.join(' ')}`)
     }
     await assert.rejects(publishWorkerArtifactsToGitHub({ directory: root, name: 'example/project',
       commit: 'a'.repeat(40), artifacts: [], run, sleep: async ms => waits.push(ms) }), error => error === failure)
