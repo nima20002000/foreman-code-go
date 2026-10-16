@@ -75,7 +75,7 @@ export interface CloudProvider {
   readonly id: 'github' | 'circleci'
   readonly label: string
   /** Absent for the service on the workspace mirror's own owner. */
-  readonly account?: CloudAccount
+  readonly account?: CloudAccount | undefined
   readonly transport?: CiHostRun['transport']
   /** Longest accepted pipeline parameter value, when the provider caps it. */
   readonly parameterLimit?: number

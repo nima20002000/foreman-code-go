@@ -202,8 +202,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   cleanupHooks.waitForCleanup = () => cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
   return { cloud, reopen, root, commit, ports, dispatched, github, circle, cleanup, git, mirrorGit, dispose, account: provider.account,
-    accountMirrorGit: (...args: string[]) => run(accountMirror, ...args),
-    run: (...args: string[]) => run(work, ...args),
+    run: (...args: string[]) => run(work, ...args), accountMirrorGit: (...args: string[]) => run(accountMirror, ...args),
     async prune(activeIds: Set<string>) {
       return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
         activeRuns: { ids: activeIds, readAt: Date.now() },

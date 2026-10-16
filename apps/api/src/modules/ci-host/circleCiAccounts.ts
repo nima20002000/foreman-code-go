@@ -16,7 +16,7 @@ export class CircleCiAccounts {
 
   constructor(private readonly ports: HostCiPorts, private readonly mirrors: () => Promise<string[]>,
     private readonly added: (account: CloudAccount) => void,
-    private readonly options: { runningOwners?: () => Promise<string[]>; now?: () => number } = {}) {}
+    private readonly options: { runningOwners?: (() => Promise<string[]>) | undefined; now?: () => number } = {}) {}
 
   private now() { return (this.options.now ?? Date.now)() }
 
