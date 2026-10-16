@@ -1,5 +1,6 @@
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { genericCiRepository } from './helpers/genericCiRepository.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
@@ -71,7 +72,7 @@ it.each([0, 1250])(
 it.each([
   ['unit', 0], ['unit', 1250], ['lint', 0], ['lint', 1250],
 ] as const)(
-  'runs generic %s for an empty affected selection and preserves HTTP and MCP readback after a %i ms launch delay',
+  'rejects empty affected selection, then runs explicit full generic %s with HTTP and MCP readback after a %i ms launch delay',
   async (suite, launchDelayMs) => {
   const repository = await genericCiRepository({ cloud: true, beforeLaunch: async () => {
     // eslint-disable-next-line no-restricted-syntax
@@ -87,7 +88,19 @@ it.each([
     const denied = await f.app.inject({ method: 'POST', url,
       headers: { authorization: `Bearer ${reader.token}` }, payload: input })
     expect(denied.statusCode).toBe(403)
-    const response = await f.app.inject({ method: 'POST', url, headers, payload: input })
+    const rejected = await f.app.inject({ method: 'POST', url, headers, payload: input })
+    const selectionError = { error: { code: 'CI_SELECTION_UNSUPPORTED',
+      message: 'This repository has no affected test selection. Request scope full and omit files.' } }
+    expect(rejected.statusCode).toBe(409)
+    expect(rejected.json()).toMatchObject(selectionError)
+    const mcpRejected = await f.call(f.operator, 'ci_run', { ...input, commandId: 'generic-affected-mcp' })
+    expect(mcpRejected.isError).toBe(true)
+    expect(decodeMcpToolResult(mcpRejected)).toMatchObject(selectionError)
+    expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    expect(repository.cloudAttempts).toEqual([])
+
+    const fullInput = { suite, scope: 'full', commit: repository.commit, commandId: 'generic-full' }
+    const response = await f.app.inject({ method: 'POST', url, headers, payload: fullInput })
     expect(response.statusCode).toBe(200)
     const started = CiRunOutputSchema.parse(response.json())
     await f.value(f.operator, 'ci_computers_list', {})
