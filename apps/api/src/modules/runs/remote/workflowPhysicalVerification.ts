@@ -49,6 +49,7 @@ export interface PassiveRemoteNativeOwner {
   nativeOwner: string; native: RemoteNativeIdentity; binding: Readonly<DeviceSessionBinding>; assertCurrent(): void
 }
 interface Prepared {
+  signal: AbortSignal | undefined
   isExpired(): boolean
   binding: Readonly<DeviceSessionBinding>
   readout: RemoteWorkflowPhysicalReadout
@@ -309,7 +310,7 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
     ? same(source.history, retained.readout.history)
     : source.type === 'event' && retained.readout.history?.events.some(event =>
       same({ ...event, executionId: receipt.intent.executionId }, source.event)))
-  if (retained && retainedSource && same(retained.readout.receipt, receipt)
+  if (retained && retained.signal === signal && retainedSource && same(retained.readout.receipt, receipt)
     && same(retained.placement, placement) && same(retained.binding, captured.binding)
     && !retained.isExpired()) {
     retained.assertCurrent()
@@ -383,6 +384,7 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   }
   const result = Object.freeze({ kind: 'original-remote-physical' as const })
   const observation: Prepared = {
+    signal,
     isExpired: () => expiresAt <= Date.now(),
     binding: Object.freeze(structuredClone(captured.binding)),
     readout,
