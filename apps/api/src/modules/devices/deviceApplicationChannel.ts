@@ -379,8 +379,7 @@ export class DeviceApplicationChannel {
       await this.waitAck(id, 0, upload.signal, { type: 'application-open', id, namespace, version, kind,
         jsonBytes: json.byteLength, binaryBytes: bytes?.byteLength ?? 0,
         ...(kind === 'request' && stop ? { admission: 'stop' as const } : {}),
-        // Maintenance probes reserve local observation capacity; older Workers accept them as ordinary requests.
-        ...(kind === 'request' && admission.observation && namespace === 'execution-v1'
+        ...(kind === 'request' && admission.observation
           ? { admission: 'observation' as const } : {}) })
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
       const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * DEVICE_APPLICATION_CHUNK_WINDOW
@@ -449,7 +448,7 @@ export class DeviceApplicationChannel {
       const stopNamespace = this.options.side === 'worker' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
       if (frame.admission !== undefined) {
         const allowed = kind === 'request' && (frame.admission === 'stop' && frame.namespace === stopNamespace
-          || frame.admission === 'observation' && frame.namespace === 'execution-v1')
+          || frame.admission === 'observation' && ['execution-v1', 'computer-maintenance-v2'].includes(frame.namespace))
         if (!allowed) throw new DeviceConnectionError('malformed-frame')
       }
       const stop = kind === 'request' ? frame.admission === 'stop' : this.pending.get(id)?.stop === true

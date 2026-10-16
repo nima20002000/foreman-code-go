@@ -52,8 +52,11 @@ function fixture(ignoreAbort = new Set<string>()) {
   const workerSocket = adaptDeviceSocket(rawWorker)
   const started: string[] = []
   const releases = new Map<string, (result: DeviceApplicationResult) => void>()
-  const registrations = ['execution-v1', 'ci-host-v1', 'worker-mcp-v2'].map(namespace => ({
-    namespace, version: 1, role: 'duplex' as const, maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576,
+  const namespaces = ['execution-v1', 'ci-host-v1', 'worker-mcp-v2', 'computer-maintenance-v2',
+    'harness-discovery-v1', 'host-harness-check-v1', 'resource-telemetry', 'computer-sync-v1']
+  const registrations = namespaces.map(namespace => ({
+    namespace, version: namespace === 'computer-maintenance-v2' ? 2 : 1,
+    role: 'duplex' as const, maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576,
     handle: async (payload: unknown, context: { signal: AbortSignal }) => {
       const { id } = payload as { id: string }
       started.push(id)
@@ -77,7 +80,8 @@ function fixture(ignoreAbort = new Set<string>()) {
   const tasks: Promise<unknown>[] = [main.run(mainSocket.messages[Symbol.asyncIterator](), 600_000),
     worker.run(workerSocket.messages[Symbol.asyncIterator](), 300_000)]
     .map(task => task.catch(error => error))
-  const request = (side: 'main' | 'worker', namespace: string, payload: { id: string; method?: string },
+  const request = (side: 'main' | 'worker', namespace: string,
+    payload: { id: string; method?: string; operation?: string; scope?: string },
     options: DeviceApplicationRequestOptions = {}) => {
     const result = ({ main, worker })[side].request(namespace, payload, { timeoutMs: 120_000, ...options })
       .then(value => value, (error: unknown) => error)
@@ -97,6 +101,30 @@ function fixture(ignoreAbort = new Set<string>()) {
 }
 
 afterEach(() => vi.useRealTimers())
+
+it.each(['main', 'worker'] as const)('completes bundle status with every ordinary slot occupied from %s', async side => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    const backgroundNamespaces = ['harness-discovery-v1', 'host-harness-check-v1', 'resource-telemetry']
+    for (let index = 0; index < DEVICE_APPLICATION_IN_FLIGHT - 1; index++) {
+      void f.request(side, backgroundNamespaces[index % backgroundNamespaces.length]!, { id: `background-${index}` })
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    // Sync uses the last ordinary slot that background-priority requests leave available.
+    void f.request(side, 'computer-sync-v1', { id: 'sync' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).toHaveLength(DEVICE_APPLICATION_IN_FLIGHT)
+
+    const status = f.request(side, 'computer-maintenance-v2',
+      { id: 'bundle-status', operation: 'status', scope: 'worker' }, { priority: 'foreground', timeoutMs: 10_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started.slice(DEVICE_APPLICATION_IN_FLIGHT)).toEqual(['bundle-status'])
+    const reply = { payload: { operation: 'worker', worker: null } }
+    f.release('bundle-status', reply)
+    expect(await status).toEqual(reply)
+  } finally { await f.close() }
+})
 
 it.each(observationRequests)('keeps all short-request slots available while $method is held', async payload => {
   vi.useFakeTimers()
@@ -186,13 +214,16 @@ it('keeps cancelled physical handlers within observation capacity until they dra
   } finally { await f.close() }
 })
 
-it('rejects a write disguised as an observation before calling its handler', async () => {
+it.each([
+  ['execution-v1', 1, { method: 'start-turn' }],
+  ['computer-maintenance-v2', 2, { operation: 'start', task: { kind: 'update-worker' } }],
+] as const)('rejects a %s write disguised as an observation before calling its handler', async (namespace, version, payload) => {
   vi.useFakeTimers()
   const f = fixture()
   const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-  const packet = Buffer.from(JSON.stringify({ id: 'write', method: 'start-turn' }))
+  const packet = Buffer.from(JSON.stringify({ id: 'write', ...payload }))
   try {
-    f.rawMain.send(JSON.stringify({ type: 'application-open', id, namespace: 'execution-v1', version: 1,
+    f.rawMain.send(JSON.stringify({ type: 'application-open', id, namespace, version,
       kind: 'request', jsonBytes: packet.byteLength, binaryBytes: 0, admission: 'observation' }))
     await vi.advanceTimersByTimeAsync(0)
     expect(f.rawWorker.frames).toContainEqual({ type: 'application-ack', id, offset: 0 })
