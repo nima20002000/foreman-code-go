@@ -89,6 +89,21 @@ describe('harness catalog status reads', () => {
       stale: false, refreshing: false, refreshCount: 1, failureCount: 1, lastError: expect.any(String) } })
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ failureCount: 1 }),
       'Native readiness refresh failed')
+    expect(failed.capability).toEqual(first.capability)
+    expect(HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))).toEqual(failed)
+    expect(qualify).toHaveBeenCalledTimes(2)
+    vi.setSystemTime(new Date(start.getTime() + 315_002))
+    const retrying = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
+    expect(retrying).toMatchObject({ capability: first.capability, observation: {
+      checkedAt: start.toISOString(), stale: true, refreshing: true, refreshCount: 2, failureCount: 1,
+    } })
+    await catalog.checkConfiguration(principal, DEFAULT_HARNESS_DEFAULTS.codex)
+    const recovered = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
+    expect(recovered).toMatchObject({ capability: first.capability, discoveryError: null, observation: {
+      checkedAt: new Date().toISOString(), stale: false, refreshing: false,
+      refreshCount: 2, failureCount: 1, lastError: null,
+    } })
+    expect(qualify).toHaveBeenCalledTimes(3)
     await catalog.shutdownChecks()
   })
 
