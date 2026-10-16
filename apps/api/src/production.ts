@@ -6,9 +6,9 @@ import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
 import {
-  AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema,
+  AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE,
 } from '@foreman-code/contracts/source-materialization'
-import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
+import { agentFileReader } from './modules/ci-host/agentFileReader.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
 import { startStateDeadlineSweeper } from './modules/diagnostics/stateDeadlines.js'
@@ -24,7 +24,6 @@ import { activeCiRuns, circleCiOrgs, cloudCis, runningCircleCiOwners, workspaceM
   from './modules/ci-host/cloud.js'
 import { configuredReservedCloudSlots } from './modules/ci-host/cloudSlots.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
-import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
@@ -2866,17 +2865,7 @@ async function initializeComputerServices(composition: ProductionComposition, ma
   runtimeServices.buildComputers = jobRuntime.buildComputers
   registerBuildComputerRoutes(app, jobRuntime.buildComputers)
   runtimeServices.jobs = jobRuntime.jobs
-  const readAgentFiles: ReadAgentFiles = async (hostRef, path, baseCommit) => {
-    const signal = AbortSignal.timeout(150_000)
-    if (hostRef.kind === 'main') return snapshotAgentWorktree(systemGitWorktreePorts(), { path, baseCommit }, signal)
-    const endpoint = deviceRuntime.endpointForDomains()
-    if (!endpoint.capabilities(hostRef.deviceId).some(value => value.namespace === AGENT_SNAPSHOT_NAMESPACE && value.mainCanRequest)) {
-      throw new DomainError('COMPUTER_OFFLINE', 'The Agent\'s computer is offline or its app is too old to send its files.', 409)
-    }
-    const reply = AgentSnapshotResultSchema.parse((await endpoint.request(hostRef.deviceId, AGENT_SNAPSHOT_NAMESPACE,
-      { path, baseCommit }, { signal })).payload)
-    return { commit: reply.commit, bundle: reply.bundleBase64 === null ? null : Buffer.from(reply.bundleBase64, 'base64') }
-  }
+  const readAgentFiles = agentFileReader(() => deviceRuntime.endpointForDomains())
 
   return { clouds, discoverClouds, readAgentFiles, workspaceRoots }
 }
