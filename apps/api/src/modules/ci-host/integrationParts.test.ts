@@ -1,37 +1,76 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { CI_MAX_RUN_TICKETS, CiRunOutputSchema, integrationPartition, userSystemdIntegrationFiles } from '@foreman-code/contracts'
+import { CI_MAX_RUN_TICKETS, CiPartitionSchema, CiRunOutputSchema, integrationPartition,
+  userSystemdIntegrationFiles } from '@foreman-code/contracts'
 import { planIntegrationParts } from './integrationParts.js'
 
 const files = Array.from({ length: 20 }, (_, index) => `apps/api/test/example-${index}.integration.test.ts`)
 const durations = Object.fromEntries(files.map(file => [file, 120_000]))
 const input = { suite: 'integration' as const, commandId: 'integration', scope: 'full' as const }
 
-it('sizes full integration work to four minutes and reports setup plus measured duration', () => {
+it.each([8, 112])('fills %i slots with balanced full-suite parts accepted by the shared contracts', slots => {
+  const selected = Array.from({ length: 800 }, (_, index) => `apps/api/test/example-${index}.integration.test.ts`)
+  const measured = Object.fromEntries(selected.map((file, index) => [file, 10_000 + (index % 5) * 10_000]))
+  const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 0, ordinary: slots })
+
+  expect(parts).toHaveLength(slots)
+  const slices = parts.map(part => integrationPartition(selected, measured, part.partition!))
+  expect(slices.flat().sort()).toEqual([...selected].sort())
+  expect(slices.every(slice => slice.length > 0)).toBe(true)
+  const loads = slices.map(slice => slice.reduce((sum, file) => sum + measured[file]!, 0))
+  const average = Object.values(measured).reduce((sum, ms) => sum + ms, 0) / slots
+  expect(Math.max(...loads)).toBeLessThanOrEqual(average + 50_000)
+  expect(parts.map(part => part.expectedDurationMs)).toEqual(loads.map(ms => 90_000 + ms))
+  expect(parts.every(part => CiPartitionSchema.safeParse(part.partition).success)).toBe(true)
+  const tickets = parts.map(() => ({ ticketId: randomUUID() }))
+  expect(CiRunOutputSchema.safeParse({ ticketId: tickets[0]!.ticketId, partitions: tickets }).success).toBe(true)
+})
+
+it('shares full-suite slots between measured tiers and leaves a single heavy file whole', () => {
+  const quick = Array.from({ length: 800 }, (_, index) => `apps/api/test/quick-${index}.integration.test.ts`)
+  const slow = Array.from({ length: 8 }, (_, index) => `apps/api/test/slow-${index}.integration.test.ts`)
+  const heavy = 'apps/api/test/heavy.integration.test.ts'
+  const selected = [...quick, ...slow, heavy]
+  const measured = { ...Object.fromEntries(quick.map(file => [file, 20_000])),
+    ...Object.fromEntries(slow.map(file => [file, 90_000])), [heavy]: 250_000 }
+  const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 0, ordinary: 112 })
+
+  expect(parts).toHaveLength(112)
+  const slices = parts.map(part => integrationPartition(selected, measured, part.partition!))
+  expect(slices.flat().sort()).toEqual([...selected].sort())
+  expect(slices.find(slice => slice.includes(heavy))).toEqual([heavy])
+  const average = Object.values(measured).reduce((sum, ms) => sum + ms, 0) / parts.length
+  const ordinaryLoads = slices.filter(slice => !slice.includes(heavy))
+    .map(slice => slice.reduce((sum, file) => sum + measured[file]!, 0))
+  expect(Math.max(...ordinaryLoads)).toBeLessThanOrEqual(average * 1.25)
+  expect(planIntegrationParts(input, { files: [...selected].reverse(), durations: measured }, { host: 0, ordinary: 112 }))
+    .toEqual(parts)
+})
+
+it('uses one full-suite part per file when capacity allows and reports setup plus measured duration', () => {
   const parts = planIntegrationParts(input, { files, durations }, { host: 2, ordinary: 44 })
-  expect(parts).toHaveLength(10)
+  expect(parts).toHaveLength(20)
   const slices = parts.map(part => integrationPartition(files, durations, part.partition!))
   expect(slices.flat().sort()).toEqual([...files].sort())
-  expect(slices.every(slice => slice.length === 2)).toBe(true)
-  expect(parts.every(part => part.expectedDurationMs === 330_000)).toBe(true)
+  expect(slices.every(slice => slice.length === 1)).toBe(true)
+  expect(parts.every(part => part.expectedDurationMs === 210_000)).toBe(true)
   expect(parts.every(part => part.files.length === 0)).toBe(true)
 })
 
-it('keeps long files alone and packs the remaining files longest first', () => {
+it('keeps long files alone while smaller files use the remaining full-suite capacity', () => {
   const selected = files.slice(0, 5)
   const measured = Object.fromEntries(selected.map((file, index) => [file, [600_000, 180_000, 120_000, 60_000, 60_000][index]!]))
   const parts = planIntegrationParts(input, { files: selected, durations: measured }, { host: 0, ordinary: 44 })
   const slices = parts.map(part => integrationPartition(selected, measured, part.partition!))
-  expect(parts).toHaveLength(3)
+  expect(parts).toHaveLength(5)
   expect(slices[0]).toEqual([selected[0]])
-  expect(slices[1]).toEqual([selected[1], selected[4]])
-  expect(slices[2]).toEqual([selected[2], selected[3]])
-  expect(parts.map(part => part.expectedDurationMs)).toEqual([690_000, 330_000, 270_000])
+  expect(slices.slice(1)).toEqual(selected.slice(1).map(file => [file]))
+  expect(parts.map(part => part.expectedDurationMs)).toEqual([690_000, 270_000, 210_000, 150_000, 150_000])
 })
 
 it.each([1, 3, 44])('bounds parts to %i available slots without losing work', ordinary => {
   const parts = planIntegrationParts(input, { files, durations }, { host: 0, ordinary })
-  expect(parts).toHaveLength(Math.min(10, ordinary))
+  expect(parts).toHaveLength(Math.min(files.length, ordinary))
   const slices = parts.map(part => part.partition ? integrationPartition(files, durations, part.partition) : files)
   expect(slices.flat().sort()).toEqual([...files].sort())
 })
@@ -52,7 +91,7 @@ it('preserves separate host-only slices when hosts are busy and leaves ordinary 
   const inventory = { files: [...files, ...hostFiles], durations: { ...durations,
     ...Object.fromEntries(hostFiles.map(file => [file, 120_000])) } }
   const parts = planIntegrationParts(input, inventory, { host: 0, ordinary: 44 })
-  expect(parts).toHaveLength(11)
+  expect(parts).toHaveLength(21)
   expect(parts[0]!.partition!.hostIndexes).toEqual([0])
   const slices = parts.map(part => integrationPartition(inventory.files, durations, part.partition!))
   expect(slices[0]!.sort()).toEqual(hostFiles.sort())
