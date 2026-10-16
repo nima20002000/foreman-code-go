@@ -806,6 +806,13 @@ export class HostCiService {
         message: `Queued once on another slot after setup failure: ${reason}`.slice(0, 2000) }
     }
     const requeued = state.state === 'queued'
+    const executionHistory = [...run.executionHistory ?? []]
+    if (requeued) {
+      const previousRunId = ciExecutionRunId(run)
+      const retained = executionHistory.some(attempt => attempt.runId === previousRunId
+        && isDeepStrictEqual(attempt.hostRef, computer.hostRef))
+      if (!retained) executionHistory.push({ runId: previousRunId, hostRef: computer.hostRef })
+    }
     let executionRunId = run.executionRunId
     if (requeued) executionRunId = setupRequeue ? setupRetry!.runId : randomUUID()
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
@@ -823,6 +830,7 @@ export class HostCiService {
       dispatchHostKey: undefined,
       setupRetry,
       executionRunId,
+      ...(executionHistory.length ? { executionHistory } : {}),
       ...(options.observation ? { observation: options.observation } : {}),
       ...(state.transport ? { transport: state.transport } : {}),
       ...(setupRequeue ? { dispatchAttempts: undefined, collection: undefined, provenance: undefined,

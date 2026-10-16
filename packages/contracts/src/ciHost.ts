@@ -281,6 +281,8 @@ export const CiRunRecordSchema = z.object({
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
   /** A fresh executor identity after confirmed reassignment; the ticket keeps its ID. */
   executionRunId: CiHostRunIdSchema.optional(),
+  /** Earlier execution directories and the computers that own them. */
+  executionHistory: z.array(z.object({ runId: CiHostRunIdSchema, hostRef: CiComputerRefSchema }).strict()).optional(),
   /** One fresh executor attempt after a cloud failure before its first test case. */
   setupRetry: z.object({
     runId: CiHostRunIdSchema, failedComputer: CiComputerRefSchema, reason: z.string().max(2000),
