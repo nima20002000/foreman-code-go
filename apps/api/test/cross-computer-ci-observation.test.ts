@@ -61,3 +61,32 @@ it('records malformed reports for replay instead of failing before readbacks are
   expect(f.observation.tickets.has(f.ticket.id)).toBe(true)
   expect(f.observation.reports.get('execution-1')).toBe('not JSON')
 })
+
+it('collects failed file results for every failed partition after the group settles', async () => {
+  const f = fixture()
+  const failed = { ...structuredClone(f.ticket), id: '22222222-2222-4222-8222-000000000003',
+    state: 'failed', exitCode: 1 }
+  const tests = { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false,
+    files: [{ file: 'apps/api/test/example.test.ts', status: 'failed', durationMs: 1,
+      tests: [{ name: 'normalizes a label', status: 'failed', durationMs: 1 }] }] }
+  f.callTool.mockImplementation(async request => {
+    if (request.name === 'ci_get') {
+      const run = request.arguments!.ticketId === failed.id ? failed : f.ticket
+      return { content: [], structuredContent: { run, partitions: [f.ticket, failed],
+        group: { groupId: failed.groupId, state: 'failed' },
+        ...(request.arguments!.testStatus ? { tests } : {}) } }
+    }
+    if (!(request.name in f.replies)) throw new Error(`Unexpected tool ${request.name}`)
+    return { content: [], structuredContent: f.replies[request.name] }
+  })
+  const items = [...f.activity.items]
+  for (const [index, item] of f.activity.items.filter((item: { kind: string }) => item.kind === 'job_work').entries()) {
+    items.push({ ...structuredClone(item), id: `failed-activity-${index}`, sequence: String(items.length + 1),
+      refs: { ...item.refs, ciTicketId: failed.id }, status: item.status === 'completed' ? 'failed' : item.status })
+  }
+  f.replies.run_activities_get_v1 = { ...f.activity, items, highWater: String(items.length) }
+  await pollCiScenario(f.client, [f.prepared], f.observation, async () => undefined)
+  expect(f.observation.tickets.get(failed.id)?.tests).toEqual(tests)
+  expect(f.callTool.mock.calls.some(([request]) => request.name === 'ci_get'
+    && request.arguments?.ticketId === failed.id && Array.isArray(request.arguments.testStatus))).toBe(true)
+})

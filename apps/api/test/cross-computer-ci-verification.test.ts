@@ -127,3 +127,154 @@ it.each(['missing', 'extra'] as const)('rejects a %s joined request in the ci_ge
     initiator: false, active: true })
   expect(() => verifier.verifyScenario(recorded)).toThrow('No lost or duplicated CI requests')
 })
+
+function retryFixture(recorded = fixture()) {
+  const initial = recorded.tickets[0]!
+  const group = recorded.groups[initial.latest.groupId]!
+  const retry = structuredClone(initial)
+  const retryRun = { ...retry.latest, id: '22222222-2222-4222-8222-000000000003',
+    groupId: '33333333-3333-4333-8333-000000000003', commit: 'c'.repeat(40),
+    scope: 'affected' as const, files: recorded.workflows[0]!.assignments[0]!.task!.files, partition: null,
+    queuedAt: '2026-10-15T00:01:00.000Z', startedAt: '2026-10-15T00:01:01.000Z',
+    finishedAt: '2026-10-15T00:01:02.000Z' }
+  retry.ticketId = retryRun.id
+  retry.latest = retryRun
+  retry.timeline = [{ observedAt: retryRun.finishedAt, run: structuredClone(retryRun) }]
+  recorded.tickets.push(retry)
+  recorded.groups[retryRun.groupId] = { run: structuredClone(retryRun),
+    group: { groupId: retryRun.groupId, state: 'passed' } }
+  recorded.groupLogs[retryRun.groupId] = { ...structuredClone(recorded.groupLogs[initial.latest.groupId]!),
+    parts: [{ ...structuredClone(recorded.groupLogs[initial.latest.groupId]!.parts![0]!), run: retryRun }] }
+  const listed = recorded.ciLists['run-1']!
+  const job = structuredClone(listed.jobs[0]!)
+  job.ticketId = retryRun.id
+  job.scope = 'affected'
+  job.ci = { ...job.ci, id: retryRun.id, groupId: retryRun.groupId, partition: null,
+    queuedAt: retryRun.queuedAt, startedAt: retryRun.startedAt, finishedAt: retryRun.finishedAt }
+  listed.jobs.push(job)
+  const items = recorded.activities['run-1']!
+  const queued = structuredClone(items.find(item => item.status === 'queued')!)
+  const completed = structuredClone(items.find(item => item.kind === 'job_work' && item.status === 'completed')!)
+  for (const item of items.filter(item => item.kind === 'job_work' && item.status === 'completed'
+    && item.refs.ciTicketId === initial.ticketId)) item.status = 'failed'
+  for (const [index, item] of [queued, completed].entries()) {
+    item.id = `retry-activity-${index}`
+    item.sequence = String(items.length + 1)
+    item.refs.ciTicketId = retryRun.id
+    item.status = index === 0 ? 'queued' : 'completed'
+    items.push(item)
+  }
+  for (const run of [initial.latest, ...initial.timeline.map(sample => sample.run), group.run,
+    recorded.groupLogs[initial.latest.groupId]!.parts![0]!.run]) {
+    run.state = 'failed'
+    run.exitCode = 1
+  }
+  group.group!.state = 'failed'
+  listed.jobs[0]!.ci.state = 'failed'
+  listed.jobs[0]!.ci.exitCode = 1
+  initial.tests = { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false,
+    files: [{ file: retryRun.files[0]!, status: 'failed', durationMs: 1,
+      tests: [{ name: 'collapses whitespace', status: 'failed', durationMs: 1 }] }] }
+  recorded.workflows[0]!.assignments[0]!.task!.seedFailure = true
+  return recorded
+}
+
+it('counts an initial failed request and a committed retry of only its failed file', () => {
+  expect(() => verifier.verifyScenario(retryFixture())).not.toThrow()
+})
+
+it.each(['full', 'unrelated', 'missing', 'early', 'no-failure-results'] as const)
+('rejects a retry with %s selection or readback', change => {
+  const recorded = retryFixture()
+  const retry = recorded.groups[recorded.tickets[2]!.latest.groupId]!
+  if (change === 'full') { retry.run.scope = 'full'; retry.run.files = [] }
+  if (change === 'unrelated') retry.run.files = ['apps/api/test/unrelated.test.ts']
+  if (change === 'missing') delete recorded.groups[retry.run.groupId]
+  if (change === 'early') retry.run.queuedAt = '2026-10-14T00:00:00.000Z'
+  if (change === 'no-failure-results') delete recorded.tickets[0]!.tests
+  expect(() => verifier.verifyScenario(recorded)).toThrow()
+})
+
+it('rejects CI published from an unchanged Agent worktree', () => {
+  const recorded = fixture()
+  recorded.runs[0]!.worktrees![0]!.baseCommit = recorded.tickets[0]!.latest.commit
+  expect(() => verifier.verifyScenario(recorded)).toThrow('committed change')
+})
+
+it('rejects an unrequested ticket omitted from its group', () => {
+  const recorded = retryFixture()
+  recorded.tickets.push({ ...structuredClone(recorded.tickets[2]!), ticketId: 'orphan-ticket' })
+  expect(() => verifier.verifyScenario(recorded)).toThrow('owns every group ticket')
+})
+
+function burstFixture() {
+  const recorded = fixture()
+  const workflow = recorded.workflows[0]!
+  workflow.project = 'graphql'
+  workflow.assignments[0]!.suite = 'integration'
+  workflow.assignments[0]!.task!.scope = 'full'
+  workflow.assignments[0]!.task!.files = ['apps/api/test/ci-example.integration.test.ts']
+  const template = recorded.tickets.shift()!
+  const group = recorded.groups[template.latest.groupId]!
+  const log = recorded.groupLogs[template.latest.groupId]!
+  const job = recorded.ciLists['run-1']!.jobs[0]!
+  const items = recorded.activities['run-1']!
+  const activity = items.filter(item => item.kind === 'job_work')
+  recorded.activities['run-1'] = items.filter(item => item.kind === 'agent_work')
+  const tickets = Array.from({ length: 100 }, (_, index) => {
+    const ticket = structuredClone(template)
+    const run = { ...ticket.latest, id: `burst-ticket-${index}`, suite: 'integration' as const,
+      scope: 'full' as const, files: [], partition: { index, count: 100 } }
+    ticket.ticketId = run.id
+    ticket.latest = run
+    ticket.timeline = [{ observedAt: run.finishedAt!, run: structuredClone(run) }]
+    for (const [offset, item] of activity.entries()) {
+      recorded.activities['run-1']!.push({ ...structuredClone(item), id: `burst-${index}-${offset}`,
+        sequence: String(index * 2 + offset + 2), refs: { ...item.refs, ciTicketId: run.id } })
+    }
+    return ticket
+  })
+  recorded.tickets.unshift(...tickets)
+  group.run = tickets[0]!.latest
+  group.partitions = tickets.map(ticket => ticket.latest)
+  log.parts = tickets.map(ticket => ({ ...structuredClone(log.parts![0]!), run: ticket.latest }))
+  recorded.ciLists['run-1']!.jobs = tickets.map(ticket => ({ ...structuredClone(job),
+    ticketId: ticket.ticketId, scope: 'full', ci: { ...job.ci, id: ticket.ticketId, suite: 'integration',
+      partition: ticket.latest.partition } }))
+  recorded.reports['execution-1'] = { ...recorded.reports['execution-1'] as object, suite: 'integration' }
+  const affected = recorded.workflows[1]!
+  affected.project = 'graphql'
+  affected.assignments[0]!.suite = 'integration'
+  const files = ['apps/api/test/ci-other.integration.test.ts']
+  affected.assignments[0]!.task!.files = files
+  const ticket = recorded.tickets.at(-1)!
+  const ownGroup = recorded.groups[ticket.latest.groupId]!
+  for (const run of [ticket.latest, ...ticket.timeline.map(sample => sample.run), ownGroup.run,
+    recorded.groupLogs[ticket.latest.groupId]!.parts![0]!.run]) {
+    run.suite = 'integration'
+    run.files = files
+  }
+  recorded.ciLists['run-2']!.jobs[0]!.ci.suite = 'integration'
+  recorded.reports['execution-2'] = { ...recorded.reports['execution-2'] as object, suite: 'integration' }
+  return recorded
+}
+
+it('accepts one full hundred-part integration burst alongside affected work', () => {
+  expect(() => verifier.verifyScenario(burstFixture())).not.toThrow()
+})
+
+it('reruns only the failed file after a hundred-part full integration request', () => {
+  expect(() => verifier.verifyScenario(retryFixture(burstFixture()))).not.toThrow()
+})
+
+it('requires the full integration load request when graphql participates', () => {
+  const recorded = fixture()
+  recorded.workflows[0]!.project = 'graphql'
+  expect(() => verifier.verifyScenario(recorded)).toThrow('one full integration request')
+})
+
+it('rejects a missing partition in the full integration burst', () => {
+  const recorded = burstFixture()
+  Object.values(recorded.groups)[0]!.partitions!.pop()
+  expect(() => verifier.verifyScenario(recorded)).toThrow('partition')
+})
