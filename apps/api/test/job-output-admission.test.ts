@@ -58,7 +58,7 @@ async function fixture() {
     if(text.includes('from job_dispatch_intents'))return {rows:[{intent,last_receipt:receipt,receipt_sequence:'1'}]}
     if(text.includes('from source_execution_materializations'))return {rows:[{record:material,state:'closed'}]}
     if(text.includes('from source_root_bindings'))return {rows:[{record:root,current_binding_revision:String(rootRevision),revoked_at:rootRevoked?now:null}]}
-    if(text.includes('from source_snapshots'))return {rows:[{record:source,availability:'retained'}]}
+    if(text.includes('from source_snapshots'))return {rows:[{record:source,availability:'retained',workspace_id:source.workspaceId,main_id:source.mainId,snapshot_id:source.manifest.snapshotId,approved_source_id:source.manifest.approvedSourceId,manifest_digest:source.manifest.manifestDigest,commit:source.manifest.git.commit}]}
     if(text.includes('from file_allocations'))return {rows:[{state:canonicalState,allocation_state:allocationState,expires_at:expires}]}
     if(text.startsWith('insert into management_command_receipts')){records.set(String(args[2]),JSON.parse(String(args[5])));return {rows:[],rowCount:1}}
     if(text.includes("where principal_id = any($1::text[]) and operation = $2 and command_id = $3")){const old=records.get(String(args[2]));return {rows:old?[{principal_id:old.principalId,input_hash:commandInputHash(old.input),target_key:`job:${job.id}:output:${old.input.path}`,result:old}]:[]}}
@@ -75,9 +75,25 @@ async function fixture() {
   const reserve=vi.fn<(input:JobOutputPublicationInput,source:FileMutationSource)=>Promise<FileWithRevision>>(async()=>({file:{fileId,currentRevisionId:revisionId,scope:{kind:'job_execution' as const,workspaceId:job.workspaceId,jobExecutionId:job.id},state:'pending' as const,createdAt:job.createdAt,retentionDurationSeconds:7200,expiresAt:expires.toISOString()},revision:{byteClass:'ci-output' as const,fileId,revisionId,filename:'result.json',mediaType:'application/json' as const,byteSize:11,sha256:digest('{"ok":true}'),origin:'job_output' as const,createdAt:job.createdAt}}))
   const admission=new PostgresJobOutputAdmission(pool,authority,endpoint,reserve,()=>now)
   const input=JobOutputPublicationInputSchema.parse({workspaceId:job.workspaceId,executionId:job.id,attemptId:job.attemptId,owner:job.owner,commandId:randomUUID(),path:'dist/result.json',mediaType:'application/json',sha256:digest('{"ok":true}'),byteSize:11})
-  return {admission,input,binding,job,records,reserve,query,pool,authority,receipt,clock:()=>now,endpoint,loseGrant:()=>{liveGrant=false},revoked:()=>{revoked=true},loseOwner:()=>{liveOwner=false},rebind:()=>{binding.connectionEpoch=randomUUID()},offline:()=>{ready=false},expire:()=>{now=new Date(expires)},rootChange:()=>{rootRevision++},revokeRoot:()=>{rootRevoked=true},advance:()=>{now=new Date(now.getTime()+3600_001)},finalize:(state='ready',allocation='finalized')=>{canonicalState=state;allocationState=allocation}}
+  return {source,admission,input,binding,job,records,reserve,query,pool,authority,receipt,clock:()=>now,endpoint,loseGrant:()=>{liveGrant=false},revoked:()=>{revoked=true},loseOwner:()=>{liveOwner=false},rebind:()=>{binding.connectionEpoch=randomUUID()},offline:()=>{ready=false},expire:()=>{now=new Date(expires)},rootChange:()=>{rootRevision++},revokeRoot:()=>{rootRevoked=true},advance:()=>{now=new Date(now.getTime()+3600_001)},finalize:(state='ready',allocation='finalized')=>{canonicalState=state;allocationState=allocation}}
 }
 describe('main-owned job output admission and actual byte receiver',()=>{
+  it('authorizes chunks without traversing the immutable manifest after admission', async () => {
+    const f = await fixture()
+    const intent = await f.admission.admit(f.input)
+    const entries = f.source.manifest.entries
+    let reads = 0
+    Object.defineProperty(f.source.manifest, 'entries', { get() { reads++; return entries } })
+    await f.admission.authorizeTransfer(intent, outputTransferContext(f.binding))
+    await f.admission.authorizeTransfer(intent, outputTransferContext(f.binding))
+    expect(reads).toBe(0)
+  })
+  it('still validates the complete manifest at output admission', async () => {
+    const f = await fixture()
+    f.source.manifest.totalBytes = -1
+    await expect(f.admission.admit(f.input)).rejects.toThrow()
+    expect(f.reserve).not.toHaveBeenCalled()
+  })
   it('retries a failed canonical reservation and persists one original output admission',async()=>{
     const f=await fixture()
     f.reserve.mockRejectedValueOnce(new Error('Canonical reservation unavailable'))
