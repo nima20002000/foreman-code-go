@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ExecutionAuthorityRequestSchema } from '@foreman-code/contracts/execution-authority'
 import { CodexAppServerSessionManager } from '../../harnesses/codexAppServer.js'
 import { DeviceConnectionError } from '../../devices/deviceWire.js'
+import { deviceReconnectTimeoutMs } from '../../devices/deviceReconnect.js'
 import * as workerMcpEndpoint from './workerMcpEndpoint.js'
 import { constructionFixture } from './__tests__/installedWorkflowHost.js'
 import { deferred } from '../../../../test/helpers/deferred.js'
@@ -103,16 +104,20 @@ describe('installed workflow preparation across a dropped device link', () => {
     }
   })
 
-  it('still closes the preparation when the Worker link stays down past the reconnect bound', async () => {
+  it('rejects the preparation when the Worker link stays down past the reconnect bound', async () => {
     const f = await preparing()
     const original = f.handler(f.frame, f.context)
     const originalOutcome = original.then(() => 'answered', (error: unknown) => error)
     try {
       await f.entered.promise
       f.drop()
-      f.linkLostAt.mockReturnValue(Date.now() - 120_000)
+      f.linkLostAt.mockReturnValue(Date.now() - deviceReconnectTimeoutMs - 1)
       f.release.resolve()
       expect(await originalOutcome).toMatchObject({ code: 'WORKER_WORKFLOW_UNAVAILABLE' })
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'uncertain', entryAttempted: true },
+      })
     } finally {
       f.release.resolve()
       await originalOutcome

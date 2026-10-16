@@ -477,6 +477,9 @@ describe('installed host resident execution continuity', () => {
         sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) })
       expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
       expect(await read('status')).toMatchObject({ receipt: { terminal: { result } } })
+      await expect(f.call('history')).rejects.toMatchObject({
+        code: 'WORKER_WORKFLOW_UNAVAILABLE', details: { reason: 'original_operation_retired' },
+      })
       expect(f.create).toHaveBeenCalledOnce()
       expect(f.turns).toHaveBeenCalledOnce()
     } finally { await f.host.close() }
@@ -518,6 +521,9 @@ describe('installed host resident execution continuity', () => {
       expect(await f.call('physical-ack', { ...selector, retire: true })).toMatchObject({ payload: { status: 'retired' } })
       expect(await f.journal.isRetired(f.intent.operationId)).toBe(true)
       expect(await f.call('status')).toMatchObject({ payload: { receipt: { terminal: { kind: 'completed' } } } })
+      await expect(f.call('history')).rejects.toMatchObject({
+        code: 'WORKER_WORKFLOW_UNAVAILABLE', details: { reason: 'original_operation_retired' },
+      })
       expect(f.create).toHaveBeenCalledOnce()
     } finally {
       f.finish('canceled')

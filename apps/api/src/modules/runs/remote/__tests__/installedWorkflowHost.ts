@@ -224,6 +224,9 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
     boundary: { kind: 'cgroup-v2', path: '/unit/boundary', device: '1', inode: '2' }, lifecycle: 'active' }
   let observed = launch
   vi.spyOn(registry, 'snapshot').mockImplementation(() => ({ revision: 'snapshot', launches: [observed] }))
+  vi.spyOn(registry, 'closedRegistration').mockImplementation((owner, launchId) =>
+    observed.owner === owner && observed.launchId === launchId && observed.lifecycle === 'closed'
+      ? observed : undefined)
   vi.spyOn(registry, 'reserveLaunch').mockImplementation(owner => ({ ...registry.scope(owner), launchId: launch.launchId }))
   vi.spyOn(registry, 'abandonReservedLaunch').mockResolvedValue(false)
   vi.spyOn(registry, 'closeRegistration').mockResolvedValue(undefined)

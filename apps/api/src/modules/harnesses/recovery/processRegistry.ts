@@ -182,7 +182,16 @@ function retiredOwner(directory: string, owner: string, id?: string): boolean {
 }
 
 function closedObservation(directory: string, owner: string, id: string): NativeLaunchObservation | undefined {
-  const raw = readRecord(join(directory, `closed-${id}.json`)) ?? archivedClosure(directory, id)
+  let raw = readRecord(join(directory, `closed-${id}.json`)) ?? archivedClosure(directory, id)
+  if (raw === undefined) {
+    const retired = readRecord(join(directory, 'retired.json'))
+      ?? archivedRetirement(dirname(directory), basename(directory))
+    if (retired !== undefined) {
+      const receipt = recordObject(retired)
+      if (receipt.format !== 2 || receipt.owner !== owner) throw new Error('Invalid native retirement receipt.')
+      if (receipt.id === id) raw = receipt.observation
+    }
+  }
   if (raw === undefined) return undefined
   const observation = NativeProcessObservationSchema.parse(raw)
   if (observation.owner !== owner || observation.launchId !== id || observation.lifecycle !== 'closed'
