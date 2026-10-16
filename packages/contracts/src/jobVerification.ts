@@ -324,3 +324,4 @@ export const WorkflowJobPageSchema = z.object({
   nextCursor: WorkflowJobCursorSchema.nullable(),
 }).strict()
 export type WorkflowJobListInput = z.input<typeof WorkflowJobListInputSchema>
+export type WorkflowJobPage = z.infer<typeof WorkflowJobPageSchema>
