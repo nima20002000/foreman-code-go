@@ -1,11 +1,11 @@
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion } from '@foreman-code/contracts'
-import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { CapturedReviewNativeSource } from '../interactions/reviewNativeCapture.js'
 import type { remoteNativeManager } from './workerCarrier.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { physicalFixture } from '../runs/remote/__tests__/installedWorkflowHost.js'
+import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import { VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { createProductionRemoteWorkflow } from './productionRemoteWorkflow.js'
 
@@ -23,12 +23,12 @@ async function fixture() {
   const f = await physicalFixture()
   const state = { receipt: structuredClone(f.readout.receipt), failAck: false,
     reviewProofs: [] as { record: unknown }[] }
-  const query = f.query.getMockImplementation()!
-  f.query.mockImplementation(async text => {
+  const originalQuery = f.query.getMockImplementation()!
+  const query = async (text: string) => {
     if (text.includes('from remote_execution_receipts')) return { rows: [{ receipt: state.receipt }], rowCount: 1 }
     if (text.includes('from review_native_proofs')) return { rows: state.reviewProofs, rowCount: state.reviewProofs.length }
-    return query(text)
-  })
+    return originalQuery(text)
+  }
   ports.persist.mockImplementation(async (_sql, _owner, evidence: VerifiedRemoteEvidence) => {
     state.receipt = structuredClone(evidence.receipt)
   })
@@ -42,9 +42,11 @@ async function fixture() {
     if (frame.method === 'status') return { payload: { status: 'known', receipt: f.readout.receipt } }
     return { payload: f.readout }
   })
-  Object.assign(f.owner, { oneShotConnection: () => f.sqlConnection,
+  await f.sqlConnection.close()
+  const sqlConnection = new ExclusiveGraphConnection({ query } as unknown as pg.ClientBase, () => undefined)
+  Object.assign(f.owner, { oneShotConnection: () => sqlConnection,
     readOneShotFence: async () => ({ ownerId: 'owner', fence: '1' }) })
-  const composition = createProductionRemoteWorkflow({ pool: { query: f.query } as unknown as pg.Pool,
+  const composition = createProductionRemoteWorkflow({ pool: { query } as unknown as pg.Pool,
     locations: {} as Parameters<typeof createProductionRemoteWorkflow>[0]['locations'],
     endpoint: () => ({ currentBinding: f.currentBinding,
       captureRequest: () => ({ binding: f.context.binding, request: f.request }) }) as unknown as
@@ -72,7 +74,7 @@ async function fixture() {
     f.readout.observation = { ...f.captured.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }
     f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
   }
-  return { ...f, composition, state, observe, closeNative }
+  return { ...f, sqlConnection, composition, state, observe, closeNative }
 }
 
 it('releases real execution bindings after cold closure is committed and acknowledged', async () => {
