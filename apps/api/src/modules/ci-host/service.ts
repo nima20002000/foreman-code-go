@@ -1073,11 +1073,15 @@ export class HostCiService {
     // Slow provider polls may hold all but one permit, so Worker tickets can always release their slots.
     const cloudLimit = limit > 1 ? limit - 1 : limit
     let observingCloud = cloud.filter(row => this.observingRuns.has(row.id) && !this.collectingRuns.has(row.id)).length
+    // The first cloud ticket left waiting for a permit is where the next pass resumes, even if this pass goes on to
+    // start Worker tickets that wrap around to the front of the rotation.
+    let resumeAt: number | undefined
     for (let visited = 0; visited < rows.length && this.observingRuns.size - this.collectingRuns.size < limit; visited++) {
       const index = (offset + visited) % rows.length
       const row = rows[index]!
       if (this.observingRuns.has(row.id)) continue
       const isCloud = CiRunRecordSchema.parse(row.record).computer?.hostRef.kind === 'cloud'
+      if (isCloud && pendingCloud < 48 && observingCloud >= cloudLimit) resumeAt ??= index
       if (isCloud ? pendingCloud >= 48 || observingCloud >= cloudLimit : pendingLocal >= 8) continue
       if (isCloud) {
         pendingCloud++
@@ -1087,7 +1091,7 @@ export class HostCiService {
         trackService('ci-observation', { cadenceMs: 1000, deadlineMs: 5 * 60_000 },
           () => refresh(row))).finally(() => { this.observingRuns.delete(row.id) })
       this.observingRuns.set(row.id, observation)
-      this.observationOffset = (index + 1) % rows.length
+      this.observationOffset = resumeAt ?? (index + 1) % rows.length
     }
   }
 
