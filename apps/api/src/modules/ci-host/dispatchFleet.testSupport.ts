@@ -65,5 +65,5 @@ export function dispatchFleet(computers: HostCiComputer[], records: CiRunRecord[
   }
   if (options.publishMirror) endpoint.publishMirror = options.publishMirror
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits, endpoint)
-  return { service, started }
+  return { service, started, endpoint }
 }

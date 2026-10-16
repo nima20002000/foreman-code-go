@@ -1,6 +1,8 @@
 import { expect, it } from 'vitest'
 import type { CiHostStatus } from '@foreman-code/contracts'
 import type { HostCiComputer } from './service.js'
+import { deferred } from '../../../test/helpers/deferred.js'
+import { waitForCiDispatch } from '../../infrastructure/ciDatabasePriority.js'
 import { dispatchFleet, queuedTicket, readyStatus } from './dispatchFleet.testSupport.js'
 
 const host: HostCiComputer = { key: 'builder', label: 'Build computer', priority: 50,
@@ -43,4 +45,33 @@ it.each([
     await fixture.service.drain()
     expect(fixture.started).toEqual([])
   } finally { await fixture.service.close() }
+})
+
+it('starts background preparation when its status response arrives after dispatch ends', async () => {
+  const response = deferred()
+  const entered = deferred()
+  const fixture = dispatchFleet([host], [queuedTicket({ dispatchHostKey: 'waiting-computer' })], {
+    status: async () => status(),
+  })
+  const request = fixture.endpoint.request.bind(fixture.endpoint)
+  fixture.endpoint.request = (computer, input, options) => waitForCiDispatch(async () => {
+    if (input.operation === 'status' && options?.priority === 'background') {
+      entered.resolve()
+      await response.promise
+    }
+    return request(computer, input, options)
+  })
+  try {
+    await fixture.service.dispatch()
+    await entered.promise
+    expect(fixture.started).toEqual([])
+    response.resolve()
+    await fixture.service.drain()
+    expect(fixture.started).toEqual([
+      expect.objectContaining({ request: expect.objectContaining({ warmup: true, suite: 'install' }) }),
+    ])
+  } finally {
+    response.resolve()
+    await fixture.service.close()
+  }
 })
