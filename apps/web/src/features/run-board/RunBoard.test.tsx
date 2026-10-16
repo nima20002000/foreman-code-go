@@ -22,7 +22,6 @@ import { reply, runA, runB, runsUrl, scope } from './testFixtures'
 import { installFlowLayout } from './testFlowLayout'
 import { deferred } from '../../test/deferred'
 
-const readSnapshot = runsSelectorApi.snapshot
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
 const clients: QueryClient[] = []
 const releases: (() => void)[] = []
@@ -76,11 +75,12 @@ function hold(result: RunBoardSnapshotGetResult) {
   return { release, response: async () => { await gate.promise; return HttpResponse.json(result) } }
 }
 function withoutCancellation() {
+  const actual = runsSelectorApi.snapshot
   const completed: string[] = []
   vi.spyOn(runsSelectorApi, 'snapshot').mockImplementation(async (input) => {
     // Deliberately drop AbortSignal, but retain the real HTTP client and schema
     // checks. A passing race test must not depend solely on transport abort.
-    const result = await readSnapshot(input)
+    const result = await actual(input)
     completed.push(input.runId)
     return result
   })
