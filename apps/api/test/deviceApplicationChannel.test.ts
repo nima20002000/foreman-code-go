@@ -81,6 +81,19 @@ function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limi
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated namespace carrier mechanics', () => {
+  it('distinguishes an evicted physical reply from an unavailable native process across the channel', async () => {
+    const pair = setup(async () => {
+      throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply is no longer retained.',
+        409, { reason: 'not_retained' })
+    })
+    try {
+      await expect(pair.main.request('execution-v1', { method: 'physical-readout' })).rejects.toMatchObject({
+        code: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', class: 'transient', retryable: true,
+      })
+      expect(pair.rawMain.closed).toBe(false)
+    } finally { await pair.close() }
+  })
+
   it('queues foreground work behind occupied slots while Stop remains available', async () => {
     const releases: Array<() => void> = []
     const handled = vi.fn(async (payload: unknown) => {
@@ -273,6 +286,7 @@ describe('authenticated namespace carrier mechanics', () => {
     ['AUTH_REVOKED', false],
     ['AUTH_RUN_ENDED', false],
     ['REMOTE_NATIVE_PHYSICAL_BACKPRESSURE', true],
+    ['REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', true],
     ['REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', true],
     ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
     ['NATIVE_ARTIFACT_AUTHORITY_DENIED', false],

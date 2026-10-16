@@ -4,6 +4,34 @@ import { DomainError } from '../../errors.js'
 import { physicalFixture } from './__tests__/installedWorkflowHost.js'
 import { InstalledWorkflowPhysicalReadouts, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 
+it('classifies a physical reply evicted during admission as an expired reply rather than a lost process', async () => {
+  const f = await physicalFixture()
+  const readouts = new InstalledWorkflowPhysicalReadouts()
+  const remember = (sequence: number) => readouts.remember({
+    readout: { ...f.readout, receipt: { ...f.readout.receipt, sequence } },
+    placement: f.placement, source: f.source,
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    assertOwnerCurrent: async () => {}, assertCurrent: async () => {},
+    observe: () => f.captured.launch, closure: () => null,
+  })
+  const selector = { intent: f.intent, placement: f.placement, receiptSequence: 1,
+    sourceDigest: remoteWorkflowSourceDigest(f.source) }
+  try {
+    for (let sequence = 1; sequence <= 129; sequence++) remember(sequence)
+    const missing = await readouts.read(selector).catch((error: unknown) => error)
+    expect(missing).toMatchObject({ details: { reason: 'not_retained' } })
+    expect(deviceApplicationFailure(missing)).toEqual({
+      code: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', class: 'transient', retryable: true,
+    })
+    // Refreshing the same original process restores readback without increasing retention capacity.
+    remember(1)
+    expect((await readouts.read(selector)).receipt.sequence).toBe(1)
+  } finally {
+    readouts.clear()
+    await f.sqlConnection.close()
+  }
+})
+
 it.each([
   ['read', 'raw'], ['read', 'serialized'], ['ack', 'raw'], ['ack', 'serialized'],
 ] as const)('retains original replies after a %s authorization failure (%s)', async (operation, boundary) => {

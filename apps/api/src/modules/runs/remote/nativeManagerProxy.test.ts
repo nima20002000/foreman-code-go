@@ -86,6 +86,53 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('refreshes an expired physical reply without skipping events or starting another native turn', async () => {
+    const f = setup(() => terminal([event(0), event(1)]))
+    const session = await f.proxy.createSession(f.start)
+    f.observeOriginalSource.mockRejectedValueOnce(new DeviceApplicationError('REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED'))
+    const delivered: NativeHarnessEvent[] = []
+    for await (const frame of f.proxy.startTurn(session, {
+      prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+    })) delivered.push(frame)
+    expect(delivered).toEqual([event(0), event(1)])
+    expect(f.cursors).toEqual([-1, -1])
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'start-turn', 'history', 'history'])
+    expect(f.controlFor).not.toHaveBeenCalled()
+  })
+
+  it('refreshes history from the same native session after its physical reply expires', async () => {
+    const history = terminal([event(0)])
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    f.observeOriginalSource.mockRejectedValueOnce(new DeviceApplicationError('REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED'))
+    expect((await f.proxy.history(session)).events).toEqual(history.events)
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'history', 'history'])
+    expect(f.observedReceipts.every(receipt => receipt.intent.attemptId === f.receipt.intent.attemptId)).toBe(true)
+    expect(f.controlFor).not.toHaveBeenCalled()
+  })
+
+  it('still fails physical identity errors without refreshing the original source', async () => {
+    const f = setup(() => terminal([event(0)]))
+    const session = await f.proxy.createSession(f.start)
+    const failure = new DeviceApplicationError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE')
+    f.observeOriginalSource.mockRejectedValueOnce(failure)
+    await expect(f.proxy.history(session)).rejects.toBe(failure)
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'history'])
+  })
+
+  it.each(['history', 'stream'] as const)('bounds physical reply refreshes during %s reads', async operation => {
+    const f = setup(() => terminal([event(0)]))
+    const session = await f.proxy.createSession(f.start)
+    const failure = new DeviceApplicationError('REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED')
+    f.observeOriginalSource.mockRejectedValue(failure)
+    const read = operation === 'history' ? f.proxy.history(session) : f.proxy.startTurn(session, {
+      prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+    }).next()
+    await expect(read).rejects.toBe(failure)
+    expect(f.request.mock.calls.filter(([method]) => method === 'history')).toHaveLength(5)
+    expect(f.controlFor).not.toHaveBeenCalled()
+  })
+
   it.each(['close', 'closeForRestart'] as const)('cancels the device request when %s reaches its deadline', async method => {
     const f = setup(() => ({ events: [], pendingInteractions: [] }))
     const session = await f.proxy.createSession(f.start)

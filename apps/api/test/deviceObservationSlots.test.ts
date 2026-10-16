@@ -118,6 +118,76 @@ function fixture(ignoreAbort = new Set<string>(), workerSupportsMaintenanceObser
 
 afterEach(() => vi.useRealTimers())
 
+it.each(['main', 'worker'] as const)(
+  'keeps a native request queued on %s within its caller deadline without adding slots', async side => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      for (let index = 0; index < DEVICE_APPLICATION_IN_FLIGHT; index++) {
+        void f.request(side, 'execution-v1', { id: `occupied-${index}` })
+      }
+      await vi.advanceTimersByTimeAsync(0)
+      let settled = false
+      const native = f.request(side, 'execution-v1', { id: 'native', method: 'start-turn' }, { timeoutMs: 90_000 })
+        .then(result => { settled = true; return result })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(settled).toBe(false)
+      expect(f.started).toHaveLength(DEVICE_APPLICATION_IN_FLIGHT)
+      const background = f.request(side, 'ci-host-v1', { id: 'poll', operation: 'status' })
+      expect(await background).toMatchObject({ code: 'backpressure', reason: 'background_yield' })
+      f.release('occupied-0')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(f.started.filter(id => id === 'native')).toHaveLength(1)
+      f.release('native')
+      expect(await native).toEqual({ payload: 'native' })
+      expect(f.rawMain.closed).toBe(false)
+      expect(f.rawWorker.closed).toBe(false)
+    } finally { await f.close() }
+  },
+)
+
+it('expires a queued native request at its caller deadline before a handler can run', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    for (let index = 0; index < DEVICE_APPLICATION_IN_FLIGHT; index++) {
+      void f.request('main', 'execution-v1', { id: `occupied-${index}` })
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    let failure: unknown
+    const native = f.request('main', 'execution-v1', { id: 'expired' }, { timeoutMs: 1_000 })
+      .then(result => { failure = result })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(failure).toMatchObject({ code: 'backpressure', reason: 'admission_queue_timeout' })
+    f.release('occupied-0')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).not.toContain('expired')
+    await native
+  } finally { await f.close() }
+})
+
+it('includes local slot waiting in the native request response deadline', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    for (let index = 0; index < DEVICE_APPLICATION_IN_FLIGHT; index++) {
+      void f.request('main', 'execution-v1', { id: `occupied-${index}` })
+    }
+    await vi.advanceTimersByTimeAsync(0)
+    let failure: unknown
+    const native = f.request('main', 'execution-v1', { id: 'slow-native' }, { timeoutMs: 2_000 })
+      .then(result => { failure = result })
+    await vi.advanceTimersByTimeAsync(1_500)
+    f.release('occupied-0')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).toContain('slow-native')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(failure).toMatchObject({ code: 'timeout' })
+    await native
+    expect(f.started.filter(id => id === 'slow-native')).toHaveLength(1)
+  } finally { await f.close() }
+})
+
 it('keeps maintenance requests ordinary and the link open when the peer does not advertise observation support', async () => {
   vi.useFakeTimers()
   const f = fixture(new Set(), false)
