@@ -184,3 +184,43 @@ it('keeps the dispatch deadline and refuses a late executor acknowledgement afte
     await db.close()
   }
 })
+
+it('delivers tickets with every shared connection held and releases reserved connections before executor I/O', async () => {
+  vi.useFakeTimers()
+  const records = [queuedTicket(), queuedTicket()]
+  const db = database(records)
+  const held = await Promise.all(Array.from({ length: 4 }, () => db.pool.connect()))
+  const release = deferred()
+  const starts: string[] = []
+  const computers = [executor(0), executor(1)]
+  const endpoint: HostCiEndpoint = {
+    computers: async () => computers,
+    request: async (_computer, request) => {
+      if (request.operation === 'status') return readyStatus()
+      if (request.operation !== 'start') throw new Error('Unexpected executor request')
+      starts.push(request.runId)
+      await release.promise
+      return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'build',
+        startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, message: null, logBytes: 0 } }
+    },
+  }
+  const service = new HostCiService(db.pool, {} as PostgresCommandCoordinator,
+    {} as CiAuthority, {} as CiCommits, endpoint)
+  try {
+    const dispatch = service.dispatch()
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(starts.sort()).toEqual(records.map(run => run.id).sort())
+    const reserved = await withCiDatabasePriority(() => Promise.all([db.pool.connect(), db.pool.connect()]))
+    for (const client of reserved) client.release()
+    release.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    await dispatch
+    for (const run of records) expect(db.read(run.id).record.state).toBe('running')
+  } finally {
+    release.resolve()
+    for (const client of held) client.release()
+    await vi.advanceTimersByTimeAsync(3001)
+    await service.close()
+    await db.close()
+  }
+})

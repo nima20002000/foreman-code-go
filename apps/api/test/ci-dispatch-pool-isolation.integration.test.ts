@@ -2,13 +2,11 @@ import type pg from 'pg'
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { expect, it, vi } from 'vitest'
 import { createDatabase } from '../src/infrastructure/database.js'
-import { withCiDatabasePriority } from '../src/infrastructure/ciDatabasePriority.js'
-import type { CiRunRecord } from '@foreman-code/contracts'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { deferred } from './helpers/deferred.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
-it('claims a queued MCP ticket while observations hold the shared pool and delivers it after capacity returns', async () => {
+it('dispatches a queued MCP ticket while an observation holds every shared database connection', async () => {
   const f = await fixture({ databasePool: connectionString => createDatabase({
     connectionString, maxConnections: 1, connectionTimeoutMs: 100, queryTimeoutMs: 1000,
   }).pool })
@@ -44,14 +42,10 @@ it('claims a queued MCP ticket while observations hold the shared pool and deliv
     await entered.promise
     f.computers.push(idle)
     void f.ci.dispatch()
-    await vi.waitFor(async () => {
-      const row = await withCiDatabasePriority(() => f.pool.query<{ record: CiRunRecord }>(
-        'select record from ci_runs where id=$1', [queued.ticketId]))
-      expect(row.rows[0]?.record).toMatchObject({ state: 'starting',
-        computer: { hostRef: idle.hostRef }, dispatchRequest: { runId: queued.ticketId } })
+    await vi.waitFor(() => {
+      expect(f.started.some(start => start.request.operation === 'start'
+        && start.request.runId === queued.ticketId && start.computer === idle.label)).toBe(true)
     }, { timeout: 3500 })
-    expect(f.started.some(start => start.request.operation === 'start'
-      && start.request.runId === queued.ticketId)).toBe(false)
     release.resolve()
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
       ticketId: queued.ticketId,
@@ -59,8 +53,6 @@ it('claims a queued MCP ticket while observations hold the shared pool and deliv
     const saved = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: queued.ticketId }))
     expect(saved.run).toMatchObject({ id: queued.ticketId, state: 'running', computer: { hostRef: idle.hostRef } })
     expect(saved.run.id).not.toBe(first.ticketId)
-    expect(f.started.filter(start => start.request.operation === 'start'
-      && start.request.runId === queued.ticketId && start.computer === idle.label)).toHaveLength(1)
   } finally {
     release.resolve()
     await f.close()
