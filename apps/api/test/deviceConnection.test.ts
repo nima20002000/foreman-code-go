@@ -124,7 +124,7 @@ describe('device-only carrier and lifecycle', () => {
   it('retains the handshake admission bound until cancelled physical auth queries settle', async () => {
     vi.useFakeTimers(); const { endpoint, auth } = makeEndpoint(), releases: Array<(value: AuthenticatedDevice) => void> = []
     auth.authenticateDevice.mockImplementation(() => new Promise((resolve) => { releases.push(resolve) }))
-    const pending = Array.from({ length: 32 }, () => endpoint.authenticate({ authorization: 'Bearer device' })); for (const task of pending) void task.catch(() => {})
+    const pending = Array.from({ length: 32 }, () => endpoint.authenticate({ authorization: 'Bearer device' })); for (const task of pending) void task.catch(() => { /* ignore: each rejection is asserted below through allSettled */ })
     await vi.advanceTimersByTimeAsync(101); await Promise.allSettled(pending)
     await expect(endpoint.authenticate({ authorization: 'Bearer device' })).rejects.toThrow('backpressure'); expect(auth.authenticateDevice).toHaveBeenCalledTimes(32)
     endpoint.close(); let joined = false; const drain = endpoint.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
