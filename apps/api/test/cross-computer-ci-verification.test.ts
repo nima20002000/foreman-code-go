@@ -128,7 +128,7 @@ it.each(['missing', 'extra'] as const)('rejects a %s joined request in the ci_ge
   expect(() => verifier.verifyScenario(recorded)).toThrow('No lost or duplicated CI requests')
 })
 
-function retryFixture(recorded = fixture()) {
+function retryFixture(recorded = burstFixture()) {
   const initial = recorded.tickets[0]!
   const group = recorded.groups[initial.latest.groupId]!
   const retry = structuredClone(initial)
@@ -186,7 +186,7 @@ it('counts an initial failed request and a committed retry of only its failed fi
 it.each(['full', 'unrelated', 'missing', 'early', 'no-failure-results'] as const)(
   'rejects a retry with %s selection or readback', change => {
   const recorded = retryFixture()
-  const retry = recorded.groups[recorded.tickets[2]!.latest.groupId]!
+  const retry = recorded.groups[recorded.tickets.at(-1)!.latest.groupId]!
   if (change === 'full') { retry.run.scope = 'full'; retry.run.files = [] }
   if (change === 'unrelated') retry.run.files = ['apps/api/test/unrelated.test.ts']
   if (change === 'missing') delete recorded.groups[retry.run.groupId]
@@ -203,7 +203,7 @@ it('rejects CI published from an unchanged Agent worktree', () => {
 
 it('rejects an unrequested ticket omitted from its group', () => {
   const recorded = retryFixture()
-  recorded.tickets.push({ ...structuredClone(recorded.tickets[2]!), ticketId: 'orphan-ticket' })
+  recorded.tickets.push({ ...structuredClone(recorded.tickets.at(-1)!), ticketId: 'orphan-ticket' })
   expect(() => verifier.verifyScenario(recorded)).toThrow('owns every group ticket')
 })
 
@@ -277,4 +277,43 @@ it('rejects a missing partition in the full integration burst', () => {
   const recorded = burstFixture()
   Object.values(recorded.groups)[0]!.partitions!.pop()
   expect(() => verifier.verifyScenario(recorded)).toThrow('partition')
+})
+
+
+function fullDemoFixture(recorded = fixture()) {
+  for (const workflow of recorded.workflows.filter(value => value.project === 'demo')) {
+    for (const assignment of workflow.assignments) {
+      if (!assignment.task) continue
+      assignment.task.scope = 'full'
+      assignment.task.files = [`test/ci-scratch-label-${workflow.workflowId}.test.mjs`]
+    }
+    const runs = recorded.tickets.filter(ticket => ticket.workspaceId === workflow.workspaceId)
+      .flatMap(ticket => [ticket.latest, ...ticket.timeline.map(sample => sample.run)])
+    for (const group of Object.values(recorded.groups).filter(value => value.run.workspaceId === workflow.workspaceId)) {
+      runs.push(group.run, ...group.partitions ?? [])
+    }
+    for (const log of Object.values(recorded.groupLogs)) {
+      runs.push(...(log.parts ?? []).map(part => part.run).filter(run => run.workspaceId === workflow.workspaceId))
+    }
+    for (const run of runs) {
+      run.scope = 'full'
+      run.files = []
+    }
+    for (const job of recorded.ciLists[workflow.runId]!.jobs) job.scope = 'full'
+  }
+  return recorded
+}
+
+it('accepts demo full unit requests without counting them as full integration requests', () => {
+  expect(() => verifier.verifyScenario(fullDemoFixture())).not.toThrow()
+})
+
+it('accepts a committed demo full unit retry after its seeded failure', () => {
+  expect(() => verifier.verifyScenario(fullDemoFixture(retryFixture(fixture())))).not.toThrow()
+})
+
+it('still requires the graphql full integration burst alongside demo full unit requests', () => {
+  const recorded = fullDemoFixture()
+  recorded.workflows[0]!.project = 'graphql'
+  expect(() => verifier.verifyScenario(recorded)).toThrow('one full integration request')
 })
