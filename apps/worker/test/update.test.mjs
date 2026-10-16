@@ -512,6 +512,44 @@ test('supervisor launch failure keeps the old pointer and resumes admissions wit
   assert.equal((await updater.status()).lastError, 'worker_update_supervisor_unavailable');
 });
 
+for (const launchTimeout of [false, true]) {
+  test(`an unresolved supervisor handoff keeps admissions closed (launch timeout: ${launchTimeout})`, async t => {
+    const f = await fixture(t);
+    let resumed = 0;
+    const updater = await new WorkerUpdater({ ...f.options, resume: () => { resumed++; },
+      launchSupervisor: async stateDirectory => {
+        const now = Date.now();
+        let clock = now;
+        const date = t.mock.method(Date, 'now', () => { clock += 10_001; return clock; });
+        try {
+          await launchUpdateSupervisor(stateDirectory, { run: async () => {
+            if (launchTimeout) throw Object.assign(new Error('systemd-run timed out'), { killed: true, signal: 'SIGTERM' });
+            return { stdout: '' };
+          } });
+        } finally { date.mock.restore(); }
+      } }).initialize();
+    t.after(() => updater.close());
+    await assert.rejects(updater.start(), { code: 'worker_update_supervisor_handoff_pending' });
+    assert.equal(resumed, 0);
+    assert.equal((await updater.status()).state, 'restarting');
+    await assert.rejects(updater.start({ retry: true }), { code: 'worker_update_restart_pending' });
+    const record = await readUpdateRecord(f.stateDirectory);
+    assert.equal(record.restart.restartAttempted, false);
+    record.supervisorStarted = record.restart.requestId;
+    await writeUpdateRecord(f.stateDirectory, record);
+    // Only a reconciled outcome proving neither restart happened may reopen this process.
+    await assert.rejects(superviseWorkerUpdate(record, {
+      prepareService: f.prepareService,
+      switchPointer: async () => { throw new Error('Pointer storage unavailable'); },
+      restart: async () => assert.fail('Restart should not be reached.'),
+    }), { code: 'worker_update_rollback_failed' });
+    assert.equal((await updater.status()).state, 'failed');
+    assert.equal(resumed, 1);
+    await updater.status();
+    assert.equal(resumed, 1);
+  });
+}
+
 test('runtime drain blocks maintenance starts until recovery resumes admission', async () => {
   let finishJobs;
   const jobsFinished = new Promise(resolve => { finishJobs = resolve; });

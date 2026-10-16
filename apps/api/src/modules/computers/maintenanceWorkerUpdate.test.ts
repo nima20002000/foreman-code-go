@@ -16,6 +16,18 @@ async function scheduled(maintenance: ComputerMaintenance) {
 }
 
 describe('Worker update maintenance lifecycle', () => {
+  it.each([false, true, undefined])('passes retry classification to the updater (%s)', async retry => {
+    const computer = fakeComputer()
+    const attempts: unknown[] = []
+    const maintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: {
+      status: async () => ({ currentVersion: '1.0.0', targetVersion: null, state: 'current', lastError: null }),
+      start: async options => { attempts.push(options); return 'Worker is current.' },
+    } })
+    await maintenance.start({ kind: 'update-worker', ...(retry === undefined ? {} : { retry }) })
+    await maintenance.drain()
+    expect(attempts).toEqual([{ retry: retry ?? true }])
+  })
+
   it.each(['current', 'rolled-back'] as const)('recovers the first %s result after a later release without an intermediate poll',
     async firstState => {
       const computer = fakeComputer()

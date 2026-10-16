@@ -33,6 +33,25 @@ it.each([true, false])('uses Worker content identity to schedule updates (same c
   expect(fleet.requested.filter(task => task.kind === 'update-worker')).toHaveLength(sameContent ? 0 : 1)
 })
 
+it('keeps automatic Worker maintenance distinct from an explicit Retry', async () => {
+  const computer = fakeComputer()
+  const fleet = fakeFleet(computer)
+  Object.assign(fleet.sources, { workerManifestSha256s: async () => ['b'.repeat(64)] })
+  fleet.endpoint.capabilities = () => [
+    { namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true },
+    { namespace: WORKER_UPDATE_NAMESPACE, mainCanRequest: false },
+  ]
+  computer.ports.workerUpdate = {
+    status: async () => ({ currentVersion: '1.0.0', targetVersion: '1.1.0', state: 'rolled-back',
+      lastError: 'worker_update_startup_timeout', manifestSha256: 'a'.repeat(64) }),
+    start: async () => 'Worker update needs a retry.',
+  }
+  await fleet.fleet.syncChangedSources()
+  expect(fleet.requested.filter(task => task.kind === 'update-worker')).toEqual([
+    { kind: 'update-worker', retry: false },
+  ])
+})
+
 it.each([undefined, 'a'.repeat(64)])('prompts a same-version Worker with stale manifest %s and backs off retries', async manifest => {
   const computer = fakeComputer()
   let now = Date.now()
