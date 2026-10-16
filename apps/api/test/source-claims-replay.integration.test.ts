@@ -1,7 +1,7 @@
 import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, mkdtemp, open, readFile, symlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
@@ -52,7 +52,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const bytes = Buffer.from('retained original bytes\n')
     const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
       capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip',
-      entries: [{ path: 'app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }], deletions: [] })
+      entries: [{ path: 'app.txt', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }], deletions: [] })
     const handle = await openPrivateRoot(root), filesystem = await identity(handle); await handle.close()
     const binding = { version: 1 as const, mainId: randomUUID(), deviceId: null, workerInstallationId: null, workspaceId: randomUUID(), rootId: randomUUID(),
       bindingRevision: 1, locationRevision: 1, canonicalPath: root, filesystem, accessMode: 'exclusive-write' as const,
@@ -60,7 +60,11 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const attempt = { placementHash: 'a'.repeat(64), executionId: randomUUID(), attemptId: randomUUID(), keyRevision: null, authorizationRevision: null }
     const receipt = await new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {}).prepare({ manifest, binding, attempt })
     const tree = join(root, receipt.materializationId, 'tree')
-    if (outputBytes) await writeFile(join(tree, 'output.bin'), Buffer.alloc(outputBytes, 7))
+    if (outputBytes) {
+      // Delayed allocation and extent-tree blocks change a file's st_blocks when writeback runs; settle it before the baseline is measured.
+      const output = await open(join(tree, 'output.bin'), 'w')
+      try { await output.writeFile(Buffer.alloc(outputBytes, 7)); await output.sync() } finally { await output.close() }
+    }
     const dependencies = join(root, 'dependency-cache')
     await mkdir(dependencies)
     const dependency = join(dependencies, 'package.js')
@@ -70,7 +74,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const beforeParent = await lstat(join(root, receipt.materializationId))
     await symlink(dependencies, join(tree, 'node_modules'))
     await symlink('missing-package', join(tree, 'missing-link'))
-    await link(join(tree, 'app.ts'), join(tree, 'app-copy.ts'))
+    await link(join(tree, 'app.txt'), join(tree, 'app-copy.txt'))
     const afterTree = await lstat(tree)
     const links = await Promise.all(['node_modules', 'missing-link'].map(name => lstat(join(tree, name))))
     const linkBytes = links.reduce((sum, stat) => sum + Math.max(4096, stat.size, stat.blocks * 512), 0)
@@ -160,7 +164,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     else expect(retainedBytes).toBeLessThan(reservation.reservedBytes)
     expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0]).toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
     expect(Number((await pool.query("select sum(reserved_bytes) as charged from source_storage_reservations where state<>'reclaimed'")).rows[0].charged)).toBe(retainedBytes)
-    expect(await readFile(join(root, receipt.materializationId, 'tree/app.ts'))).toEqual(bytes)
+    expect(await readFile(join(root, receipt.materializationId, 'tree/app.txt'))).toEqual(bytes)
     expect(await readFile(dependency)).toEqual(Buffer.alloc(128 * 1024, 1))
     await pool.query(`insert into source_preparation_reconciliations values ($1,'closed')`, [record.operationId])
     await pool.query('update source_storage_reservations set reserved_bytes=$1', [reservation.reservedBytes])
@@ -170,7 +174,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0])
       .toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
-    expect(await readFile(join(tree, 'app.ts'))).toEqual(bytes)
+    expect(await readFile(join(tree, 'app.txt'))).toEqual(bytes)
     expect(await readFile(dependency)).toEqual(Buffer.alloc(128 * 1024, 1))
     await expect(new PostgresSourceReservations(async () => sourceStorageCapacityFixture()).reserve(pool, { scopeId: reservation.scopeId,
       ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }))
@@ -207,7 +211,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await closeCompletedWorkflowSources(pool, cleanup, report)
     expect(releases).toBe(1)
     await expect(lstat(join(root, shared.materializationId, 'tree'))).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(await readFile(join(root, shared.sharedTree!.id, 'tree/app.ts'))).toEqual(bytes)
+    expect(await readFile(join(root, shared.sharedTree!.id, 'tree/app.txt'))).toEqual(bytes)
     const accounted = (await pool.query('select state,reserved_bytes,record from source_storage_reservations where reservation_id=$1',
       [sharedReservation.reservationId])).rows[0]!
     expect(accounted.state).toBe('retained')
