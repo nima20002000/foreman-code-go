@@ -87,7 +87,7 @@ async function cleanupFailedRound(client: Client, workflows: RunningCiWorkflow[]
       { deadline: Date.now() + 120_000 })
       const unknown = details.executions.filter(execution =>
         workflow.assignments.some(agent => agent.agentId === execution.agentId && agent.suite)
-        && !([...observation.groups.values()].some(group => group.run.initiator.executionId === execution.id)))
+        && !([...observation.groups.values()].some(group => ciGroupRequestedBy(group, execution.id))))
       if (unknown.length) {
         errors.push(`Run ${workflow.runId} has ${unknown.length} CI Agents without discoverable ticket groups; inspect production.`)
       }

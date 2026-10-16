@@ -29,8 +29,11 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'integration across every computer; one gate runs at a time. priority is normal or high. A newer descendant commit '
     + 'from the same requester on the same branch or Agent execution cancels its older active tickets of the same suite '
     + 'unless noSupersede=true; ci_get then reports supersededBy. commandId is optional; repeating it with the same input '
-    + 'returns the original tickets. Returns ticketId and, for multi-part runs, partitions: wait for the group with one '
-    + 'ci_get waitUntil=group-terminal call on any ticket, not by polling.',
+    + 'returns the original tickets. An identical request (same workspace, repository, commit, suite, scope, baseCommit, '
+    + 'files, partitions and gate) made while one is queued or running joins it instead of queueing new tickets: it returns '
+    + 'the same tickets with joined=true and sharedWith (other requesters still attached), and every requester reads the '
+    + 'same result. Joining needs the same CI grants as a new request. Returns ticketId and, for multi-part runs, '
+    + 'partitions: wait for the group with one ci_get waitUntil=group-terminal call on any ticket, not by polling.',
   ci_get: 'Read one CI ticket. reassignment retains its cause, previous host, time and cumulative count. '
     + 'mirrorPublication.repair retains clone repair cause, source, duration and count. '
     + 'observation reports whether live state is available, its last successful read, '
@@ -51,7 +54,8 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'ends any wait. A part fails after 180 seconds without output or after '
     + 'max(3 \u00d7 expectedDurationMs, 120 seconds); a cloud part that fails before its first test is retried once on another '
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
-    + 'test also failed it, so a known flake is recognized. Agents with ci_get read every ticket of their workspace.',
+    + 'test also failed it, so a known flake is recognized. sharing lists every requester (principalId, executionId, '
+    + 'initiator, active) when identical requests joined the group. Agents with ci_get read every ticket of their workspace.',
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
     + 'systemd), saved buildAllowancePercent, allowedCpuCount, CPU and memory within that allowance, '
     + 'used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
@@ -60,12 +64,14 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'by itself once that GitHub organization has a copy of the CI mirror followed in CircleCI, which is set up '
     + 'outside Foreman (docs/runbooks/add-circleci-org.md).',
   ci_cancel: 'Cancel a queued or running CI ticket by ticketId. Optional commandId is recorded once in the audit, so a '
-    + 'retry is safe. CI_CANCEL_PENDING means remote cleanup is unconfirmed and still retrying. run_stop cancels every '
-    + 'open ticket of that Run\u2019s Agents.',
+    + 'retry is safe. CI_CANCEL_PENDING means remote cleanup is unconfirmed and still retrying. A requester of a group '
+    + 'that joined identical requests share only detaches (detached.remainingRequesters) while others remain; the '
+    + 'tickets are canceled once no requester remains. run_stop cancels every open ticket of that Run\u2019s Agents '
+    + 'that no other requester still shares.',
   ci_logs_read: `Read a CI ticket\u2019s full log from its computer: omit afterOffset for the last maxBytes (at most ${CI_LOG_MAX_BYTES}), `
     + 'or page forward with nextOffset. group=true pages every part of the ticket\u2019s group within the same budget. '
     + 'Queued tickets return CI_NOT_STARTED.',
-  ci_list: 'List CI tickets the Agents of one Run requested, newest first (at most 500). '
+  ci_list: 'List CI tickets the Agents of one Run requested or joined as identical requests, newest first (at most 500). '
     + 'Optional executionId filters before the limit. Each ticket includes suite, part, '
     + 'partition, scope, state, step, computer and placement (host, github or circleci), timing, the requesting '
     + 'Agent\u2019s executionId, agentId and workflow node, and passed/failed/skipped test counts once reported. '

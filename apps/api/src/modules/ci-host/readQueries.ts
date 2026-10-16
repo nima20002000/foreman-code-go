@@ -14,6 +14,7 @@ import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { readHostCiLog } from './logRead.js'
 import { ciExecutionRunId } from './executionAttempt.js'
 import { CiTicketChanges } from './ticketChanges.js'
+import { ciGroupSharing } from './requestSharing.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -133,11 +134,13 @@ export class HostCiReads {
       const current = group.find(member => member.id === run.id) ?? run
       const position = current.state === 'queued' ? await this.queuePosition(current.id) : undefined
       const smokeComputer = (await this.host.smokeTargets([current])).get(current.groupId)
+      const sharing = await ciGroupSharing(this.pool, scope.workspaceId, current.groupId)
       return { run: { ...current, ...(smokeComputer ? { smokeComputer } : {}) },
         partitions: group.length > 1 ? group : undefined,
         ...(input.logTail === false ? {} : { logTail: row.log_tail }),
         queue: position ? { position, reason: ciQueueReason(current) } : null,
         group: { groupId: current.groupId, state: ciGroupState(group) },
+        ...(sharing ? { sharing } : {}),
         ...(current.gate ? { gate: ciGateReport(group) } : {}),
         ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}),
         ...(current.state === 'failed' ? { failureHistory: await this.failureHistory(current.id, scope.workspaceId) } : {}) }

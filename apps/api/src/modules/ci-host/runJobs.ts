@@ -2,13 +2,18 @@ import { CI_RUN_JOBS_LIMIT, CiRunRecordSchema, CiTestResultsSchema, CiTestSummar
   type CiPlacement, type CiRunJob, type CiTestResults, type CiTestStatus } from '@foreman-code/contracts'
 import { ciActivityFromRecord } from '../runs/agentCiSnapshot.js'
 
-/** Every CI ticket an Agent execution of the Run requested, newest first, with the requesting Agent's node. */
+/** Every CI ticket an Agent execution of the Run requested, newest first, with the requesting Agent's node. A ticket of a
+ * group the Agent joined as an identical request is listed under that Agent too. */
 export const RUN_CI_JOBS_SQL = `select c.record,c.test_results->'summary' as tests,e.id as execution_id,e.agent_id,
   e.workflow_node_id as node_id,coalesce((select coalesce(n->>'name',n->>'label') from jsonb_array_elements(
     case when jsonb_typeof(v.record#>'{definition,nodes}')='array' then v.record#>'{definition,nodes}' else '[]'::jsonb end) n
     where n->>'id'=e.workflow_node_id limit 1),e.workflow_node_id) as node_name
   from harness_executions e join runs r on r.id=e.run_id and r.workspace_id=$1
-  join ci_runs c on c.workspace_id=r.workspace_id and c.record#>>'{initiator,executionId}'=e.id
+  join lateral (select c.record,c.test_results,c.created_at,c.id from ci_runs c
+      where c.workspace_id=r.workspace_id and c.record#>>'{initiator,executionId}'=e.id
+    union all select c.record,c.test_results,c.created_at,c.id from ci_group_requesters q
+      join ci_runs c on c.workspace_id=q.workspace_id and c.group_id=q.group_id
+      where q.workspace_id=r.workspace_id and q.execution_id=e.id and not q.initiator) c on true
   left join workflow_versions v on v.id=r.workflow_version_id
   where e.run_id=$2 and ($3::text is null or e.id=$3) order by c.created_at desc,c.id desc limit ${CI_RUN_JOBS_LIMIT + 1}`
 

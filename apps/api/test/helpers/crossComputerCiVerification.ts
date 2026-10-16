@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { CiRunRecord } from '@foreman-code/contracts'
-import { readAgentCiReport, requireCiStateOrder } from './crossComputerCiReadback.js'
+import { ciGroupRequestedBy, readAgentCiReport, requireCiStateOrder } from './crossComputerCiReadback.js'
 import type { RecordedScenario } from './crossComputerCiRecording.js'
 import type { TicketObservation } from './crossComputerCiObservation.js'
 
@@ -108,7 +108,10 @@ export function verifyScenario(recorded: RecordedScenario): void {
   const directories: string[] = []
   const groups = Object.values(recorded.groups)
   const expected = recorded.workflows.flatMap(workflow => workflow.assignments).filter(agent => agent.suite).length
-  check(groups.length === expected, 'No lost or duplicated CI requests')
+  // Identical concurrent requests share one group; each joined request is listed in its sharing requesters.
+  const requests = groups.reduce((count, group) => count + 1
+    + (group.sharing?.requesters.filter(requester => !requester.initiator).length ?? 0), 0)
+  check(requests === expected, 'No lost or duplicated CI requests')
   for (const workflow of recorded.workflows) {
     const details = recorded.runs.find(value => value.run.id === workflow.runId)
     check(details?.run.outcome === 'succeeded', `workflow ${workflow.runId} outcome is succeeded`)
@@ -127,8 +130,13 @@ export function verifyScenario(recorded: RecordedScenario): void {
     check(listed && !listed.truncated && listed.runId === workflow.runId, `workflow ${workflow.runId} CI list is complete`)
     for (const job of listed?.jobs ?? []) {
       const ticket = recorded.tickets.find(ticket => ticket.ticketId === job.ticketId)
-      check(ticket?.runId === workflow.runId && ticket.agentId === job.requester.agentId
-        && ticket.initiatingExecutionId === job.requester.executionId,
+      const group = ticket ? recorded.groups[ticket.latest.groupId] : undefined
+      const joined = group && group.run.initiator.executionId !== job.requester.executionId
+        && ciGroupRequestedBy(group, job.requester.executionId)
+      check(joined ? executions.some(execution => execution.id === job.requester.executionId
+        && execution.agentId === job.requester.agentId)
+        : ticket?.runId === workflow.runId && ticket.agentId === job.requester.agentId
+          && ticket.initiatingExecutionId === job.requester.executionId,
       `CI list ticket ${job.ticketId} has its own run, owner and executionId`)
     }
     for (const assignment of workflow.assignments) {
@@ -151,7 +159,10 @@ export function verifyScenario(recorded: RecordedScenario): void {
       check(placement?.readback.evidence === 'accepted'
         && isDeepStrictEqual(placement.readback.placement.hostRef, assignment.hostRef), `Agent ${assignment.agentId} placement accepted on chosen computer`)
       const own = groups.filter(group => group.run.initiator.executionId === execution.id)
-      check(own.length === (assignment.suite ? 1 : 0), `Agent ${assignment.agentId} has the right number of CI groups`)
+      const joined = groups.filter(group => group.run.initiator.executionId !== execution.id
+        && ciGroupRequestedBy(group, execution.id))
+      check(own.length + joined.length === (assignment.suite ? 1 : 0),
+        `Agent ${assignment.agentId} has the right number of CI groups`)
       if (!assignment.suite) continue
       let report: ReturnType<typeof readAgentCiReport> | undefined
       capture(`Agent ${assignment.agentId} report`, () => { report = readAgentCiReport(recorded.reports[execution.id]) })
@@ -188,6 +199,16 @@ export function verifyScenario(recorded: RecordedScenario): void {
         }
         if (report) check(tickets.some(ticket => ticket.log?.text.split('\n').some(line => line.trim() === report!.logLine)),
           `Agent ${assignment.agentId} logLine appears in its ticket log`)
+      }
+      for (const group of joined) {
+        const runs = group.partitions ?? [group.run]
+        check(group.group?.state === 'passed', `joined group ${group.run.groupId} passed`)
+        check(runs.every(run => run.workspaceId === workflow.workspaceId && run.repository === workflow.repository
+          && run.suite === assignment.suite && run.groupId === group.run.groupId),
+        `joined group ${group.run.groupId} request facts agree`)
+        const tickets = recorded.tickets.filter(ticket => ticket.latest.groupId === group.run.groupId)
+        if (report) check(tickets.some(ticket => ticket.log?.text.split('\n').some(line => line.trim() === report!.logLine)),
+          `Agent ${assignment.agentId} logLine appears in its joined ticket log`)
       }
     }
     capture(`workflow ${workflow.runId} activity`, () => verifyActivity(recorded, workflow, check))

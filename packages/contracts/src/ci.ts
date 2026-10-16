@@ -64,8 +64,18 @@ export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspac
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
 /** `cachedFiles` lists selected files skipped because an earlier passed ticket ran them with identical inputs. */
+/** `joined` marks a request that joined an identical active request of the same workspace instead of queueing tickets;
+ * `sharedWith` counts the other requesters still attached to that group. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(CI_MAX_RUN_TICKETS).optional(),
-  cachedFiles: z.array(CiCachedFileSchema).optional() }).strict()
+  cachedFiles: z.array(CiCachedFileSchema).optional(), joined: z.literal(true).optional(),
+  sharedWith: z.number().int().nonnegative().optional() }).strict()
+export type CiRunOutput = z.infer<typeof CiRunOutputSchema>
+export const CI_SHARING_REQUESTERS_LIMIT = 100
+/** Every requester of a shared ticket group: the initiator and each identical request that joined it. */
+export const CiSharingSchema = z.object({ requesters: z.array(z.object({
+  principalId: IdSchema, executionId: IdSchema.nullable(), initiator: z.boolean(), active: z.boolean(),
+}).strict()).max(CI_SHARING_REQUESTERS_LIMIT) }).strict()
+export type CiSharing = z.infer<typeof CiSharingSchema>
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
@@ -95,6 +105,8 @@ export const CiGetOutputSchema = z.object({
   logTail: z.string().optional(),
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
+  /** Present when identical requests share this ticket's group. */
+  sharing: CiSharingSchema.optional(),
   tests: CiTestResultsSchema.nullable().optional(),
   /** Present for waitUntil: settled when every group ticket is terminal with collection settled; otherwise still-running. */
   wait: z.object({ until: z.literal('group-terminal'), status: z.enum(['settled', 'still-running']),
@@ -118,7 +130,9 @@ export const CiCancelInputSchema = CiTicketInputSchema.extend({
   commandId: IdSchema.optional().describe('Optional caller request identity recorded with cancellation; generated when omitted.'),
 }).strict()
 export const OperatorCiCancelInputSchema = CiCancelInputSchema.extend({ workspaceId: IdSchema }).strict()
-export const CiCancelOutputSchema = z.object({ run: CiRunRecordSchema }).strict()
+/** `detached`: the caller left a group other requesters still share, so its tickets keep running for them. */
+export const CiCancelOutputSchema = z.object({ run: CiRunRecordSchema,
+  detached: z.object({ remainingRequesters: z.number().int().positive() }).strict().optional() }).strict()
 export const CiTestsOutputSchema = z.object({ ticketId: IdSchema, tests: CiTestResultsSchema.nullable() }).strict()
 
 /** Where a CI job ran: this computer fleet's Host CI, GitHub Actions or CircleCI. */
