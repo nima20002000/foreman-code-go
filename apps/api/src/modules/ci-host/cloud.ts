@@ -907,8 +907,17 @@ export class CloudCi {
     const snapshotMs = Math.max(0, performance.now() - snapshotting - (guardMs - initialGuardMs) - branchFetchMs)
     const pushing = performance.now()
     pushedMains.delete(mirrorKey)
-    await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
+    const push = () => git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
+    await push().catch(async (error: unknown) => {
+      if (!(error instanceof DomainError) || error.code !== 'CI_CLOUD_FAILED'
+        || !/\[remote rejected\][^\r\n]*\(missing necessary objects\)/.test(error.message)) throw error
+      // Cleanup or another process can retire advertised refs while Git sends a pack that omits their objects.
+      // A new push negotiates again and sends the missing ancestry, including a locally cached snapshot parent.
+      log.warn({ operation: 'retry CI mirror push', err: error, mirror, commit, attempt: 1 },
+        'CI mirror lost advertised objects; retrying push once with fresh negotiation')
+      await push()
+    })
     pushedMains.set(mirrorKey, snapshot)
     const timings = { queueMs, sourceMs, fetchMs, guardMs, snapshotMs, pushMs: performance.now() - pushing,
       totalMs: performance.now() - started + queueMs }
