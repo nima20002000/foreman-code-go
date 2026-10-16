@@ -818,8 +818,10 @@ export class HostCiService {
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
     let savedLogTail = logTail === undefined ? null : sanitizeCiText(logTail)
     if (setupRequeue) savedLogTail = ''
-    const saved = await this.saveCancellation(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,
-        log_tail=coalesce($6,log_tail),
+    // Reusing the stored JSON keeps its TOAST value when only the log changes.
+    const record = serializeCiJson(next)
+    const recordAssignment = canonicalJson(run) === canonicalJson(JSON.parse(record)) ? '' : 'record=$4::jsonb, '
+    const saved = await this.saveCancellation(`update ci_runs set state=$2, host_key=$3, ${recordAssignment}log_tail=coalesce($6,log_tail),
         test_results=case when $10 then null else test_results end,
         durations=case when $10 then null else durations end
       where id=$1 and (state in ('queued','starting','running') or state=$8
@@ -829,7 +831,7 @@ export class HostCiService {
         and record=$9::jsonb
         and (state is distinct from $2 or host_key is distinct from $3
           or record is distinct from $4::jsonb or ($6::text is not null and log_tail is distinct from $6))`,
-      [run.id, next.state, hostKey, serializeCiJson(next), ['starting', 'running'].includes(run.state) ? computer.key : null,
+      [run.id, next.state, hostKey, record, ['starting', 'running'].includes(run.state) ? computer.key : null,
         savedLogTail,
         run.supersededBy ?? null, run.state, JSON.stringify(run), setupRequeue],
       next, run.cancellation ?? audit, client)
