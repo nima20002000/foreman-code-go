@@ -1,3 +1,5 @@
+export const workerNativeLoaders = { '.node': 'copy' }
+
 export const workerEntryPoints = {
   cli: 'apps/worker/src/cli.mjs',
   worker: 'apps/worker/src/workerFactory.mjs',

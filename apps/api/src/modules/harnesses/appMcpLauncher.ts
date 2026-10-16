@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import type { HarnessMcpConnection } from '@foreman-code/contracts/management'
+import { acquireDirectoryLock } from '../sources/directoryLock.js'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 
 /** One native entry serves every role; the credential decides Operator, Orchestrator or Coder. */
@@ -160,23 +160,7 @@ async function withLauncherLock<T>(
   try {
     signal.throwIfAborted()
     // Directory aliases share the same inode; the kernel releases the lock on process exit.
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('/usr/bin/flock', ['--exclusive', '3'], {
-        stdio: ['ignore', 'ignore', 'ignore', directory.fd],
-      })
-      let processError: Error | undefined
-      const abort = () => { child.kill('SIGKILL') }
-      signal.addEventListener('abort', abort, { once: true })
-      child.once('error', error => { processError = error })
-      child.once('close', code => {
-        signal.removeEventListener('abort', abort)
-        if (signal.aborted) reject(signal.reason)
-        else if (processError) reject(processError)
-        else if (code === 0) resolve()
-        else reject(new Error('MCP launcher installation lock failed.'))
-      })
-      if (signal.aborted) abort()
-    })
+    await acquireDirectoryLock(directory.fd, { signal })
     signal.throwIfAborted()
     return await action(signal)
   } finally {
