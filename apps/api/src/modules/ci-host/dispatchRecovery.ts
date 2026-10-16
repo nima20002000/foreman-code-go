@@ -62,17 +62,11 @@ async function sendAssignedDispatch(services: DispatchServices, run: CiRunRecord
     }
     reply = response
   } catch (error) {
-    if (!rejectedCiStart(error) || (run.dispatchAttempts ?? 1) > 1) {
+    if (!rejectedCiStart(error)) {
       const message = error instanceof Error ? error.message : String(error)
       await retainDispatch(client, run, computer, `${message} Ownership retained until execution is reconciled.`)
       log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start reply unknown; retaining executor')
       return 'pending'
-    }
-    if ((error as DomainError).code === 'CI_MIRROR_PRIVATE_DATA') {
-      const now = new Date().toISOString()
-      await services.settle(run, computer, { state: 'failed', step: null, exitCode: null,
-        startedAt: now, finishedAt: now, message: (error as Error).message }, { client })
-      return 'settled'
     }
     if (!await releaseCiDispatch(client, run, computer, (error as Error).message, { clearRetry: true })) return 'pending'
     return (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected'
