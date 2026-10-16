@@ -7,6 +7,7 @@ import { vi } from 'vitest'
 import { mainIdentityProofMessage } from '@foreman-code/contracts/device-identity-node'
 import { workerArtifactContentSha256 } from '@foreman-code/contracts/worker-artifact-content-node'
 import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
+import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import { DeviceEndpoint } from '../../src/modules/devices/deviceEndpoint.js'
 import { DeviceConnectionSupervisor } from '../../src/modules/devices/connectionSupervisor.js'
 import { adaptDeviceSocket } from '../../src/modules/devices/deviceWire.js'
@@ -57,7 +58,7 @@ export async function workerBundleFixture() {
   // A real Worker's full status runs slow version, registry and package inspections; only its bundle facts are fast.
   let fullStatus: Promise<void> | undefined
   let statusFailure: Error | undefined
-  const bundleStatus = vi.fn(async (): Promise<unknown> => ({ payload: { operation: 'worker', worker: status.worker } }))
+  const bundleStatus = vi.fn(async (): Promise<DeviceApplicationResult> => ({ payload: { operation: 'worker', worker: status.worker } }))
   const maintenance = async (payload: { operation?: string; scope?: string }) => {
     if (payload.operation !== 'status') return handled(payload)
     if (statusFailure) throw statusFailure
