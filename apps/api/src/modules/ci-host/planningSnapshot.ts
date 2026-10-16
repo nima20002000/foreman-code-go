@@ -7,6 +7,10 @@ const FRESHNESS_MS = 5000
 /** How long dispatch keeps using the last successful read while a slower refresh of it is still running. */
 const REFRESHING_MS = 30_000
 
+/** The device channel was busy with foreground work; the computer itself was not found unready. */
+export const isBackgroundYield = (error: unknown) =>
+  error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield'
+
 interface StatusSnapshot {
   at: number
   status?: CiHostStatus
@@ -88,8 +92,7 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
       if (this.statuses.get(key) === snapshot) this.observeStatus(computer, reply)
       return reply
     }).catch(error => {
-      if (this.statuses.get(key) === snapshot && previous?.status
-        && error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield') {
+      if (this.statuses.get(key) === snapshot && previous?.status && isBackgroundYield(error)) {
         // Yielding preserves the answer, but its age still requires a refresh on the next read.
         this.statuses.set(key, { at: previous.at, status: previous.status })
         this.lastKnown.set(key, { at: previous.at, status: previous.status })
