@@ -29,6 +29,7 @@ it.each([
     const read = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), started.ticketId, 'failed')
     expect(read.run).toMatchObject({ state: 'failed', part: null, partition: null,
       message: `The repository has no "${suite}" script for the ${suite} suite.` })
+    if (suite === 'integration') expect(read.run.collection).toBe('unsupported')
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [started.ticketId])).rows[0]!.record).toEqual(read.run)
   } finally {
