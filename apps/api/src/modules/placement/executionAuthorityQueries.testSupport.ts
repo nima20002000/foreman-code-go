@@ -158,7 +158,7 @@ export function authorityQueryFixture() {
       state.afterPins?.()
     }
   }
-  const producer = new ObservedProducer(pool, mainId, sources, policies,
+  const producer: AgentPlacementProducer = new ObservedProducer(pool, mainId, sources, policies,
     { installations } as ConstructorParameters<typeof AgentPlacementProducer>[4], { codex: 'fixture' })
   const locations = new WorkspaceLocationService(pool, {} as ConstructorParameters<typeof WorkspaceLocationService>[1])
   const extension = createExecutionAuthorityExtension(pool, locations, producer)
