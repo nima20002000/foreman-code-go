@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import type { SourceActiveNativeSession, SourceFilesystemOperation, SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import type { SourceInstalledNativeOwner } from './executionHosts.js'
 import { captureGitSource } from './capture.js'
@@ -241,6 +242,26 @@ it('finds and removes an abandoned Worker materialization without Main preparati
   await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.txt')))
     .rejects.toMatchObject({ code: 'ENOENT' })
   expect(await f.service.handle(request, f.context)).toMatchObject({ reclaimed: true })
+})
+
+it('removes a closed retained copy through the authenticated Worker reclamation operation', async () => {
+  const f = await fixture()
+  const prepared = await f.service.handle(f.request, f.context)
+  if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
+  await releaseMaterializationClaim(prepared.receipt, async () => 'released')
+  const record = SourceMaterializationRecordSchema.parse({ receipt: prepared.receipt,
+    operationId: f.owner.identity.operationId, reservationId: randomUUID(),
+    rootPolicyId: f.root.selection.rootPolicyId, rootPolicyRevision: f.root.selection.rootPolicyRevision,
+    sourceBindingHash: prepared.receipt.placementHash, finalDispatchBindingHash: null, state: 'closed' })
+  const grant = { reservationId: record.reservationId, reclamationId: randomUUID(),
+    operationId: record.operationId, expiresAt: f.owner.identity.expiresAt, roots: [f.root],
+    owner: { ...f.owner, record, preparationClosed: true }, scopeId: 'worker-filesystem', removeRetained: true }
+  f.currentReclamation.mockResolvedValue(grant)
+  expect(await f.service.handle({ version: 1, operation: 'sources.reclaim-reservation',
+    reservationId: grant.reservationId, reclamationId: grant.reclamationId }, f.context))
+    .toMatchObject({ reclaimed: true, operationId: grant.operationId })
+  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'receipt.json')))
+    .rejects.toMatchObject({ code: 'ENOENT' })
 })
 
 it('does not release a Worker reservation when Main cleanup authority is unavailable or changes', async () => {

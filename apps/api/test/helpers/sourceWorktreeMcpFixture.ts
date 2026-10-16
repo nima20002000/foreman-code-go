@@ -98,7 +98,7 @@ async function harnessRegistry(base: Base, mainId: string, project: string) {
   return { overrides, installations, pinOverride }
 }
 
-export async function sourceWorktreeMcpFixture() {
+export async function sourceWorktreeMcpFixture(options: { approvalNodeIds?: string[] } = {}) {
   let producer: AgentPlacementProducer
   let preparation: AgentExecutionPreparation
   let validatePlacement: ReturnType<typeof placedContinuationValidator>
@@ -109,6 +109,7 @@ export async function sourceWorktreeMcpFixture() {
   try {
     base = await currentOperatorIntegration({
       fixture: makeCurrentWorkflowFixture(randomUUID(), 'sequential'), insertRun: false,
+      ...options,
       admitPlacementExecutionLocked: async (sql, owner, run, execution, ref, inputDigest) => {
         await producer.admitExecution(sql, owner, execution, ref, inputDigest, run.authorizationPrincipalId)
       },
