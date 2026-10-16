@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { handoffPlacementFixture } from './helpers/handoffPlacementFixture.js'
-import { readUntil } from './helpers/observableCondition.js'
+import { waitForHandoffCompletion } from './helpers/handoffCompletion.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 describe('handed-off node placement after a Worker reconnect', () => {
@@ -8,8 +8,7 @@ describe('handed-off node placement after a Worker reconnect', () => {
     const f = await handoffPlacementFixture()
     try {
       const accepted = await f.start()
-      const finished = await readUntil(f.details, details => details.run.executionState === 'completed',
-        { timeoutMs: 30_000, description: 'all three handed-off Agents finish' })
+      const finished = await waitForHandoffCompletion(f, 'all three handed-off Agents finish')
       expect(finished.run, JSON.stringify(finished.run.result)).toMatchObject({ outcome: 'succeeded' })
       expect(finished.executions).toHaveLength(4)
       expect(finished.executions.every(execution => execution.result?.outcome === 'succeeded')).toBe(true)
@@ -36,8 +35,7 @@ describe('handed-off node placement after a Worker reconnect', () => {
     const f = await handoffPlacementFixture({ checkOutcome: 'failed' })
     try {
       const accepted = await f.start()
-      const finished = await readUntil(f.details, details => details.run.executionState === 'completed',
-        { timeoutMs: 30_000, description: 'profile failure and healthy sibling completion' })
+      const finished = await waitForHandoffCompletion(f, 'profile failure and healthy sibling completion')
       expect(finished.executions).toHaveLength(4)
       const failed = finished.executions.find(execution => execution.workflowNodeId === f.workers[1]!.id)
       expect(failed).toMatchObject({ state: 'completed', result: { outcome: 'failed', error: {
