@@ -1,3 +1,4 @@
+import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
 import { isDatabasePoolTimeout } from './databaseReadRetry.js'
 import { isDatabaseTimeout, retryDatabaseOperation, type DatabaseRetryOptions } from './databaseTimeout.js'
 
@@ -29,4 +30,13 @@ export function retryStartupDatabase<T>(
   options: DatabaseRetryOptions = {},
 ): Promise<T> {
   return retryDatabaseOperation(work, isTransientStartupDatabaseError, options)
+}
+
+/** First pass of a background loop that also runs on a timer: a transient database or socket failure is reported and
+ * left to the next tick; anything else still fails startup. */
+export async function runBackgroundPassAtStartup(pass: () => Promise<void>, report: (error: unknown) => void): Promise<void> {
+  try { await pass() } catch (error) {
+    if (!isTransientDatabaseOrSocketError(error)) throw error
+    report(error)
+  }
 }

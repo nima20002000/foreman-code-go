@@ -118,7 +118,7 @@ export class WorkflowScheduleDispatcher {
     this.closed = true
     this.pending.clear()
     if (this.timer) clearTimeout(this.timer)
-    await this.active
+    await this.active?.catch(() => { /* ignore: poll() already reported a failed scan; shutdown only waits for it to end. */ })
     await Promise.all(this.dispatching.values())
   }
 }

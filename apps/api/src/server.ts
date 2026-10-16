@@ -8,7 +8,7 @@ import { loadConfig } from './config.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { trackInFlightRequests } from './infrastructure/inFlightRequests.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
-import { retryStartupDatabase } from './infrastructure/startupDatabase.js'
+import { retryStartupDatabase, runBackgroundPassAtStartup } from './infrastructure/startupDatabase.js'
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { join } from 'node:path'
 
@@ -143,7 +143,7 @@ async function main() {
     stopIfClosing()
     await startDeviceListener()
     stopIfClosing()
-    await reconcile(reportReconciliationError)
+    await runBackgroundPassAtStartup(() => reconcile(reportReconciliationError), reportReconciliationError)
     stopIfClosing()
     reconciliationTimer = setInterval(() => {
       void reconcile(reportReconciliationError).catch(reportReconciliationError)
