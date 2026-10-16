@@ -123,7 +123,9 @@ it('runs concurrent projects through Agent Host CI with isolated readback twice 
     clients.push(writer)
     const denied = await connectCiOperator(input.endpoint, input.deniedToken)
     clients.push(denied)
-    for (const round of [1, 2]) {
+    // Fast iteration runs one round per deploy; the final confirmation runs both (FOREMAN_CODE_CROSS_COMPUTER_CI_ROUNDS=2).
+    const rounds = process.env.FOREMAN_CODE_CROSS_COMPUTER_CI_ROUNDS === '1' ? [1] : [1, 2]
+    for (const round of rounds) {
       const workflows: RunningCiWorkflow[] = []
       const observation = createScenarioObservation()
       const evidence = { invocationId, round, startedAt: new Date().toISOString(), finishedAt: null as string | null,
