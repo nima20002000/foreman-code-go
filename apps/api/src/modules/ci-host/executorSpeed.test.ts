@@ -260,3 +260,17 @@ it('reuses one speed estimate between planning passes until a gate ticket finish
   await readExecutorSpeeds(pool, fleet)
   expect(historyLoads).toBe(2)
 })
+
+it('does not reuse another planner\'s speed estimate from the same database pool', async () => {
+  const builder = computers[0]!
+  const files = ['apps/api/test/a.integration.test.ts']
+  let rows: unknown[] = []
+  const pool = { query: async () => ({ rows }) } as unknown as pg.Pool
+  const planner = (): HostCiEndpoint => ({ computers: async () => [builder],
+    request: async () => { throw new Error('unused') } })
+  expect((await readExecutorSpeeds(pool, planner())).get(builder.key)).toBeUndefined()
+  rows = [{ record: gatePart(builder, builder.key, 100_000, 200_000, { files }),
+    test_results: { files: [{ file: files[0], durationMs: 40_000 }] } }]
+  // A new service plans with its own endpoint and measures the history that exists when it starts.
+  expect((await readExecutorSpeeds(pool, planner())).get(builder.key)).toMatchObject({ throughput: 40_000 / 200_000 })
+})
