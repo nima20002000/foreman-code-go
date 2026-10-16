@@ -335,12 +335,14 @@ export class LangGraphWorkflowEngine {
       const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
       if (!snapshot.stopRequested && !snapshot.cleanupPending && snapshot.run.executionState !== 'completed') throw new DomainError(
         'GRAPH_STOP_CONFLICT', 'Cleanup requires the committed negative or terminal fence.', 409)
-      // A queued resume can outlive successful cleanup; do not reopen its intent.
-      if (snapshot.cleanupPending || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
+      // A settled terminal Run has no pending resources, regardless of its outcome.
+      const cleanupRequired = snapshot.cleanupPending || snapshot.run.executionState !== 'completed'
+      if (cleanupRequired) {
         await this.runs.requestCleanup(owner.runId, owner)
       }
       try {
-        if (snapshot.run.executionState !== 'completed' || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded') {
+        if (cleanupRequired && (snapshot.run.executionState !== 'completed'
+          || snapshot.stopRequested || snapshot.run.outcome !== 'succeeded')) {
           await this.nativeExecutions.cancelRun(owner.runId, owner)
           await settleWorkflowRun(owner, await hasRecoveredWorkflowNativeLifetime(owner))
         } else await this.nativeExecutions.finishRun(owner.runId)
