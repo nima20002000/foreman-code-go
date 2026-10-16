@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { CiRunJob } from '@foreman-code/contracts'
@@ -25,16 +25,21 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
-function mount() {
+// The Run's subagent overlay reads its selection from the router.
+async function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={client}><RunBoardCanvas snapshot={runA} /></QueryClientProvider>)
+  const router = createRouter({ routeTree: createRootRoute({ component: () => <RunBoardCanvas snapshot={runA} /> }),
+    history: createMemoryHistory({ initialEntries: ['/'] }) })
+  await router.load()
+  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
 }
 
 it('shows the CI server on a saved Run Board and opens the Run CI jobs', async () => {
   server.use(http.get('*/api/management/workspaces/:workspaceId/ci', ({ request }) =>
     HttpResponse.json({ runId: new URL(request.url).searchParams.get('runId'), jobs: [job], truncated: false })))
-  mount()
-  await userEvent.click(await screen.findByRole('button', { name: /^CI server, .*Open CI jobs/ }))
+  await mount()
+  // fireEvent: a real pointer press would start React Flow's zoom drag, which jsdom cannot host.
+  fireEvent.click(await screen.findByRole('button', { name: /^CI server, .*Open CI jobs/ }))
   const dialog = await screen.findByRole('dialog', { name: 'CI server' })
   expect(await within(dialog).findByRole('button', { name: 'Show tests of unit · unit-api requested by X before rename' })).toBeVisible()
 })
@@ -42,6 +47,6 @@ it('shows the CI server on a saved Run Board and opens the Run CI jobs', async (
 it('keeps the CI server on a saved Run Board when CI cannot be read', async () => {
   server.use(http.get('*/api/management/workspaces/:workspaceId/ci', () =>
     HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'CI read denied' } }, { status: 403 })))
-  mount()
+  await mount()
   expect(await screen.findByRole('button', { name: /^CI server, CI unavailable/ })).toBeVisible()
 })
