@@ -4,6 +4,7 @@ import type { TransactionSql } from '../../infrastructure/transaction.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from './operatorDelegation.js'
+import { authorizationReadSnapshot, snapshotPrincipal } from './authorizationReadSnapshot.js'
 
 type Database = GraphSqlClient
 interface Row {
@@ -24,6 +25,8 @@ function principal(row: Row | undefined, options: { checkExpiry: boolean } = { c
     grants: row.grants, expiresAt: row.expires_at.toISOString(), revokedAt: null })
 }
 async function row(database: Database, id: string): Promise<Row | undefined> {
+  const snapshot = await authorizationReadSnapshot(database)
+  if (snapshot) return snapshotPrincipal(snapshot, id)
   return (await database.query<Row>(`select id,name,audience,grants,expires_at,revoked_at,delegated_from
     from management_principals where id=$1`, [id])).rows[0]
 }
@@ -38,11 +41,16 @@ export async function currentOperatorAuthority(database: Database, id: string, a
   const stored = await row(database, id)
   const accepted = principal(stored)
   if (!stored!.delegated_from) return { principal: accepted, owner: accepted }
-  const found = await database.query<Binding>(`select b.owner_principal_id,b.grant_ceiling,b.accepted_expires_at,r.execution_state,
+  const snapshot = await authorizationReadSnapshot(database)
+  const found = snapshot ? undefined : await database.query<Binding>(`select b.owner_principal_id,b.grant_ceiling,b.accepted_expires_at,r.execution_state,
     exists(select 1 from run_cleanup_intents cleanup where cleanup.run_id=r.id and cleanup.pending) as cleanup_pending
     from run_authority_principals b join runs r on r.id=b.run_id
     where b.principal_id=$1 and r.record->>'authorizationPrincipalId'=b.principal_id`, [id])
-  const binding = found.rows[0]
+  const storedBinding = snapshot?.run_authority
+  const binding = snapshot ? storedBinding && { ...storedBinding,
+    accepted_expires_at: typeof storedBinding.accepted_expires_at === 'string'
+      ? new Date(storedBinding.accepted_expires_at) : storedBinding.accepted_expires_at,
+  } : found!.rows[0]
   if (!binding || binding.owner_principal_id !== stored!.delegated_from) {
     throw new DomainError('AUTH_INVALID', 'A temporary chat credential is not durable Run authority.', 401)
   }

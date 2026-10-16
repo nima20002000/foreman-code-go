@@ -128,7 +128,9 @@ export function authorityQueryFixture() {
     else if (text.includes('from workspaces')) rows = [{ location_revision: '1', archived_at: state.workspaceArchivedAt }]
     else if (text.includes('from harness_instance_settings')) rows = [{ record: state.override }]
     else if (text.includes('from harness_instance_profile_evidence')) rows = [{ instance_revision: '1', record: state.proof }]
-    return { rows: structuredClone(rows) as R[], rowCount: rows.length, fields: [], command: 'SELECT', oid: 0 }
+    // PostgreSQL JSON columns encode timestamps as strings, unlike direct timestamp columns.
+    const records = text.includes('as authorization_read') ? JSON.parse(JSON.stringify(rows)) : structuredClone(rows)
+    return { rows: records as R[], rowCount: rows.length, fields: [], command: 'SELECT', oid: 0 }
   } }
   let queries = 0
   let leases = 0

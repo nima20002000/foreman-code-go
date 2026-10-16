@@ -10,6 +10,7 @@ import { authorizeSource } from './authority.js'
 import { sourceSha256 } from './manifest.js'
 import { rootSelectionDigest, rootAttestationDigest } from './rootAttestation.js'
 import type { AuthorizedWorkspaceRoot, WorkspaceRootHostPort, WorkspaceRootPolicyPort } from './rootPolicyPorts.js'
+import { authorizationReadSnapshot } from '../access/authorizationReadSnapshot.js'
 
 type Sql = GraphSqlClient
 type RootBindingKind = 'location' | 'managed'
@@ -26,16 +27,22 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
   private async authorizeWorkspace(sql: Sql, principal: ManagementPrincipal, workspaceId: string, write = false) {
     const live = await authorizeSource(sql, principal, write ? 'source_roots:bind' : 'source_roots:read', workspaceId)
     requireAuthorization(principal, 'workspace_locations:read', { workspaceId }); requireAuthorization(live.principal, 'workspace_locations:read', { workspaceId })
-    const main = (await sql.query<{ id: string }>('select id from application_installation where singleton=true for share')).rows[0]
-    if (main?.id !== this.mainId) throw new DomainError('ROOT_WRONG_MAIN', 'Root policy belongs to the original main installation.', 403)
-    const row = (await sql.query<{ location_revision: string; archived_at: Date | null }>('select location_revision,archived_at from workspaces where id=$1 for share', [workspaceId])).rows[0]
+    const snapshot = await authorizationReadSnapshot(sql)
+    const mainId = snapshot ? snapshot.main_id : (await sql.query<{ id: string }>(
+      'select id from application_installation where singleton=true for share')).rows[0]?.id
+    if (mainId !== this.mainId) throw new DomainError('ROOT_WRONG_MAIN', 'Root policy belongs to the original main installation.', 403)
+    const row = snapshot?.workspace_id === workspaceId ? snapshot.workspace : (await sql.query<{
+      location_revision: string; archived_at: Date | null
+    }>('select location_revision,archived_at from workspaces where id=$1 for share', [workspaceId])).rows[0]
     if (!row) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
     if (row.archived_at) throw new DomainError('WORKSPACE_ARCHIVED', 'Archived workspaces cannot select or authorize roots.', 409)
     return { ...live, locationRevision: Number(row.location_revision) }
   }
   private async configuration(sql: Sql, host: ApprovedRootAllowlist['hostRef']): Promise<ApprovedRootAllowlist> {
     if (host.mainId !== this.mainId) throw new DomainError('ROOT_WRONG_MAIN', 'The selected root host belongs to another main.', 403)
-    const row = (await sql.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
+    const snapshot = await authorizationReadSnapshot(sql)
+    const sameHost = snapshot && isDeepStrictEqual(snapshot.placement.hostRef, host)
+    const row = sameHost ? snapshot.root_configuration : (await sql.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
       join workspace_root_host_configurations c on c.host_scope=h.host_scope and c.configuration_revision=h.configuration_revision
       where h.host_scope=$1 for share of h,c`, [workspaceRootHostScope(host)])).rows[0]
     if (!row) throw new DomainError('ROOT_CONFIGURATION_MISSING', 'The host has no explicit human-approved root configuration.', 409)
@@ -221,7 +228,11 @@ export class PostgresWorkspaceRootPolicies implements WorkspaceRootPolicyPort {
   }
   async resolve(sql: Sql, principal: ManagementPrincipal, selection: { workspaceId: string; hostRef: WorkspaceRootPolicy['hostRef']; rootPolicyId: string; rootPolicyRevision: string; locationRevision: string }): Promise<WorkspaceRootPolicy> {
     const live = await this.authorizeWorkspace(sql, principal, selection.workspaceId)
-    const row = (await sql.query<{ record: unknown; revoked_at: Date | null }>('select record,revoked_at from workspace_root_policies where root_policy_id=$1 and root_policy_revision=$2 and workspace_id=$3 for share', [selection.rootPolicyId, selection.rootPolicyRevision, selection.workspaceId])).rows[0]
+    const snapshot = await authorizationReadSnapshot(sql)
+    const selected = snapshot?.placement.destination
+    const samePolicy = snapshot?.workspace_id === selection.workspaceId
+      && selected?.rootPolicyId === selection.rootPolicyId && selected.rootPolicyRevision === selection.rootPolicyRevision
+    const row = snapshot && samePolicy ? snapshot.root_policy : (await sql.query<{ record: unknown; revoked_at: Date | null }>('select record,revoked_at from workspace_root_policies where root_policy_id=$1 and root_policy_revision=$2 and workspace_id=$3 for share', [selection.rootPolicyId, selection.rootPolicyRevision, selection.workspaceId])).rows[0]
     if (!row || row.revoked_at) throw new DomainError('ROOT_POLICY_UNAVAILABLE', 'The exact authorized root policy is missing or revoked.', 409)
     const policy = WorkspaceRootPolicySchema.parse(row.record), configuration = await this.configuration(sql, selection.hostRef)
     const registration = await this.hosts.authorize(sql, live.principal, selection.hostRef, policy.applicationInstallationId)

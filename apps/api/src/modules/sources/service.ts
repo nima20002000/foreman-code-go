@@ -40,6 +40,7 @@ import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefi
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
 import { prepareRunSources } from './runSource.js'
+import { authorizationReadSnapshot } from '../access/authorizationReadSnapshot.js'
 
 export type { SourceExecutionHostPort }
 type Transport = 'http' | 'mcp'
@@ -90,8 +91,10 @@ export class PostgresSourceService implements SourceAdmissionPort {
     return withTransaction(this.pool, work)
   }
   private async host(sql: Sql): Promise<void> {
-    const row = (await sql.query<{ id: string }>('select id from application_installation where singleton=true for share')).rows[0]
-    if (row?.id !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source authority belongs to the original configured main installation.', 403)
+    const snapshot = await authorizationReadSnapshot(sql)
+    const id = snapshot ? snapshot.main_id : (await sql.query<{ id: string }>(
+      'select id from application_installation where singleton=true for share')).rows[0]?.id
+    if (id !== this.mainId) throw new DomainError('SOURCE_WRONG_MAIN', 'Source authority belongs to the original configured main installation.', 403)
   }
   private async workspace(sql: Sql, workspaceId: string): Promise<void> {
     const row = (await sql.query<{ archived_at: Date | null }>('select archived_at from workspaces where id=$1 for share', [workspaceId])).rows[0]
@@ -131,7 +134,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
     // A snapshot record is immutable (database trigger): verify a large manifest once, but read availability every time.
     const key = [workspaceId, pin.approvedSourceId, pin.snapshotId, pin.manifestDigest].join(':')
     const verified = this.verifiedSources.get(key)
-    const row = (await sql.query<{ record: unknown; availability: string }>(`select ${verified ? 'null as record' : 'record'},availability
+    const snapshot = await authorizationReadSnapshot(sql)
+    const selected = snapshot?.placement.source
+    const sameSource = snapshot?.workspace_id === workspaceId && selected && 'kind' in selected
+      && selected.kind === 'pending' && selected.approvedSourceId === pin.approvedSourceId
+      && selected.snapshotId === pin.snapshotId && selected.manifestDigest === pin.manifestDigest
+    const row = snapshot && sameSource ? snapshot.source : (await sql.query<{ record: unknown; availability: string }>(`select ${verified ? 'null as record' : 'record'},availability
       from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share`,
     [workspaceId, pin.approvedSourceId, pin.snapshotId, pin.manifestDigest])).rows[0]
     if (!row) throw new DomainError('SOURCE_NOT_FOUND', 'The exact approved source snapshot was not found in this workspace.', 404)
@@ -415,7 +423,11 @@ export class PostgresSourceService implements SourceAdmissionPort {
     input: { workspaceId: string; rootId: string; bindingRevision: number; source: ApprovedSourcePin }): Promise<SourceRootRecord> {
     await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId)
     await this.resolveApprovedSource(sql, principal, input.workspaceId, input.source)
-    const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where workspace_id=$1 and root_id=$2 and binding_revision=$3 for share',
+    const snapshot = await authorizationReadSnapshot(sql)
+    const selected = snapshot?.placement.source
+    const sameRoot = snapshot?.workspace_id === input.workspaceId && selected && 'kind' in selected
+      && selected.kind === 'pending' && selected.rootId === input.rootId && selected.bindingRevision === input.bindingRevision
+    const row = snapshot && sameRoot ? snapshot.source_root : (await sql.query<{ record: unknown }>('select record from source_root_bindings where workspace_id=$1 and root_id=$2 and binding_revision=$3 for share',
       [input.workspaceId, input.rootId, input.bindingRevision])).rows[0]
     if (!row) throw new DomainError('SOURCE_ROOT_NOT_FOUND', 'The exact authorized root binding was not found.', 404)
     const root = SourceRootRecordSchema.parse(row.record)

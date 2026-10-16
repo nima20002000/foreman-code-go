@@ -16,6 +16,7 @@ export interface ExecutionRunAuthorityPort {
 }
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
+import { withAuthorizationReadSnapshot } from '../access/authorizationReadSnapshot.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError, databaseReadFailure } from '../errors.js'
 import { assertRemoteReviewAssignment, canCloseRetainedRemoteReviewer, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
@@ -28,6 +29,16 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   locations: ExecutionRunAuthorityPort,
   raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer,
   lock = true): Promise<{ cleanupOnly: true } | undefined> {
+  if (lock) return checkRemoteExecutionAuthority(sql, locations, raw, authenticated, producer, lock)
+  const input = ExecutionAuthorityRequestSchema.parse(raw)
+  return withAuthorizationReadSnapshot(sql, input.intent.runId, readPlacement(input.placement),
+    () => checkRemoteExecutionAuthority(sql, locations, input, authenticated, producer, lock))
+}
+
+async function checkRemoteExecutionAuthority(sql: GraphSqlClient,
+  locations: ExecutionRunAuthorityPort,
+  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer,
+  lock: boolean): Promise<{ cleanupOnly: true } | undefined> {
   const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
   // Owner transactions that write keep these rows locked until COMMIT. A Worker's read-only admission
   // check reads the latest committed rows instead and must not queue behind a busy Run.
