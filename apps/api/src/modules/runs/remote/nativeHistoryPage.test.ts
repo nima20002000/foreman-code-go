@@ -2,12 +2,38 @@ import { describe, expect, it } from 'vitest'
 import { DEVICE_APPLICATION_JSON_BYTES, DEVICE_HISTORY_PAGE_BYTES } from '@foreman-code/contracts/device-application'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
-import { pageNativeHistory } from './nativeHistoryPage.js'
+import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { decodeResultCopies } from './executionResultCodec.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
+}
+
+const retainedWindows: Array<{
+  name: string
+  sequences: number[]
+  firstRetainedSequence: number
+  nextSequence: number
+  gap?: NativeHistory['gap']
+}> = [
+  { name: 'contiguous events', sequences: [10, 11, 12], firstRetainedSequence: 10, nextSequence: 13 },
+  { name: 'protected terminal frame', sequences: [10, 50], firstRetainedSequence: 10, nextSequence: 51,
+    gap: { fromSequence: 11, toSequence: 49, reason: 'retention' } },
+  { name: 'events on both sides of a gap', sequences: [10, 11, 50, 51],
+    firstRetainedSequence: 10, nextSequence: 52,
+    gap: { fromSequence: 12, toSequence: 49, reason: 'retention' } },
+  { name: 'trailing explicit gap', sequences: [10, 11], firstRetainedSequence: 10, nextSequence: 50,
+    gap: { fromSequence: 12, toSequence: 49, reason: 'retention' } },
+  { name: 'explicit oversized range', sequences: [10, 50], firstRetainedSequence: 10, nextSequence: 51,
+    gap: { fromSequence: 11, toSequence: 49, reason: 'event_too_large' } },
+  { name: 'empty retained window', sequences: [], firstRetainedSequence: 50, nextSequence: 50 },
+  { name: 'empty explicit gap', sequences: [], firstRetainedSequence: 10, nextSequence: 50,
+    gap: { fromSequence: 10, toSequence: 49, reason: 'retention' } },
+]
+
+function sequenceRange(from: number, to: number): number[] {
+  return Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index)
 }
 
 describe('byte-bounded native history pages', () => {
@@ -86,6 +112,63 @@ describe('byte-bounded native history pages', () => {
     expect(remaining.history.events).toEqual([event(443)])
     expect(remaining.history.gap).toBeUndefined()
     expect(remaining.page).toEqual({ nextAfterSequence: 443, hasMore: false })
+  })
+
+  it('advances through an explicit gap before skipping an oversized protected-snapshot event', () => {
+    const history: NativeHistory = {
+      events: [event(10), event(50, 'x'.repeat(DEVICE_HISTORY_PAGE_BYTES))],
+      pendingInteractions: [], firstRetainedSequence: 10, nextSequence: 51,
+      gap: { fromSequence: 11, toSequence: 49, reason: 'retention' },
+    }
+    const retained = pageNativeHistory(history, 10)
+    expect(retained.history.events).toEqual([])
+    expect(retained.history.gap).toEqual(history.gap)
+    expect(retained.page).toEqual({ nextAfterSequence: 49, hasMore: true })
+
+    const oversized = pageNativeHistory(history, 49)
+    expect(oversized.history.events).toEqual([])
+    expect(oversized.history.gap).toEqual({ fromSequence: 50, toSequence: 50, reason: 'event_too_large' })
+    expect(oversized.page).toEqual({ nextAfterSequence: 50, hasMore: false })
+    expect(nativeHistoryPageSource(oversized)?.gap).toEqual(oversized.history.gap)
+  })
+
+  it.each(retainedWindows)('accounts for every sequence across size and cursor combinations: $name', window => {
+    const texts = ['event', 'x'.repeat(DEVICE_HISTORY_PAGE_BYTES / 2), 'x'.repeat(DEVICE_HISTORY_PAGE_BYTES)]
+    for (let sizes = 0; sizes < texts.length ** window.sequences.length; sizes++) {
+      const events = window.sequences.map((sequence, index) =>
+        event(sequence, texts[Math.floor(sizes / texts.length ** index) % texts.length]!))
+      const history: NativeHistory = {
+        events, pendingInteractions: [], firstRetainedSequence: window.firstRetainedSequence,
+        nextSequence: window.nextSequence, ...(window.gap ? { gap: window.gap } : {}),
+      }
+      for (const after of [-1, 9, 10, 11, 25, 49, 50, 51].filter(cursor => cursor < window.nextSequence)) {
+        const delivered: NativeHarnessEvent[] = []
+        const skipped: number[] = []
+        let cursor = after
+        for (let page = 0; page <= window.nextSequence; page++) {
+          const reply = pageNativeHistory(history, cursor)
+          const through = reply.page.nextAfterSequence
+          expect(Buffer.byteLength(JSON.stringify(reply.history))).toBeLessThanOrEqual(DEVICE_HISTORY_PAGE_BYTES)
+          expect(reply.page.hasMore).toBe(through + 1 < window.nextSequence)
+          if (cursor + 1 < window.nextSequence) expect(through).toBeGreaterThan(cursor)
+          const gap = reply.history.gap
+          const missing = gap ? sequenceRange(gap.fromSequence, gap.toSequence) : []
+          const coverage = [...missing, ...reply.history.events.map(frame => frame.sequence)].sort((a, b) => a - b)
+          expect(coverage).toEqual(sequenceRange(cursor + 1, through))
+          expect(nativeHistoryPageSource(reply)?.gap).toEqual(gap)
+          delivered.push(...reply.history.events)
+          skipped.push(...missing)
+          cursor = through
+          if (!reply.page.hasMore) break
+        }
+        const expected = events.filter((frame, index) => frame.sequence > after
+          && Math.floor(sizes / texts.length ** index) % texts.length !== 2)
+        expect(delivered).toEqual(expected)
+        expect(skipped.sort((a, b) => a - b)).toEqual(sequenceRange(after + 1, window.nextSequence - 1)
+          .filter(sequence => !expected.some(frame => frame.sequence === sequence)))
+        expect(cursor).toBe(window.nextSequence - 1)
+      }
+    }
   })
 
   it('reports an oversized last event even when the terminal window is otherwise empty', () => {

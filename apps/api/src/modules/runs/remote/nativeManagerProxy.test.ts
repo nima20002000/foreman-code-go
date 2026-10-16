@@ -711,6 +711,46 @@ describe('remote native history streaming', () => {
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
 
+  it.each([0, 1, 2, 3])('drains protected terminal snapshots across oversized event mask %i', async mask => {
+    const protectedEvent = event(10, mask & 1 ? 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1) : 'protected')
+    const retainedEvent = event(50, mask & 2 ? 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1) : 'retained')
+    const history: NativeHistory = {
+      ...terminal([protectedEvent, retainedEvent]),
+      gap: { fromSequence: 11, toSequence: 49, reason: 'retention' },
+    }
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const skipped: DeviceHistoryGap[] = []
+    const delivered: NativeHarnessEvent[] = []
+    for await (const frame of f.proxy.startTurn(session, {
+      prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async gap => { skipped.push(gap) },
+    })) delivered.push(frame)
+    const expectedGaps: DeviceHistoryGap[] = [{ fromSequence: 0, toSequence: 9, reason: 'retention' }]
+    if (mask & 1) expectedGaps.push({ fromSequence: 10, toSequence: 10, reason: 'event_too_large' })
+    expectedGaps.push({ fromSequence: 11, toSequence: 49, reason: 'retention' })
+    if (mask & 2) expectedGaps.push({ fromSequence: 50, toSequence: 50, reason: 'event_too_large' })
+    expect(skipped).toEqual(expectedGaps)
+    expect(delivered).toEqual([...(mask & 1 ? [] : [protectedEvent]), ...(mask & 2 ? [] : [retainedEvent])])
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn).toEqual(history.terminalTurn)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+
+  it.each([false, true])('rejects an unreported hole before an oversized event (explicit gap: %s)', async explicit => {
+    const history: NativeHistory = {
+      ...terminal([event(10), event(50, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1))]),
+      ...(explicit ? { gap: { fromSequence: 11, toSequence: 48, reason: 'retention' as const } } : {}),
+    }
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const consume = async () => {
+      for await (const frame of f.proxy.startTurn(session, {
+        prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      })) expect(frame.sequence).toBe(10)
+    }
+    await expect(consume()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
+  })
+
   it('streams and reconciles terminal answers larger than a history page using the original result', async () => {
     const history = terminal([event(0)])
     const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }
