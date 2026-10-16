@@ -60,19 +60,19 @@ async function fixture() {
     agentId: f.execution.agentId, workspaceId: 'workspace', version: 1, prompt: { system: 'test' },
     assignedSkills: [], harness: DEFAULT_HARNESS_DEFAULTS.codex, contentHash: 'fixture', createdAt: f.execution.createdAt }
   composition.manager({ executionId: f.execution.id, agentId: f.execution.agentId,
-    configuration, harness: 'codex', workingDirectory: f.execution.workingDirectory }, () => f.owner)
+    configuration, harness: 'codex', workingDirectory: f.execution.workingDirectory! }, () => f.owner)
   const callbacks = ports.manager.mock.calls.at(-1)![2] as Parameters<typeof remoteNativeManager>[2]
   const observe = async () => {
     const receipt = f.readout.receipt
     await VerifiedRemoteEvidence.commit(receipt, f.connection, await callbacks.commit(receipt, f.connection, {}))
-    await callbacks.observeOriginalSource!(receipt, { type: 'history', history: f.readout.history! })
+    await callbacks.observeOriginalSource!(receipt, { type: 'history', history: f.readout.history! } as never)
   }
   const closeNative = () => {
     f.readout.receipt = { ...f.readout.receipt, sequence: f.readout.receipt.sequence + 1,
       phase: 'confirmed_terminal', stopFence: true, terminal: { kind: 'cancelled',
         closureEvidenceDigest: commandInputHash({ intent: f.intent, native: f.readout.receipt.native,
           launch: f.captured.launch, physicalOwnerClosed: true }).slice('sha256:'.length) } }
-    f.readout.observation = { ...f.captured.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' }
+    f.readout.observation = { ...f.captured.launch, lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' } as never
     f.readout.closure = { ownerClosed: true, launch: f.readout.observation }
   }
   return { ...f, sqlConnection, composition, state, observe, closeNative }
@@ -95,7 +95,7 @@ it('releases real execution bindings after cold closure is committed and acknowl
     await f.composition.prepare(f.execution.id)
     expect(() => f.composition.capture({ owner: f.owner } as WorkflowNativeCaptureInput, {
       execution: f.execution, source: { type: 'history', history: f.readout.history! }, closureGeneration: '1',
-    } as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
+    } as unknown as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
   } finally { await f.sqlConnection.close() }
 })
 
@@ -145,7 +145,7 @@ it.each([false, true])('releases real reviewer source maps only after closed lif
       await f.composition.prepare(f.execution.id)
       expect(() => f.composition.capture({ owner: f.owner } as WorkflowNativeCaptureInput, {
         execution: f.execution, source: { type: 'history', history }, closureGeneration: '1',
-      } as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
+      } as unknown as WorkflowNativeCapture)).toThrowError(expect.objectContaining({ code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED' }))
     } else {
       expect(f.composition.isRemote(f.execution.id)).toBe(true)
       expect(f.composition.getRemoteNativeOwners()).toEqual([])
