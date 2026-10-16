@@ -105,6 +105,7 @@ describe('terminal resume cleanup', () => {
       const settled = await f.runs.getRepeatSnapshot()
       const readSettledRun = async () => {
         expect(await f.runs.getRepeatSnapshot()).toEqual(settled)
+        return undefined
       }
       f.native.cancelRun.mockImplementation(readSettledRun)
       f.native.finishRun.mockImplementation(readSettledRun)
