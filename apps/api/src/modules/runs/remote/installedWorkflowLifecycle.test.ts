@@ -67,6 +67,15 @@ it('refuses to invent artifact output when a recovered terminal has no saved out
 
 it('cancels the installed Worker preflight request when Stop arrives', async () => {
   const f = await constructionFixture()
+  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({
+    ...f.registry.scope(owner), launchId: f.launch.launchId,
+  }))
+  const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
+  vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
+    f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] })
+    return true
+  })
+  vi.spyOn(f.registry, 'closedRegistration').mockReturnValue(closed)
   const entered = deferred()
   const release = deferred()
   let requestSignal: AbortSignal | undefined
@@ -91,7 +100,9 @@ it('cancels the installed Worker preflight request when Stop arrives', async () 
   const preparationResult = Promise.allSettled([preparing])
   let stopping: Promise<unknown> | undefined
   try {
-    await entered.promise
+    await Promise.race([entered.promise, preparing.then(() => {
+      throw new Error('Preparation completed before preflight')
+    })])
     stopping = f.handler({ method: 'control', intent: f.intent, placement: f.placement,
       command: { schemaVersion: 1, protocolVersion: 1, commandId: 'stop-preflight',
         operationId: f.intent.operationId, executionId: f.intent.executionId,
@@ -128,7 +139,7 @@ it('persists published artifact output before the terminal receipt is committed'
   const recovery = new InstalledWorkflowRecovery(join(f.root, 'workflow-recovery'),
     new NativeProcessRegistry(join(f.root, 'native-processes')))
   let outputAtCommit: unknown
-  const commit = f.journal.terminal.bind(f.journal)
+  const commit = vi.mocked(f.journal.terminal).getMockImplementation()!
   vi.spyOn(f.journal, 'terminal').mockImplementation(async (operationId, terminal) => {
     outputAtCommit = await recovery.readOutput(operationId)
     return commit(operationId, terminal)
