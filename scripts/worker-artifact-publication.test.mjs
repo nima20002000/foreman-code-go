@@ -17,19 +17,27 @@ const commit = 'c'.repeat(40)
 const githubStub = `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { createHash } from 'node:crypto'
 const args = process.argv.slice(2)
 const path = process.env.ARTIFACT_TEST_STATE
 const state = JSON.parse(readFileSync(path, 'utf8'))
-const operation = args[1]
+const operation = args[0] === 'api' ? 'api' : args[1]
 state.calls.push({ operation, args })
 const save = () => writeFileSync(path, JSON.stringify(state))
 const fail = message => { save(); console.error(message); process.exit(1) }
+const apiReads = state.calls.filter(call => call.operation === 'api').length
 const shouldFail = state.failure?.operation === operation && (!state.failed || state.failure.always)
+  && apiReads > (state.failure.afterReads ?? -1)
 if (shouldFail && !state.failure.afterUpload) {
   state.failed = true
   fail(state.failure.message)
 }
-if (operation === 'view' && !state.exists) fail('release not found')
+if (operation === 'api') {
+  if (!state.exists) fail('HTTP 404: release not found')
+  const assets = Object.entries(state.assets).map(([name, bytes]) => ({ name,
+    digest: 'sha256:' + createHash('sha256').update(Buffer.from(bytes, 'base64')).digest('hex') }))
+  console.log(JSON.stringify({ assets }))
+}
 if (operation === 'create') state.exists = true
 if (operation === 'upload') {
   for (const asset of args.slice(3, args.indexOf('--repo'))) {
@@ -47,11 +55,6 @@ if (operation === 'upload') {
     fail(state.failure.message)
   }
 }
-if (operation === 'download') {
-  const name = args[args.indexOf('--pattern') + 1]
-  if (!state.assets[name]) fail('no assets match the file pattern')
-  writeFileSync(args[args.indexOf('--output') + 1], Buffer.from(state.assets[name], 'base64'))
-}
 save()
 `
 
@@ -63,7 +66,7 @@ async function fixture(t, overrides = {}) {
   const bin = join(directory, 'bin')
   await mkdir(bin)
   await writeFile(join(bin, 'gh'), githubStub, { mode: 0o700 })
-  const artifacts = ['a', 'b'].map(letter => ({ manifestSha256: letter.repeat(64) }))
+  const artifacts = ['a', 'b', 'c', 'd'].map(letter => ({ manifestSha256: letter.repeat(64) }))
   for (const artifact of artifacts) {
     const source = join(directory, artifact.manifestSha256)
     await mkdir(source)
@@ -102,7 +105,7 @@ test('publish CLI resumes a partial release and reuses verified assets without o
   assert.equal(uploads.length, 1)
   assert.equal(uploads[0].args.some(arg => arg.endsWith(`${f.artifacts[0].manifestSha256}.tar.gz`)), false)
   assert.equal(uploads[0].args.includes('--clobber'), false)
-  assert.equal(Object.keys(remote.assets).length, 2)
+  assert.equal(Object.keys(remote.assets).length, f.artifacts.length)
   assert.deepEqual((await f.index()).github, { repository: repositoryName, tag: `worker-${commit}` })
   assert.deepEqual((await f.index()).publication, { state: 'published', lastError: null })
   const calls = remote.calls.length
@@ -124,7 +127,7 @@ test('republication accepts identical bundle bytes after filesystem metadata cha
   await publishWorkerArtifactsToGitHub(f.options)
   const second = await f.remote()
   assert.deepEqual(second.assets, first.assets)
-  assert.equal(second.calls.filter(call => call.operation === 'upload').length, 2)
+  assert.equal(second.calls.filter(call => call.operation === 'upload').length, 1)
 })
 
 test('publish CLI retries connection reset by peer and records a verified publication', async t => {
@@ -135,20 +138,21 @@ test('publish CLI retries connection reset by peer and records a verified public
   assert.match(stderr, /nextRetryMs/)
   assert.equal((await f.index()).publication.state, 'published')
   const uploads = (await f.remote()).calls.filter(call => call.operation === 'upload')
-  assert.equal(uploads.length, 2)
-  assert.ok(uploads.every(call => call.args.slice(3, call.args.indexOf('--repo')).length === 1))
+  assert.equal(uploads.length, 1)
+  assert.equal(uploads[0].args.slice(3, uploads[0].args.indexOf('--repo')).length, f.artifacts.length)
 })
 
-for (const operation of ['view', 'create', 'upload', 'download']) {
-  test(`retries a transient ${operation} network failure and reuses uploaded assets`, async t => {
-    const f = await fixture(t, { exists: operation !== 'create', failure: { operation,
-      message: 'read: connection reset by peer', afterUpload: operation === 'upload' } })
+for (const failure of [{ operation: 'api' }, { operation: 'create' },
+  { operation: 'upload', afterUpload: true }, { operation: 'api', afterReads: 1 }]) {
+  test(`retries a transient ${failure.operation} failure after ${failure.afterReads ?? 0} reads`, async t => {
+    const f = await fixture(t, { exists: failure.operation !== 'create', failure: { ...failure,
+      message: 'read: connection reset by peer' } })
     const published = await f.publish()
     assert.equal(published.publication.state, 'published')
     assert.deepEqual(f.waits, [5000])
-    assert.equal(Object.keys((await f.remote()).assets).length, 2)
+    assert.equal(Object.keys((await f.remote()).assets).length, f.artifacts.length)
     const uploads = (await f.remote()).calls.filter(call => call.operation === 'upload')
-    assert.equal(uploads.length, 2)
+    assert.equal(uploads.length, 1)
   })
 }
 
@@ -157,7 +161,7 @@ test('verifies and reuses an asset when an upload races with another publisher',
     message: 'HTTP 422: Validation Failed\nReleaseAsset.name already exists' } })
   assert.equal((await f.publish()).publication.state, 'published')
   assert.deepEqual(f.waits, [5000])
-  assert.equal((await f.remote()).calls.filter(call => call.operation === 'upload').length, 2)
+  assert.equal((await f.remote()).calls.filter(call => call.operation === 'upload').length, 1)
 })
 
 test('rejects a mismatched existing asset without replacing it or advancing the target', async t => {
@@ -173,11 +177,11 @@ test('rejects a mismatched existing asset without replacing it or advancing the 
 })
 
 test('bounds network retries and retains the unpublished target after exhaustion', async t => {
-  const f = await fixture(t, { failure: { operation: 'download', always: true,
+  const f = await fixture(t, { failure: { operation: 'api', always: true,
     message: 'read: connection reset by peer' } })
   await assert.rejects(f.publish(), /connection reset by peer/)
   assert.deepEqual(f.waits, [5000, 10000, 20000, 25000])
-  assert.equal((await f.remote()).calls.filter(call => call.operation === 'download').length, 5)
+  assert.equal((await f.remote()).calls.filter(call => call.operation === 'api').length, 5)
   assert.equal((await f.index()).github, undefined)
   assert.equal((await f.index()).publication.state, 'failed')
 })
@@ -187,4 +191,18 @@ test('does not retry an unrelated validation failure', async t => {
   await assert.rejects(f.publish(), /invalid asset/)
   assert.deepEqual(f.waits, [])
   assert.equal((await f.index()).publication.state, 'failed')
+})
+
+test('uploads all missing assets in one call and verifies digests without downloading', async t => {
+  const f = await fixture(t)
+  await f.publish()
+  const remote = await f.remote()
+  assert.deepEqual(remote.calls.map(call => call.operation), ['api', 'upload', 'api'])
+  for (const call of remote.calls.filter(call => call.operation === 'api')) {
+    assert.deepEqual(call.args, ['api', `repos/${repositoryName}/releases/tags/worker-${commit}`])
+  }
+  const upload = remote.calls.find(call => call.operation === 'upload')
+  assert.deepEqual(upload.args.slice(3, upload.args.indexOf('--repo')).map(path => path.split('/').at(-1)),
+    f.artifacts.map(artifact => `${artifact.manifestSha256}.tar.gz`))
+  assert.equal(upload.args.includes('--clobber'), false)
 })

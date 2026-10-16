@@ -23,9 +23,12 @@ function publicationWindow(previous, now = Date.now()) {
 }
 
 export function runWorkerPublicationCommand(command, args, { timeoutMs = PUBLICATION_COMMAND_TIMEOUT_MS,
-  killGraceMs = 5000, ...options } = {}) {
+  killGraceMs = 5000, captureOutput = false, ...options } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { ...options, detached: true, stdio: ['ignore', 'inherit', 'pipe'] })
+    const child = spawn(command, args, { ...options, detached: true,
+      stdio: ['ignore', captureOutput ? 'pipe' : 'inherit', 'pipe'] })
+    let stdout = ''
+    child.stdout?.on('data', chunk => { stdout += chunk.toString() })
     let stderr = ''
     let expired = false
     let closed = false
@@ -59,7 +62,7 @@ export function runWorkerPublicationCommand(command, args, { timeoutMs = PUBLICA
       clearTimeout(timer)
       if (expired) {
         if (forced) reject(failure())
-      } else if (code === 0) resolve()
+      } else if (code === 0) resolve({ stdout })
       else reject(new Error(`${command} failed (${code}): ${stderr.trim()}`))
     })
   })
@@ -174,38 +177,36 @@ function githubErrorReason(error) {
   return `${error.message ?? ''} ${error.stderr ?? ''}`
 }
 
-const missingAsset = /no assets match the file pattern|no assets to download/iu
-
 function retryableGitHubError(error) {
   const reason = githubErrorReason(error)
-  if (reason.includes('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED')) return false
+  if (reason.includes('WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED')
+    || reason.includes('GitHub Worker asset checksum mismatch')) return false
   return /HTTP (?:404|408|429|5\d\d)|release not found|release already exists|ReleaseAsset\.name already exists/iu.test(reason)
     || /ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection reset|broken pipe|socket hang up|\bEOF\b|timed out/iu.test(reason)
     || /TLS handshake timeout|i\/o timeout|temporary failure in name resolution/iu.test(reason)
-    || missingAsset.test(reason)
+    || /GitHub Worker asset not found/iu.test(reason)
 }
 
-async function verifyGitHubAsset({ asset, staging, tag, name, run, cwd }) {
-  const filename = asset.slice(asset.lastIndexOf('/') + 1)
-  const downloaded = join(staging, `downloaded-${filename}`)
-  await rm(downloaded, { force: true })
-  await run('gh', ['release', 'download', tag, '--repo', name, '--pattern', filename,
-    '--output', downloaded], { cwd })
-  if (sha256(await readFile(downloaded)) !== sha256(await readFile(asset))) {
-    throw new Error(`GitHub Worker asset checksum mismatch: ${filename}`)
-  }
-}
-
-async function publishGitHubAsset(options) {
+async function readGitHubRelease({ name, tag, run, cwd }) {
+  let result
   try {
-    await verifyGitHubAsset(options)
-    return
+    result = await run('gh', ['api', `repos/${name}/releases/tags/${tag}`], { cwd, captureOutput: true })
   } catch (error) {
-    if (!missingAsset.test(githubErrorReason(error))) throw error
+    if (/HTTP 404/iu.test(githubErrorReason(error))) return null
+    throw error
   }
-  const { tag, asset, name, run, cwd } = options
-  await run('gh', ['release', 'upload', tag, asset, '--repo', name], { cwd })
-  await verifyGitHubAsset(options)
+  return JSON.parse(result.stdout)
+}
+
+function missingGitHubAssets(assets, release) {
+  const digests = new Map((release?.assets ?? []).map(asset => [asset.name, asset.digest]))
+  return assets.filter(asset => {
+    if (!digests.has(asset.name)) return true
+    if (digests.get(asset.name) !== asset.digest) {
+      throw new Error(`GitHub Worker asset checksum mismatch: ${asset.name}`)
+    }
+    return false
+  })
 }
 
 /** Uploads each artifact as <manifestSha256>.tar.gz to the GitHub release worker-<commit>, so paired Workers download
@@ -224,23 +225,25 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
       await run('tar', ['-czf', asset, '--sort=name', '--format=gnu', '--mtime=@0',
         '--owner=0', '--group=0', '--numeric-owner', '--mode=u+rwX,go-rwx',
         '-C', join(directory, manifestSha256), '.'], { cwd: repository ?? directory })
-      assets.push(asset)
+      assets.push({ path: asset, name: `${manifestSha256}.tar.gz`,
+        digest: `sha256:${sha256(await readFile(asset))}` })
     }
     const backoff = [5000, 10000, 20000, 25000]
     for (let attempt = 0; ; attempt++) {
       try {
-        const exists = await run('gh', ['release', 'view', tag, '--repo', name], { cwd: repository ?? directory })
-          .then(() => true, error => {
-            if (/HTTP 404|release not found/iu.test(`${error.message ?? ''} ${error.stderr ?? ''}`)) return false
-            throw error
-          })
-        if (!exists) {
+        const options = { name, tag, run, cwd: repository ?? directory }
+        const release = await readGitHubRelease(options)
+        if (!release) {
           await run('gh', ['release', 'create', tag, '--repo', name, '--prerelease',
             '--title', `Worker ${commit.slice(0, 12)}`,
-            '--notes', `Foreman Code Worker artifacts built from ${commit}.`], { cwd: repository ?? directory })
+            '--notes', `Foreman Code Worker artifacts built from ${commit}.`], { cwd: options.cwd })
         }
-        for (const asset of assets) {
-          await publishGitHubAsset({ asset, staging, tag, name, run, cwd: repository ?? directory })
+        const missing = missingGitHubAssets(assets, release)
+        if (missing.length) {
+          await run('gh', ['release', 'upload', tag, ...missing.map(asset => asset.path), '--repo', name],
+            { cwd: options.cwd })
+          const remaining = missingGitHubAssets(assets, await readGitHubRelease(options))
+          if (remaining.length) throw new Error(`GitHub Worker asset not found: ${remaining[0].name}`)
         }
         return { repository: name, tag }
       } catch (error) {
@@ -332,7 +335,7 @@ export async function recordWorkerPublicationFailure(directory, error) {
   await writeArtifactIndex(directory, { ...index, publication })
 }
 
-/** The device target advances only when all GitHub release assets pass download verification. */
+/** The device target advances only when all GitHub release asset digests match. */
 export async function publishInstalledWorkerArtifacts({ directory, repositoryName, commit, run,
   publish = publishWorkerArtifactsToGitHub }) {
   const path = join(directory, 'index.json')
