@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
+import { DEVICE_APPLICATION_IN_FLIGHT } from '@foreman-code/contracts/device-application'
 import { workerBundleFixture } from '../../../test/support/workerBundle.js'
 import { buildComputerFixture } from '../../../test/helpers/buildComputerFixture.js'
 import { JobComputerSelection } from '../jobs/computerSelection.js'
@@ -179,6 +180,36 @@ it('checks the running bundle without waiting for slow full maintenance inspecti
     await f.close()
   }
 }, 20_000)
+
+it('checks bundle readiness while startup requests occupy every ordinary device slot', async () => {
+  const f = await workerBundleFixture()
+  let release!: () => void
+  const held = new Promise<void>(resolve => { release = resolve })
+  f.match()
+  f.handled.mockImplementation(async payload => {
+    await held
+    return { payload }
+  })
+  const occupied: Promise<unknown>[] = []
+  let readiness: Promise<unknown> | undefined
+  try {
+    for (let index = 0; index < DEVICE_APPLICATION_IN_FLIGHT - 1; index++) {
+      occupied.push(f.request('ci-host-v1', { operation: 'status' }))
+    }
+    await vi.waitFor(() => expect(f.handled).toHaveBeenCalledTimes(DEVICE_APPLICATION_IN_FLIGHT - 1))
+    occupied.push(f.request('execution-v1', { method: 'status' }))
+    await vi.waitFor(() => expect(f.handled).toHaveBeenCalledTimes(DEVICE_APPLICATION_IN_FLIGHT))
+
+    readiness = f.endpoint.assertWorkerBundleReady(f.identity.deviceId).then(() => 'ready', (error: unknown) => error)
+    await vi.waitFor(() => expect(f.bundleStatus).toHaveBeenCalledOnce())
+    expect(await readiness).toBe('ready')
+    expect(f.handled).toHaveBeenCalledTimes(DEVICE_APPLICATION_IN_FLIGHT)
+  } finally {
+    release()
+    await Promise.allSettled([...occupied, ...(readiness ? [readiness] : [])])
+    await f.close()
+  }
+})
 
 it('reports a Worker that cannot report its running bundle as a retryable domain error', async () => {
   const f = await workerBundleFixture()
