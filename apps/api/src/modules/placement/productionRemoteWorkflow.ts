@@ -381,7 +381,8 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
   }
   let status = await readStatus({ method: 'status', intent: binding.intent, placement: binding.placement })
   if (status.status === 'known' && sameWorkflowValue(status.receipt.intent, binding.intent)
-    && !status.receipt.native && !status.receipt.entryAttempted && !status.receipt.terminal) {
+    && !status.receipt.native && !status.receipt.terminal) {
+    // Entry may have started without acknowledging a session; Stop still needs positive closure below.
     owner.assertOwned()
     const intent = binding.intent
     status = await readStatus({ method: 'control', intent, placement: binding.placement,
