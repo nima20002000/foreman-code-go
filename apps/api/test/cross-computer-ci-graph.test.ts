@@ -53,7 +53,7 @@ describe('cross-computer CI graph', () => {
     expect(graph).not.toHaveProperty('repeat')
     for (const agent of agents) {
       expect(agent.harnessConfiguration).toMatchObject({ harness: 'codex', sandbox: 'workspace-write',
-        model: 'gpt-6-luna', reasoningEffort: 'medium', advanced: {
+        model: 'gpt-6.1-sol', reasoningEffort: 'medium', advanced: {
           approvalPolicy: 'never', additionalWritableDirectories: [], workspaceWrite: { networkAccess: true },
         } })
       expect(agent.graphqlTools).toEqual(expect.arrayContaining(['context_get', 'ci_computers_list', 'ci_run',

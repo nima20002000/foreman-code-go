@@ -5,7 +5,7 @@ import { WorkflowDefinitionV3Schema, type WorkflowDefinitionV3 } from '@foreman-
 
 export const ciHarness = {
   harness: 'codex' as const,
-  model: 'gpt-6-luna',
+  model: 'gpt-6.1-sol',
   reasoningEffort: 'medium' as const,
   serviceTier: 'standard' as const,
   // Writable Agents receive their own product-managed git worktree and branch.
