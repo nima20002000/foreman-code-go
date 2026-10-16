@@ -223,3 +223,15 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     } }
 }
 
+
+/** Requests cancellation, then exposes provider termination after the discovery window. */
+export async function confirmCancellation(f: Awaited<ReturnType<typeof fixture>>, runId: string) {
+  if (f.cloud.provider.id === 'github' && !f.github.listed.length) {
+    f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
+  }
+  await f.cloud.handle({ operation: 'cancel', runId })
+  Object.assign(f.github, { status: 'completed', conclusion: 'cancelled' })
+  f.circle.runView = { phase: 'ended', current_outcome: 'canceled', workflows: [] }
+  f.advance(75_001)
+  return f.cloud.handle({ operation: 'cancel', runId })
+}

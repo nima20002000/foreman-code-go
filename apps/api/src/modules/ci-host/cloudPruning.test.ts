@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
-import { fixture } from './cloud.testSupport.js'
+import { confirmCancellation, fixture } from './cloud.testSupport.js'
 
 it.each(['github', 'circleci'] as const)(
   'waits for cancellation cleanup queued during an active %s sweep', async provider => {
@@ -25,7 +25,7 @@ it.each(['github', 'circleci'] as const)(
         runId, suite: 'lint', scope: 'full',
       })
       await expect.poll(() => sweeps).toBe(1)
-      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+      expect(await confirmCancellation(f, runId))
         .toMatchObject({ run: { state: 'canceled' } })
       let cleanupFinished = false
       cleanup = f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci').then(() => {
@@ -72,7 +72,7 @@ it.each(['github', 'circleci'] as const)(
       await sweeping
       expect(f.mirrorGit('for-each-ref', '--format=%(refname)', branch)).toBe(branch)
       f.advance(5 * 60_000)
-      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+      expect(await confirmCancellation(f, runId))
         .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
     } finally {
       release()
@@ -109,7 +109,7 @@ it.each(['github', 'circleci'] as const)(
       await expect.poll(() => deleting, { timeout: 5_000 }).toBe(true)
       expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/'))
         .toContain(`refs/heads/ci/${f.commit}`)
-      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+      expect(await confirmCancellation(f, runId))
         .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
     } finally {
       release()

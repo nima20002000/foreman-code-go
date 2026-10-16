@@ -89,7 +89,7 @@ it('runs the same published files on CircleCI and reads its result, log and dura
   expect(await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full',
     partition: { index: 1, count: 2 } })).toMatchObject({ run: { runId, state: 'running' } })
   const snapshot = f.mirrorGit('rev-parse', `refs/heads/ci/${f.commit}`)
-  const workflowRef = `ci-snapshot/${snapshot}`
+  const workflowRef = `ci/${f.commit}-${runId}`
   expect(f.mirrorGit('rev-parse', `${workflowRef}^{tree}`)).toBe(f.run('rev-parse', 'HEAD^{tree}'))
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ run: { provenance: { sourceCommit: f.commit, workflowCommit: snapshot, workflowRef } } })

@@ -43,3 +43,34 @@ it('retains ownership when terminal status cannot be read after cancellation', a
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null } })
   }
 })
+
+it('waits for a late GitHub duplicate to stop and remembers it when discovery no longer lists it', async () => {
+  const f = await fixture()
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
+  f.github.listed = [{ databaseId: 91, displayTitle: `ci ${runId}` }]
+  const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 } as const
+  await f.cloud.handle(read)
+  await f.cloud.handle({ operation: 'cancel', runId })
+  f.github.listed.push({ databaseId: 92, displayTitle: `ci ${runId}` })
+  Object.assign(f.github, { status: 'completed', conclusion: 'cancelled' })
+  let duplicateStopped = false
+  const original = f.ports.run
+  vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
+    if (file === 'gh' && args[0] === 'api' && args.some(arg => arg.includes('/runs/92/jobs')) && !duplicateStopped) {
+      return { code: 0, stderr: '', stdout: 'HTTP/2.0 200 OK\r\n\r\n'
+        + JSON.stringify({ jobs: [{ id: 92, status: 'in_progress', steps: [] }] }) }
+    }
+    return original(file, args, options)
+  })
+  f.advance(75_001)
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null } })
+  f.github.listed.pop()
+  f.advance(4_001)
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null } })
+  duplicateStopped = true
+  f.advance(4_001)
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'canceled' } })
+  expect(f.github.canceled).toEqual(['91', '92'])
+})
