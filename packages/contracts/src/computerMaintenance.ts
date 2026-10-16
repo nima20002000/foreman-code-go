@@ -40,7 +40,8 @@ export type SyncedMarketplace = z.infer<typeof SyncedMarketplaceSchema>
 
 export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
-  z.object({ kind: z.literal('update-worker') }).strict(),
+  // Automatic convergence preserves the updater's failure guard; explicit Retry defaults to true.
+  z.object({ kind: z.literal('update-worker'), retry: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal('update-system') }).strict(),
   z.object({ kind: z.literal('restart') }).strict(),
   // An omitted harness is unavailable; an empty list is a successfully read empty catalog.

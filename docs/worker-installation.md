@@ -230,15 +230,16 @@ old app directory and perform a fresh approved installation into an empty app
 root with the original state. Do not fabricate the binding or delete state to
 get past the check.
 
-The installer serializes with an app-owned lock directory, verifies the approved
-manifest and all copied bytes, fsyncs staged files and every containing directory
+The installer serializes with a kernel lock on an open installation-root directory
+descriptor, verifies the approved manifest and all copied bytes, fsyncs staged files and every containing directory
 from children to parents, persists newly created installation-root ancestors,
 and atomically changes
 `current`. `previous` retains the last version. Full disk/read-only errors before
 publication leave `current` intact. A process killed during staging can leave an
-app-owned `.stage-*` and `.install-lock`; after confirming no installer is active,
-a human may remove only that identified staging/lock. There is no unsafe automatic
-stale-PID cleanup. Retry of the same installed manifest is idempotent.
+app-owned `.stage-*`; after confirming no installer is active,
+a human may remove only that identified staging directory. The kernel releases the
+installation lock when the process exits, including after forced termination.
+Retry of the same installed manifest is idempotent.
 
 Setup retains the installation and worker-state locks while publishing the MCP
 bridge, Companion launcher, desktop files and proposed service. Companion service

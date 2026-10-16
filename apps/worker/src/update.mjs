@@ -330,7 +330,8 @@ export class WorkerUpdater {
       const manifest = WorkerArtifactManifestSchema.parse(release.manifest);
       validateManifest(manifest, facts, expected);
       if (manifest.version !== release.version) throw new WorkerError('manifest_version_mismatch');
-      const sameContent = this.contentSha256 === workerArtifactContentSha256(manifest);
+      const contentSha256 = workerArtifactContentSha256(manifest);
+      const sameContent = this.contentSha256 === contentSha256;
       if (sameContent) {
         const bytes = Buffer.from(`${JSON.stringify(release.manifest, null, 2)}\n`);
         if (hash(bytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
@@ -343,7 +344,8 @@ export class WorkerUpdater {
         return `Worker ${version} is current.`;
       }
       // Connection loss and interrupted shutdowns are safe to retry from the release manifest.
-      if (!retry && this.record?.manifestSha256 === release.manifestSha256
+      if (!retry && (this.record?.manifestSha256 === release.manifestSha256
+        || this.record?.contentSha256 === contentSha256)
         && ['failed', 'rolled-back'].includes(this.statusValue.state)
         && !this.retryableFailure()) {
         return 'Worker update needs a retry.';
@@ -352,7 +354,7 @@ export class WorkerUpdater {
       enter('release');
       const launch = await run(() => (this.options.locateLaunch ?? locateWorkerLaunch)(this.options));
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
-        { manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
+        { manifestSha256: release.manifestSha256, contentSha256,
           downloadSource: null });
       // Download and verify while the Worker still admits work.
       // Only installation and restart need the drained runtime.
@@ -391,6 +393,8 @@ export class WorkerUpdater {
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {
+      // A launched helper may still restart this service; only its reconciled outcome can reopen work.
+      if (error?.code === 'worker_update_supervisor_handoff_pending') throw error;
       let failureCode = error instanceof WorkerError ? error.code : 'worker_update_failed';
       if (error?.code === 'WORKER_UPDATE_DRAIN_DEADLINE_EXCEEDED') failureCode = 'worker_update_drain_deadline_exceeded';
       if (this.lifetime.signal.aborted) failureCode = 'worker_updater_stopped';

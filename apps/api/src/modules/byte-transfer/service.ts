@@ -589,6 +589,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
   }
   async isRuntimeQuiescent(): Promise<boolean> {
     if (this.busy.size || this.readers.size || this.allocationBusy) return false
+    await this.cleanupExpired()
     for (const intent of await this.inventory()) {
       const record = await this.load(intent.transferId)
       if (!['verified', 'cancelled'].includes(record.progress.state)

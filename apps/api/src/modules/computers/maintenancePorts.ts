@@ -17,7 +17,7 @@ export interface MaintenancePorts {
   selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
   workerUpdate?: {
     status(): Promise<WorkerUpdateStatus>
-    start(): Promise<string>
+    start(options: { retry: boolean }): Promise<string>
     /** Returns a retained outcome only when it completed by the task's deadline. */
     outcome?(task: MaintenanceTask, deadlineAt: string): Promise<WorkerUpdateStatus | null>
   }

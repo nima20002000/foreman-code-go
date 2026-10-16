@@ -174,9 +174,17 @@ export async function waitForWorkerReady({ stateDirectory, version, workerInstal
   timeoutMs = 60_000, pollMs = 250, readStatus = readWorkerStatus }) {
   const deadline = Date.now() + timeoutMs;
   let lastStatus;
+  let lastProbeError;
   do {
-    const status = await readStatus(stateDirectory);
-    lastStatus = status;
+    let status;
+    try {
+      status = await readStatus(stateDirectory);
+    } catch (error) {
+      if (!['worker_status_timeout', 'ECONNRESET', 'ECONNREFUSED', 'ENOENT', 'EPIPE', 'ETIMEDOUT']
+        .includes(error.code)) throw error;
+      lastProbeError = error;
+    }
+    if (status) lastStatus = status;
     if (status?.phase === 'blocked' && status.failure) throw new Error(status.failure);
     if (status?.active === true && status.phase === 'ready' && status.appVersion === version
       && status.workerInstallationId === workerInstallationId) return;
@@ -185,8 +193,9 @@ export async function waitForWorkerReady({ stateDirectory, version, workerInstal
   const observed = lastStatus
     ? `phase=${lastStatus.phase}, failure=${lastStatus.failure ?? 'none'}, version=${lastStatus.appVersion ?? 'unknown'}`
     : 'no running Worker status';
+  const probeFailure = lastProbeError ? ` Last status probe: ${workerUpdateErrorMessage(lastProbeError)}.` : '';
   throw new WorkerError('worker_update_startup_timeout',
-    `worker_update_startup_timeout: Worker ${version} did not become ready; ${observed}.`);
+    `worker_update_startup_timeout: Worker ${version} did not become ready; ${observed}.${probeFailure}`);
 }
 
 async function readWorkerStartupFailure(plan, since) {
@@ -289,17 +298,28 @@ export async function launchUpdateSupervisor(stateDirectory, { run = execute } =
   record.restart.unit = unit;
   delete record.supervisorStarted;
   await writeUpdateRecord(stateDirectory, record);
-  await run('/usr/bin/systemd-run', ['--user', '--collect', '--unit', unit, '--property=Type=exec',
-    '--property=Restart=on-failure', '--property=RestartSec=1',
-    ...(process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1' ? ['--setenv=FOREMAN_INSTALL_SKIP_CI_SMOKE=1'] : []),
-    process.execPath, helper, stateDirectory], { timeout: 10_000, maxBuffer: 4096, env: environment() });
-  const deadline = Date.now() + 10_000;
-  do {
-    const record = await readUpdateRecord(stateDirectory);
-    if (record?.supervisorStarted && record.supervisorStarted === record.restart?.requestId) return;
-    await wait(50);
-  } while (Date.now() < deadline);
-  throw new WorkerError('worker_update_supervisor_start_failed');
+  try {
+    await run('/usr/bin/systemd-run', ['--user', '--collect', '--unit', unit, '--property=Type=exec',
+      '--property=Restart=on-failure', '--property=RestartSec=1',
+      ...(process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1' ? ['--setenv=FOREMAN_INSTALL_SKIP_CI_SMOKE=1'] : []),
+      process.execPath, helper, stateDirectory], { timeout: 10_000, maxBuffer: 4096, env: environment() });
+  } catch (error) {
+    if (error.killed || error.signal || error.code === 'ETIMEDOUT') {
+      throw new WorkerError('worker_update_supervisor_handoff_pending', undefined, { cause: error });
+    }
+    throw error;
+  }
+  try {
+    const deadline = Date.now() + 10_000;
+    do {
+      const record = await readUpdateRecord(stateDirectory);
+      if (record?.supervisorStarted && record.supervisorStarted === record.restart?.requestId) return;
+      await wait(50);
+    } while (Date.now() < deadline);
+    throw new WorkerError('worker_update_supervisor_handoff_pending');
+  } catch (cause) {
+    throw new WorkerError('worker_update_supervisor_handoff_pending', undefined, { cause });
+  }
 }
 
 export async function recoverPendingWorkerUpdate(stateDirectory, { run = execute,

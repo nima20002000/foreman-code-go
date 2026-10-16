@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { constants } from 'node:fs';
 import { mkdir, readFile, lstat, realpath, copyFile, chmod, open, rename, symlink, readlink, readdir, rm, statfs } from 'node:fs/promises';
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
@@ -83,9 +85,23 @@ export async function withInstallLock(root, fn) {
     }
     await syncDirectory(parent);
   }
-  const lock = join(root, '.install-lock');
-  try { await mkdir(lock, { mode: 0o700 }); } catch (error) { if (error.code === 'EEXIST') throw new WorkerError('install_busy', undefined, { cause: error }); throw error; }
-  try { return await fn(); } finally { await rm(lock, { recursive: true, force: true }); }
+  const lock = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    await new Promise((resolve, reject) => {
+      // flock locks the inherited open file description until this process closes its descriptor.
+      const child = spawn('/usr/bin/flock', ['--exclusive', '--nonblock', '3'], {
+        stdio: ['ignore', 'ignore', 'inherit', lock.fd],
+      });
+      let failure;
+      child.once('error', error => { failure = error; });
+      child.once('close', code => {
+        if (failure) reject(failure);
+        else if (code === 0) resolve();
+        else reject(new WorkerError(code === 1 ? 'install_busy' : 'installation_lock_failed'));
+      });
+    });
+    return await fn();
+  } finally { await lock.close(); }
 }
 
 async function installationState(root, stateDirectory) {
