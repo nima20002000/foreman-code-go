@@ -57,7 +57,7 @@ function fixture(repository = false) {
     if (revision !== location.locationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'Location changed.', 409)
     return { ...location }
   }, revalidateSnapshot: vi.fn(async () => undefined) }
-  const store = { storageIdentity: async () => ({ device: 'fixture', mountId: 'fixture' }),
+  const store = { storageIdentity: async () => ({ device: 'fixture', inode: 'fixture', mountId: 'fixture' }),
     storageCapacity: async () => {
       expect(state.transactions).toBe(0)
       expect(state.connections).toBe(0)
