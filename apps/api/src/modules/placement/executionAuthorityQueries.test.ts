@@ -33,7 +33,7 @@ describe('execution authorization database work', () => {
     if (defect === 'owner-expiry') s.owner.expires_at = new Date('2000-01-01T00:00:00.000Z')
     if (defect === 'principal') s.principal.expires_at = new Date('2000-01-01T00:00:00.000Z')
     if (defect === 'binding-owner') s.binding.owner_principal_id = 'other'
-    if (defect === 'delegation-cycle') s.owner.delegated_from = s.principal.id
+    if (defect === 'delegation-cycle') Object.assign(s.owner, { delegated_from: s.principal.id })
     if (defect === 'ceiling') s.binding.grant_ceiling = []
     if (defect === 'workspace-scope') s.owner.grants = [{ actions: ['runs:start'], scope: { workspaceIds: ['other'] } }]
     if (defect === 'workflow-scope') s.owner.grants = [{ actions: ['runs:start'], scope: { workflowIds: ['other'] } }]
