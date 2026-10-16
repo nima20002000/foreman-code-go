@@ -4,23 +4,7 @@ import { WORKER_MCP_EXTENSION, decodeWorkerMcpResult, WorkerMcpRelayAuthorizatio
 import type { ChildProcessEnvironment } from '../../harnesses/port.js'
 import type { DeviceConnectionSupervisor } from '../../devices/connectionSupervisor.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
-import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
-
-/** Relayed calls keep their 100-second deadline, which precedes the 120-second bridge deadline. Group waits send chunks
- * of at most 60 seconds, so they fit too. The relay answers first with a retryable timeout, so the client never has to
- * report its own deadline as a cancellation. */
-const relayDeadlineMs = 100_000
-
-async function withRelayDeadline<T>(run: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-  const deadline = new AbortController()
-  const timer = setTimeout(() => deadline.abort(), relayDeadlineMs)
-  const expired = new Promise<never>((_resolve, reject) => {
-    deadline.signal.addEventListener('abort', () => reject(new DeviceApplicationError('timeout')), { once: true })
-  })
-  try {
-    return await Promise.race([run(signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal), expired])
-  } finally { clearTimeout(timer) }
-}
+import { withWorkerMcpDeadline } from '../../devices/workerMcpDeadline.js'
 
 /** Main reauthorizes the original lease on every request, including after owner renewal. */
 export async function prepareWorkerApplicationAccess(channel: Pick<DeviceConnectionSupervisor, 'request'>,
@@ -60,7 +44,7 @@ export async function prepareWorkerApplicationAccess(channel: Pick<DeviceConnect
     requestSignal?.throwIfAborted()
     const payload = WorkerMcpRelayRequestSchema.parse({ ...envelope(), operation: 'worker-mcp.request', body,
       ...(protocolVersion ? { protocolVersion } : {}) })
-    const response = await withRelayDeadline(relaySignal => retryDeviceRequest(() => channel.request(WORKER_MCP_EXTENSION.namespace,
+    const response = await withWorkerMcpDeadline(relaySignal => retryDeviceRequest(() => channel.request(WORKER_MCP_EXTENSION.namespace,
       payload, { signal: relaySignal, timeoutMs: deviceRequestTimeoutMs }),
     { retry: 'admission', signal: relaySignal }), requestSignal)
     requestSignal?.throwIfAborted()

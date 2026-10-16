@@ -78,7 +78,7 @@ export class MainWorkerConversationMcp {
     if (request.operation === 'conversation-mcp.authorize') {
       return WorkerConversationMcpAuthorizationSchema.parse({ expiresAt: principal.expiresAt })
     }
-    const result = await this.input.forward().request(request.body, request.token, request.protocolVersion)
+    const result = await this.input.forward().request(request.body, request.token, request.protocolVersion, signal)
     await this.authorize(request, connection, signal)
     return WorkerMcpRelayResponseSchema.parse(result)
   }

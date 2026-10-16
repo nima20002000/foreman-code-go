@@ -6,6 +6,8 @@ import { DispatchIntentSchema, AcceptedNodePlacementSchema } from './nodePlaceme
 import { WorkerNativeOutputOperationSchema } from './workerNativeOutput.js'
 import { RemoteApplicationAccessSchema } from './remoteExecution.js'
 import { TemporaryFileScopeSchema } from './files.js'
+import { WORKER_MCP_EXTENSION, WORKER_MCP_RESPONSE_MAX_BYTES } from './workerMcpLimits.js'
+export { WORKER_MCP_EXTENSION, WORKER_MCP_RESPONSE_MAX_BYTES } from './workerMcpLimits.js'
 export const WorkerMcpRelayRequestSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('worker-mcp.authorize'), intent: DispatchIntentSchema,
     placement: AcceptedNodePlacementSchema, applicationAccess: RemoteApplicationAccessSchema }).strict(),
@@ -27,10 +29,8 @@ export const WorkerMcpRelayAuthorizationSchema = z.object({ version: z.literal(1
   audience: z.literal('worker'), principalId: z.string().min(1), executionId: z.string().min(1), agentId: z.string().min(1),
   operationId: z.string().min(1), attemptId: z.string().min(1), bindingHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime() }).strict()
 export const WorkerMcpRelayResponseSchema = z.object({ statusCode: z.number().int().min(100).max(599),
-  contentType: z.enum(['application/json', 'text/event-stream', 'empty']), body: z.string().max(1_000_000) }).strict()
-export const WORKER_MCP_EXTENSION = {
-  namespace: 'worker-mcp-v2', version: 2, maxJsonBytes: 1_048_576, maxBinaryBytes: 1_000_000,
-} as const
+  contentType: z.enum(['application/json', 'text/event-stream', 'empty']),
+  body: z.string().max(WORKER_MCP_RESPONSE_MAX_BYTES) }).strict()
 const WorkerMcpBinaryResponseSchema = WorkerMcpRelayResponseSchema.omit({ body: true }).extend({
   version: z.literal(2), bodyEncoding: z.literal('utf8'),
   bodyBytes: z.number().int().nonnegative().max(WORKER_MCP_EXTENSION.maxBinaryBytes),
