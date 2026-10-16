@@ -6,12 +6,19 @@ import { SOURCE_MANIFEST_MAX_BYTES, SourceManifestSchema, type SourceManifest, t
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
-import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
+import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import type { SourceSnapshotSink } from './capture.js'
 import { copySourceTree } from './copySourceTree.js'
 import { openSnapshotReference } from './snapshotReference.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
+import { flushSourceTree } from './sourceTreeFlush.js'
+import { syncSourceTree } from './sourceTreeSync.js'
+
+interface SnapshotWriteback {
+  directory: FileHandle
+  batched: boolean
+}
 
 async function removeSnapshotDirectory(parent: FileHandle, name: string): Promise<void> {
   let directory: FileHandle
@@ -45,6 +52,7 @@ async function removeSnapshotDirectory(parent: FileHandle, name: string): Promis
  * authoritative retention/ownership reconciliation owns reclamation.
  */
 export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByteReader {
+  private readonly writebacks = new Map<string, Promise<SnapshotWriteback>>()
   private readonly manifests = new Map<string, {
     identity: string
     manifest: SourceManifest
@@ -52,6 +60,46 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
   }>()
 
   constructor(private readonly canonicalRoot: string) {}
+  private writeback(id: string, snapshot: FileHandle): Promise<SnapshotWriteback> {
+    let pending = this.writebacks.get(id)
+    if (!pending) {
+      pending = this.openWriteback(snapshot)
+      this.writebacks.set(id, pending)
+    }
+    return pending
+  }
+  private async openWriteback(snapshot: FileHandle): Promise<SnapshotWriteback> {
+    // Keep the same open description from before the writes through syncfs so
+    // its filesystem error cursor includes background writeback failures.
+    const directory = await open(anchored(snapshot), constants.O_RDONLY | constants.O_DIRECTORY)
+    try {
+      const batched = await flushSourceTree(directory, AbortSignal.timeout(SOURCE_LIMITS.preparationMs),
+        { mode: 'filesystem-qualify' })
+      return { directory, batched }
+    } catch (error) {
+      await directory.close()
+      throw error
+    }
+  }
+  private async flushWriteback(id: string, snapshot: FileHandle): Promise<void> {
+    const state = await this.writebacks.get(id)
+    const signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
+    if (state?.batched) {
+      if (!isDeepStrictEqual(await identity(state.directory), await identity(snapshot))) {
+        throw new SourceError('SOURCE_ROOT_CHANGED', 'Snapshot directory changed during capture.')
+      }
+      if (!await flushSourceTree(state.directory, signal, { mode: 'filesystem' })) {
+        throw new SourceError('SOURCE_TREE_SYNC_FAILED', 'Source synchronization became unavailable.')
+      }
+    } else {
+      await syncSourceTree(snapshot, signal)
+    }
+  }
+  private async closeWriteback(id: string): Promise<void> {
+    const pending = this.writebacks.get(id)
+    this.writebacks.delete(id)
+    if (pending) await (await pending).directory.close()
+  }
   async storageCapacity() {
     await this.storageIdentity()
     return readSourceStorageCapacity(this.canonicalRoot)
@@ -83,15 +131,17 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
         throw error
       })
       if (existing) { await existing.close(); throw new SourceError('SOURCE_ALREADY_COMMITTED', 'Committed source snapshots are immutable.') }
+      const writeback = await this.writeback(id, snapshot)
       const data = await openChildDirectory(snapshot, 'bytes', true)
       const target = await entryParent(data, entry.path, true).finally(() => data.close())
       const { parent, leaf } = target
       try {
         const file = await open(anchored(parent, leaf), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
-        try { await file.writeFile(bytes); await file.sync() } finally { await file.close() }
-        await parent.sync()
+        try {
+          await file.writeFile(bytes)
+          if (!writeback.batched) await file.sync()
+        } finally { await file.close() }
       } finally { await parent.close() }
-      await snapshot.sync(); await root.sync()
     } finally { await snapshot.close(); await root.close() }
   }
   async writeGitMetadata(snapshotId: string, bytes: Uint8Array): Promise<void> {
@@ -149,13 +199,18 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
         }
       }))
       if (failed) throw failed.error
+      // Persist every source byte and directory before the manifest can be visible.
+      await this.flushWriteback(manifest.snapshotId, snapshot)
       const file = await open(anchored(snapshot, 'manifest.pending'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
       try { await file.writeFile(JSON.stringify(manifest)); await file.sync() } finally { await file.close() }
       // Snapshot ID is allocated exclusively by capture. A commit replay cannot
       // acquire commit.lock again, so it cannot replace an accepted manifest.
       await rename(anchored(snapshot, 'manifest.pending'), anchored(snapshot, 'manifest.json'))
       await snapshot.sync(); await root.sync()
-    } finally { await snapshot.close(); await root.close() }
+    } finally {
+      try { await this.closeWriteback(manifest.snapshotId) }
+      finally { await snapshot.close(); await root.close() }
+    }
   }
   async abort(id: string): Promise<void> {
     const { root, snapshot } = await this.directory(id, true)
@@ -163,7 +218,10 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       const marker = await open(anchored(snapshot, 'capture-aborted'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o400)
       try { await marker.writeFile('Source capture failed; not ready.\n'); await marker.sync() } finally { await marker.close() }
       await snapshot.sync(); await root.sync()
-    } finally { await snapshot.close(); await root.close() }
+    } finally {
+      try { await this.closeWriteback(id) }
+      finally { await snapshot.close(); await root.close() }
+    }
   }
   private async readEntry(snapshot: FileHandle, entry: SourceEntry): Promise<Buffer> {
     sourcePath(entry.path)

@@ -56,7 +56,18 @@ def journaled_ext4():
         return False
 
 mode = sys.argv[1]
-if mode == 'qualify':
+if mode in ('filesystem-qualify', 'filesystem'):
+    version = tuple(int(part) for part in os.uname().release.split('-')[0].split('.')[:2])
+    # Earlier kernels do not report filesystem writeback errors through syncfs.
+    if version < (5, 8) or not hasattr(libc, 'syncfs'):
+        sys.exit(2)
+    if mode == 'filesystem':
+        libc.syncfs.argtypes = [ctypes.c_int]
+        libc.syncfs.restype = ctypes.c_int
+        if libc.syncfs(3) != 0:
+            raise OSError(ctypes.get_errno(), 'Source filesystem writeback failed')
+    sys.exit(0)
+elif mode == 'qualify':
     sys.exit(0 if journaled_ext4() else 2)
 if mode == 'data':
     descriptors = range(4, 4 + int(sys.argv[2]))
@@ -83,7 +94,8 @@ else:
 `
 
 export async function flushSourceTree(tree: FileHandle, signal: AbortSignal,
-  operation: { mode: 'qualify' | 'metadata' } | { mode: 'data'; files: readonly number[] }): Promise<boolean> {
+  operation: { mode: 'qualify' | 'metadata' | 'filesystem-qualify' | 'filesystem' }
+    | { mode: 'data'; files: readonly number[] }): Promise<boolean> {
   signal.throwIfAborted()
   await tree.stat()
   const files = operation.mode === 'data' ? operation.files : []
