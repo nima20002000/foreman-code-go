@@ -3,6 +3,9 @@ import type { NativeLaunchObservation } from '../../harnesses/recovery/processRe
 import { REMOTE_PHYSICAL_CONTINUATION_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
 import { physicalFixture } from './__tests__/installedWorkflowHost.js'
+import { nativeHistoryPageSource, pageNativeHistory } from './nativeHistoryPage.js'
+import { readJsonContinuation } from './jsonContinuation.js'
+import { decodeResultCopies } from './executionResultCodec.js'
 import {
   InstalledWorkflowPhysicalReadouts,
   pagePhysicalReadout,
@@ -126,4 +129,83 @@ it('keeps an active paged reply while evicting unread histories oldest first', a
   } finally {
     await f.close()
   }
+})
+
+it.each(['history', 'event'] as const)(
+  'pages a growing session with dense events to completion through its %s selector', async selectorType => {
+    const f = await physicalFixture()
+    const readouts = new InstalledWorkflowPhysicalReadouts()
+    const event = (sequence: number) => ({ sequence, type: 'native.notification',
+      occurredAt: '2026-10-01T00:00:00.000Z', payload: { samples: Array<number>(64).fill(0) } })
+    const events = Array.from({ length: 1500 }, (_, sequence) => event(sequence))
+    const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(60_000) } }
+    const history = { ...f.source.history, events, terminalResult: result,
+      terminalTurn: { correlationId: f.source.history.correlationId, providerId: 'original-turn', result } }
+    const remember = (afterSequence: number) => {
+      const page = pageNativeHistory(history, afterSequence)
+      const original = nativeHistoryPageSource(page)!
+      const source = { type: 'history' as const, history: original }
+      readouts.remember({ readout: { ...f.readout, history: original }, placement: f.placement, source,
+        leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {},
+        assertCurrent: async () => {}, observe: () => f.captured.launch, closure: () => null })
+      const selectedSource = selectorType === 'history' ? source : { type: 'event' as const,
+        event: { ...original.events[0]!, executionId: f.intent.executionId } }
+      return { page, original, selector: { intent: f.intent, placement: f.placement,
+        receiptSequence: f.readout.receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(selectedSource) } }
+    }
+    const delivered: typeof events = []
+    let cursor = -1
+    let grew = false
+    let pages = 0
+    try {
+      for (let count = 0; count < 10; count++) {
+        const { page, original, selector } = remember(cursor)
+        const selected = await readouts.read(selector)
+        const first = pagePhysicalReadout(selected)
+        expect(first).toHaveProperty('kind', 'result-continuation')
+        const reconstructed = await readPhysicalReadout(first, async metadata => {
+          pages++
+          if (!grew) {
+            grew = true
+            events.push(...Array.from({ length: 300 }, (_, index) => event(events.length + index)))
+            remember(cursor)
+          }
+          return pagePhysicalReadout(await readouts.read({ ...selector, metadata }), metadata)
+        })
+        expect(reconstructed).toEqual(selected)
+        expect(reconstructed.history).toEqual(original)
+        delivered.push(...reconstructed.history!.events as typeof events)
+        await readouts.ack(selector)
+        cursor = page.page.nextAfterSequence
+        if (cursor === events.length - 1) break
+      }
+      expect(grew).toBe(true)
+      expect(pages).toBeGreaterThan(10)
+      expect(delivered).toEqual(events)
+      expect(cursor).toBe(events.length - 1)
+    } finally {
+      readouts.clear()
+      await f.sqlConnection.close()
+    }
+  })
+
+it('finishes history metadata paging while the live session cursor advances', async () => {
+  const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(60_000) } }
+  const event = (sequence: number) => ({ sequence, type: 'native.notification',
+    occurredAt: '2026-10-01T00:00:00.000Z', payload: { text: 'session output' } })
+  const history = { events: Array.from({ length: 1500 }, (_, sequence) => event(sequence)),
+    pendingInteractions: [], nextCursor: 'session:1500', terminalResult: result,
+    terminalTurn: { correlationId: 'execution:execution', providerId: 'original-turn', result } }
+  const first = pageNativeHistory(history, -1)
+  expect(first.page.metadata).toBeDefined()
+  let pages = 0
+  const fields = await readJsonContinuation(first.page.metadata!, async metadata => {
+    pages++
+    history.events.push(event(history.events.length))
+    history.nextCursor = `session:${history.events.length}`
+    return pageNativeHistory(history, first.page.nextAfterSequence, metadata).page.metadata!
+  })
+  expect(pages).toBeGreaterThan(1)
+  expect(history.nextCursor).not.toBe('session:1500')
+  expect({ ...first.history, ...decodeResultCopies(fields) as object }).toEqual(nativeHistoryPageSource(first))
 })
