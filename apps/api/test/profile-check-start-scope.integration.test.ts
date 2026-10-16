@@ -66,6 +66,7 @@ describe('profile-scoped Start after a Worker harness installation update', () =
       await fixture.provider.blockModels({ workingDirectory: fixture.stateDirectory })
       modelsBlocked = true
       await fixture.provider.updatePayload()
+      // Main checks share the provider; count only directories held by the Worker blocker.
       const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
         modelRequestDirectories(calls.slice(callsBefore), fixture.stateDirectory).length === 2,
       'two parallel profile checks')
