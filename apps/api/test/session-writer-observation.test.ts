@@ -443,7 +443,7 @@ it('drains a retained observer aborted during the restart ownership check before
     expect(provider.manager.closeForRestart).not.toHaveBeenCalled()
     releaseFinished.resolve()
     await Promise.all([closing, observation])
-    expect(provider.manager.closeForRestart).toHaveBeenCalledExactlyOnceWith(session)
+    expect(provider.manager.closeForRestart).toHaveBeenCalledExactlyOnceWith(session, undefined)
     expect(provider.manager.cancel).not.toHaveBeenCalled()
     expect(provider.manager.close).not.toHaveBeenCalled()
     expect(await coordination.getLane('codex', session.nativeSessionId)).toMatchObject({

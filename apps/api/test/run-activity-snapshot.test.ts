@@ -11,22 +11,28 @@ const scope = { workspaceId: 'ws', workflowId: 'wf', runId: 'run', workflowVersi
 const version = { id: 'version', workspaceId: 'ws', workflowId: 'wf', definition: { nodes: [], edges: [] } } as unknown as WorkflowVersionV3
 function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob = false,
   cis: Record<string, unknown>[] = [], movingCi = false, activities: ActivityReadRow[] = []) {
-  let reads = 0
-  const sql = { query: async (text: string) => {
-    if (text.startsWith('select a.sequence')) return { rows: activities }
-    if (text.startsWith('with normalized')) return { rows: [] }
-    if (text.includes('from runs where')) { reads++; return { rows: [{ revision: moving && reads > 1 ? '4' : '3', stopped: false, outcome: 'pending', execution_state: 'running' }] } }
-    if (text.includes('from harness_executions e left join')) return { rows: [
-      { id: 'A', attempt: 1, revision: '7', native_revision: '0', state: 'running', outcome: null, started_at: '2026-10-01T00:00:00.000Z', native_session_id: 'native-A', harness: 'codex' },
-      { id: 'C', attempt: 2, revision: '2', native_revision: '0', state: 'waiting', outcome: null, started_at: '2026-10-01T00:00:01.000Z', native_session_id: 'native-C', harness: 'codex' },
-      { id: 'B', attempt: 1, revision: '0', native_revision: '0', state: 'queued', outcome: null, started_at: null, native_session_id: null, harness: 'codex' }] }
-    if (text.includes('from durable_interactions')) return { rows: [] }
-    if (text.includes('from ci_runs')) return { rows: cis.map(ci => ({ ...ci,
-      revision: movingCi && reads > 1 ? '4' : ci.revision })) }
-    if (text.includes('from workflow_job_executions w join job_executions')) return { rows: jobs.map((job) => ({ ...job,
-      revision: movingJob && reads > 1 ? '10' : job.revision })) }
-    if (text.includes('as high_water')) return { rows: [{ high_water: '9007199254740993', retained_from: '1', observed: 1 }] }
-    throw new Error(`Unexpected snapshot SQL ${text}`)
+  const executions = [
+    { id: 'A', attempt: 1, revision: '7', native_revision: '0', state: 'running', outcome: null,
+      started_at: '2026-10-01T00:00:00.000Z', native_session_id: 'native-A', harness: 'codex' },
+    { id: 'C', attempt: 2, revision: '2', native_revision: '0', state: 'waiting', outcome: null,
+      started_at: '2026-10-01T00:00:01.000Z', native_session_id: 'native-C', harness: 'codex' },
+    { id: 'B', attempt: 1, revision: '0', native_revision: '0', state: 'queued', outcome: null,
+      started_at: null, native_session_id: null, harness: 'codex' },
+  ]
+  const facts = (after: boolean): unknown[][] => [
+    [{ revision: moving && after ? '4' : '3', stopped: false, outcome: 'pending', execution_state: 'running' }],
+    executions,
+    jobs.map(job => ({ ...job, revision: movingJob && after ? '10' : job.revision })),
+    cis.map(ci => ({ ...ci, revision: movingCi && after ? '4' : ci.revision })),
+    [],
+    [{ high_water: '9007199254740993', retained_from: '1', observed: 1 }],
+  ]
+  // Serve the two fact reads around the activity/native pages, independent of query spelling.
+  const responses = [...facts(false), activities, [], ...facts(true)]
+  const sql = { query: async () => {
+    const rows = responses.shift()
+    if (!rows) throw new Error('Unexpected activity read after the snapshot completed')
+    return { rows }
   } } as unknown as Pick<pg.PoolClient, 'query'>
   return sql
 }
