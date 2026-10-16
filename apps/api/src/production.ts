@@ -20,7 +20,7 @@ import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
-import { activeCiRuns, cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
+import { activeCiRuns, circleCiOrgs, cloudCis, workspaceMirrorList, workspaceMirrors } from './modules/ci-host/cloud.js'
 import { configuredReservedCloudSlots } from './modules/ci-host/cloudSlots.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
@@ -2785,9 +2785,11 @@ async function initializeComputerServices(composition: ProductionComposition, ma
     runtimeServices.workspaces, runtimeServices.workspaceRoots, jobRuntime.policies, jobRuntime.sources,
     machine.installationId, projectRoot)
   registerWorkspaceRepositoryRoutes(app, runtimeServices.workspaceRepositories)
-  const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool), {
-    activeRuns: () => activeCiRuns(database.pool),
-  })
+  const cloudOptions = { activeRuns: () => activeCiRuns(database.pool) }
+  const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool), cloudOptions)
+  const circleOrgs = circleCiOrgs(clouds, machine.installationId, workspaceMirrors(database.pool),
+    workspaceMirrorList(database.pool), cloudOptions)
+  const discoverClouds = () => circleOrgs.refresh()
   runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
     id => deviceRuntime.presenceFor(id), commands, clouds)
   registerComputerActivityRoutes(app, runtimeServices.computerActivity)
@@ -2875,7 +2877,7 @@ async function initializeComputerServices(composition: ProductionComposition, ma
     return { commit: reply.commit, bundle: reply.bundleBase64 === null ? null : Buffer.from(reply.bundleBase64, 'base64') }
   }
 
-  return { clouds, readAgentFiles, workspaceRoots }
+  return { clouds, discoverClouds, readAgentFiles, workspaceRoots }
 }
 
 async function initializeCiServices(
@@ -2883,11 +2885,12 @@ async function initializeCiServices(
   machine: ProductionMainInstallation,
   computerServices: {
     clouds: ReturnType<typeof cloudCis>
+    discoverClouds: () => Promise<void>
     readAgentFiles: ReadAgentFiles
     workspaceRoots: WorkspaceBoundLocationService
   },
 ) {
-  const { clouds, readAgentFiles, workspaceRoots } = computerServices
+  const { clouds, discoverClouds, readAgentFiles, workspaceRoots } = computerServices
   const {
     workerExecution,
     deviceRuntime,
@@ -2903,7 +2906,7 @@ async function initializeCiServices(
   // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
   composition.hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
     new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
-      clouds),
+      clouds, discoverClouds),
     agentSnapshots(database.pool, readAgentFiles), { reservedCloudSlots: configuredReservedCloudSlots() })
   composition.hostCi.start()
   app.addHook('onClose', async () => { await composition.hostCi?.close() })

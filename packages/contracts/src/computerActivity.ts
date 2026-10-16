@@ -38,6 +38,8 @@ const ComputerActivitySchema = z.object({
 const CloudCiActivitySchema = z.object({
   observation: ReadObservationSchema.optional(),
   provider: z.enum(['github', 'circleci']),
+  /** The GitHub owner of this CircleCI org; absent for the workspace mirror's own owner. */
+  account: z.string().min(1).optional(),
   name: z.string(),
   /** Main's login for the service works, so runs can start there. */
   ready: z.boolean(),

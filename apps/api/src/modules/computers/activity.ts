@@ -14,13 +14,15 @@ import { isAuthorized, requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { buildComputerKey } from '../settings/buildComputers.js'
+import { cloudCiId } from '../ci-host/cloudProviders.js'
 
 const jobRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerJobActivitySchema })
 const agentRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerAgentActivitySchema })
 
 /** A cloud CI service as Main's CI dispatcher sees it. */
 export interface CloudCiService {
-  readonly provider: { readonly id: CloudCiActivity['provider']; readonly label: string; readonly slots: number }
+  readonly provider: { readonly id: CloudCiActivity['provider']; readonly label: string; readonly slots: number
+    readonly account?: { readonly owner: string } | undefined }
   readonly readinessObservation?: ReadObservation | undefined
   ready(): Promise<boolean>
 }
@@ -114,10 +116,11 @@ async function readCloud(sql: pg.PoolClient, mainId: string, clouds: readonly {
   const listed: CloudCiActivity[] = []
   for (const cloud of clouds) {
     const { ready, observation } = cloud
-    const count = running.get(cloud.provider.id) ?? 0
+    const count = running.get(cloudCiId(cloud.provider)) ?? 0
     // A service Main is not logged in to and that runs nothing is not part of this installation.
     if (ready || count > 0 || observation?.status === 'unavailable') listed.push({
-      provider: cloud.provider.id, name: cloud.provider.label, ready,
+      provider: cloud.provider.id, ...(cloud.provider.account ? { account: cloud.provider.account.owner } : {}),
+      name: cloud.provider.label, ready,
       slots: cloud.provider.slots, running: count, ...(observation ? { observation } : {}) })
   }
   return listed

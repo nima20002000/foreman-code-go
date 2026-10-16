@@ -55,7 +55,10 @@ export const CI_TOOL_DESCRIPTIONS = {
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
     + 'systemd), saved buildAllowancePercent, allowedCpuCount, CPU and memory within that allowance, '
     + 'used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
-    + 'queue position and reason (queueTruncated reports more). Read participation and priority with build_computer_get.',
+    + 'queue position and reason (queueTruncated reports more). Read participation and priority with build_computer_get. '
+    + 'Each further CircleCI org is its own set of cloud slots (hostRef.account names its GitHub owner); Main adds one '
+    + 'by itself once that GitHub organization has a copy of the CI mirror followed in CircleCI, which is set up '
+    + 'outside Foreman (docs/runbooks/add-circleci-org.md).',
   ci_cancel: 'Cancel a queued or running CI ticket by ticketId. Optional commandId is recorded once in the audit, so a '
     + 'retry is safe. CI_CANCEL_PENDING means remote cleanup is unconfirmed and still retrying. run_stop cancels every '
     + 'open ticket of that Run\u2019s Agents.',

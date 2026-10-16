@@ -16,10 +16,11 @@ import { deepenUntilConnected, ensureClone, ensureCommit, fetchRepositoryBranch,
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import type { CiMirrorInput } from './serviceTypes.js'
-import { CLOUD_LOG_LIMIT, CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, validateProviderParameters,
+import { CLOUD_LOG_LIMIT, CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, cloudCiId, validateProviderParameters,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
+import { CircleCiAccounts } from './circleCiAccounts.js'
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { readCloudRun, saveCloudRun } from './cloudJournal.js'
 import { ciLogPage } from './logPage.js'
@@ -92,6 +93,18 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
   }
 }
 
+/** Every active workspace's public mirror. */
+export function workspaceMirrorList(pool: pg.Pool): () => Promise<string[]> {
+  return async () => {
+    const rows = (await pool.query<{ record: unknown }>(`select record from workspaces
+      where archived_at is null and record ? 'ciMirror'`)).rows
+    return rows.flatMap(row => {
+      const mirror = WorkspaceSchema.parse(row.record).ciMirror
+      return mirror ? [`${mirror.owner}/${mirror.name}`] : []
+    })
+  }
+}
+
 /** Main owns ticket completion even when the last attempt ran on a different provider. */
 export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
   const readAt = Date.now()
@@ -119,14 +132,25 @@ export class CloudCi {
   private readonly reading = new Map<string, number>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
-    private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', provider.id),
+    private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', cloudCiId(provider)),
     private readonly ports: HostCiPorts = systemHostCiPorts(),
     private readonly git: GitWorktreePorts = systemGitWorktreePorts(),
     private readonly identity = { home: homedir(), user: userInfo().username, host: hostname() }) {}
 
   async publishMirror(input: CiMirrorInput): Promise<void> {
-    await this.publish(input.repository, input.mirror, input.commit,
+    const mirror = this.accountMirror(input.mirror)
+    if (!mirror) return
+    await this.publish(input.repository, mirror, input.commit,
       input.defaultBranch, input.baseCommit, input.durations ?? {})
+  }
+
+  /** This org's copy of a workspace mirror: the same repository name under the org's GitHub owner; null when the org
+   * has no CircleCI project of that name. */
+  private accountMirror(mirror: string): string | null {
+    const account = this.provider.account
+    if (!account) return mirror
+    const name = mirror.slice(mirror.indexOf('/') + 1)
+    return account.mirrorNames.has(name) ? `${account.owner}/${name}` : null
   }
 
   setActiveRunLookup(lookup: () => Promise<ActiveCiRuns>) {
@@ -136,7 +160,7 @@ export class CloudCi {
   /** Waits for background sweeps before their repository can be removed. Call after ticket operations finish. */
   async waitForMirrorCleanup(repository: string, mirror: string) {
     await this.reconciling
-    const key = this.mirrorKey(repository, mirror)
+    const key = this.mirrorKey(repository, this.accountMirror(mirror) ?? mirror)
     await Promise.all([...pendingPublications].filter(([id]) => id.startsWith(`${this.root}\n`))
       .map(([, task]) => task))
     let cleanup = mirrorMaintenance.get(key)?.cleanup
@@ -148,8 +172,9 @@ export class CloudCi {
   }
 
   computers(priority = 30): HostCiComputer[] {
-    return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${this.provider.id}:${slot}`,
-      hostRef: { kind: 'cloud' as const, mainId: this.mainId, provider: this.provider.id, slot },
+    const account = this.provider.account?.owner
+    return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${cloudCiId(this.provider)}:${slot}`,
+      hostRef: { kind: 'cloud' as const, mainId: this.mainId, provider: this.provider.id, ...(account ? { account } : {}), slot },
       label: `${this.provider.label} ${slot + 1}`, priority, userSystemd: this.provider.userSystemd }))
   }
 
@@ -329,6 +354,10 @@ export class CloudCi {
     }
     let mirror = request.ciMirror ?? null
     if (request.ciMirror === undefined && request.workspaceId) mirror = await this.mirrors(request.workspaceId)
+    if (mirror && !this.accountMirror(mirror)) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} has no copy of the CI mirror ${mirror}.`, 409)
+    }
+    if (mirror) mirror = this.accountMirror(mirror)
     // CircleCI's machine image has no podman, which the Worker unit tests (unit-other) use.
     if (this.provider.id === 'circleci' && !runsOnCircleCi(request)) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} cannot run the Worker unit tests (no podman).`, 409)
@@ -1272,10 +1301,21 @@ export class CloudCi {
 export function cloudCis(mainId: string, mirrors: Mirrors,
   options: { ports?: HostCiPorts; activeRuns?: () => Promise<ActiveCiRuns> } = {}): CloudCi[] {
   const ports = options.ports ?? systemHostCiPorts()
-  return [new GitHubActionsProvider(ports), new CircleCiProvider(ports)].map(provider => {
-    const cloud = new CloudCi(mainId, provider, mirrors)
-    if (options.activeRuns) cloud.setActiveRunLookup(options.activeRuns)
-    return cloud
-  })
+  return [new GitHubActionsProvider(ports), new CircleCiProvider(ports)].map(provider => cloudCi(mainId, provider, mirrors, options))
+}
+
+/** Appends a CircleCI service to `clouds` for each further CircleCI org discovery finds; the caller refreshes it. */
+export function circleCiOrgs(clouds: CloudCi[], mainId: string, mirrors: Mirrors, mirrorList: () => Promise<string[]>,
+  options: { ports?: HostCiPorts; activeRuns?: () => Promise<ActiveCiRuns> } = {}): CircleCiAccounts {
+  const ports = options.ports ?? systemHostCiPorts()
+  return new CircleCiAccounts(ports, mirrorList,
+    account => clouds.push(cloudCi(mainId, new CircleCiProvider(ports, {}, account), mirrors, options)))
+}
+
+function cloudCi(mainId: string, provider: CloudProvider, mirrors: Mirrors,
+  options: { activeRuns?: () => Promise<ActiveCiRuns> }) {
+  const cloud = new CloudCi(mainId, provider, mirrors)
+  if (options.activeRuns) cloud.setActiveRunLookup(options.activeRuns)
+  return cloud
 }
 
