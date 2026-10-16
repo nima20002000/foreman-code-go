@@ -58,10 +58,24 @@ export interface CloudDispatchInput {
   workflowRef?: string; workflowCommit?: string
 }
 
+/** A further CircleCI org of Main's login: a GitHub owner with a copy of the workspace mirror under the same name. */
+export interface CloudAccount {
+  readonly owner: string
+  /** Mirror repository names the org has a CircleCI project for; discovery keeps it current. */
+  readonly mirrorNames: Set<string>
+}
+
+/** The slot key segment of a cloud CI service: the provider, and the GitHub owner of a further CircleCI org. */
+export function cloudCiId(provider: { id: string; account?: { owner: string } | undefined }): string {
+  return provider.account ? `${provider.id}@${provider.account.owner}` : provider.id
+}
+
 /** One cloud CI service: how Main starts a run of a mirror branch and reads it back, through the service's CLI login. */
 export interface CloudProvider {
   readonly id: 'github' | 'circleci'
   readonly label: string
+  /** Absent for the service on the workspace mirror's own owner. */
+  readonly account?: CloudAccount | undefined
   readonly transport?: CiHostRun['transport']
   /** Longest accepted pipeline parameter value, when the provider caps it. */
   readonly parameterLimit?: number
@@ -330,7 +344,7 @@ function circleConclusion(outcome: string | undefined): 'success' | 'failure' | 
 /** The free plan runs 30 jobs at once. */
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
-  readonly label = 'CircleCI'
+  readonly label: string
   readonly userSystemd = { supported: true, reason: null }
   /** CircleCI rejects pipeline parameter values longer than 512 characters. */
   readonly parameterLimit = 500
@@ -344,7 +358,8 @@ export class CircleCiProvider implements CloudProvider {
 
   get transport() { return this.rest.transport }
 
-  constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}) {
+  constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}, readonly account?: CloudAccount) {
+    this.label = account ? `CircleCI ${account.owner}` : 'CircleCI'
     this.rest = new CircleRest(new CloudHttp(ports, 'circleci', options))
   }
 

@@ -38,6 +38,8 @@ const ComputerActivitySchema = z.object({
 const CloudCiActivitySchema = z.object({
   observation: ReadObservationSchema.optional(),
   provider: z.enum(['github', 'circleci']),
+  /** The GitHub owner of this CircleCI org; absent for the workspace mirror's own owner. */
+  account: z.string().min(1).optional(),
   name: z.string(),
   /** Main's login for the service works, so runs can start there. */
   ready: z.boolean(),
@@ -50,7 +52,7 @@ export const ComputerActivityListSchema = z.object({
   mainId: z.uuid(),
   computers: z.array(ComputerActivitySchema).max(101),
   /** Cloud CI services that are ready or running work. */
-  cloud: z.array(CloudCiActivitySchema).max(8),
+  cloud: z.array(CloudCiActivitySchema).max(64),
   truncated: z.boolean(),
   /** Only global Jobs and Runs readers can infer that a computer has no activity. */
   activityComplete: z.boolean(),

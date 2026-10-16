@@ -22,13 +22,14 @@ export function configuredReservedCloudSlots(environment: NodeJS.ProcessEnv = pr
   return DEFAULT_RESERVED_CLOUD_SLOTS
 }
 
-/** The cloud slots gate tickets never plan or run on, taken round-robin over providers from each provider's highest
- * slots so every provider keeps capacity for non-gate work. Each provider keeps at least one slot for the gate. */
+/** The cloud slots gate tickets never plan or run on, taken round-robin over providers (each CircleCI org on its own)
+ * from each provider's highest slots so every provider keeps capacity for non-gate work. Each provider keeps at least
+ * one slot for the gate. */
 export function reservedCloudSlotKeys(computers: readonly HostCiComputer[], count: number): Set<string> {
   const providers = new Map<string, HostCiComputer[]>()
   for (const computer of computers) {
     if (computer.hostRef.kind !== 'cloud') continue
-    const provider = computer.hostRef.provider ?? ''
+    const provider = `${computer.hostRef.provider ?? ''}@${computer.hostRef.account ?? ''}`
     providers.set(provider, [...providers.get(provider) ?? [], computer])
   }
   const slots = [...providers.values()].map(list => [...list]

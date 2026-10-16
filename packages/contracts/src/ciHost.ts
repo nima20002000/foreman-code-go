@@ -216,7 +216,9 @@ export const CiCancellationSchema = z.object({
 }).strict()
 export type CiCancellation = z.infer<typeof CiCancellationSchema>
 export const CiComputerRefSchema = z.object({ kind: z.enum(['main', 'device', 'cloud']), mainId: z.string(), deviceId: z.string().optional(),
-    provider: z.enum(['github', 'circleci']).optional(), slot: z.number().int().nonnegative().optional() }).strict()
+    provider: z.enum(['github', 'circleci']).optional(),
+    /** The GitHub owner of the CircleCI org a cloud slot belongs to; absent for the workspace mirror's own owner. */
+    account: z.string().min(1).optional(), slot: z.number().int().nonnegative().optional() }).strict()
 
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,

@@ -8,7 +8,7 @@ import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import type { GitWorktreePorts } from '../sources/gitWorktree.js'
 import { CloudCi } from './cloud.js'
 import { pruneMirrorBranches } from './mirrorBranches.js'
-import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
+import { CircleCiProvider, GitHubActionsProvider, type CloudProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 
 const disposals: (() => Promise<void>)[] = []
@@ -19,7 +19,7 @@ afterEach(async () => {
 /** A private repository and its public mirror as local bare repositories standing in for GitHub, with a gh that
  * records dispatches and replays the run states a test sets. */
 export async function fixture(files: Record<string, string> = {}, options: { mirror?: boolean; provider?: 'github' | 'circleci'
-  mirrorWorkflows?: boolean; sourceWorkflows?: boolean; userSystemd?: boolean } = {}) {
+  mirrorWorkflows?: boolean; sourceWorkflows?: boolean; userSystemd?: boolean; account?: string } = {}) {
   await mkdir(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), { recursive: true })
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), 'cloud-ci-'))
   const cleanupHooks: { waitForCleanup?: () => Promise<void> } = {}
@@ -31,7 +31,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   const environment = gitFixtureEnvironment()
   const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: environment, encoding: 'utf8' }).trim()
   const work = join(root, 'work'), mirrorWork = join(root, 'mirror-work')
-  const origin = join(root, 'origin.git'), mirror = join(root, 'mirror.git')
+  const origin = join(root, 'origin.git'), mirror = join(root, 'mirror.git'), accountMirror = join(root, 'account-mirror.git')
   for (const path of [work, mirrorWork]) await mkdir(path)
   run(root, 'init', '-q', '--bare', origin); run(root, 'init', '-q', '--bare', mirror)
   // The mirror starts from one import commit without the private history.
@@ -44,6 +44,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     await writeFile(join(mirrorWork, path), text)
   }
   run(mirrorWork, 'add', '.'); run(mirrorWork, 'commit', '-qm', 'Initial import'); run(mirrorWork, 'push', '-q', mirror, 'main')
+  // A further CircleCI org (options.account) has its own copy of the mirror at `<account>/site-ci`.
+  if (options.account) { run(root, 'init', '-q', '--bare', accountMirror); run(mirrorWork, 'push', '-q', accountMirror, 'main') }
   run(work, 'init', '-q', '-b', 'main')
   await writeFile(join(work, 'secret-history.txt'), 'old\n'); run(work, 'add', '.'); run(work, 'commit', '-qm', 'private history')
   await rm(join(work, 'secret-history.txt'))
@@ -60,7 +62,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   run(work, 'add', '-A'); run(work, 'commit', '-qm', 'change'); run(work, 'push', '-q', origin, 'main')
   const commit = run(work, 'rev-parse', 'HEAD')
   const local = (value: string) => value === 'https://github.com/octo/site.git' ? origin
-    : value === 'https://github.com/octo/site-ci.git' ? mirror : value
+    : value === 'https://github.com/octo/site-ci.git' ? mirror : value === `https://github.com/${options.account}/site-ci.git` ? accountMirror : value
   const cleanup = { unavailable: false, failures: 0 }
   const git: GitWorktreePorts = {
     cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
@@ -186,8 +188,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     }
     return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` }
   } }
-  const provider = options.provider === 'circleci'
-    ? new CircleCiProvider(ports, { circleToken: async () => null }) : new GitHubActionsProvider(ports)
+  const provider: CloudProvider = options.provider === 'circleci' || options.account ? new CircleCiProvider(ports, { circleToken: async () => null },
+    options.account ? { owner: options.account, mirrorNames: new Set(['site-ci']) } : undefined) : new GitHubActionsProvider(ports)
   if (options.userSystemd === false) {
     Object.defineProperty(provider, 'userSystemd', {
       value: { supported: false, reason: 'Executor has no systemd user manager' },
@@ -199,8 +201,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   const cloud = reopen()
   cleanupHooks.waitForCleanup = () => cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, root, commit, ports, dispatched, github, circle, cleanup, git, mirrorGit, dispose,
-    run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, root, commit, ports, dispatched, github, circle, cleanup, git, mirrorGit, dispose, account: provider.account,
+    run: (...args: string[]) => run(work, ...args), accountMirrorGit: (...args: string[]) => run(accountMirror, ...args),
     async prune(activeIds: Set<string>) {
       return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
         activeRuns: { ids: activeIds, readAt: Date.now() },

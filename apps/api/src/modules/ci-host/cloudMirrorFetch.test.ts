@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
 
-it('reuses a fresh mirror fetch for back-to-back publications and refreshes it after a minute', async () => {
+it('fetches the mirror once for back-to-back publications, also a minute apart, and publishes each tree', async () => {
   const f = await fixture()
   const git = vi.spyOn(f.git, 'git')
   const commits: string[] = []
@@ -20,7 +20,7 @@ it('reuses a fresh mirror fetch for back-to-back publications and refreshes it a
   expect(mirrorFetches()).toBe(1)
   f.advance(61_000)
   await start(commits[2]!)
-  expect(mirrorFetches()).toBe(2)
+  expect(mirrorFetches()).toBe(1)
 
   expect(f.dispatched).toHaveLength(3)
   for (const commit of commits) {

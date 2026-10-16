@@ -25,7 +25,7 @@ export function SidebarComputers() {
   const complete = query.data?.activityComplete === true && !query.data.truncated
   return <ul className="sidebar-computers" aria-label="Computers">
     {computers.map(computer => <ComputerRow key={computerKey(computer.target)} computer={computer} fresh={fresh} complete={complete} />)}
-    {clouds.map(cloud => <CloudRow key={cloud.provider} cloud={cloud} fresh={fresh} />)}
+    {clouds.map(cloud => <CloudRow key={`${cloud.provider}@${cloud.account ?? ''}`} cloud={cloud} fresh={fresh} />)}
   </ul>
 }
 
