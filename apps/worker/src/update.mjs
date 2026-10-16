@@ -9,7 +9,7 @@ import { workerArtifactContentSha256 } from '../../../packages/contracts/src/wor
 import { WorkerError, workerUpdateErrorMessage } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
-  workerPointerMatches } from './updateSupervisor.mjs';
+  recoverPendingWorkerUpdate, workerPointerMatches } from './updateSupervisor.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
 import { extractWorkerArchive, fetchGitHubAsset, workerArchiveLimits, requireArchiveCapacity }
@@ -230,14 +230,27 @@ export class WorkerUpdater {
   }
 
   scheduleCheck() {
-    if (this.active || this.closed) return;
+    if (this.active || this.checking || this.closed) return;
     const reconnected = this.pendingReadyCheck;
     this.pendingReadyCheck = false;
-    void this.status().then(status => {
-      if (status.state !== 'restarting') {
-        return this.start({ retry: Boolean(reconnected && status.lastError === 'worker_update_failed') });
+    const check = this.status().then(status => {
+      if (this.closed) return;
+      if (status.state === 'restarting') {
+        return (this.options.recoverSupervisor ?? recoverPendingWorkerUpdate)(this.options.stateDirectory,
+          { signal: this.lifetime.signal });
       }
-    }).catch(error => this.options.reportError?.(error));
+      return this.start({ retry: Boolean(reconnected && status.lastError === 'worker_update_failed') });
+    });
+    this.checking = check;
+    this.operations.add(check);
+    const finished = () => {
+      this.checking = undefined;
+      this.operations.delete(check);
+    };
+    void check.then(finished, error => {
+      finished();
+      this.options.reportError?.(error);
+    });
   }
 
   start({ retry = false } = {}) {

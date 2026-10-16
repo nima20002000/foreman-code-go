@@ -12,6 +12,7 @@ import { WORKER_UPDATE_STARTUP_TIMEOUT_MS } from './ciSmokeTiming.mjs';
 
 const execute = promisify(execFile);
 const services = ['graphql-worker.service', 'foreman-ci-worker.service'];
+const supervisorUnitPattern = /^foreman-worker-update-[a-f0-9-]{36}$/;
 const environment = () => ({ PATH: '/usr/bin:/bin', HOME: process.env.HOME,
   XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS });
 
@@ -291,13 +292,17 @@ export async function superviseWorkerUpdate(record, ports = {}) {
 }
 
 export async function launchUpdateSupervisor(stateDirectory, { run = execute } = {}) {
-  const unit = `foreman-worker-update-${randomUUID()}`;
   const helper = fileURLToPath(new URL('./update-supervisor-cli.mjs', import.meta.url));
   const record = await readUpdateRecord(stateDirectory);
   if (record?.status?.state !== 'restarting') throw new WorkerError('worker_update_state_invalid');
-  record.restart.unit = unit;
-  delete record.supervisorStarted;
-  await writeUpdateRecord(stateDirectory, record);
+  let unit = record.restart.unit;
+  // Reuse the manager's unit name so an earlier delayed launch cannot create a second helper.
+  if (typeof unit !== 'string' || !supervisorUnitPattern.test(unit)) {
+    unit = `foreman-worker-update-${randomUUID()}`;
+    record.restart.unit = unit;
+    delete record.supervisorStarted;
+    await writeUpdateRecord(stateDirectory, record);
+  }
   try {
     await run('/usr/bin/systemd-run', ['--user', '--collect', '--unit', unit, '--property=Type=exec',
       '--property=Restart=on-failure', '--property=RestartSec=1',
@@ -323,18 +328,20 @@ export async function launchUpdateSupervisor(stateDirectory, { run = execute } =
 }
 
 export async function recoverPendingWorkerUpdate(stateDirectory, { run = execute,
-  launch = launchUpdateSupervisor } = {}) {
+  launch = launchUpdateSupervisor, signal } = {}) {
+  signal?.throwIfAborted();
   const record = await readUpdateRecord(stateDirectory);
   if (record?.status?.state !== 'restarting') return;
   const unit = record.restart?.unit;
-  if (typeof unit === 'string' && /^foreman-worker-update-[a-f0-9-]{36}$/.test(unit)) {
+  if (typeof unit === 'string' && supervisorUnitPattern.test(unit)) {
     try {
       const result = await run('/usr/bin/systemctl', ['--user', 'show', unit, '--property=ActiveState', '--value'],
-        { timeout: 5000, maxBuffer: 4096, env: environment() });
-      if (['activating', 'active', 'reloading'].includes(result.stdout.trim())) return;
+        { timeout: 5000, maxBuffer: 4096, env: environment(), signal });
+      if (!['inactive', 'failed', ''].includes(result.stdout.trim())) return;
     } catch (error) {
       if (error.code !== 1 && error.code !== 3 && error.code !== 4) throw error;
     }
   }
+  signal?.throwIfAborted();
   await launch(stateDirectory);
 }
