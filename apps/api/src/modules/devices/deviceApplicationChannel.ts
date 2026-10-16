@@ -54,7 +54,11 @@ interface Assembly {
 }
 export function extensionDescriptors(registrations: DeviceExtensionRegistration[]) {
   for (const registration of registrations) if (registration.role !== 'client' && typeof registration.handle !== 'function') throw new Error('A device server extension requires its actual domain handler')
-  return parseExtensionDescriptors(registrations)
+  return parseExtensionDescriptors(registrations.map(registration => ({
+    ...registration,
+    ...(registration.namespace === 'computer-maintenance-v2' && registration.version === 2
+      ? { observationAdmission: true as const } : {}),
+  })))
 }
 export function deviceNegotiationHash(extensions: DeviceNegotiatedExtension[]) {
   return createHash('sha256').update(JSON.stringify(extensions)).digest('hex')
@@ -388,7 +392,10 @@ export class DeviceApplicationChannel {
       await this.waitAck(id, 0, upload.signal, { type: 'application-open', id, namespace, version, kind,
         jsonBytes: json.byteLength, binaryBytes: bytes?.byteLength ?? 0,
         ...(kind === 'request' && stop ? { admission: 'stop' as const } : {}),
+        // Older peers accept maintenance observations as ordinary requests.
         ...(kind === 'request' && admission.observation
+          && (namespace === 'execution-v1' || namespace === 'computer-maintenance-v2'
+            && this.negotiated(namespace, true).observationAdmission === true)
           ? { admission: 'observation' as const } : {}) })
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
       const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * DEVICE_APPLICATION_CHUNK_WINDOW

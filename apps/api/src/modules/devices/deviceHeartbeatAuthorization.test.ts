@@ -39,7 +39,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-async function fixture() {
+async function fixture(namespace = 'test-echo') {
   vi.useFakeTimers()
   const keys = generateKeyPairSync('ed25519')
   const publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
@@ -54,7 +54,7 @@ async function fixture() {
   const revalidate = vi.fn(() => validate())
   const handle = vi.fn(async (payload: unknown) => ({ payload }))
   const workerHandle = vi.fn(async (payload: unknown) => ({ payload }))
-  const extension = { namespace: 'test-echo', version: 1, role: 'duplex' as const,
+  const extension = { namespace, version: namespace === 'computer-maintenance-v2' ? 2 : 1, role: 'duplex' as const,
     maxJsonBytes: 65_536, maxBinaryBytes: 0 }
   const endpoint = new DeviceEndpoint({ mainId: identity.mainId, appVersion: 'test-main',
     auth: { authenticateDevice: async () => principal, revalidateDevice: revalidate },
@@ -90,6 +90,21 @@ async function fixture() {
 }
 
 afterEach(() => vi.useRealTimers())
+
+it('preserves maintenance observation support through the signed connection handshake', async () => {
+  const f = await fixture('computer-maintenance-v2')
+  try {
+    expect(f.worker.capabilities()).toContainEqual(expect.objectContaining({
+      namespace: 'computer-maintenance-v2', observationAdmission: true,
+    }))
+    await expect(f.endpoint.request(f.identity.deviceId, 'computer-maintenance-v2',
+      { operation: 'status', scope: 'worker' })).resolves.toEqual({ payload: { operation: 'status', scope: 'worker' } })
+    expect(f.connections[0]!.main.frames).toContainEqual(expect.objectContaining({
+      type: 'application-open', namespace: 'computer-maintenance-v2', admission: 'observation',
+    }))
+    expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
+  } finally { await f.close() }
+})
 
 it('answers heartbeats and keeps serving a recently authorized link while its authorization read stalls', async () => {
   const f = await fixture()

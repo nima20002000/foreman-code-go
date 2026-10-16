@@ -101,7 +101,18 @@ export class DeviceConnectionSupervisor {
         if (!Array.isArray(advertised) || advertised.length > DEVICE_APPLICATION_MAX_EXTENSIONS) throw new DeviceConnectionError('malformed-frame')
         const extensions = advertised as import('@foreman-code/contracts/device-application').DeviceNegotiatedExtension[]
         let recomputed: typeof extensions
-        try { recomputed = negotiateDeviceExtensions(parseExtensionDescriptors(extensions.map((item) => ({ namespace: item.namespace, version: item.version, role: item.mainCanRequest && item.workerCanRequest ? 'duplex' : item.mainCanRequest ? 'client' : 'server', maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes }))), extensionDescriptors(this.options.extensions ?? [])) } catch { throw new DeviceConnectionError('malformed-frame') }
+        try {
+          recomputed = negotiateDeviceExtensions(parseExtensionDescriptors(extensions.map(item => {
+            let role: DeviceExtensionRegistration['role'] = 'server'
+            if (item.mainCanRequest) role = 'client'
+            if (item.mainCanRequest && item.workerCanRequest) role = 'duplex'
+            return {
+              namespace: item.namespace, version: item.version, role,
+              maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes,
+              ...(item.observationAdmission !== undefined ? { observationAdmission: item.observationAdmission } : {}),
+            }
+          })), extensionDescriptors(this.options.extensions ?? []))
+        } catch { throw new DeviceConnectionError('malformed-frame') }
         if (JSON.stringify(recomputed) !== JSON.stringify(extensions)) throw new DeviceConnectionError('malformed-frame')
         const dispatch = extensions.some((item) => ['execution-v1', 'job-v1'].includes(item.namespace) && item.mainCanRequest)
         const transfer = extensions.some((item) => item.namespace === 'byte-transfer-v1' && (item.mainCanRequest || item.workerCanRequest))

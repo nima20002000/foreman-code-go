@@ -14,10 +14,18 @@ class Socket extends EventEmitter {
   peer?: Socket
   closed = false
   readonly frames: Record<string, unknown>[] = []
+  rejectsMaintenanceObservation = false
 
   send(text: string) {
-    this.frames.push(JSON.parse(text) as Record<string, unknown>)
+    const frame = JSON.parse(text) as Record<string, unknown>
+    this.frames.push(frame)
     queueMicrotask(() => {
+      // Model the previous receiver, which closes on maintenance observation admission.
+      if (this.peer?.rejectsMaintenanceObservation && frame.type === 'application-open'
+        && frame.namespace === 'computer-maintenance-v2' && frame.admission === 'observation') {
+        this.peer.close()
+        return
+      }
       if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
     })
   }
@@ -43,7 +51,7 @@ const observationRequests = [
   { method: 'physical-ack', retire: true },
 ]
 
-function fixture(ignoreAbort = new Set<string>()) {
+function fixture(ignoreAbort = new Set<string>(), workerSupportsMaintenanceObservation = true) {
   const rawMain = new Socket()
   const rawWorker = new Socket()
   rawMain.peer = rawWorker
@@ -71,7 +79,15 @@ function fixture(ignoreAbort = new Set<string>()) {
       })
     },
   }))
-  const extensions = negotiateDeviceExtensions(extensionDescriptors(registrations), extensionDescriptors(registrations))
+  const mainDescriptors = extensionDescriptors(registrations)
+  const workerDescriptors = extensionDescriptors(registrations).map(descriptor => {
+    if (workerSupportsMaintenanceObservation) return descriptor
+    // Previous peers advertise only these descriptor fields.
+    const { namespace, version, role, maxJsonBytes, maxBinaryBytes } = descriptor
+    return { namespace, version, role, maxJsonBytes, maxBinaryBytes }
+  })
+  rawWorker.rejectsMaintenanceObservation = !workerSupportsMaintenanceObservation
+  const extensions = negotiateDeviceExtensions(mainDescriptors, workerDescriptors)
   const parent = new AbortController()
   const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket,
     signal: parent.signal, extensions, registrations })
@@ -101,6 +117,39 @@ function fixture(ignoreAbort = new Set<string>()) {
 }
 
 afterEach(() => vi.useRealTimers())
+
+it('keeps maintenance requests ordinary and the link open when the peer does not advertise observation support', async () => {
+  vi.useFakeTimers()
+  const f = fixture(new Set(), false)
+  try {
+    for (const id of ['bundle-status', 'next-status']) {
+      const status = f.request('main', 'computer-maintenance-v2',
+        { id, operation: 'status', scope: 'worker' }, { priority: 'foreground' })
+      await vi.advanceTimersByTimeAsync(0)
+      const opens = f.rawMain.frames.filter(frame => frame.type === 'application-open' && frame.kind === 'request')
+      expect(opens.at(-1)).toMatchObject({ namespace: 'computer-maintenance-v2', version: 2 })
+      expect(opens.at(-1)).not.toHaveProperty('admission')
+      expect(f.rawMain.closed).toBe(false)
+      expect(f.rawWorker.closed).toBe(false)
+      expect(f.started).toContain(id)
+      f.release(id)
+      expect(await status).toEqual({ payload: id })
+    }
+  } finally { await f.close() }
+})
+
+it('negotiates maintenance observation admission only when both peers advertise it', () => {
+  const registration = { namespace: 'computer-maintenance-v2', version: 2, role: 'client' as const,
+    maxJsonBytes: 1_048_576, maxBinaryBytes: 0 }
+  const main = extensionDescriptors([registration])
+  const worker = extensionDescriptors([{ ...registration, role: 'server', handle: async () => ({ payload: null }) }])
+  expect(main[0]).toMatchObject({ observationAdmission: true })
+  expect(worker[0]).toMatchObject({ observationAdmission: true })
+  expect(negotiateDeviceExtensions(main, worker)[0]).toMatchObject({ observationAdmission: true })
+  expect(negotiateDeviceExtensions([registration], worker)[0]).not.toHaveProperty('observationAdmission')
+  expect(negotiateDeviceExtensions(main, [{ ...registration, role: 'server' }])[0])
+    .not.toHaveProperty('observationAdmission')
+})
 
 it.each(['main', 'worker'] as const)('completes bundle status with every ordinary slot occupied from %s', async side => {
   vi.useFakeTimers()

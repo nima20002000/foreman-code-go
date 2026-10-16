@@ -20,6 +20,8 @@ export interface DeviceExtensionDescriptor {
   role: DeviceExtensionRole
   maxJsonBytes: number
   maxBinaryBytes: number
+  /** Enables observation admission on this namespace when both peers advertise support. */
+  observationAdmission?: true
 }
 export interface DeviceNegotiatedExtension {
   namespace: string
@@ -28,6 +30,7 @@ export interface DeviceNegotiatedExtension {
   workerCanRequest: boolean
   maxJsonBytes: number
   maxBinaryBytes: number
+  observationAdmission?: true
 }
 export type DeviceApplicationFrame =
   | { type: 'application-open'; id: string; namespace: string; version: number; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number; admission?: 'stop' | 'observation' }
@@ -91,11 +94,14 @@ export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescri
       ? AGENT_SNAPSHOT_JSON_BYTES : DEVICE_APPLICATION_JSON_BYTES
     if (!/^[a-z][a-z0-9:-]{0,63}$/.test(descriptor.namespace) || seen.has(descriptor.namespace)
       || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
+      || descriptor.observationAdmission !== undefined && descriptor.observationAdmission !== true
       || !['client', 'server', 'duplex'].includes(descriptor.role)
       || !Number.isSafeInteger(descriptor.maxJsonBytes) || descriptor.maxJsonBytes < 256 || descriptor.maxJsonBytes > maxJsonBytes
       || !Number.isSafeInteger(descriptor.maxBinaryBytes) || descriptor.maxBinaryBytes < 0 || descriptor.maxBinaryBytes > DEVICE_APPLICATION_BINARY_BYTES) throw new Error('Invalid device extension')
     seen.add(descriptor.namespace)
-    return { namespace: descriptor.namespace, version: descriptor.version, role: descriptor.role, maxJsonBytes: descriptor.maxJsonBytes, maxBinaryBytes: descriptor.maxBinaryBytes }
+    return { namespace: descriptor.namespace, version: descriptor.version, role: descriptor.role,
+      maxJsonBytes: descriptor.maxJsonBytes, maxBinaryBytes: descriptor.maxBinaryBytes,
+      ...(descriptor.observationAdmission === true ? { observationAdmission: true as const } : {}) }
   }).sort((a, b) => a.namespace < b.namespace ? -1 : a.namespace > b.namespace ? 1 : 0)
 }
 export function negotiateDeviceExtensions(main: DeviceExtensionDescriptor[], worker: DeviceExtensionDescriptor[]): DeviceNegotiatedExtension[] {
@@ -105,6 +111,10 @@ export function negotiateDeviceExtensions(main: DeviceExtensionDescriptor[], wor
     const mainCanRequest = local.role !== 'server' && peer.role !== 'client'
     const workerCanRequest = peer.role !== 'server' && local.role !== 'client'
     if (!mainCanRequest && !workerCanRequest) return []
-    return [{ namespace: local.namespace, version: local.version, mainCanRequest, workerCanRequest, maxJsonBytes: Math.min(local.maxJsonBytes, peer.maxJsonBytes), maxBinaryBytes: Math.min(local.maxBinaryBytes, peer.maxBinaryBytes) }]
+    return [{ namespace: local.namespace, version: local.version, mainCanRequest, workerCanRequest,
+      maxJsonBytes: Math.min(local.maxJsonBytes, peer.maxJsonBytes),
+      maxBinaryBytes: Math.min(local.maxBinaryBytes, peer.maxBinaryBytes),
+      ...(local.observationAdmission === true && peer.observationAdmission === true
+        ? { observationAdmission: true as const } : {}) }]
   }).sort((a, b) => a.namespace < b.namespace ? -1 : a.namespace > b.namespace ? 1 : 0)
 }
