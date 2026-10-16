@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect } from 'vitest'
 import { AgentConfigurationVersionSchema, GetInteractionResponseSchema, NativeSessionLaneSchema, ReviewJobSchema,
-  withAdvancedDefaults } from '@foreman-code/contracts'
+  withAdvancedDefaults, type HarnessExecution } from '@foreman-code/contracts'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
@@ -83,6 +83,10 @@ async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<voi
   } catch (error) {
     console.error('Remote review production failure', error)
     console.error('Remote review production error codes', fixture.failures())
+    const executions = await fixture.db.pool.query<{ record: HarnessExecution }>(
+      'select record from harness_executions order by created_at')
+    console.error('Remote review execution failures', executions.rows.flatMap(({ record }) => record.result?.error
+      ? [{ executionId: record.id, state: record.state, error: record.result.error }] : []))
     console.error('Remote review jobs', (await fixture.db.pool.query(`select id,state,
       record->'error' as error,record->>'retryAfter' as retry_after,
       record->>'providerTurnOrMessageId' as provider_turn,record->>'attempt' as attempt,
@@ -91,7 +95,11 @@ async function checkRemoteReviewFixture(check: (fixture: Fixture) => Promise<voi
       record->>'correlationId' as correlation,record->>'leaseToken' is not null as claimed,
       record->>'leaseExpiresAt' as expires_at from native_session_lanes`)).rows)
     console.error('Remote review credential fences', (await fixture.db.pool.query(`select b.execution_id,b.purpose,
-      b.approval_review_lease_fence=j.lease_fence as current_job_fence
+      b.approval_review_lease_fence=j.lease_fence as current_job_fence,
+      b.approval_connection_generation::text as credential_generation,
+      j.approval_connection_generation::text as job_generation,
+      (select l.record->>'connectionGeneration' from native_session_lanes l
+        where l.harness=j.record->>'provider' and l.native_session_id=j.record->>'nativeSessionId') as writer_generation
       from worker_credential_bindings b left join review_jobs j on j.id=b.approval_review_job_id`)).rows)
     console.error('Remote review interactions', (await fixture.db.pool.query(`select id,status,
       record->>'deliveryState' as delivery_state from durable_interactions`)).rows)
