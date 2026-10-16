@@ -23,6 +23,12 @@ export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, str
   }
   const query = async (sql: string, p: unknown[] = []) => {
     const text = sql.replace(/\s+/gu, ' ').trim()
+    if (text.startsWith('insert into ci_dispatch_claims') || text.startsWith('update ci_dispatch_claims')) {
+      return { rows: [{ ticket_id: p[0] }], rowCount: 1 }
+    }
+    if (text.startsWith('update ci_runs set record=$2::jsonb')) {
+      return changed(matches(p[0], p[2]), { record: p[1] })
+    }
     if (text.startsWith('select id,state,record')) return { rows: listed(() => true) }
     if (text.startsWith('update ci_runs set state=$2, host_key=case')) {
       const row = matches(p[0], p[5])
