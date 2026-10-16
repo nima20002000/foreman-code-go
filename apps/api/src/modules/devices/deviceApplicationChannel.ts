@@ -140,7 +140,14 @@ export class DeviceApplicationChannel {
     if (this.options.revalidate && (fresh || Date.now() - this.authorizedAt >= authorizationReuseMs)) {
       if (!this.authorization) {
         const startedAt = Date.now()
-        this.authorization = this.track(this.options.revalidate().then(() => { this.authorizedAt = startedAt }))
+        this.authorization = this.track(this.options.revalidate().then(() => { this.authorizedAt = startedAt }, error => {
+          // A denial closes the link even after all deadline waiters have timed out.
+          if (!isTransientDatabaseOrSocketError(error)
+            && !(error instanceof DeviceConnectionError && error.code === 'timeout')) {
+            this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
+          }
+          throw error
+        }))
           .finally(() => { this.authorization = undefined })
       }
       try {
@@ -152,7 +159,6 @@ export class DeviceApplicationChannel {
           const failure = deviceApplicationFailure(error)
           throw new DeviceApplicationError(failure.code, undefined, { cause: error, class: failure.class })
         }
-        this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
         throw error
       }
     }

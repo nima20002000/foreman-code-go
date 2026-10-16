@@ -207,3 +207,48 @@ it('survives transient heartbeat authorization failures but closes on explicit r
     expect(f.handle).not.toHaveBeenCalled()
   } finally { await f.close() }
 })
+
+it.each(['revoked', 'unauthorized'])('closes the link when %s arrives after the heartbeat authorization timeout', async code => {
+  const f = await fixture()
+  const read = deferred()
+  f.setValidation(() => read.promise)
+  try {
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(f.revalidate).toHaveBeenCalledOnce()
+    expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
+    await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { cached: true }))
+      .resolves.toEqual({ payload: { cached: true } })
+
+    read.reject(Object.assign(new Error('Device authorization denied'), { code }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(f.connections[0]!.main.closed).toBe(true)
+    expect(f.endpoint.currentBinding(f.identity.deviceId)).toBeUndefined()
+    await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { denied: true })).rejects.toBeDefined()
+    expect(f.workerHandle).toHaveBeenCalledOnce()
+  } finally {
+    read.resolve()
+    await f.close()
+  }
+})
+
+it('keeps the link open when a transient failure arrives after the heartbeat authorization timeout', async () => {
+  const f = await fixture()
+  const read = deferred()
+  f.setValidation(() => read.promise)
+  try {
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(f.revalidate).toHaveBeenCalledOnce()
+    read.reject(new Error('Query read timeout'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(f.connections[0]!.main.closed).toBe(false)
+    expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
+    expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
+    await expect(f.endpoint.request(f.identity.deviceId, 'test-echo', { cached: true }))
+      .resolves.toEqual({ payload: { cached: true } })
+  } finally {
+    read.resolve()
+    await f.close()
+  }
+})
