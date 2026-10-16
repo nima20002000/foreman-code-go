@@ -67,6 +67,27 @@ describe('byte-bounded native history pages', () => {
     expect(recovery.history.terminalTurn).toEqual(history.terminalTurn)
   })
 
+  it('separates a retained range from an oversized first retained event', () => {
+    const history: NativeHistory = {
+      events: [event(442, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1)), event(443)],
+      pendingInteractions: [], firstRetainedSequence: 442, nextSequence: 444,
+    }
+    const retained = pageNativeHistory(history, 146)
+    expect(retained.history.events).toEqual([])
+    expect(retained.history.gap).toEqual({ fromSequence: 147, toSequence: 441, reason: 'retention' })
+    expect(retained.page).toEqual({ nextAfterSequence: 441, hasMore: true })
+
+    const oversized = pageNativeHistory(history, retained.page.nextAfterSequence)
+    expect(oversized.history.events).toEqual([])
+    expect(oversized.history.gap).toEqual({ fromSequence: 442, toSequence: 442, reason: 'event_too_large' })
+    expect(oversized.page).toEqual({ nextAfterSequence: 442, hasMore: true })
+
+    const remaining = pageNativeHistory(history, oversized.page.nextAfterSequence)
+    expect(remaining.history.events).toEqual([event(443)])
+    expect(remaining.history.gap).toBeUndefined()
+    expect(remaining.page).toEqual({ nextAfterSequence: 443, hasMore: false })
+  })
+
   it('reports an oversized last event even when the terminal window is otherwise empty', () => {
     const result = { outcome: 'succeeded' as const }
     const reply = pageNativeHistory({ events: [event(0, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES))],
