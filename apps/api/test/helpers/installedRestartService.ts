@@ -1,62 +1,23 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
+import { copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { userInfo } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { parse } from 'yaml'
-import { apiServiceTemplate, deployProductionApi, publish }
+import { apiServiceTemplate, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
-import { copyApiRuntime } from '../../../../scripts/copy-api-runtime.mjs'
-import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
 import { readUntil } from './observableCondition.js'
 import { removeRestartUnit } from '../../../../scripts/test-restart-units.mjs'
-import { testFixtureCacheRoot } from '../../../../scripts/test-fixture-cache.mjs'
 import { ownedTestPath } from './testResources.js'
 import { measureIntegrationPhase } from './integrationPhase.js'
+import { installedRestartArtifact } from './installedRestartArtifact.js'
 
 const execute = promisify(execFile)
-const repository = fileURLToPath(new URL('../../../..', import.meta.url))
 const serviceUser = userInfo()
-const workerRequire = createRequire(new URL('../../../worker/package.json', import.meta.url))
-const { build } = workerRequire('esbuild') as {
-  build(options: {
-    entryPoints: string[]
-    outdir?: string
-    outfile?: string
-    outbase?: string
-    bundle?: boolean
-    packages?: 'external'
-    plugins?: Array<{
-      name: string
-      setup(builder: {
-        onResolve(options: { filter: RegExp },
-          callback: (args: { path: string }) => { path: string; external: boolean }): void
-      }): void
-    }>
-    platform: 'node'
-    format: 'esm'
-    target: string
-    logLevel: 'silent'
-  }): Promise<unknown>
-}
 
 export async function publishRestartUnit(unitPath: string, service: string) {
   await publish(unitPath, service, 0o600)
-}
-
-async function sources(directory: string): Promise<string[]> {
-  const files: string[] = []
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name)
-    if (entry.isDirectory()) files.push(...await sources(path))
-    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts') && !entry.name.includes('.test.')) files.push(path)
-  }
-  return files
 }
 
 /** Uses the installer's package layout and unit, with isolated fixture configuration. */
@@ -65,94 +26,13 @@ export async function installedRestartService(directory: string, configuration: 
   ownedTestPath(directory)
   const app = join(directory, 'installed')
   const release = join(app, 'current')
-  const api = join(release, 'apps/api')
-  await mkdir(dirname(api), { recursive: true, mode: 0o700 })
-  await cp(join(repository, 'scripts'), join(release, 'scripts'), { recursive: true })
-  await cp(join(repository, 'packages/contracts/src'), join(release, 'packages/contracts/src'), { recursive: true })
-  // Package from a disposable workspace so fixture setup cannot change the installed source.
-  const deployment = join(directory, 'deployment-source')
-  await mkdir(join(deployment, 'scripts'), { recursive: true, mode: 0o700 })
-  for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
-    await copyFile(join(repository, name), join(deployment, name))
-  }
-  await cp(join(repository, 'patches'), join(deployment, 'patches'), { recursive: true })
-  await copyFile(join(repository, 'scripts/require-pnpm.mjs'), join(deployment, 'scripts/require-pnpm.mjs'))
-  for (const name of ['api', 'web', 'worker']) {
-    await mkdir(join(deployment, 'apps', name), { recursive: true })
-    await copyFile(join(repository, 'apps', name, 'package.json'), join(deployment, 'apps', name, 'package.json'))
-  }
-  await cp(join(repository, 'packages/contracts'), join(deployment, 'packages/contracts'), {
-    recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
+  await measureIntegrationPhase('installed restart artifact copy', async () => {
+    await mkdir(app, { recursive: true, mode: 0o700 })
+    await execute('cp', ['--recursive', '--no-dereference', '--reflink=auto', '--no-target-directory',
+      '--', await installedRestartArtifact(), release])
   })
-  // The installer's shared dependency tree is deployed once per lockfile, not copied again for every fixture.
-  // The installed API's own modules are transformed below.
-  await mkdir(join(deployment, 'apps/api/dist'), { recursive: true })
-  const { storeDir } = parse(await readFile(join(repository, 'node_modules/.modules.yaml'), 'utf8')) as {
-    storeDir: string
-  }
-  const ciMetadataCache = join(repository, '.logs/pnpm-metadata')
-  // Test homes are private; use the host or cloud install's cache for release-age verification.
-  const metadataCache = process.env.npm_config_cache_dir
-    || (existsSync(ciMetadataCache) ? ciMetadataCache : join(serviceUser.homedir, '.cache/pnpm'))
-  const deploy = async (command: string, args: string[]) => {
-    // The disposable deployment workspace is discarded, so it needs no dependency restoration.
-    if (args.includes('install')) return
-    try {
-      // Deploy rechecks release age; allow missing full metadata while reusing installed packages.
-      await execute(command, [...args, '--prefer-offline', '--store-dir', storeDir, '--cache-dir', metadataCache], {
-        cwd: deployment, maxBuffer: 4 * 1024 * 1024, timeout: 300_000,
-        env: { ...process.env, CI: 'true' },
-      })
-    } catch (error) {
-      const output = error as Error & { stdout?: string; stderr?: string; code?: unknown; signal?: unknown }
-      throw new Error(`Installed API fixture deployment failed (prefer-offline; 300 s command limit): ${output.message}`
-        + ` (code ${output.code}, signal ${output.signal})\n`
-        + `${output.stderr ?? ''}\n${output.stdout ?? ''}`, { cause: error })
-    }
-  }
-  await measureIntegrationPhase('Installed API dependencies', () => deployProductionApi(deploy, api, {
-    dependencies: { root: join(testFixtureCacheRoot(), 'api-dependencies'), source: deployment },
-  }))
-  await mkdir(join(api, 'test/helpers'), { recursive: true })
-  await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
-  const source = join(repository, 'apps/api/src')
-  await cp(source, join(api, 'dist'), { recursive: true, filter: path => !path.endsWith('.ts') })
-  // Transform the installed modules together without rebuilding a compiler program for each file.
-  await build({
-    entryPoints: await sources(source),
-    outdir: join(api, 'dist'),
-    outbase: source,
-    platform: 'node',
-    format: 'esm',
-    target: 'es2022',
-    logLevel: 'silent',
-  })
-  await copyApiRuntime(repository, join(api, 'dist'))
-  await writeFile(join(api, 'dist/runtime-build.json'),
-    `${JSON.stringify(createRuntimeBuildIdentity(repository))}\n`, { mode: 0o600 })
-  await cp(join(repository, 'apps/worker/src'), join(release, 'apps/worker/src'), { recursive: true })
-  await copyFile(join(repository, 'package.json'), join(release, 'package.json'))
   await copyFile(process.execPath, join(release, 'node'))
   await cp(environment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY!, join(release, 'worker-artifacts'), { recursive: true })
-  await build({
-    entryPoints: [fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url))],
-    outfile: join(api, 'dist/restart-fixture.js'),
-    bundle: true,
-    packages: 'external',
-    platform: 'node',
-    format: 'esm',
-    target: 'es2022',
-    logLevel: 'silent',
-    plugins: [{
-      name: 'installed-api-imports',
-      setup(builder) {
-        builder.onResolve({ filter: /^\.\.\/\.\.\/src\/.*\.ts$/ }, ({ path }) => ({
-          path: path.replace('../../src/', './').replace(/\.ts$/, '.js'),
-          external: true,
-        }))
-      },
-    }],
-  })
   const readyFile = join(directory, 'service-ready.json')
   const preservingFile = `${readyFile}.preserving`
   const unit = `graphql-restart-${randomUUID()}.service`

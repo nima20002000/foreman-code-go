@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
 import { installedRestartService } from './helpers/installedRestartService.js'
 
@@ -40,6 +40,7 @@ describe('installed restart dependency packaging', () => {
     root = createTestRoot(parent, 'installed-packaging-')
     vi.stubEnv('FOREMAN_CODE_TEST_ROOT', root.directory)
     vi.stubEnv('FOREMAN_CODE_TEST_OWNER', root.token)
+    vi.stubEnv('FOREMAN_CODE_TEST_CACHE_ROOT', join(root.directory, 'cache'))
     vi.stubEnv('npm_config_cache_dir', join(root.directory, 'metadata'))
     deployment.execute.mockRejectedValue(Object.assign(new Error('registry metadata unavailable'), {
       code: 1, signal: null, stdout: 'ERR_PNPM_META_FETCH_FAIL', stderr: 'registry connection failed',
@@ -64,11 +65,12 @@ describe('installed restart dependency packaging', () => {
     expect(command).toBe('corepack')
     expect(args).toEqual([
       'pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod',
-      join(root.directory, 'installed/current/apps/api'),
+      join(dirname(options.cwd), 'release/apps/api'),
       '--prefer-offline', '--store-dir', '/fixture-package-store',
       '--cache-dir', join(root.directory, 'metadata'),
     ])
-    expect(options.cwd).toBe(join(root.directory, 'deployment-source'))
+    expect(dirname(dirname(options.cwd))).toBe(join(root.directory, 'cache/installed-api-restart'))
+    expect(options.cwd.endsWith('/deployment-source')).toBe(true)
     expect(options.env.CI).toBe('true')
   })
 
