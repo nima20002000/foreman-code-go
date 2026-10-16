@@ -15,7 +15,7 @@ interface MirrorRun {
   baseCommit?: string
   state: string
   mirrorBranch?: string
-  dispatch?: { input: { branch: string; defaultBranch?: string } }
+  dispatch?: { input: { branch: string; workflowRef?: string; defaultBranch?: string } }
 }
 
 // Sweeps run after every finished ticket over thousands of retained tickets; unchanged files are not parsed again.
@@ -88,6 +88,7 @@ export async function pruneMirrorBranches(options: {
         if (run.baseCommit) keep.add(`refs/heads/ci/${run.commit}-${run.baseCommit}`)
       }
       keep.add(`refs/heads/ci-default/${run.commit}`)
+      if (run.dispatch?.input.workflowRef) keep.add(`refs/heads/${run.dispatch.input.workflowRef}`)
       if (run.dispatch?.input.defaultBranch) keep.add(`refs/heads/${run.dispatch.input.defaultBranch}`)
     }
   }

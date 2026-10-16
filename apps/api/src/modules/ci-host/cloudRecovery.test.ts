@@ -302,9 +302,11 @@ it.each(['canceled', 'queued'] as const)('cancels GitHub attempts that become vi
     f.advance(75_000)
     await f.cloud.handle(readRequest(runId))
   }
-  expect(await f.cloud.handle(readRequest(runId))).toMatchObject({ run: { state: outcome } })
+  expect(await f.cloud.handle(readRequest(runId)))
+    .toMatchObject({ run: { state: outcome === 'canceled' ? 'starting' : 'queued' } })
   f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }, { databaseId: 9, displayTitle: `ci ${runId}` }]
-  f.advance(4000)
+  Object.assign(f.github, { status: 'completed', conclusion: 'cancelled' })
+  f.advance(75_001)
   const reopened = f.reopen()
   await reopened.handle({ operation: 'status' })
   await reopened.reconcile()

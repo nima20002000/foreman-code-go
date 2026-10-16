@@ -806,6 +806,8 @@ export class HostCiService {
         message: `Queued once on another slot after setup failure: ${reason}`.slice(0, 2000) }
     }
     const requeued = state.state === 'queued'
+    let executionRunId = run.executionRunId
+    if (requeued) executionRunId = setupRequeue ? setupRetry!.runId : randomUUID()
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
     // A workflow the provider only queued is moved when another computer has room; that does not rule the provider out.
     if (requeued && !setupRequeue && computer.hostRef.provider && run.step !== 'queued') {
@@ -820,6 +822,7 @@ export class HostCiService {
       dispatchedAt: state.state === 'starting' ? run.dispatchedAt ?? run.startedAt ?? run.queuedAt : undefined,
       dispatchHostKey: undefined,
       setupRetry,
+      executionRunId,
       ...(options.observation ? { observation: options.observation } : {}),
       ...(state.transport ? { transport: state.transport } : {}),
       ...(setupRequeue ? { dispatchAttempts: undefined, collection: undefined, provenance: undefined,

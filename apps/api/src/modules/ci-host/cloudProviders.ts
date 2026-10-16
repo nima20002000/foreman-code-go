@@ -17,7 +17,7 @@ export interface CloudRun {
   transport?: CiHostRun['transport']
   testsStarted?: boolean
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
-  dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
+  dispatch?: { input: CloudDispatchInput; attempts: number; at: string; uncertain?: boolean }
   reconciliation?: { attempts: number; at: string; since?: string; previousMessage: string | null }
   publicationRequest?: Extract<CiHostRequest, { operation: 'start' }>
   mirrorPublication?: CiHostRun['mirrorPublication']
@@ -90,6 +90,8 @@ export interface CloudProvider {
   dispatch(input: CloudDispatchInput): Promise<string | null>
   /** The service's run id once a workflow exists; a pipeline alone is not a started run. */
   find(run: CloudRun): Promise<string | null>
+  /** All pipelines for this execution, including submissions whose trigger reply was lost. */
+  discover?(run: CloudRun): Promise<string[]>
   status(run: CloudRun): Promise<CloudStatus>
   log(run: CloudRun): Promise<string>
   /** The measured test file durations and structured test results the run left as an artifact. */
@@ -241,13 +243,21 @@ export class GitHubActionsProvider implements CloudProvider {
     return null
   }
 
-  async find(run: CloudRun) {
+  private async matches(run: CloudRun) {
     const branch = run.dispatch?.input.workflowRef ?? run.dispatch?.input.branch ?? 'main'
     const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', branch,
       '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle,status,headSha'], 15_000)) as
       { databaseId: number; displayTitle: string; status?: string; headSha: string }[]
-    const matches = listed.filter(value => value.displayTitle === `ci ${run.runId}`)
+    return listed.filter(value => value.displayTitle === `ci ${run.runId}`)
       .sort((left, right) => left.databaseId - right.databaseId)
+  }
+
+  async discover(run: CloudRun) {
+    return (await this.matches(run)).map(match => String(match.databaseId))
+  }
+
+  async find(run: CloudRun) {
+    const matches = await this.matches(run)
     const match = matches.find(value => String(value.databaseId) === run.providerRunId) ?? matches[0]
     if (match && run.provenance && match.headSha !== run.provenance.workflowCommit) {
       await this.cancel({ ...run, providerRunId: String(match.databaseId) })
@@ -388,6 +398,37 @@ export class CircleCiProvider implements CloudProvider {
       ...(input.partition ? ['--parameter', `partition=${input.partition}`] : []),
       ...(input.durations ? ['--parameter', `durations=${input.durations}`] : []), '--json'])) as { id: string }
     return started.id
+  }
+
+  async discover(run: CloudRun) {
+    const branch = run.dispatch?.input.workflowRef
+    if (!branch || branch !== `ci/${run.commit}-${run.runId}`) {
+      throw new DomainError('CI_CLOUD_SUBMISSION_UNCERTAIN',
+        'CircleCI submission has no execution-specific ref; ownership retained.', 503)
+    }
+    const matches: { id: string; revision: string | undefined }[] = []
+    let page: string | null = null
+    do {
+      const query = `branch=${encodeURIComponent(branch)}`
+        + (page ? `&page-token=${encodeURIComponent(page)}` : '')
+      const listed = JSON.parse(await this.circleci(['api',
+        `api/v2/project/gh/${run.mirror}/pipeline?${query}`, '--method', 'GET'], 15_000)) as {
+        items: { id: string; vcs?: { branch?: string; revision?: string }; trigger?: { type?: string } }[]
+        next_page_token?: string | null
+      }
+      for (const pipeline of listed.items) {
+        // Publishing the ref can also create a VCS-triggered pipeline with no ticket parameters.
+        if (pipeline.vcs?.branch === branch && pipeline.trigger?.type === 'api') {
+          matches.push({ id: pipeline.id, revision: pipeline.vcs.revision })
+        }
+      }
+      page = listed.next_page_token ?? null
+    } while (page)
+    if (matches.some(pipeline => pipeline.revision !== run.provenance?.workflowCommit)) {
+      throw new DomainError('CI_CLOUD_PROVENANCE_MISMATCH',
+        'The CircleCI pipeline does not match the pinned snapshot.', 409)
+    }
+    return matches.map(pipeline => pipeline.id)
   }
 
   async find(run: CloudRun) {

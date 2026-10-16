@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { cloudCiLookupFixture } from '../../../test/helpers/cloudCiLookupFixture.js'
 import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
 
-it.each(['starting', 'running'] as const)('cancels a known CircleCI pipeline after denied lookup from %s', async state => {
+it.each(['starting', 'running'] as const)('cancels a known CircleCI pipeline after denied lookup and confirms termination from %s', async state => {
   const errors = ['permission denied', 'authentication required', 'HTTP 401 Unauthorized', 'HTTP 403 Forbidden']
   for (const error of errors) {
     const f = await cloudCiLookupFixture(state)
@@ -10,6 +10,13 @@ it.each(['starting', 'running'] as const)('cancels a known CircleCI pipeline aft
       f.control.operation = 'run'
       f.control.error = error
       const request = { operation: 'cancel', runId: f.run.runId }
+      await expect(f.reopen().handle(request)).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_UNREADABLE' })
+      expect(f.control.canceled).toEqual(['pipeline-1'])
+      f.advance(75_001)
+      expect(await f.reopen().handle({ operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }))
+        .toMatchObject({ run: { state, finishedAt: null } })
+      f.control.error = ''
+      f.control.outcome = 'canceled'
       const canceled = await f.reopen().handle(request)
       expect(canceled).toMatchObject({ run: { state: 'canceled', finishedAt: expect.any(String) } })
       if (canceled.operation !== 'cancel') throw new Error('Expected a cancel reply')

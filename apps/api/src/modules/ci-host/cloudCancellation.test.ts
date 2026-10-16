@@ -12,6 +12,7 @@ it('does not retry GitHub cancellation of a completed run after reopening', asyn
   if (started.operation !== 'start') throw new Error('Expected a start reply')
   f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}`,
     headSha: started.run.provenance!.workflowCommit }]
+  Object.assign(f.github, { status: 'completed', conclusion: 'cancelled' })
   const originalRun = f.ports.run
   const cancellations: string[] = []
   vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
@@ -22,6 +23,9 @@ it('does not retry GitHub cancellation of a completed run after reopening', asyn
     return originalRun(file, args, options)
   })
 
+  await expect(f.cloud.handle({ operation: 'cancel', runId }))
+    .resolves.toMatchObject({ operation: 'cancel', run: { state: 'starting', finishedAt: null } })
+  f.advance(75_001)
   await expect(f.cloud.handle({ operation: 'cancel', runId }))
     .resolves.toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
   for (let poll = 0; poll < 2; poll++) {

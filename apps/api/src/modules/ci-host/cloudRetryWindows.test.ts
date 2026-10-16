@@ -73,19 +73,20 @@ it('recovers artifacts within the collection window without downloading the reta
 it('finishes cancellation discovery after allowing late attempts to appear, including across restart', async () => {
   const f = await fixture()
   const runId = randomUUID()
-  const find = vi.spyOn(f.cloud.provider, 'find').mockResolvedValue('first-attempt')
+  const discover = vi.spyOn(f.cloud.provider, 'discover').mockResolvedValue(['first-attempt'])
   const cancel = vi.spyOn(f.cloud.provider, 'cancel').mockResolvedValue()
   await f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
     repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
   await f.cloud.handle({ operation: 'cancel', runId })
   expect(cancel.mock.calls.map(([run]) => run.providerRunId)).toEqual(['first-attempt'])
-  find.mockResolvedValue('late-attempt')
+  discover.mockResolvedValue(['first-attempt', 'late-attempt'])
   f.advance(4_000)
   await f.reopen().reconcile()
   expect(cancel.mock.calls.map(([run]) => run.providerRunId)).toEqual(['first-attempt', 'late-attempt'])
   f.advance(80_000)
+  Object.assign(f.github, { status: 'completed', conclusion: 'cancelled' })
   await f.reopen().reconcile()
-  const calls = find.mock.calls.length
+  const calls = discover.mock.calls.length
   for (let pass = 0; pass < 3; pass++) {
     f.advance(4_000)
     const reopened = f.reopen()
@@ -93,7 +94,7 @@ it('finishes cancellation discovery after allowing late attempts to appear, incl
     await reopened.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
     await reopened.handle({ operation: 'cancel', runId })
   }
-  expect(find).toHaveBeenCalledTimes(calls)
+  expect(discover).toHaveBeenCalledTimes(calls)
   expect(cancel).toHaveBeenCalledTimes(2)
 })
 

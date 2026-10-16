@@ -103,6 +103,10 @@ export class CircleRest {
   }
 
   private async readCommand(args: string[], timeoutMs: number): Promise<string | null> {
+    if (args[0] === 'api') {
+      const response = await this.read(`/${args[1]!}`, args, timeoutMs)
+      return response ? response.text() : null
+    }
     if (args[0] === 'run' && args[1] === 'get') {
       const pipeline = await this.pipeline(args[2]!, args, timeoutMs)
       return pipeline ? JSON.stringify(pipeline) : null

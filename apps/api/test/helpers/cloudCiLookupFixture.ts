@@ -16,7 +16,7 @@ export async function cloudCiLookupFixture(state: 'starting' | 'running',
   await mkdir(join(root, 'clone/.git'), { recursive: true })
   let now = Date.now()
   const control = { error: '', cancelError: '', operation: state === 'starting' ? 'run' : 'job',
-    reads: 0, canceled: [] as string[] }
+    reads: 0, canceled: [] as string[], outcome: '' }
   const run: CloudRun = { runId, repository: 'fixture/site', mirror: 'fixture/site-ci', commit: 'a'.repeat(40),
     suite: 'integration', providerRunId: 'pipeline-1', state, startedAt: new Date(now).toISOString(),
     finishedAt: null, exitCode: null, message: null, workflowStarted: state === 'running',
@@ -35,7 +35,9 @@ export async function cloudCiLookupFixture(state: 'starting' | 'running',
         control.reads++
         if (control.error) return { code: 1, stdout: '', stderr: control.error }
       }
-      if (args[0] === 'run') return ok(JSON.stringify({ phase: 'started', workflows: [{ jobs: [{ id: 'job-1' }] }] }))
+      if (args[0] === 'run') return ok(JSON.stringify(control.outcome
+        ? { phase: 'ended', current_outcome: control.outcome, workflows: [] }
+        : { phase: 'started', workflows: [{ jobs: [{ id: 'job-1' }] }] }))
       if (args[0] === 'job') return ok(JSON.stringify({ phase: 'started', executions: [] }))
       return ok()
     } }

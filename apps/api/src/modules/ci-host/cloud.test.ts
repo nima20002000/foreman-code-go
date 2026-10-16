@@ -7,7 +7,7 @@ import { affectedSnapshot } from '../../../../../scripts/ci-affected.mjs'
 import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 import { cloudService } from './cloudService.testSupport.js'
 
-import { fixture } from './cloud.testSupport.js'
+import { confirmCancellation, fixture } from './cloud.testSupport.js'
 import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
 
 it.each([false, true])('keeps a first-pass CircleCI file failure in Main when its retest passes: report=%s', async reported => {
@@ -152,7 +152,11 @@ it.each([false, true])('settles CircleCI cancellation when nothing is active, lo
     commit: f.commit, suite: 'integration', scope: 'full' })
   f.circle.cancelError = 'error: Run run-1 has no active workflows to cancel.'
   if (lookupEnded) f.circle.lookupError = 'error: Run run-1 has no active workflows to cancel.'
-  expect(await f.cloud.handle({ operation: 'cancel', runId }))
+  if (lookupEnded) {
+    await expect(f.cloud.handle({ operation: 'cancel', runId })).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_UNREADABLE' })
+    f.circle.lookupError = ''
+  }
+  expect(await confirmCancellation(f, runId))
     .toMatchObject({ operation: 'cancel', run: { state: 'canceled', finishedAt: expect.any(String) } })
   expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
   expect(f.circle.canceled).toHaveLength(1)
@@ -459,7 +463,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
       suite: 'integration', scope: 'full' })
     f.advance(75_000)
-    expect(await f.cloud.handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+    expect(await confirmCancellation(f, runId)).toMatchObject({ run: { state: 'canceled' } })
     expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
       .toMatchObject({ run: { state: 'canceled' } })
     expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(1)
@@ -480,7 +484,7 @@ describe('GitHub Actions CI on a public mirror', () => {
       repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
     await expect.poll(() => sweeps).toBe(1)
     f.advance(5 * 60_000)
-    await f.cloud.handle({ operation: 'cancel', runId })
+    await confirmCancellation(f, runId)
     const disposal = f.dispose()
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
@@ -820,7 +824,10 @@ describe('GitHub Actions CI on a public mirror', () => {
       f.advance(75_000)
       const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
       expect(await f.reopen().handle(read)).toMatchObject({ run: { state, finishedAt: null } })
-      const canceled = await f.reopen().handle({ operation: 'cancel', runId })
+      await expect(f.reopen().handle({ operation: 'cancel', runId })).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_NOT_FOUND' })
+      expect(f.circle.canceled).toEqual(['run-1'])
+      f.circle.lookupError = ''
+      const canceled = await confirmCancellation(f, runId)
       expect(canceled).toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
       if (canceled.operation !== 'cancel') throw new Error('Expected a cancel reply')
       expectCliRunMessage(canceled.run, 'Canceled.')
@@ -866,7 +873,9 @@ describe('GitHub Actions CI on a public mirror', () => {
       .resolves.toMatchObject({ run: { state: 'starting', finishedAt: null,
         message: expect.stringContaining('permission denied') } })
     await expect(f.reopen().handle({ operation: 'cancel', runId }))
-      .resolves.toMatchObject({ run: { state: 'canceled' } })
+      .rejects.toMatchObject({ code: 'CI_CLOUD_RUN_UNREADABLE' })
+    f.circle.lookupError = ''
+    await expect(confirmCancellation(f, runId)).resolves.toMatchObject({ run: { state: 'canceled' } })
   })
 
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {

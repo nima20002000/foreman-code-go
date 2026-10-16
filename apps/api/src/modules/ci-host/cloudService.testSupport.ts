@@ -10,8 +10,8 @@ import { HostCiService, type CiCommits, type HostCiComputer } from './service.js
 /** Keeps Main's database boundary in memory while using the real cloud adapter and dispatcher. */
 export function cloudService(cloud: CloudCi, run: CiHostRun, commit: string,
   selection: { suite?: CiSuite; part?: CiPart } = {}) {
-  const computer: HostCiComputer = { key: 'cloud:circleci', label: 'CircleCI', priority: 0,
-    hostRef: { kind: 'cloud', mainId: 'main', provider: 'circleci', slot: 0 },
+  const computer: HostCiComputer = { key: `cloud:${cloud.provider.id}`, label: cloud.provider.label, priority: 0,
+    hostRef: { kind: 'cloud', mainId: 'main', provider: cloud.provider.id, slot: 0 },
     userSystemd: { supported: true, reason: null } }
   let record = CiRunRecordSchema.parse({ id: run.runId, workspaceId: 'workspace', groupId: randomUUID(),
     suite: selection.suite ?? 'integration', part: selection.part ?? null,
