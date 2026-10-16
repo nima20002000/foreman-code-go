@@ -5,6 +5,7 @@ import { readOperationalFailures } from '../src/modules/diagnostics/operationalF
 import { deferred } from './helpers/deferred.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { createTestPool } from './helpers/testPool.mjs'
 
 describe.runIf(postgresEnabled)('workflow reporting under database contention', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
@@ -29,7 +30,9 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
     const retryFailures = () => readOperationalFailures().find(value => value.operation === 'retry database operation')
     const retriesBefore = retryFailures()?.failureCount ?? 0
     const locked = deferred<void>()
-    const hold = withTransaction(fixture.base.db.pool, async sql => {
+    // Reporting needs the application pool even while this external transaction holds the Run lock.
+    const locker = createTestPool({ ...database.pool.options, max: 1 })
+    const hold = withTransaction(locker, async sql => {
       await sql.query('select id from runs where id=$1 for update', [fixture.base.f.run.id])
       locked.resolve()
       // Hold the lock until reporting is actually blocked and has timed out once, however long a loaded runner takes to reach it.
@@ -46,6 +49,9 @@ describe.runIf(postgresEnabled)('workflow reporting under database contention', 
       expectSuccessfulFaultRecovery(await fixture.finished(), fixture)
       expect(retryFailures()).toMatchObject({ component: 'engine', status: 'degraded' })
       expect(retryFailures()!.failureCount).toBeGreaterThan(retriesBefore)
-    } finally { await settledLock }
+    } finally {
+      await settledLock
+      await locker.end()
+    }
   }, 18_000)
 })
