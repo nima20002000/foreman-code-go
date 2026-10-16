@@ -12,6 +12,7 @@ const classes: Readonly<Record<string, FailureClass>> = {
   WORKER_VERSION_SKEW: 'transient',
   WORKER_BUNDLE_UNPUBLISHED: 'transient',
   WORKER_UPDATING: 'transient',
+  WORKER_RUNTIME_DRAINING: 'transient',
   CI_HOST_BUSY: 'transient',
   MCP_INSPECTION_CONTEXT_MISMATCH: 'permanent',
   MCP_PRESET_UNAVAILABLE: 'permanent',

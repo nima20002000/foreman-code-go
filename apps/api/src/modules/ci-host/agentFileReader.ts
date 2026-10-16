@@ -14,7 +14,7 @@ export function agentFileReader(endpointForDomains: () => Pick<DeviceEndpoint, '
       throw new DomainError('COMPUTER_OFFLINE', 'The Agent\'s computer is offline or its app is too old to send its files.', 409)
     }
     const reply = AgentSnapshotResultSchema.parse((await endpoint.request(hostRef.deviceId, AGENT_SNAPSHOT_NAMESPACE,
-      { path, baseCommit }, { signal })).payload)
+      { path, baseCommit }, { signal, timeoutMs: 150_000 })).payload)
     return { commit: reply.commit, bundle: reply.bundleBase64 === null ? null : Buffer.from(reply.bundleBase64, 'base64') }
   }
 }

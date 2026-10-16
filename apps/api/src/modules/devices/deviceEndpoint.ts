@@ -14,6 +14,7 @@ import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failur
 import { DomainError } from '../errors.js'
 import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
+import { deviceRequestTimeoutMs } from './deviceRequestRetry.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -155,7 +156,7 @@ export class DeviceEndpoint {
       const welcome: DeviceWelcome = { ...binding, type: 'welcome', protocolVersion: DEVICE_PROTOCOL_VERSION, appVersion: this.options.appVersion, mainIdentityProof, capabilities: { heartbeat: true, dispatch: extensions.some((item) => ['execution-v1', 'job-v1'].includes(item.namespace) && item.mainCanRequest), transfer: extensions.some((item) => item.namespace === 'byte-transfer-v1' && (item.mainCanRequest || item.workerCanRequest)), extensions } }
       welcome.observedAt = new Date().toISOString()
       sendFrame(socket, welcome)
-      const acknowledged = await nextFrame(iterator, abort.signal, this.options.handshakeMs ?? 10_000)
+      const acknowledged = await nextFrame(iterator, abort.signal, deviceRequestTimeoutMs)
       if (acknowledged.done || !current()) throw new DeviceConnectionError('transport')
       const readySeenAt = new Date().toISOString()
       const ready = readFrame(acknowledged.value)
@@ -186,7 +187,7 @@ export class DeviceEndpoint {
       const channelTask = channel.run(iterator, this.options.heartbeatMs ?? 30_000).catch((error: unknown) => { abort.abort(); throw error })
       void channelTask.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
       void this.track(channelTask.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ }).then(() => channel.join()).finally(() => this.allChannels.delete(channel)))
-      await withDeviceDeadline(this.track(this.options.reconcile(binding, abort.signal)), abort.signal, this.options.handshakeMs ?? 10_000)
+      await withDeviceDeadline(this.track(this.options.reconcile(binding, abort.signal)), abort.signal, deviceRequestTimeoutMs)
       if (!current()) throw new DeviceConnectionError('transport')
       if (!session?.presence || this.sessions.get(principal.deviceId)?.abort !== abort) throw new DeviceConnectionError('transport')
       session.ready = true
