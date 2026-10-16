@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
+  WORKER_MCP_RESPONSE_MAX_BYTES,
   WorkerNativeOutputDeclarationsAuthorizationSchema, WorkerNativeOutputDeclarationsPolicySchema,
   WorkerNativeOutputReadinessSchema,
   type WorkerNativeOutputDeclarationsPolicy, type WorkerMcpRelayRequest } from '@foreman-code/contracts/worker-mcp-relay'
@@ -220,7 +221,7 @@ export function selectedMainMcpForward(app: import('fastify').FastifyInstance): 
         const chunk = await reader.read()
         if (chunk.done) break
         byteLength += chunk.value.byteLength
-        if (byteLength > 1_000_000) {
+        if (byteLength > WORKER_MCP_RESPONSE_MAX_BYTES) {
           await reader.cancel()
           throw new DomainError('WORKER_MCP_RESPONSE_INVALID', 'The selected Main MCP response exceeds its relay limit.', 502)
         }

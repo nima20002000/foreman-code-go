@@ -90,6 +90,8 @@ export async function createWorkerMcpEndpoint(input: WorkerMcpEndpointOptions & 
 /** Inspection keeps a stable native URL; requests remain unauthorized until Main supplies its scoped lease. */
 export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOptions) {
   input.signal.throwIfAborted()
+  const lifetime = new AbortController()
+  const signal = AbortSignal.any([input.signal, lifetime.signal])
   const log = componentLogger('harness')
   const logFailure = (operation: string, error: unknown) => {
     log.error({ operation, launcher: input.launcher,
@@ -104,12 +106,13 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
     const task = (async () => {
       response.setHeader('cache-control', 'no-store')
       const lease = bound
-      if (closing || !lease || Date.parse(lease.expiresAt) <= Date.now()
+      if (closing || signal.aborted || !lease || Date.parse(lease.expiresAt) <= Date.now()
         || !timingSafeEqual(lease.digest, createHash('sha256').update(request.headers.authorization ?? '').digest())) {
         response.writeHead(401); response.end(); return
       }
       if (request.method !== 'POST' || request.url !== '/mcp') { response.writeHead(405); response.end(); return }
       const controller = new AbortController()
+      const requestSignal = AbortSignal.any([signal, controller.signal])
       const disconnected = () => controller.abort()
       request.once('aborted', disconnected)
       response.once('close', disconnected)
@@ -126,9 +129,10 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
         catch { response.writeHead(400); response.end(); return }
         const protocol = request.headers['mcp-protocol-version']
         if (Array.isArray(protocol) || (protocol?.length ?? 0) > 64) { response.writeHead(400); response.end(); return }
-        const result = await lease.relay.request(body, protocol, controller.signal)
+        requestSignal.throwIfAborted()
+        const result = await lease.relay.request(body, protocol, requestSignal)
         if (bound !== lease || closing) throw new Error('The Main MCP lease changed during the request.')
-        controller.signal.throwIfAborted()
+        requestSignal.throwIfAborted()
         const publication = input.onArtifactPublication && observedWorkflowArtifactPublication(body, result)
         if (publication) input.onArtifactPublication!(publication.input, publication.result)
         response.writeHead(result.statusCode, result.contentType === 'empty' ? {} : { 'content-type': result.contentType })
@@ -158,6 +162,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
   let unregister: (() => Promise<void>) | undefined
   const close = () => shutdown ??= (async () => {
     closing = true
+    lifetime.abort()
     renewal?.abort()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     await Promise.all([...active])
@@ -167,7 +172,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
   let updates: Promise<void> = Promise.resolve()
   const bindRelay = (relay: WorkerMcpRelay) => {
     const task = updates.then(async () => {
-      input.signal.throwIfAborted()
+      signal.throwIfAborted()
       const token = readProductEnvironment(relay.environment.variables, 'MCP_TOKEN')
       if (closing || !token || !Number.isFinite(Date.parse(relay.expiresAt)) || Date.parse(relay.expiresAt) <= Date.now()) {
         throw new Error('The original Main MCP lease is unavailable.')
@@ -177,7 +182,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       await unregister?.()
       unregister = undefined
       const release = await registerAppRoute(token, endpoint, relay.expiresAt, input.launcher)
-      if (closing || input.signal.aborted) {
+      if (closing || signal.aborted) {
         await release()
         throw new Error('The private worker MCP listener closed.')
       }
@@ -204,11 +209,11 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
       // again cannot succeed, so later renewals report the logged refusal without another Main request.
       if (lease.refused) { repeatedRefusal = true; throw lease.refused }
       let renewedExpiry: string
-      try { renewedExpiry = await lease.relay.refresh(input.signal) } catch (error) {
+      try { renewedExpiry = await lease.relay.refresh(signal) } catch (error) {
         if (isLeaseRefusal(error) && bound === lease) lease.refused = error
         throw error
       }
-      input.signal.throwIfAborted()
+      signal.throwIfAborted()
       if (closing || bound !== lease) throw new Error('The original worker MCP endpoint is closing.')
       if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
         throw new Error('The renewed Main MCP lease is unavailable.')
@@ -236,7 +241,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
     if (!lease.relay.refresh) return
     const owner = new AbortController()
     renewal = owner
-    void renewOwnedLeases({ signal: AbortSignal.any([owner.signal, input.signal]),
+    void renewOwnedLeases({ signal: AbortSignal.any([owner.signal, signal]),
       leases: [{ name: 'Worker MCP route', renewWithinMs: WORKER_MCP_LEASE_RENEWAL_WINDOW_MS,
         remainingMs: () => bound === lease ? Date.parse(lease.expiresAt) - Date.now() : NaN,
         renew: async () => { await refreshLease() } }],

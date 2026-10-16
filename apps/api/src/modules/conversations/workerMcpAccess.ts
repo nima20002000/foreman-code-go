@@ -4,11 +4,13 @@ import { WORKER_MCP_EXTENSION, decodeWorkerMcpResult, WorkerConversationMcpReque
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
+import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
+import { withWorkerMcpDeadline } from '../devices/workerMcpDeadline.js'
 
 export async function prepareWorkerConversationMcp(input: {
   source: WorkerConversationRpcRequest
   token: string
-  request(namespace: string, payload: unknown, options: { signal: AbortSignal }): Promise<DeviceApplicationResult>
+  request(namespace: string, payload: unknown, options: { signal: AbortSignal; timeoutMs: number }): Promise<DeviceApplicationResult>
   signal: AbortSignal
 }) {
   const owner = input.source.binding.owner
@@ -18,7 +20,8 @@ export async function prepareWorkerConversationMcp(input: {
   const fields = { version: 1, binding: input.source.binding, token: input.token, admissionId: input.source.admissionId }
   const request = async (payload: unknown, signal: AbortSignal) => {
     signal.throwIfAborted()
-    const reply = await input.request(WORKER_MCP_EXTENSION.namespace, WorkerConversationMcpRequestSchema.parse(payload), { signal })
+    const reply = await input.request(WORKER_MCP_EXTENSION.namespace, WorkerConversationMcpRequestSchema.parse(payload),
+      { signal, timeoutMs: deviceRequestTimeoutMs })
     signal.throwIfAborted()
     return decodeWorkerMcpResult(reply)
   }
@@ -27,7 +30,7 @@ export async function prepareWorkerConversationMcp(input: {
   return { expiresAt: lease.expiresAt, environment: { agentId: owner.operatorId,
     variables: { [APP_MCP_TOKEN]: input.token } },
     async request(body: unknown, protocolVersion?: string, signal = input.signal) {
-      return WorkerMcpRelayResponseSchema.parse(await request({ ...fields, operation: 'conversation-mcp.request', body,
-        ...(protocolVersion ? { protocolVersion } : {}) }, signal))
+      return WorkerMcpRelayResponseSchema.parse(await withWorkerMcpDeadline(relaySignal => request({ ...fields,
+        operation: 'conversation-mcp.request', body, ...(protocolVersion ? { protocolVersion } : {}) }, relaySignal), signal))
     } }
 }

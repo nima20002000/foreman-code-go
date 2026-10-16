@@ -14,6 +14,9 @@ import { prepareWorkerApplicationAccess } from '../runs/remote/workerApplication
 import { encodeWorkerMcpResult, decodeWorkerMcpResult, WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { rejectableDeferred } from '../../../test/helpers/deferred.js'
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES } from '@foreman-code/contracts/source-materialization'
+
+const responseBudget = 2 * SOURCE_MATERIALIZATION_RECORD_MAX_BYTES
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -322,7 +325,7 @@ describe('selected Main fixed artifact tool routing', () => {
   })
   it('refuses an unavailable listener and oversized responses', async () => {
     const app = Fastify()
-    app.post('/mcp', (_request, reply) => reply.type('application/json').send('x'.repeat(1_000_001)))
+    app.post('/mcp', (_request, reply) => reply.type('application/json').send('x'.repeat(responseBudget + 1)))
     const forward = selectedMainMcpForward(app)
     try {
       await expect(forward.request({}, 'worker-token')).rejects.toMatchObject({ code: 'WORKER_MCP_UNAVAILABLE' })
@@ -369,10 +372,10 @@ it('relays a quote-heavy authenticated CI read within the complete device envelo
 
 it('preserves binary response boundaries, SSE and HTTP status and rejects altered carrier lengths', () => {
   const response = { statusCode: 409, contentType: 'text/event-stream' as const,
-    body: '"'.repeat(1_000_000) }
+    body: '"'.repeat(responseBudget) }
   const carrier = encodeWorkerMcpResult(response)
-  expect(carrier.bytes?.byteLength).toBe(1_000_000)
+  expect(carrier.bytes?.byteLength).toBe(responseBudget)
   expect(decodeWorkerMcpResult(carrier)).toEqual(response)
   expect(() => decodeWorkerMcpResult({ ...carrier, bytes: carrier.bytes!.subarray(1) })).toThrow()
-  expect(() => encodeWorkerMcpResult({ ...response, body: '"'.repeat(1_000_001) })).toThrow()
+  expect(() => encodeWorkerMcpResult({ ...response, body: '"'.repeat(responseBudget + 1) })).toThrow()
 })
