@@ -12,6 +12,7 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
   /** The computer runs an installer-pinned Codex, so npm installs the update elsewhere. */ pinnedCodex?: boolean } = {}) {
   const marketplaces = [...overrides.marketplaces ?? ['openai']], plugins = [...overrides.plugins ?? []]
   const codexMcp = [...overrides.codexMcp ?? []]
+  const codexDefinitions = new Map<string, unknown>()
   let aptOutput = overrides.apt ?? '2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
   const runs: Run[] = []
   const written: Record<string, string> = {}
@@ -34,9 +35,16 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
         aptOutput = overrides.afterUpgrade ?? '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
         return { code: 0, stdout: '2 upgraded, 0 newly installed', stderr: '' }
       }
-      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'list') return { code: 0, stdout: JSON.stringify(codexMcp.map(name => ({ name }))), stderr: '' }
+      if (name === 'codex' && args[0] === 'mcp' && args[1] === 'list') return { code: 0,
+        stdout: JSON.stringify(codexMcp.map(name => ({ name, transport: codexDefinitions.get(name) }))), stderr: '' }
       if (name === 'codex' && args[0] === 'mcp' && args[1] === 'add') {
         codexMcp.push(args[2]!)
+        const separator = args.indexOf('--')
+        codexDefinitions.set(args[2]!, separator >= 0
+          ? { type: 'stdio', command: args[separator + 1], args: args.slice(separator + 2) }
+          : { type: 'streamable_http', url: args[args.indexOf('--url') + 1],
+            bearer_token_env_var: args.includes('--bearer-token-env-var')
+              ? args[args.indexOf('--bearer-token-env-var') + 1] : null })
         // Codex saves an OAuth server, then fails when nobody completes the browser sign-in.
         if (overrides.oauthMcp?.includes(args[2]!)) return { code: 1, stdout: 'Added global MCP server.\nDetected OAuth support.', stderr: 'timed out waiting for OAuth callback' }
       }

@@ -98,8 +98,7 @@ export class CiRuntimeWorker {
     this.preparation = (async () => {
       const repository = await ensureCommit(this.ports.git, request.repository, request.commit, this.lifetime).catch(error => {
         this.lifetime.throwIfAborted()
-        throw new DomainError('COMPUTER_GITHUB_REQUIRED', `This computer could not fetch ${request.repository} from GitHub. `
-          + 'Connect GitHub on this computer (computer_github_login_start), then retry.', 409, { cause: error instanceof Error ? error.message : String(error) })
+        throw error
       })
       this.lifetime.throwIfAborted()
       const installer = join(await this.ports.managedRuntimeRoot(), 'installer')

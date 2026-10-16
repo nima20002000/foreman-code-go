@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
 import { DomainError } from '../errors.js'
-import { gitFailure } from './gitErrors.js'
+import { gitAcquisitionFailure, gitFailure } from './gitErrors.js'
 import { directoryFlags, withPrivateDirectoryLock } from './privateFilesystem.js'
 import { runGitProcess } from './gitProcess.js'
 import { runGitWithCacheStorage } from './gitCacheStorage.js'
@@ -205,6 +205,10 @@ export async function ensureClone(ports: GitWorktreePorts, repository: string, s
 }
 async function runGit(ports: GitWorktreePorts, args: string[], cwd: string | undefined, signal: AbortSignal) {
   const result = await ports.git(args, { ...(cwd ? { cwd } : {}), signal })
+  signal.throwIfAborted()
+  if (result.code !== 0 && (args[0] === 'clone' || args[0] === 'fetch')) {
+    throw gitAcquisitionFailure(args[0], result.stderr)
+  }
   if (result.code !== 0) throw gitFailure('SOURCE_WORKTREE_FAILED', args[0])
   return result.stdout
 }
