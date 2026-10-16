@@ -199,6 +199,6 @@ it('treats a Worker that predates bundle-only status as running an unknown bundl
     // An older Worker's strict request schema rejects the scoped status request.
     f.bundleStatus.mockRejectedValue(new Error('Unrecognized key: scope'))
     await expect(f.endpoint.assertWorkerBundleReady(f.identity.deviceId)).rejects.toMatchObject({
-      code: 'WORKER_VERSION_SKEW', details: { expected: f.expected, running: null, updatePhase: null } })
+      code: 'WORKER_VERSION_SKEW', details: { expected: { version: f.expected.version }, running: null, updatePhase: null } })
   } finally { await f.close() }
 })
