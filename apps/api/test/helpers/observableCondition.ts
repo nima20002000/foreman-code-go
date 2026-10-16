@@ -1,3 +1,5 @@
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+
 export async function readUntil<T>(
   read: () => Promise<T>,
   accept: (value: T) => boolean,
@@ -6,12 +8,20 @@ export async function readUntil<T>(
     description: string
     subscribe?: (changed: () => void) => () => void
     minimumReadIntervalMs?: number
+    /** With progress, timeoutMs bounds the time without a change in this value, not the whole wait. */
+    progress?: (value: T) => unknown
   },
 ): Promise<T> {
-  const deadline = performance.now() + options.timeoutMs
-  let expire!: () => void
-  const expired = new Promise<void>(resolve => { expire = resolve })
-  const timer = setTimeout(expire, options.timeoutMs)
+  let deadline = 0
+  let expired!: Promise<void>
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const arm = () => {
+    clearTimeout(timer)
+    deadline = performance.now() + options.timeoutMs
+    expired = new Promise<void>(resolve => { timer = setTimeout(resolve, options.timeoutMs) })
+  }
+  arm()
+  let progress: string | undefined
   let pollTimer: ReturnType<typeof setTimeout> | undefined
   try {
     for (;;) {
@@ -23,7 +33,13 @@ export async function readUntil<T>(
         const readStarted = performance.now()
         const value = await read()
         if (accept(value)) return value
-        if (performance.now() >= deadline) throw new Error(`Timed out waiting for ${options.description}.`)
+        if (options.progress) {
+          const observed = canonicalJson(options.progress(value))
+          if (progress !== undefined && observed !== progress) arm()
+          progress = observed
+        }
+        if (performance.now() >= deadline) throw new Error(`Timed out waiting for ${options.description}.${
+          progress === undefined ? '' : ` No progress for ${options.timeoutMs} ms; last progress: ${progress}`}`)
         // Commit notifications wake the read immediately; polling covers external native progress.
         const pollIntervalMs = Math.max(25, options.minimumReadIntervalMs ?? 0)
         const polling = new Promise<void>(resolve => { pollTimer = setTimeout(resolve, pollIntervalMs) })

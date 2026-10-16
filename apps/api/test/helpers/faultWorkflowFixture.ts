@@ -280,6 +280,8 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       if (!started || reconciliation) return
       reconciliation = base.engine.reconcile(report).catch(report).finally(() => { reconciliation = undefined })
     }, 500)
+    const readExecutions = async () => (await Promise.all([...intents.keys()].map(id => base.runs.getExecution(id))))
+      .filter((execution): execution is HarnessExecution => execution !== undefined)
     return {
       base, worker, entry, affected, sibling, read, intents, contexts,
       async setReportingDeadline(milliseconds: number) {
@@ -288,8 +290,7 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
         if (!owner) throw new Error('Expected the active reporting Run owner')
         await owner.oneShotConnection().query("select set_config('statement_timeout',$1,false)", [`${milliseconds}ms`])
       },
-      readExecutions: async () => (await Promise.all([...intents.keys()].map(id => base.runs.getExecution(id))))
-        .filter((execution): execution is HarnessExecution => execution !== undefined),
+      readExecutions,
       get startupDescription() { return startupDescription },
       async mcpInspections() {
         if (preparationFailure) throw preparationFailure.error
@@ -305,9 +306,16 @@ export async function faultWorkflowFixture(options: { loop?: boolean; mcpUnavail
       release() { releaseAffected = true; releaseSibling = true },
       active: () => readActiveRemoteRun(base, placements, affected.id, readStartup),
       async finished() {
-        await readUntil(() => base.runs.getRepeatSnapshot(base.f.run.id), value =>
-          value.run.executionState === 'completed' && !value.cleanupPending,
-        { timeoutMs: 8_000, minimumReadIntervalMs: 250, description: 'terminal Run readback' })
+        // Recovery may abandon an attempt and launch a whole fresh one; on a loaded host
+        // that takes longer than any fixed total, so only a Run that stops changing fails.
+        await readUntil(async () => ({ snapshot: await base.runs.getRepeatSnapshot(base.f.run.id),
+          executions: await readExecutions() }), ({ snapshot }) =>
+          snapshot.run.executionState === 'completed' && !snapshot.cleanupPending,
+        { timeoutMs: 8_000, minimumReadIntervalMs: 250, description: 'terminal Run readback',
+          progress: ({ snapshot, executions }) => ({ run: snapshot.run.executionState,
+            cleanupPending: snapshot.cleanupPending, executions: executions.map(execution => ({
+              id: execution.id, state: execution.state, nativeSessionId: execution.nativeSessionId ?? null,
+              outcome: execution.result?.outcome ?? null })) }) })
         const details = await read()
         expect(details.cleanupPending).toBe(false)
         const mcp = await readerClient.callTool({ name: 'run_get', arguments: {
