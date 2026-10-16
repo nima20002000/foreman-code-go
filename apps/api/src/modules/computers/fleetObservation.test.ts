@@ -59,7 +59,7 @@ function fixture() {
     applicationInstallationId: mainId, keyRevision: null, authorizationRevision: null }, advance: () => { now += 1000 } }
 }
 
-it.each(['fleet', 'target'] as const)('reports failed %s observations, retries ordinary reads and clears the failure after success', async kind => {
+it.each(['fleet', 'target'] as const)('reports failed %s observations beside the last good status, retries ordinary reads and clears the failure after success', async kind => {
   const f = fixture()
   const read = (refresh = false) => kind === 'fleet' ? f.fleet.list(f.principal, 'http', refresh)
     : f.fleet.readTarget(f.principal, 'http', { target: f.target, refresh })
@@ -67,7 +67,7 @@ it.each(['fleet', 'target'] as const)('reports failed %s observations, retries o
   f.advance()
   f.probe.mockRejectedValue(Object.assign(new Error('secret transport details'), { code: 'DEVICE_TRANSPORT_ERROR' }))
   const failed = await read(true)
-  expect(failed.computers[0]).toMatchObject({ status: null, observation: {
+  expect(failed.computers[0]).toMatchObject({ status: f.status, observation: {
     status: 'unavailable', lastError: expect.stringContaining('DEVICE_TRANSPORT_ERROR'),
     failedAt: '2026-10-14T00:00:01.000Z', lastSuccess: '2026-10-14T00:00:00.000Z', consecutiveFailures: 1,
   } })
