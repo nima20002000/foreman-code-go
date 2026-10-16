@@ -121,6 +121,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       ? { loggerInstance: options.logger }
       : { logger: options.logger ?? false }),
     genReqId: () => randomUUID(),
+    // Startup hooks can outlast Fastify's 10 s default on a loaded computer; the service manager bounds startup.
+    pluginTimeout: 0,
     // Fastify's per-request lines are replaced by one line whose level says whether it matters.
     logController: new LogController({ disableRequestLogging: true }),
   })
