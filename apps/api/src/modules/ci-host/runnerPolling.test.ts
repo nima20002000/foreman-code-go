@@ -60,12 +60,12 @@ it.each([
   await mkdir(cache, { recursive: true })
   const root = await mkdtemp(join(cache, 'ci-batch-state-'))
   const ids = [randomUUID(), randomUUID()]
-  let queries = 0
+  let unitStateReads = 0
   const ports: HostCiPorts = {
     now: () => new Date(), cpus: 8, memoryBytes: 16 * 2 ** 30,
     run: async (file, args) => {
       if (file !== 'systemctl') return { code: 0, stdout: '', stderr: '' }
-      queries++
+      unitStateReads++
       // Return records out of request order and include an unrelated unit.
       const stdout = [
         `Id=unrelated.service\nLoadState=loaded\nActiveState=inactive`,
@@ -91,7 +91,7 @@ it.each([
     if (reply.operation !== 'status') throw new Error('Expected CI status')
     expect(reply.runs.find(run => run.runId === ids[0])?.state).toBe(scenario.expected)
     expect(reply.runs.find(run => run.runId === ids[1])?.state).toBe('running')
-    expect(queries).toBe(1)
+    expect(unitStateReads).toBe(1)
     await runner.beginDrain()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
@@ -105,14 +105,14 @@ it('rechecks a unit when launch metadata changes during the batched query', asyn
   const meta = { runId, repository: 'example/project', commit: 'a'.repeat(40), suite: 'lint',
     state: 'starting', startedAt: '2026-10-13T00:00:00Z', finishedAt: null,
     exitCode: null, message: null, cleaned: false }
-  let queries = 0
+  let unitStateReads = 0
   const runner = new HostCiRunner(root, {
     now: () => new Date(), cpus: 8, memoryBytes: 16 * 2 ** 30,
     run: async file => {
       if (file !== 'systemctl') return { code: 0, stdout: '', stderr: '' }
-      queries++
-      if (queries === 1) await writeFile(join(directory, 'meta.json'), JSON.stringify({ ...meta, state: 'running' }))
-      const state = queries === 1 ? 'inactive' : 'active'
+      unitStateReads++
+      if (unitStateReads === 1) await writeFile(join(directory, 'meta.json'), JSON.stringify({ ...meta, state: 'running' }))
+      const state = unitStateReads === 1 ? 'inactive' : 'active'
       return { code: 0, stdout: `Id=foreman-ci-${runId}.service\nLoadState=loaded\nActiveState=${state}\n`, stderr: '' }
     },
   })
@@ -122,7 +122,7 @@ it('rechecks a unit when launch metadata changes during the batched query', asyn
     await writeFile(join(directory, 'log'), '')
     const reply = await runner.handle({ operation: 'status' })
     expect(reply).toMatchObject({ runs: [{ runId, state: 'running' }], slotsUsed: 1 })
-    expect(queries).toBe(2)
+    expect(unitStateReads).toBe(2)
     await runner.beginDrain()
   } finally { await rm(root, { recursive: true, force: true }) }
 })

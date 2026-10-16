@@ -137,7 +137,7 @@ describe('durable remote ownership', () => {
     await expect(recovered.reviewResult(intent.operationId, assignments[0]!.correlationId)).rejects.toThrow()
     const current = { ...stop, native: { ...native, turnId: 'turn-159' } }
     expect((await recovered.control(current)).dispatch).toBe(true)
-  }, 60_000)
+  }, 30_000)
 
   it.each(['reserved', 'acknowledged'] as const)('keeps session Stop valid after a review is %s', async phase => {
     const { journal } = await setup()
