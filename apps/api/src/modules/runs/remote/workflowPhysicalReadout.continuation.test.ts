@@ -145,7 +145,7 @@ it.each(['history', 'event'] as const)(
       const page = pageNativeHistory(history, afterSequence)
       const original = nativeHistoryPageSource(page)!
       const source = { type: 'history' as const, history: original }
-      readouts.remember({ readout: { ...f.readout, history: original }, placement: f.placement, source,
+      readouts.remember({ readout: { ...f.readout, history: original as typeof f.readout.history }, placement: f.placement, source,
         leaseExpiresAt: '2099-01-01T00:00:00.000Z', assertOwnerCurrent: async () => {},
         assertCurrent: async () => {}, observe: () => f.captured.launch, closure: () => null })
       const selectedSource = selectorType === 'history' ? source : { type: 'event' as const,
