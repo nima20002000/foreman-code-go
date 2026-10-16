@@ -267,9 +267,9 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   retireTurn?(session: NativeSessionReference, correlationId: string): Promise<void>
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */
   reconcileResponse?(session: NativeSessionReference, response: NativeResponseIdentity, signal?: AbortSignal): Promise<NativeHistory>
-  close(session: NativeSessionReference): Promise<void>
+  close(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   /** Detach the local runtime for process restart without canceling unresolved provider work. */
-  closeForRestart?(session: NativeSessionReference): Promise<void>
+  closeForRestart?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   /** Stop every owned transport, including creations without a known session identity. */
-  dispose?(): Promise<void>
+  dispose?(signal?: AbortSignal): Promise<void>
 }

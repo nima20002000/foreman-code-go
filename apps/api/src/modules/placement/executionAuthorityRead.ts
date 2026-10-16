@@ -20,6 +20,7 @@ interface AuthorityRow {
   execution_state: string
   stopped: boolean
   cleanup: boolean
+  failed: boolean
   granted: boolean
   connection: unknown | null
   receipt: unknown | null
@@ -35,6 +36,8 @@ export async function readExecutionAuthoritySnapshot(sql: GraphSqlClient,
       r.record->>'authorizationPrincipalId' as authorization_principal_id,
       r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped,
       exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending) as cleanup,
+      exists(select 1 from approval_execution_state b where b.execution_id=e.id
+        and b.failure_result is not null) as failed,
       (select count(*)=1 from execution_dispatch_owner_grants g where g.execution_id=i.execution_id
         and g.operation_id=i.operation_id and g.grant_id=$3 and g.epoch=$4 and not g.revoked) as granted,
       o.connection,a.receipt,a.operation_id is not null as receipt_present,

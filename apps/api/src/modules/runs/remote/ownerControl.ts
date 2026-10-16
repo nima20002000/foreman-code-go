@@ -34,6 +34,9 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
         // Run cleanup closes the session even if its review turn advances before delivery.
         target = { nativeTarget: { kind: 'session', sessionId: command.native.sessionId } }
       }
+    } else if ((await sql.query(`select 1 from approval_execution_state
+      where execution_id=$1 and failure_result is not null for share`, [binding.intent.executionId])).rowCount === 1) {
+      commandId = `stop-failed-attempt:${binding.intent.operationId}`
     } else if (!receipt.reviewTurns?.some(turn => !turn.settled)
       && await canCloseRetainedRemoteReviewer(sql, receipt)) {
       commandId = `close-reviewer:${binding.intent.operationId}`

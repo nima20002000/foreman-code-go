@@ -42,8 +42,9 @@ import type { ReviewCleanupSession, ReviewCredentialMaintenance } from './review
 import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager } from './sessionWriter.js'
 import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
-import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
+import { attemptCleanup, cleanupTimeoutMs, withCleanupDeadline } from './cleanup.js'
 import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
+import { readExecutionPlacement } from '../placement/persistence.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { isTransientRefreshFailure, renewOwnedLeases, type OwnedLease } from '../leases/ownerLeases.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -256,9 +257,10 @@ export class ApprovalExecutionCoordinator {
   /** Persist only the exact manager's confirmed close, for Stop AND ordinary
    * runtime disposal. This does not cancel the Run, stop its budget, retire its
    * approval, revoke execution authority or finalize its workflow lifetime. */
-  private async closeWorkflowSession(owned: OwnedNativeSession, restart = false): Promise<void> {
+  private async closeWorkflowSession(owned: OwnedNativeSession,
+    options: { restart?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     if (owned.context.acceptedPlacement?.hostRef.kind !== 'device')
-      return this.closeWorkflowSessionOwned(owned, restart)
+      return this.closeWorkflowSessionOwned(owned, options)
     let owner = owned.reviewOwner ?? owned.runOwner
     try { owner?.assertOwned() }
     catch (error) {
@@ -271,23 +273,27 @@ export class ApprovalExecutionCoordinator {
     if (!owner) throw new DomainError('SESSION_LANE_BUSY', 'The Run is still draining its native owner.', 409)
     this.adoptRunOwner(owner)
     const releaseOwner = owner.retain(() => owned.controller.abort())
-    try { await this.closeWorkflowSessionOwned(owned, restart) }
+    try { await this.closeWorkflowSessionOwned(owned, options) }
     finally {
       await releaseOwner()
       if (acquired) await owner.release()
     }
   }
-  private async closeWorkflowSessionOwned(owned: OwnedNativeSession, restart: boolean): Promise<void> {
+  private async closeWorkflowSessionOwned(owned: OwnedNativeSession,
+    options: { restart?: boolean; signal?: AbortSignal }): Promise<void> {
+    const { restart, signal } = options
+    signal?.throwIfAborted()
     const session = owned.session
     if (!session) throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT',
       'The native connection is not ready for an exact close receipt.', 409)
     const generation = owned.generation
-    if (restart) await owned.manager.closeForRestart(session)
-    else await owned.manager.close(session)
+    if (restart) await owned.manager.closeForRestart(session, signal)
+    else await owned.manager.close(session, signal)
     // Persist the same positive close that formerly survived only in RAM.
     // Registration precedes native preflight/spawn; no cold resolver or
     // terminal business state can create this receipt.
     const assertCurrent = () => {
+      signal?.throwIfAborted()
       if (this.ownedSessions.get(owned.execution.id) !== owned
         || owned.generation !== generation || owned.opening) {
         throw new DomainError('NATIVE_WORKFLOW_CLOSURE_CONFLICT', 'The native manager lifetime changed during close.', 409)
@@ -336,7 +342,10 @@ export class ApprovalExecutionCoordinator {
         if (proof?.durableGeneration === owned.closureGeneration) closed = true
         if (!closed) {
           if (cancel) await attempt('cancel native session', (signal) => owned.manager.cancel(session, signal))
-          closed = await attempt('close native session', async () => { await this.closeWorkflowSession(owned); return true }) === true
+          closed = await attempt('close native session', async signal => {
+            await this.closeWorkflowSession(owned, { signal })
+            return true
+          }) === true
         }
       } else {
         // Positive disposal, not an empty map, no-session row or a terminal enum.
@@ -344,7 +353,10 @@ export class ApprovalExecutionCoordinator {
         const manager = owned.manager
         const generation = owned.generation
         const observedSession = owned.session
-        const disposed = await attempt('dispose original unbound native manager', async () => { await manager.dispose(); return true }) === true
+        const disposed = await attempt('dispose original unbound native manager', async signal => {
+          await manager.dispose(signal)
+          return true
+        }) === true
         if (disposed && !owned.opening && owned.session === observedSession && owned.generation === generation) {
           const check = () => {
             if (this.ownedSessions.get(owned.execution.id) !== owned || owned.manager !== manager
@@ -416,11 +428,11 @@ export class ApprovalExecutionCoordinator {
     if (owned.cleanup) throw new DomainError('REPEAT_CLEANUP_PENDING', 'Native cleanup is already in progress.', 409)
     // Keep the actual operation registered even when a caller's outer deadline
     // expires. A timeout is not closure and cannot start a competing finalizer.
-    const task = (async (): Promise<Error[]> => {
+    const close = async (signal: AbortSignal): Promise<Error[]> => {
       check()
       const proof = await this.workflowClosures!.read(owned.execution)
       check()
-      if (!proof || proof.durableGeneration !== registration) await this.closeWorkflowSession(owned)
+      if (!proof || proof.durableGeneration !== registration) await this.closeWorkflowSession(owned, { signal })
       check()
       if (credential) await this.credentials?.revoke({ principalId: credential.principalId })
       else if (owned.terminalRecoveredWithoutCredential && finishRecoveredCredentials) {
@@ -437,19 +449,21 @@ export class ApprovalExecutionCoordinator {
         owned.failed ? 'failed' : 'released')
       if (this.ownedSessions.get(owned.execution.id) === owned) this.ownedSessions.delete(owned.execution.id)
       return []
-    })()
+    }
     const failures: Error[] = []
-    const bounded = (async () => {
-      await attemptCleanup(failures, `${owned.execution.id}: close exact repeat lifetime`, () => task)
+    const bounded: Promise<Error[]> = (async () => {
+      await attemptCleanup(failures, `${owned.execution.id}: close exact repeat lifetime`, signal => {
+        const task = close(signal)
+        // Keep an unfinished close registered until its operation acknowledges cancellation.
+        void task.finally(() => { if (owned.cleanup === bounded) delete owned.cleanup }).catch(() => {
+          // ignore: the bounded cleanup promise reports the same failure to its caller.
+        })
+        return task
+      }, owned.context.acceptedPlacement?.hostRef.kind === 'device' ? { timeoutMs: deviceRequestTimeoutMs } : {})
       const safe = nativePersistenceRedactor(Object.values(credential?.environment.variables ?? {}))
       return failures.map((error) => safe.error(error) as Error)
     })()
     owned.cleanup = bounded
-    // A timeout returns uncertainty but retains the in-flight operation. Stop
-    // observes the same bounded failure; it does not race another native close.
-    void task.finally(() => { if (owned.cleanup === bounded) delete owned.cleanup }).catch(() => {
-      // ignore: the bounded cleanup promise reports the same failure to its caller.
-    })
     const errors = await bounded
     if (errors.length) throw new AggregateError(errors, 'Exact native lifetime cleanup is incomplete.')
   }
@@ -1615,7 +1629,7 @@ export class ApprovalExecutionCoordinator {
       const closeSession = async (owned: OwnedNativeSession, owner?: RunOwnership) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
-        await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
+        await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async signal => {
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
           // Local engine ownership can finish before its native session detaches.
@@ -1643,7 +1657,7 @@ export class ApprovalExecutionCoordinator {
           // Creation can finish before the session binding commits. Dispose the
           // captured manager when startup settles without a persisted binding.
           if (!owned.session || owned.openingFailed || owned.generation === 0 || !owned.execution.nativeSessionId) {
-            await owned.manager.dispose()
+            await owned.manager.dispose(signal)
             return
           }
           if (snapshot.run.executionState !== 'completed') {
@@ -1658,8 +1672,8 @@ export class ApprovalExecutionCoordinator {
               return
             }
           }
-          await this.closeWorkflowSessionOwned(owned, true)
-        })
+          await this.closeWorkflowSessionOwned(owned, { restart: true, signal })
+        }, owned.context.acceptedPlacement?.hostRef.kind === 'device' ? { timeoutMs: deviceRequestTimeoutMs } : {})
         return failures.map((error) => safe.error(error) as Error)
       }
       const runs = new Map<string, OwnedNativeSession[]>()
@@ -1678,7 +1692,8 @@ export class ApprovalExecutionCoordinator {
             owned.stopWaitingRenewal?.(), owned.stopReviewerRenewal?.(), owned.reviewerRenewal,
           ])
           await owned.cleanup
-        })))
+        })), siblings.some(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
+          ? deviceRequestTimeoutMs : cleanupTimeoutMs)
         const resident = siblings.filter(owned => this.ownedSessions.get(owned.execution.id) === owned
           && !this.closedExecutions.has(owned.execution.id))
         const ownerSession = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device'
@@ -1695,7 +1710,7 @@ export class ApprovalExecutionCoordinator {
               await delay(25, undefined, { signal })
             }
           }
-        })
+        }, ownerSession.context.acceptedPlacement?.hostRef.kind === 'device' ? deviceRequestTimeoutMs : cleanupTimeoutMs)
         try {
           // Sibling closes share one Run lock until every close or cleanup commits.
           if (retained) this.adoptRunOwner(retained.owner)
@@ -2283,7 +2298,8 @@ export class ApprovalExecutionCoordinator {
           }
           const failures: Error[] = []
           await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
-            recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }))
+            recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }),
+          { timeoutMs: await this.recoveryCleanupTimeout(owner, execution) })
           owner.assertOwned()
           if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
         }
@@ -2314,6 +2330,14 @@ export class ApprovalExecutionCoordinator {
       error: { code: 'EXECUTION_INTERRUPTED', message, retryable: true } })
   }
 
+  private async recoveryCleanupTimeout(owner: RunOwnership, execution: HarnessExecution): Promise<number> {
+    const resident = this.ownedSessions.get(execution.id)
+    const placement = resident ? resident.context.acceptedPlacement
+      : await readExecutionPlacement(owner.oneShotConnection(), execution.id)
+    owner.assertOwned()
+    return placement?.hostRef.kind === 'device' ? deviceRequestTimeoutMs : cleanupTimeoutMs
+  }
+
   /** Close one attempt for its own recorded cause, without fencing the Run or
    * touching sibling credentials, budgets or sessions. Closure is best effort:
    * an unconfirmed close leaves only this attempt's settlement pending. A
@@ -2328,6 +2352,7 @@ export class ApprovalExecutionCoordinator {
       code: failure.outcome === 'failed' ? failure.error?.code : undefined }, 'Abandoning one native attempt')
     await this.budgets.ensure(stored.id, owner.runId, this.activeTimeoutMs)
     await this.runs.recordExecutionFailure(owner, stored.id, failure)
+    const timeoutMs = await this.recoveryCleanupTimeout(owner, stored)
     const resident = this.ownedSessions.get(stored.id)
     if (resident) {
       // A session save can commit even when its acknowledgement never reaches the caller.
@@ -2339,13 +2364,13 @@ export class ApprovalExecutionCoordinator {
         await withCleanupDeadline(signal => recoverWorkflowNativeClosure(
           owner, stored, this.recoverNativeProcesses, signal, {
             purpose: 'failed_attempt', ...(resident.closureGeneration ? { generation: resident.closureGeneration } : {}),
-          }))
+          }), timeoutMs)
         const remaining = await this.cleanupSession(resident)
         if (remaining.length) throw new AggregateError(remaining, 'Abandoned attempt native closure remains unconfirmed.')
       }
     } else {
       await withCleanupDeadline(signal => recoverWorkflowNativeClosure(
-        owner, stored, this.recoverNativeProcesses, signal, { purpose: 'failed_attempt' }))
+        owner, stored, this.recoverNativeProcesses, signal, { purpose: 'failed_attempt' }), timeoutMs)
       await this.credentials?.revokeForExecution(stored.id)
     }
     owner.assertOwned()
@@ -3156,10 +3181,10 @@ export class ApprovalExecutionCoordinator {
       // revoke a successor's credential, budget or execution authority.
       const owned = observation.ownedSession!
       const failures: Error[] = []
-      await attemptCleanup(failures, 'close lost-owner transport', async () => {
-        if (owned.session) await this.closeWorkflowSession(owned, true)
-        else await owned.manager.dispose()
-      })
+      await attemptCleanup(failures, 'close lost-owner transport', async signal => {
+        if (owned.session) await this.closeWorkflowSession(owned, { restart: true, signal })
+        else await owned.manager.dispose(signal)
+      }, owned.context.acceptedPlacement?.hostRef.kind === 'device' ? { timeoutMs: deviceRequestTimeoutMs } : {})
       if (!failures.length) await this.forgetLostOwnerSession(owned)
     }
     throw error

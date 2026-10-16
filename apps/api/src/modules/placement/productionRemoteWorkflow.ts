@@ -1,6 +1,6 @@
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
-import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
+import { RemoteOperationStatusSchema, remoteActiveNative } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { readRemoteReceiptResponse } from '../runs/remote/installedWorkflowResponsePages.js'
 import type { CapturedRemoteTelemetryNativeOwner } from '../resource-telemetry/productionAuthority.js'
@@ -60,7 +60,7 @@ interface RetainedRemoteWorkflowSource {
 }
 type RemoteWorkflowPhysicalVerification = ReturnType<typeof createRemoteWorkflowPhysicalVerification>
 type RemoteWorkflowAuthority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding,
-  connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control') => ReturnType<typeof assertRemoteExecutionAuthority>
+  connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control' | 'stop') => ReturnType<typeof assertRemoteExecutionAuthority>
 
 function sourceKey(source: WorkflowOriginalNativeSource) { return remoteWorkflowSourceDigest(source) }
 
@@ -83,7 +83,7 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
     if (!producer) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual placement producer is unavailable.', 503)
     return producer
   }
-  const authority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding, connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control') =>
+  const authority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding, connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control' | 'stop') =>
     assertRemoteExecutionAuthority(sql, input.locations, { version: 1, intent: binding.intent, placement: binding.placement, action }, connection, requireProducer())
   const carrier = deviceEndpointCarrier(() => input.endpoint())
   const prepare = (executionId: string) => prepareRemoteWorkflowBinding(input, bindings, executionId)
@@ -323,6 +323,10 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
     'REMOTE_RUN_OWNER_CONFLICT', 'The Run owner does not match native cleanup.', 409)
   const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
   if (!captured) return false
+  const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
+    connectionGeneration } = captured.binding
+  const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
+    bootId, keyRevision, authorizationRevision, connectionGeneration })
   const request = (payload: unknown) => retryDeviceRequest(() => captured.request(payload,
     { signal, timeoutMs: deviceRequestTimeoutMs }), { retry: 'idempotent', signal })
   const readStatus = async (payload: unknown) => {
@@ -343,6 +347,17 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
     const intent = binding.intent
     status = await readStatus({ method: 'control', intent, placement: binding.placement,
       command: preparationStop(intent) })
+  } else if (status.status === 'known' && sameWorkflowValue(status.receipt.intent, binding.intent)
+    && !status.receipt.terminal) {
+    const native = remoteActiveNative(status.receipt)
+    if (native) {
+      const command = await owner.oneShotConnection().transaction(async sql => {
+        await authority(sql, binding, authenticated, 'stop')
+        return admitRemoteOwnerControl(sql, owner, binding, { kind: 'stop', native })
+      })
+      signal.throwIfAborted()
+      status = await readStatus({ method: 'control', intent: binding.intent, placement: binding.placement, command })
+    }
   }
   if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
     || !status.receipt.terminal) return false
@@ -357,10 +372,6 @@ async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkf
     : session === null && (hasPositiveRemoteEntryClosure(receipt)
       || hasPositiveRemoteNonEntryClosure(receipt))
   if (!confirmedClosed()) return false
-  const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
-    connectionGeneration } = captured.binding
-  const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
-    bootId, keyRevision, authorizationRevision, connectionGeneration })
   const committed = await VerifiedRemoteEvidence.commit(receipt, authenticated,
     new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
       async assertCurrent(sql, intent, placement, connection) {
