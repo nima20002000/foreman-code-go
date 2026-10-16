@@ -306,3 +306,20 @@ it('settles a one-ticket group wait only after its results are collected', async
       wait: { until: 'group-terminal', status: 'settled', tickets: 1, settledTickets: 1 } })
   } finally { await f.close() }
 })
+
+it('reports the requested ticket from the same read as the group that settled', async () => {
+  const f = fixture()
+  try {
+    const stale = f.read()
+    f.persist({ state: 'passed', exitCode: 0, collection: 'complete' })
+    const sibling = CiRunRecordSchema.parse({ ...f.read(), id: '33333333-3333-4333-8333-333333333333', part: 'unit-api' })
+    // The ticket row is read first; the group read that follows already sees the collection finish.
+    f.query.mockImplementationOnce(async () => ({ rows: [{ record: { ...stale, state: 'passed', exitCode: 0,
+      collection: 'pending' }, log_tail: '' }] }))
+    f.query.mockImplementationOnce(async () => ({ rows: [{ record: f.read() }, { record: sibling }] }))
+    const result = await f.ci.get(f.caller, { workspaceId: 'workspace', ticketId: f.read().id, logTail: false,
+      waitUntil: 'group-terminal' })
+    expect(result).toMatchObject({ run: { collection: 'complete' },
+      wait: { status: 'settled', tickets: 2, settledTickets: 2 } })
+  } finally { await f.close() }
+})

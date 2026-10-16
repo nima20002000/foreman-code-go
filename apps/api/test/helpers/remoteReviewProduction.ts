@@ -420,7 +420,8 @@ export async function remoteReviewProduction(options: {
               void error
             })
         }
-        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
+        throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`
+          + `\nMain stderr: ${mainFailure.slice(-2000)}\nWorker stderr: ${workerFailure.slice(-2000)}`)
       }
       return decodeMcpToolResult(response)
     }
