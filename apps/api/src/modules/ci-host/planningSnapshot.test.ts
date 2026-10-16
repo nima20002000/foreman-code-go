@@ -55,7 +55,7 @@ it('drops the last status when a refresh fails', async () => {
   expect(f.planning.dispatchStatus(computer)).toBeUndefined()
 })
 
-function finished(state: 'failed' | 'lost'): CiHostReply {
+function finished(state: 'passed' | 'failed' | 'lost'): Extract<CiHostReply, { operation: 'read' }> {
   return { operation: 'read', text: '', nextOffset: 0, run: { runId: 'fixture-run', state, step: null, exitCode: 1,
     startedAt: '2026-10-16T00:00:00.000Z', finishedAt: '2026-10-16T00:01:00.000Z', logBytes: 0, message: null } }
 }
@@ -74,4 +74,15 @@ it('rereads a computer after it loses a run', async () => {
   f.planning.observeStatus(computer, finished('lost'))
 
   expect(f.planning.dispatchStatus(computer)).toBeUndefined()
+})
+
+it('frees a finished run slot in the held status before the next read', async () => {
+  const f = snapshot()
+  const running = finished('failed').run
+  f.replies.push(Promise.resolve({ ...ready, slotsUsed: 2,
+    runs: [{ ...running, state: 'running', exitCode: null, finishedAt: null }] }))
+  await f.planning.request(computer, { operation: 'status' })
+  f.planning.observeStatus(computer, finished('passed'))
+
+  expect(f.planning.dispatchStatus(computer)).toMatchObject({ ready: true, slotsUsed: 1, runs: [{ state: 'passed' }] })
 })
