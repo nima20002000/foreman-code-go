@@ -54,3 +54,24 @@ it('drops the last status when a refresh fails', async () => {
 
   expect(f.planning.dispatchStatus(computer)).toBeUndefined()
 })
+
+function finished(state: 'failed' | 'lost'): CiHostReply {
+  return { operation: 'read', text: '', nextOffset: 0, run: { runId: 'fixture-run', state, step: null, exitCode: 1,
+    startedAt: '2026-10-16T00:00:00.000Z', finishedAt: '2026-10-16T00:01:00.000Z', logBytes: 0, message: null } }
+}
+
+it('keeps a computer ready after one of its tests fails', async () => {
+  const f = snapshot()
+  await f.planning.request(computer, { operation: 'status' })
+  f.planning.observeStatus(computer, finished('failed'))
+
+  expect(f.planning.dispatchStatus(computer)).toMatchObject({ ready: true })
+})
+
+it('rereads a computer after it loses a run', async () => {
+  const f = snapshot()
+  await f.planning.request(computer, { operation: 'status' })
+  f.planning.observeStatus(computer, finished('lost'))
+
+  expect(f.planning.dispatchStatus(computer)).toBeUndefined()
+})
