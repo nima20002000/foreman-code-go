@@ -836,17 +836,25 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   const entered = deferred()
   const release = deferred()
   let launches = 0
+  let ticketId: string | undefined
   const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(),
-    run: async (file, args) => {
+    run: async (file, args, options) => {
       if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: 'Commit not fetched' }
-      if (file === 'git' && args.includes('fetch')) { entered.resolve(); await release.promise }
+      // Warmup fetches carry an abort signal; this case stalls the real ticket's preparation.
+      if (file === 'git' && args.includes('fetch') && !options?.signal) {
+        entered.resolve()
+        await release.promise
+      }
       if (file === 'git' && args.includes('worktree') && args.includes('add')) {
         const source = args.at(-2)!
         await mkdir(source, { recursive: true })
         await writeFile(join(source, 'package.json'), '{}')
       }
-      if (file === 'systemd-run') launches++
-      return { code: 0, stdout: file === 'systemctl' ? 'inactive\n' : '', stderr: '' }
+      if (file === 'systemd-run' && args.includes(`--unit=foreman-ci-${ticketId}`)) launches++
+      const states = file === 'systemctl' && args.includes('show')
+        ? args.filter(arg => arg.endsWith('.service')).map(unit =>
+          `Id=${unit}\nLoadState=loaded\nActiveState=inactive\n`).join('\n') : ''
+      return { code: 0, stdout: states, stderr: '' }
     } }
   const runner = new HostCiRunner(root, ports, {})
   const computer: HostCiComputer = { key: 'fixture:builder', label: 'Builder', priority: 1,
@@ -858,7 +866,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   const executor: HostCiEndpoint = { computers: async () => available ? [computer] : [],
     request: async (_computer, request) => {
       if (request.operation === 'status' && statusUnavailable) throw new Error('Status unavailable')
-      if (request.operation === 'start') {
+      if (request.operation === 'start' && !request.warmup) {
         original = request
         start ??= runner.handle(request)
         await entered.promise
@@ -871,6 +879,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   let restoreClock: (() => void) | undefined
   try {
     const ticket = await f.enqueue()
+    ticketId = ticket.ticketId
     available = true
     await settle(f.ci)
     statusUnavailable = true
@@ -887,6 +896,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
       principalId: f.operator.principalId, source: 'mcp' } })
     expect(launches).toBe(0)
+    expect(original?.runId).toBe(ticket.ticketId)
     release.resolve()
     await expect(start).resolves.toMatchObject({ run: { state: 'canceled' } })
     restarted = f.createService()
@@ -903,6 +913,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
     await start
     await restarted?.close()
     await f.close()
+    await runner.beginDrain()
     await rm(root, { recursive: true, force: true })
   }
 })
