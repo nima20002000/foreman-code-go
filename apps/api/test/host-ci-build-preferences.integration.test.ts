@@ -122,9 +122,44 @@ it('honors persisted MCP build participation and priority while retaining assign
     const start = async () => CiRunOutputSchema.parse(await call(writer, 'ci_run', {
       workspaceId, suite: 'install',
     }))
-    const get = async (ticketId: string) => {
-      await ci!.dispatch()
-      return CiGetOutputSchema.parse(await call(reader, 'ci_get', { workspaceId, ticketId }))
+    const get = async (ticketId: string, waitSeconds = 0) => CiGetOutputSchema.parse(
+      await call(reader, 'ci_get', { workspaceId, ticketId, waitSeconds, logTail: false }))
+    const getRunning = async (ticketId: string) => {
+      const deadline = performance.now() + 5000
+      let output = await get(ticketId)
+      // ci_get waits on persisted ticket changes; dispatch and live observation can finish separately.
+      while (['queued', 'starting', 'running'].includes(output.run.state)
+        && (output.run.state !== 'running' || output.run.observation?.status !== 'available')) {
+        const remaining = deadline - performance.now()
+        expect(remaining, JSON.stringify(output)).toBeGreaterThan(0)
+        output = await get(ticketId, remaining / 1000)
+      }
+      expect(output.run).toMatchObject({ state: 'running', observation: { status: 'available' } })
+      return output
+    }
+    const getSettled = async (ticketId: string) => {
+      const output = CiGetOutputSchema.parse(await call(reader, 'ci_get', {
+        workspaceId, ticketId, waitUntil: 'group-terminal', waitSeconds: 5, logTail: false,
+      }))
+      expect(output.wait?.status).toBe('settled')
+      return output
+    }
+    const cancel = async (...ticketIds: string[]) => {
+      const inputs = ticketIds.map(ticketId => ({ workspaceId, ticketId, commandId: randomUUID() }))
+      for (const input of inputs) {
+        const pending = await writer.callTool({ name: 'ci_cancel', arguments: input })
+        expect(pending.isError).toBe(true)
+        expect(decodeMcpToolResult(pending)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+        cancelAcknowledgements.add(input.ticketId)
+      }
+      // Cancel every partition before waiting for the whole group to settle.
+      const completed = await getSettled(ticketIds[0]!)
+      expect(completed.wait).toMatchObject({ tickets: ticketIds.length, settledTickets: ticketIds.length })
+      expect((completed.partitions ?? [completed.run]).map(run => run.state))
+        .toEqual(ticketIds.map(() => 'canceled'))
+      for (const input of inputs) {
+        expect(await call(writer, 'ci_cancel', input)).toMatchObject({ run: { state: 'canceled' } })
+      }
     }
 
     expect((await list()).computers).toEqual([])
@@ -154,7 +189,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     const incompatible = (await list()).computers.find(computer => computer.hostRef.deviceId === devices[1]!.registration.deviceId)
     expect(incompatible).toMatchObject({ ready: false, reasons: [expect.stringMatching(/CI start protocol.*update/i)] })
     const protocolTicket = await start()
-    const protocolRead = await get(protocolTicket.ticketId)
+    const protocolRead = await getRunning(protocolTicket.ticketId)
     expect(protocolRead.run.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
     expect((await db.pool.query('select record from ci_runs where id=$1', [protocolTicket.ticketId])).rows[0]!.record)
       .toEqual(protocolRead.run)
@@ -167,13 +202,13 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await get(protocolTicket.ticketId)).run).toEqual({ ...protocolRead.run,
       observation: { status: 'available', lastSuccessAt: expect.any(String), lastError: null,
         consecutiveFailures: 0, nextAttemptAt: null } })
-    await call(writer, 'ci_cancel', { workspaceId, ticketId: protocolTicket.ticketId })
+    await cancel(protocolTicket.ticketId)
     outdated.clear()
     vi.setSystemTime(Date.now() + 5001)
     starts.length = 0
 
     const first = await start()
-    const firstRead = await get(first.ticketId)
+    const firstRead = await getRunning(first.ticketId)
     expect(firstRead.run.computer?.hostRef).toEqual(devices[1]!.target.hostRef)
     expect((await db.pool.query('select record from ci_runs where id=$1', [first.ticketId])).rows[0]!.record)
       .toEqual(firstRead.run)
@@ -185,21 +220,17 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await get(first.ticketId)).run.state).toBe('running')
     expect(await call(reader, 'ci_logs_read', { workspaceId, ticketId: first.ticketId })).toMatchObject({ text: '' })
     const second = await start()
-    expect((await get(second.ticketId)).run.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
+    expect((await getRunning(second.ticketId)).run.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
     await save(main, true, 100)
     const third = await start()
-    expect((await get(third.ticketId)).run.computer?.hostRef).toEqual(main.hostRef)
+    expect((await getRunning(third.ticketId)).run.computer?.hostRef).toEqual(main.hostRef)
     expect(starts).toEqual([devices[1]!.registration.deviceId, devices[0]!.registration.deviceId, 'main'])
-    expect(await call(writer, 'ci_cancel', { workspaceId, ticketId: first.ticketId }))
-      .toMatchObject({ run: { state: 'canceled' } })
+    await cancel(first.ticketId)
     expect((await get(first.ticketId)).run.state).toBe('canceled')
     const entry = runs.get(second.ticketId)!
     entry.run = { ...entry.run, state: 'passed', exitCode: 0, finishedAt: new Date().toISOString() }
     await save(devices[0]!.target, false, 20)
-    // Dispatch observes assigned runs asynchronously, including runs on disabled computers.
-    const completed = CiGetOutputSchema.parse(await call(reader, 'ci_get', {
-      workspaceId, ticketId: second.ticketId, waitUntil: 'group-terminal', waitSeconds: 5, logTail: false,
-    }))
+    const completed = await getSettled(second.ticketId)
     expect(completed.wait).toMatchObject({ status: 'settled', tickets: 1, settledTickets: 1 })
     expect(completed.run.state).toBe('passed')
     expect((await db.pool.query('select state from ci_runs where id=$1', [second.ticketId])).rows[0]!.state).toBe('passed')
@@ -208,8 +239,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await read(main)).preference.buildEnabled).toBe(false)
     expect((await list()).computers).toEqual([])
     expect((await get(third.ticketId)).run.state).toBe('running')
-    expect(await call(writer, 'ci_cancel', { workspaceId, ticketId: third.ticketId }))
-      .toMatchObject({ run: { state: 'canceled' } })
+    await cancel(third.ticketId)
     await save(main, false, 100)
     await save(devices[0]!.target, true, 20)
     await save(devices[1]!.target, true, 90, 50)
@@ -228,6 +258,8 @@ it('honors persisted MCP build participation and priority while retaining assign
     const partitioned = CiRunOutputSchema.parse(await call(writer, 'ci_run', {
       workspaceId, suite: 'integration', commandId: randomUUID(), partitions: 2,
     }))
+    expect(partitioned.partitions).toHaveLength(2)
+    for (const ticket of partitioned.partitions!) await getRunning(ticket.ticketId)
     const partitionRead = await get(partitioned.ticketId)
     const higher = partitionRead.partitions!.find(run => run.partition?.index === 0)!
     const lower = partitionRead.partitions!.find(run => run.partition?.index === 1)!
@@ -238,13 +270,13 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect(lower.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
     expect(higher.partition!.weights).toEqual(lower.partition!.weights)
     expect(higher.partition!.weights![0]! / higher.partition!.weights![1]!).toBeCloseTo(0.5, 1)
-    await call(writer, 'ci_cancel', { workspaceId, ticketId: partitioned.ticketId })
+    await cancel(...partitioned.partitions!.map(ticket => ticket.ticketId))
     const smokeInput = { workspaceId, suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
       commandId: randomUUID(), files: ['apps/api/test/feature.integration.test.ts'],
       smokeComputer: devices[1]!.target.hostRef }
     expect((await reader.callTool({ name: 'ci_run', arguments: smokeInput })).isError).toBe(true)
     const smoke = CiRunOutputSchema.parse(await call(writer, 'ci_run', smokeInput))
-    const smokeRead = await get(smoke.ticketId)
+    const smokeRead = await getRunning(smoke.ticketId)
     expect(smokeRead.run).toMatchObject({ state: 'running', integrationShards: 4,
       smokeComputer: smokeInput.smokeComputer, computer: { hostRef: smokeInput.smokeComputer } })
     expect(requests.get(smoke.ticketId))
