@@ -53,6 +53,7 @@ it('expires completed retry snapshots after thirty days while retaining fresh, u
     receipt('binding', { operation: 'job.inputs.bind' }),
     receipt('artifact', { operation: 'remote.native-artifact.output' }),
     receipt('workflow-version', { operation: 'workflow.save.v3' }),
+    receipt('repository-location-recovery', { operation: 'workspace.location.set' }),
     receipt('future-operation', { operation: 'unrecognized' }),
   ]
   const expired = [receipt('ordinary'), receipt('control', {

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { NativeProcessRegistry } from './processRegistry.js'
 import { privateDirectory, readRecord, writeRecord } from './storage.js'
+import { RemoteOperationJournal } from '../../runs/remote/operationJournal.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -74,4 +75,30 @@ it('retains closure certificates when settlement lookup fails', async () => {
   await expect(registry.pruneSettled(async () => { throw new Error('journal unavailable') }))
     .rejects.toThrow('journal unavailable')
   expect(readRecord(closed.path)).toEqual(closed.observation)
+})
+
+it('expires closed managed MCP owners without workflow retirement while retaining fresh, active and unknown owners', async () => {
+  const directory = fixture()
+  const root = privateDirectory(join(directory, 'native-processes'))
+  const old = archive(root, `managed-mcp:codex:${randomUUID()}`, 2 * 86_400_000)
+  const fresh = archive(root, `managed-mcp:codex:${randomUUID()}`, 60_000)
+  const unknown = archive(root, `managed-mcp:other:${randomUUID()}`, 2 * 86_400_000)
+  const unfinished = archive(root, 'execution:unfinished', 2 * 86_400_000)
+  const registry = new NativeProcessRegistry(root)
+  const active = registry.reserveLaunch(`managed-mcp:codex:${randomUUID()}`)
+  const journal = await RemoteOperationJournal.open(join(directory, 'operations.json'), { initializeNewInstallation: true })
+  try {
+    expect(await registry.pruneSettled(owner => journal.isNativeOwnerSettled(owner))).toBe(1)
+    expect(registry.closedRegistration(old.observation.owner, old.observation.launchId)).toBeUndefined()
+    for (const record of [fresh, unknown, unfinished]) {
+      expect(registry.closedRegistration(record.observation.owner, record.observation.launchId)).toEqual(record.observation)
+    }
+    expect(registry.snapshot().launches).toEqual(expect.arrayContaining([
+      expect.objectContaining({ owner: active.owner, launchId: active.launchId, lifecycle: 'closure-unconfirmed' }),
+    ]))
+  } finally {
+    await registry.abandonReservedLaunch(active)
+    registry.closeRetention()
+    await journal.close()
+  }
 })
