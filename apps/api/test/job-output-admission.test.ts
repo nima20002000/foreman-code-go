@@ -67,8 +67,9 @@ async function fixture() {
     if(text.includes("result #>> '{input,executionId}'"))return {rows:[...records.values()].filter(r=>r.input.executionId===args[1]&&r.input.attemptId===args[2]&&r.input.path===args[3])}
     return {rows:[],rowCount:0}
   })
-  const pool={query,connect:async()=>({query,release:()=>{}})} as unknown as pg.Pool
-  vi.spyOn(pg,'Pool').mockImplementation(class { constructor(){return pool} } as unknown as typeof pg.Pool)
+  const pool=new pg.Pool()
+  vi.spyOn(pg.Pool.prototype,'query').mockImplementation(query as never)
+  vi.spyOn(pg.Pool.prototype,'connect').mockResolvedValue({query,release:()=>{}} as never)
   const authority=new JobPublicationAuthority({require:async()=>{if(!liveOwner)throw new DomainError('JOB_OWNERSHIP_LOST','Modeled owner lost.',409)}},{revalidateAccepted:async()=>undefined} as never)
   const endpoint={currentBinding:()=>ready?Object.freeze({...binding}):undefined}
   const reserve=vi.fn<(input:JobOutputPublicationInput,source:FileMutationSource)=>Promise<FileWithRevision>>(async()=>({file:{fileId,currentRevisionId:revisionId,scope:{kind:'job_execution' as const,workspaceId:job.workspaceId,jobExecutionId:job.id},state:'pending' as const,createdAt:job.createdAt,retentionDurationSeconds:7200,expiresAt:expires.toISOString()},revision:{byteClass:'ci-output' as const,fileId,revisionId,filename:'result.json',mediaType:'application/json' as const,byteSize:11,sha256:digest('{"ok":true}'),origin:'job_output' as const,createdAt:job.createdAt}}))

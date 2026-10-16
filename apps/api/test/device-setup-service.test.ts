@@ -24,9 +24,10 @@ function fixture(){
     if(text.startsWith('insert into device_pairing_grants'))grants++
     return {rows,rowCount:rows.length,command:'SELECT',oid:0,fields:[]}
   })
-  const connection={query,release:vi.fn()},pool={options:{},query,connect:async()=>connection,end:vi.fn(async()=>{})}
-  vi.spyOn(pg,'Pool').mockImplementation(function(){return pool} as never)
-  const service=new PostgresDeviceAccessService(pool as unknown as pg.Pool,mainId,undefined,()=>available?{endpoint:'wss://192.168.1.12:7443/device/connect',available:true,reason:null}:{endpoint:null,available:false,reason:'listener-not-started'})
+  const connection={query,release:vi.fn()},pool=new pg.Pool()
+  vi.spyOn(pg.Pool.prototype,'query').mockImplementation(query as never)
+  vi.spyOn(pg.Pool.prototype,'connect').mockResolvedValue(connection as never)
+  const service=new PostgresDeviceAccessService(pool,mainId,undefined,()=>available?{endpoint:'wss://192.168.1.12:7443/device/connect',available:true,reason:null}:{endpoint:null,available:false,reason:'listener-not-started'})
   const input={commandId:randomUUID(),identityRequestCode:workerIdentityRequestCode(identity),endpoint:'wss://192.168.1.12:7443/device/connect',scopes:['connect','heartbeat'] as ('connect'|'heartbeat')[]}
   return {service,principal,input,query,receipts,get grants(){return grants},get registrations(){return registrations},unavailable:()=>{available=false},available:()=>{available=true},revoke:()=>{revoked=true}}
 }
