@@ -49,7 +49,7 @@ function fixture(nativeRetention?: NativeQualificationRetention) {
   const authorize = vi.fn(async () => undefined)
   const proof = (value: HostHarnessOverride): HostHarnessProfileEvidence => ({ target: value.target, instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint, driverId: value.driverId,
     driverRevision: '1', protocolRevision: '1', suiteRevision: 'suite', environmentGeneration: 'env', connectionGeneration: 'local', authenticated: true, compatible: true, qualified: true, checkedAt: new Date().toISOString() })
-  const qualify = vi.fn(async (value: HostHarnessOverride, _input: { checkId: string; signal: AbortSignal }) => {
+  const qualify = vi.fn<(value: HostHarnessOverride, input: { checkId: string; signal: AbortSignal }) => Promise<HostHarnessProfileEvidence>>(async value => {
     expect(readTransaction).toBe(false)
     return proof(value)
   })
