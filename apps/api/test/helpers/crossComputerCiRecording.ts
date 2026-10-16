@@ -15,7 +15,7 @@ export function recordScenario(workflows: RunningCiWorkflow[], observation: Scen
       workflowId: workflow.graph.id, workflowVersionId: workflow.saved.version.id, runId: workflow.runId,
       project: workflow.workspace.project, repository: workflow.repository,
       assignments: workflow.assignments.map(agent => ({ agentId: agent.agentId, nodeId: agent.nodeId,
-        suite: agent.suite, hostRef: agent.profile.target.hostRef })) })),
+        suite: agent.suite, ...(agent.task ? { task: agent.task } : {}), hostRef: agent.profile.target.hostRef })) })),
     workspaces: input.workspaces.map(workspace => ({ workspaceId: workspace.workspaceId, ciComputers: workspace.ciComputers })),
     tickets: [...observation.tickets.values()], groups: Object.fromEntries(observation.groups),
     reports: Object.fromEntries(observation.reports), runs: [...observation.runs.values()],
