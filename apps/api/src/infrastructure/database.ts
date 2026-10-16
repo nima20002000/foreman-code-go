@@ -16,7 +16,8 @@ export interface Database {
 }
 
 export function createDatabase(options: DatabaseOptions): Database {
-  // CI dispatch keeps two connections of its own for its short pass operations; CI admission uses the shared pool.
+  // CI admission and dispatch keep two connections of their own; timeouts match the shared pool so a burst of
+  // Agent ci_run calls waits briefly instead of failing.
   const dispatchPool = createPool({ ...options, maxConnections: 2, queryTimeoutMs: 1000 }, 'graphql-ci-dispatch')
   const pool = createPool(options, 'graphql-api', dispatchPool)
   return {
