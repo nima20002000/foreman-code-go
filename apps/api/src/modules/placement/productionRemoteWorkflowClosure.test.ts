@@ -30,7 +30,7 @@ const ports = vi.hoisted(() => {
     },
   }
   return { connection, intent, placement, authority: vi.fn(), prefetch: vi.fn(), closed: vi.fn(),
-    persist: vi.fn(), reject: vi.fn() }
+    persist: vi.fn(), reject: vi.fn(), acknowledge: vi.fn() }
 })
 vi.mock('./persistence.js', () => ({
   readDispatchIntent: async () => ports.intent,
@@ -49,7 +49,7 @@ vi.mock('../runs/remote/persistence.js', () => ({
 }))
 vi.mock('./executionAuthority.js', () => ({ assertRemoteExecutionAuthority: ports.authority }))
 vi.mock('../runs/remote/workflowPhysicalVerification.js', () => ({
-  createRemoteWorkflowPhysicalVerification: () => ({ prefetch: ports.prefetch, confirmedClosed: ports.closed }),
+  createRemoteWorkflowPhysicalVerification: () => ({ prefetch: ports.prefetch, confirmedClosed: ports.closed, acknowledgeClosed: ports.acknowledge }),
 }))
 import { createProductionRemoteWorkflow } from './productionRemoteWorkflow.js'
 
@@ -57,6 +57,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   ports.prefetch.mockResolvedValue({ kind: 'original-remote-physical' })
   ports.closed.mockReturnValue(true)
+  ports.acknowledge.mockResolvedValue({})
 })
 
 function fixture() {
@@ -332,5 +333,16 @@ it('keeps revoked execution authority from publishing cold closure', async () =>
       .rejects.toMatchObject({ code: 'REMOTE_CLOSURE_RECEIPT_REJECTED' })
     expect(f.state.stored).toBeUndefined()
     expect(ports.reject).toHaveBeenCalled()
+  } finally { await f.close() }
+})
+
+it('releases the actual cached binding after successful cold cleanup', async () => {
+  const f = fixture()
+  try {
+    await f.composition.prepare('execution')
+    expect(f.composition.binding('execution')).toBeDefined()
+    expect(await f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner)).toBe(true)
+    expect(f.composition.binding('execution')).toBeUndefined()
+    expect(f.composition.isRemote('execution')).toBe(false)
   } finally { await f.close() }
 })

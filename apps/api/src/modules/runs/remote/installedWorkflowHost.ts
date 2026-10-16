@@ -309,6 +309,7 @@ class InstalledWorkflowHostRuntime {
     intent: DispatchIntent
     placement: AcceptedNodePlacement
     task: Promise<RemoteExecutionHost>
+    controller: AbortController
   }>()
 
   constructor(private readonly input: InstalledWorkflowHostOptions,
@@ -452,7 +453,8 @@ class InstalledWorkflowHostRuntime {
   }
 
   private readonly constructOwned = async(context:DeviceExtensionContext,intent:DispatchIntent,placement:AcceptedNodePlacement,
-    action: 'read' | 'stop', renewal?: RemoteOwnerReconciliation)=>{
+    action: 'read' | 'stop', signal: AbortSignal, renewal?: RemoteOwnerReconciliation)=>{
+    signal.throwIfAborted()
     this.current(context.binding)
     const request=this.forBinding(context.binding),authorize=workerExecutionAuthorizer(request)
     let owned=this.operations.get(intent.executionId)
@@ -543,7 +545,8 @@ class InstalledWorkflowHostRuntime {
           await assertOriginal()
         }, suiteRevision }
       const reader = createInstalledCodexQualificationReader(readerInput)
-      const capture=await reader.capture()
+      const capture=await reader.capture(signal)
+      signal.throwIfAborted()
       const savedHarness = capture.facts.configuration.harness
       if (savedHarness.harness === 'codex' && savedHarness.accountId
         && savedHarness.accountId !== account?.accountId) unavailable('accepted_account_binding_missing')
@@ -864,15 +867,40 @@ class InstalledWorkflowHostRuntime {
       this.current(context.binding)
       return this.construct(context,intent,placement,action,renewal)
     }
-    const task = this.constructOwned(context,intent,placement,action,renewal)
+    const controller = new AbortController()
+    const signal = AbortSignal.any([this.signal, context.signal, controller.signal])
+    const task = this.constructOwned(context,intent,placement,action,signal,renewal)
     this.construction.set(intent.executionId, {
       binding: structuredClone(context.binding),
       intent: structuredClone(intent),
       placement: structuredClone(placement),
-      task,
+      task, controller,
     })
     void task.then(() => this.construction.delete(intent.executionId), () => this.construction.delete(intent.executionId))
     return task
+  }
+
+  private async stopInitialConstruction(frame: RemoteExecutionRpcRequest, context: DeviceExtensionContext) {
+    if (frame.method !== 'control' || frame.command.action.kind !== 'stop'
+      || this.operations.has(frame.intent.executionId)) return undefined
+    const pending = this.construction.get(frame.intent.executionId)
+    if (!pending) return undefined
+    if (!isDeepStrictEqual(pending.intent, frame.intent) || !isDeepStrictEqual(pending.placement, frame.placement)
+      || !isDeepStrictEqual(pending.binding, context.binding)) unavailable('original_operation_generation_changed')
+    const authorize = workerExecutionAuthorizer(this.forBinding(context.binding))
+    await authorize(frame.intent, frame.placement, 'stop', context.signal)
+    this.current(context.binding)
+    const log = await this.journal()
+    await log.accept(frame.intent, connectionIdentity(context.binding), randomUUID())
+    await log.control(frame.command)
+    pending.controller.abort(new Error('Original workflow construction stopped.'))
+    await Promise.allSettled([pending.task])
+    // Construction may have finished while Stop was admitted; its resident uses the ordinary cleanup path.
+    if (this.operations.has(frame.intent.executionId)) return undefined
+    return recoverInstalledWorkflowReply({ frame, binding: context.binding, journal: log,
+      recovery: this.recovery, registry: this.registry, physical: this.physical,
+      signal: context.signal, lifetimeSignal: this.signal, assertCurrent: () => this.current(context.binding),
+      authorize: async action => { await authorize(frame.intent, frame.placement, action, context.signal) } })
   }
 
   /** A preparation keeps its original host and journal entry when only the transport session changed. */
@@ -1130,6 +1158,8 @@ class InstalledWorkflowHostRuntime {
           this.current(context.binding)
           return { payload: this.responsePages.read(frame, context.binding) }
         }
+        const stopped = await this.stopInitialConstruction(frame, context)
+        if (stopped) return stopped
         const resident = this.operations.get(frame.intent.executionId)
         // Only the transport session changed: the original work continues on it, unless Main stops it.
         const reconnected = resident !== undefined && !resident.preparationRecovery
