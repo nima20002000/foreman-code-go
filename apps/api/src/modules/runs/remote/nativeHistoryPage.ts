@@ -15,7 +15,11 @@ let retainedMetadataBytes = 0
 
 function metadataPage(fields: HistoryFields, request?: DeviceJsonContinuationRequest) {
   const retained = request && metadataTransfers.get(request.digest)
-  if (retained && isDeepStrictEqual(retained.fields, fields)) {
+  // Live event cursors can advance while the original metadata bytes are still being read.
+  if (retained && isDeepStrictEqual(
+    { ...retained.fields, nextCursor: undefined },
+    { ...fields, nextCursor: undefined },
+  )) {
     return pageJsonContinuationBytes(retained.bytes, request)
   }
   const bytes = Buffer.from(JSON.stringify(encodeResultCopies(fields, historyResultPaths())))

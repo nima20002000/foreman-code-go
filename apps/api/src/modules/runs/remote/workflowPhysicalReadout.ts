@@ -274,8 +274,12 @@ export class InstalledWorkflowPhysicalReadouts {
       return {key:this.key(receipt.sequence,remoteWorkflowSourceDigest(source)),source}
     }):[]
     const resultDigests = payloads.map(payload => payload.digest)
-    const bytes = Buffer.byteLength(canonicalGraphJson({ ...dictionary, results: resultDigests, aliases },
-      REMOTE_PHYSICAL_CONTINUATION_LIMIT))
+    // Count retained copies without applying one canonical JSON node budget to all of them together.
+    const bytes = Buffer.byteLength(JSON.stringify({ ...dictionary, results: resultDigests, aliases }))
+    if (bytes > REMOTE_PHYSICAL_CONTINUATION_LIMIT) {
+      throw new DomainError('payload-too-large', 'Original physical source retention exceeds its size limit.', 413,
+        { byteSize: bytes, maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT })
+    }
     const count = (digests: readonly string[], digest: string) => digests.filter(value => value === digest).length
     const projectedSize = () => {
       let size = this.byteSize - (previous?.bytes ?? 0) + bytes
