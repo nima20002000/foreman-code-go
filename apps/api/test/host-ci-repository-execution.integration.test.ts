@@ -1,10 +1,12 @@
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { genericCiRepository } from './helpers/genericCiRepository.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 import { ciRunReadback } from './helpers/ciRunReadback.js'
+import { deferred } from './helpers/deferred.js'
 
 it.each([
   ['pnpm-lock.yaml', 'corepack pnpm'], ['package-lock.json', 'npm'], ['yarn.lock', 'corepack yarn'],
@@ -33,6 +35,46 @@ it.each([
       expect(stored.map(row => row.record)).toEqual([read.run])
     }
   } finally {
+    await f.close()
+    await repository.close()
+  }
+})
+
+it('settles the real MCP job after preempting a warmup whose native unit never starts', async () => {
+  const entered = deferred()
+  const release = deferred()
+  let firstLaunch = true
+  const repository = await genericCiRepository({ lockfile: 'pnpm-lock.yaml', beforeLaunch: async () => {
+    if (!firstLaunch) return
+    firstLaunch = false
+    entered.resolve()
+    await release.promise
+    throw new Error('Warmup launch interrupted before service creation')
+  } })
+  const f = await fixture({ repositoryRunner: repository })
+  try {
+    const computer = (await repository.endpoint.computers())[0]!
+    const warmupId = randomUUID()
+    await repository.endpoint.request(computer, { operation: 'start', warmup: true, runId: warmupId,
+      repository: 'octo/site', commit: repository.commit, suite: 'install', scope: 'full' })
+    await entered.promise
+    const ticket = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build' }))
+    await vi.waitFor(async () => {
+      const pending = await repository.endpoint.request(computer, {
+        operation: 'read', runId: warmupId, afterOffset: 0, maxBytes: 1024,
+      })
+      expect(pending).toMatchObject({ operation: 'read', run: { state: 'starting',
+        message: expect.stringContaining('Cancellation requested') } })
+    })
+    release.resolve()
+    const saved = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), ticket.ticketId, 'passed')
+    expect(saved.run).toMatchObject({ suite: 'build', state: 'passed', computer: { hostRef: computer.hostRef } })
+    expect(saved.logTail).toContain('fixture build passed')
+    expect(saved.run.id).not.toBe(warmupId)
+    expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
+      [saved.run.groupId])).rows.map(row => row.record)).toEqual([saved.run])
+  } finally {
+    release.resolve()
     await f.close()
     await repository.close()
   }
