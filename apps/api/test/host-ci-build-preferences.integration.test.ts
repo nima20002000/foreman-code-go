@@ -193,7 +193,12 @@ it('honors persisted MCP build participation and priority while retaining assign
     const entry = runs.get(second.ticketId)!
     entry.run = { ...entry.run, state: 'passed', exitCode: 0, finishedAt: new Date().toISOString() }
     await save(devices[0]!.target, false, 20)
-    expect((await get(second.ticketId)).run.state).toBe('passed')
+    // Dispatch observes assigned runs asynchronously, including runs on disabled computers.
+    const completed = CiGetOutputSchema.parse(await call(reader, 'ci_get', {
+      workspaceId, ticketId: second.ticketId, waitUntil: 'group-terminal', waitSeconds: 5, logTail: false,
+    }))
+    expect(completed.wait).toMatchObject({ status: 'settled', tickets: 1, settledTickets: 1 })
+    expect(completed.run.state).toBe('passed')
     expect((await db.pool.query('select state from ci_runs where id=$1', [second.ticketId])).rows[0]!.state).toBe('passed')
     await db.pool.query('update build_computer_preferences set target=$1::jsonb where host_key=$2',
       [JSON.stringify({ ...main, applicationInstallationId: randomUUID() }), `${mainId}:main`])
