@@ -20,6 +20,7 @@ import { CLOUD_LOG_LIMIT, CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubAction
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
+import { pushMirror } from './mirrorPush.js'
 import { CircleCiAccounts } from './circleCiAccounts.js'
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { readCloudRun, saveCloudRun } from './cloudJournal.js'
@@ -503,8 +504,8 @@ export class CloudCi {
       ...(durations && durations.length <= limit ? { durations } : {}) }
     if (this.provider.id === 'circleci') {
       input.workflowRef = `ci/${request.commit}-${request.runId}`
-      await git(['push', '--quiet', `https://github.com/${mirror}.git`,
-        `${snapshot}:refs/heads/${input.workflowRef}`])
+      await pushMirror(() => git(['push', '--quiet', `https://github.com/${mirror}.git`,
+        `${snapshot}:refs/heads/${input.workflowRef}`]), { mirror, commit: request.commit })
     }
     validateProviderParameters(this.provider, input)
     let run = await this.save({ mirrorBranch: branch, runId: request.runId, repository: request.repository, mirror, commit: request.commit,
@@ -907,17 +908,9 @@ export class CloudCi {
     const snapshotMs = Math.max(0, performance.now() - snapshotting - (guardMs - initialGuardMs) - branchFetchMs)
     const pushing = performance.now()
     pushedMains.delete(mirrorKey)
-    const push = () => git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
-      `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
-    await push().catch(async (error: unknown) => {
-      if (!(error instanceof DomainError) || error.code !== 'CI_CLOUD_FAILED'
-        || !/\[remote rejected\][^\r\n]*\(missing necessary objects\)/.test(error.message)) throw error
-      // Cleanup or another process can retire advertised refs while Git sends a pack that omits their objects.
-      // A new push negotiates again and sends the missing ancestry, including a locally cached snapshot parent.
-      log.warn({ operation: 'retry CI mirror push', err: error, mirror, commit, attempt: 1 },
-        'CI mirror lost advertised objects; retrying push once with fresh negotiation')
-      await push()
-    })
+    await pushMirror(() => git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
+      `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])]),
+    { mirror, commit })
     pushedMains.set(mirrorKey, snapshot)
     const timings = { queueMs, sourceMs, fetchMs, guardMs, snapshotMs, pushMs: performance.now() - pushing,
       totalMs: performance.now() - started + queueMs }
