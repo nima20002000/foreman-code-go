@@ -32,7 +32,8 @@ const CiRunInputObjectSchema = z.object({
     + 'Requires scripts/ci-suite.sh and scripts/ci-files.mjs. User-systemd files use separate systemd-capable slices; '
     + 'mixed explicit selections split even when this is omitted. Other repositories run integration as one job.').optional(),
   scope: CiScopeSchema.optional().describe('Defaults to affected; full runs the complete suite. '
-    + 'Repositories without an affected selector always run the full suite.'),
+    + 'Repositories without affected selection default to full only when scope and files are omitted; '
+    + 'explicit affected scope or files fails with CI_SELECTION_UNSUPPORTED. Request full and omit files.'),
   files: CiSelectedFilesSchema.optional().describe('Optional affected selection of safe repository-relative paths '
     + 'with an explicit commit; no file-count cap or repository-root restriction. Omit to select '
     + 'on the runner against baseCommit or the workspace default branch; an empty list runs no tests. '
