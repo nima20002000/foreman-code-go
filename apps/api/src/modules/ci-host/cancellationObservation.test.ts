@@ -34,12 +34,12 @@ function fixture(kind: 'device' | 'cloud') {
     cancellationStarted.resolve()
     await cancellationReply.promise
     return { operation: 'cancel' as const, run: { runId: run.id, state: 'canceled' as const,
-      step: null, exitCode: null, startedAt: run.startedAt, finishedAt: new Date().toISOString(),
+      step: null, exitCode: null, startedAt: run.startedAt ?? new Date().toISOString(), finishedAt: new Date().toISOString(),
       message: 'Canceled.', logBytes: 0 } }
   })
   const endpoint: HostCiEndpoint = { computers: async () => [computer], request: async (_computer, input) => {
     if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
-      slotsTotal: 1, slotsUsed: 1, runs: [] }
+      cpuCount: 1, memoryBytes: 1, slotsTotal: 1, slotsUsed: 1, runs: [] }
     if (input.operation === 'cancel') return cancel()
     if (input.operation !== 'read') throw new Error(`Unexpected ${input.operation}`)
     observationStarted.resolve()
