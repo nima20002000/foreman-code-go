@@ -35,7 +35,9 @@ function fixture() {
     initiator: { principalId: caller.id, executionId: null },
   })
   const logTail = 'x'.repeat(32_768)
-  const query = vi.fn(async () => ({ rows: [{ record: structuredClone(record), log_tail: logTail }] }))
+  const query = vi.fn(async (_statement: unknown, parameters?: unknown[]) => ({
+    rows: parameters?.[1] === record.groupId ? [] : [{ record: structuredClone(record), log_tail: logTail }],
+  }))
   const client = Object.assign(new EventEmitter(), { query: vi.fn(async () => ({ rows: [] })), release: vi.fn() })
   const pool = { query, connect: vi.fn(async () => client) } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: vi.fn(async principal => {
@@ -332,7 +334,7 @@ it.each([{}, { waitUntil: 'group-terminal' as const }])(
       f.persist({ state: 'passed', exitCode: 0, collection: 'complete' })
       f.query.mockResolvedValueOnce({ rows: [{ record: collecting, log_tail: '' }] })
       f.query.mockResolvedValueOnce({ rows: [{ record: f.read(), log_tail: 'npm run integration\n' }] })
-      const result = await f.ci.get(f.caller, { workspaceId: 'workspace', ticketId: f.read().id, ...mode })
+      const result = value(await f.call(mode))
       expect(result.run).toEqual(f.read())
       expect(result.logTail).toBe('npm run integration\n')
       if (mode.waitUntil) expect(result).toMatchObject({ wait: { status: 'settled' } })
