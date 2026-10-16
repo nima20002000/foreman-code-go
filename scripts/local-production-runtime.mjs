@@ -292,6 +292,8 @@ Delegate=yes
 WorkingDirectory=@APP@/current/apps/api
 EnvironmentFile=@HOME@/.config/graphql-production/production.env
 Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
+# Keep SCRAM crypto responsive alongside overlapping eight-entry filesystem batches.
+Environment=UV_THREADPOOL_SIZE=32
 Environment=DATABASE_POOL_MAX=40
 Environment=DATABASE_QUERY_TIMEOUT_MS=5000
 Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifacts

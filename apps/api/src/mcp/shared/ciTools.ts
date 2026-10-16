@@ -10,7 +10,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../../modules/jobs/ciAuthority.j
 import type { HostCiService } from '../../modules/ci-host/service.js'
 import type { PostgresCommandCoordinator } from '../../modules/commands/postgres.js'
 import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/access/policy.js'
-import { DomainError } from '../../modules/errors.js'
+import { DomainError, databaseConnectionFailure } from '../../modules/errors.js'
 import { toolFailure, toolResult } from './results.js'
 import { logOperatorToolFailure } from '../operator/invoke.js'
 import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
@@ -112,14 +112,20 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   const invoke = async (name: CiTool, work: () => Promise<unknown>) => {
     try { return toolResult(await work()) }
     catch (caughtError) {
-      const error = deviceBusyFailure(caughtError)
-      logOperatorToolFailure(name, error)
+      const error = databaseConnectionFailure(deviceBusyFailure(caughtError))
+      logOperatorToolFailure(name, caughtError)
       if (error instanceof DomainError && [401, 403, 404].includes(error.status)) {
         await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
       } else {
-        await context.services.commands.recordAudit(context.principal.id, 'mcp', name, `mcp:${name}`, 'failed', {
-          code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
-        })
+        try {
+          await context.services.commands.recordAudit(context.principal.id, 'mcp', name, `mcp:${name}`, 'failed', {
+            code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
+          })
+        } catch (auditError) {
+          if (!(error instanceof DomainError) || error.code !== 'DATABASE_BUSY') throw auditError
+          // A second unavailable connection must not replace the caller's retry instructions.
+          logOperatorToolFailure(name, auditError)
+        }
       }
       return toolFailure(error)
     }

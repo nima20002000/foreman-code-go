@@ -19,7 +19,7 @@ import type { OperatorServices } from './mcp/operator/types.js'
 import { registerOperatorHttpSecurity, requireLocalRequest } from './modules/access/http.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
 import type { LocalHumanAccess } from './modules/access/localHuman.js'
-import { DomainError, databaseReadFailure, publicFailureClass } from './modules/errors.js'
+import { DomainError, databaseConnectionFailure, databaseReadFailure, publicFailureClass } from './modules/errors.js'
 import type { McpDetectionService } from './modules/harnesses/mcpDetection.js'
 import { registerUserInteractions } from './routes/userInteractions.js'
 import { registerRunGraphRoutes } from './routes/runGraph.js'
@@ -225,7 +225,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   })
 
   app.setErrorHandler(async (error, request, reply) => {
-    const failure = databaseReadFailure(error)
+    const failure = databaseConnectionFailure(databaseReadFailure(error))
     const domain = publicRequestError(failure)
     const failureClass = publicFailureClass(failure)
     if (domain.status >= 500) request.log.error({ err: error }, domain.message)
