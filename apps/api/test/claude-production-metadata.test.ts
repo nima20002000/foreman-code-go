@@ -91,6 +91,22 @@ it('serves an expired result immediately while one background discovery refreshe
   } finally { vi.useRealTimers() }
 })
 
+it('keeps serving the last good result when a background refresh fails', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const f = fixture()
+    vi.mocked(discoverClaudeMetadata).mockResolvedValueOnce(metadata)
+    await f.port.discover('/workspace', AbortSignal.timeout(3000))
+    vi.setSystemTime(Date.now() + 300_000)
+    vi.mocked(discoverClaudeMetadata).mockRejectedValue(new Error('discovery timed out'))
+    expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ authenticated: true })
+    await vi.waitFor(() => expect(discoverClaudeMetadata).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(f.processes.closeOwner).toHaveBeenCalledTimes(2))
+    expect(await f.port.discover('/workspace', AbortSignal.timeout(3000))).toMatchObject({ authenticated: true,
+      models: [expect.objectContaining({ id: 'observed-model' })] })
+  } finally { vi.useRealTimers() }
+})
+
 it.each(['profile', 'installation', 'host', 'inventory', 'directory'] as const)('does not share overlapping discoveries when the %s changes', async change => {
   const f = fixture(), firstFinish = delayed(), secondFinish = delayed()
   const first = f.port.discover('/workspace', AbortSignal.timeout(3000))

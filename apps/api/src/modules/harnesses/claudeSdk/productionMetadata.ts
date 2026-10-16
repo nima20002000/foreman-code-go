@@ -12,6 +12,7 @@ import type { NativeProcessRegistry } from '../recovery/processRegistry.js'
 import type { NativeHarnessFactories } from '../runtimeFactory.js'
 import type { HarnessInstanceSettingsRepository } from '../instanceSettings/repository.js'
 import { DomainError } from '../../errors.js'
+import { logger } from '../../diagnostics/logger.js'
 import { commandInputHash } from '../../commands/postgres.js'
 import { ClaudeCheckedNativeConfigurationPort } from './nativeConfiguration.js'
 import { discoverClaudeMetadata } from './metadata.js'
@@ -65,7 +66,7 @@ export function productionClaudeMetadata(input: {
     if (cached) {
       if (Date.now() - cached.at >= 300_000 && !cached.refreshing) {
         cached.refreshing = true
-        void discover(workingDirectory, AbortSignal.timeout(60_000), true, accountBinding).catch(() => { if (results.get(key) === cached) results.delete(key) })
+        void discover(workingDirectory, AbortSignal.timeout(60_000), true, accountBinding).catch((error: unknown) => { logger.warn({ component: 'harness', err: error }, 'Claude metadata refresh failed; keeping the last result') })
           .finally(() => { cached.refreshing = false })
       }
       if (!refresh) return structuredClone(cached.value)
