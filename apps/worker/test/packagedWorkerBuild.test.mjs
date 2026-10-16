@@ -11,7 +11,7 @@ const repository = fileURLToPath(new URL('../../../', import.meta.url));
 
 for (const { runtime, target } of [
   { runtime: '22.23.3', target: 'apps/worker/artifacts/ubuntu-26.04-x64-target.json' },
-  { runtime: '22.23.2', target: 'apps/worker/artifacts/ubuntu-26.04-x64-node-22.23.2-target.json' },
+  { runtime: '22.23.2', target: 'apps/worker/artifacts/test-hosts/ubuntu-26.04-x64-node-22.23.2-target.json' },
 ]) {
   test(`the committed worker package builds and loads its complete execution graph on ${runtime}`, async t => {
     const directory = await mkdtemp(join(persistentFixtureRoot, 'worker-build-'));

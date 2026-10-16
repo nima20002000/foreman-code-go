@@ -24,7 +24,7 @@ test('artifact versions follow product releases rather than a shared worker pack
 });
 
 test('reviewed build inputs must identify repository artifact JSON rather than an external file', () => {
-  const target = 'apps/worker/artifacts/ubuntu-24.04-x64-target.json';
+  const target = 'apps/worker/artifacts/test-hosts/ubuntu-24.04-x64-target.json';
   assert.equal(committedWorkerInputPath('/repo', target), target);
   assert.equal(committedWorkerInputPath('/repo', `/repo/${target}`), target);
   for (const input of ['/approved-target.json', '../target.json', 'apps/worker/src/target.json', 'apps/worker/artifacts/target.txt']) {

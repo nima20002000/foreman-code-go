@@ -122,7 +122,7 @@ supported; its Sharp assets and quota helper have not been qualified.
 
 The target and optional runtime metadata must be committed JSON files under
 `apps/worker/artifacts/`. Review the bytes at the captured source commit, for
-example with `git show HEAD:apps/worker/artifacts/ubuntu-24.04-x64-target.json`.
+example with `git show HEAD:apps/worker/artifacts/test-hosts/ubuntu-24.04-x64-target.json`.
 External files and uncommitted new files cannot be build inputs. Working-copy
 edits to an existing target are not selected: the builder reads the committed
 bytes. Commit and review the target first, then build that revision. By default
@@ -130,7 +130,7 @@ the captured revision is HEAD; `WORKER_BUILD_COMMIT` selects a reviewed full
 commit SHA. Build-control files must also match that revision.
 
 ```
-corepack pnpm --filter @foreman-code/worker build:artifact apps/worker/artifacts/ubuntu-24.04-x64-target.json /new/artifact-directory
+corepack pnpm --filter @foreman-code/worker build:artifact apps/worker/artifacts/test-hosts/ubuntu-24.04-x64-target.json /new/artifact-directory
 ```
 
 The fresh output includes the built worker, installer, service template and a

@@ -37,8 +37,8 @@ async function installedWorkerHost(environment) {
   const facts = await hostFacts(home, [join(home, '.cache', 'graphql-disposable-tests')])
   const root = fileURLToPath(new URL('..', import.meta.url))
   const names = [
-    'ubuntu-24.04-x64-target.json', 'ubuntu-26.04-x64-target.json',
-    'ubuntu-24.04-x64-node-22.23.2-target.json', 'ubuntu-26.04-x64-node-22.23.2-target.json',
+    'test-hosts/ubuntu-24.04-x64-target.json', 'ubuntu-26.04-x64-target.json',
+    'test-hosts/ubuntu-24.04-x64-node-22.23.2-target.json', 'test-hosts/ubuntu-26.04-x64-node-22.23.2-target.json',
   ]
   // Artifact builds use the approved Git snapshot, not uncommitted target edits.
   const targets = names.map(name => {

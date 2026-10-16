@@ -483,7 +483,7 @@ export async function verifyRepository(context, { root = process.cwd(), signal }
         environment.FOREMAN_CODE_WORKER_CODEX_BINARY = tool.executable
         const startedAt = new Date().toISOString()
         result = await execute(['node', 'scripts/build-worker-artifact.mjs',
-          'apps/worker/artifacts/ubuntu-24.04-x64-target.json', artifact], 'worker-artifact')
+          'apps/worker/artifacts/test-hosts/ubuntu-24.04-x64-target.json', artifact], 'worker-artifact')
         writeReport(portionPath(directory, 'root:worker-artifact', 'command.json'), {
           key: 'root:worker-artifact', startedAt, finishedAt: new Date().toISOString(), code: result.code ?? 1,
         }, context.limits.logBytes)

@@ -9,8 +9,8 @@ import { persistentFixtureRoot } from './fixtureStorage.mjs';
 
 const repository = fileURLToPath(new URL('../../../', import.meta.url));
 const targets = [
-  'ubuntu-24.04-x64-target.json', 'ubuntu-26.04-x64-target.json',
-  'ubuntu-24.04-x64-node-22.23.2-target.json', 'ubuntu-26.04-x64-node-22.23.2-target.json',
+  'test-hosts/ubuntu-24.04-x64-target.json', 'ubuntu-26.04-x64-target.json',
+  'test-hosts/ubuntu-24.04-x64-node-22.23.2-target.json', 'test-hosts/ubuntu-26.04-x64-node-22.23.2-target.json',
 ];
 
 const containers = await mkdtemp(join(persistentFixtureRoot, 'qhc-'));
