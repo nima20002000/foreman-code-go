@@ -215,7 +215,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
           .toEqual([f.executionId, joinedExecutionId].sort())
         const operator = await f.graph.credential([{ actions: [...CI_GET_ACTIONS, 'runs:read', 'bug_reports:read'],
           scope: { workspaceIds: [f.graph.scope.workspaceId] } }])
-        const listInput = { runId: other.run.id }
+        const listInput = { workspaceId: other.scope.workspaceId, runId: other.run.id }
         expect(OperatorCiListInputSchema.safeParse(listInput).success).toBe(true)
         const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', listInput))
         expect(listed.jobs).toContainEqual(expect.objectContaining({ ticketId: ticket.ticketId,
