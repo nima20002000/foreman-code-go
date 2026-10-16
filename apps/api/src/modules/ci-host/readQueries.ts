@@ -172,12 +172,15 @@ export class HostCiReads {
     const entries: CiFailureHistory[] = []
     for (const file of failed.slice(0, 10)) {
       const rows = (await this.pool.query<{ status: string; tests: { name: string; status: string }[] }>(
-        `select f->>'status' as status,f->'tests' as tests from ci_runs r
-          cross join lateral jsonb_array_elements(r.test_results->'files') f
-          where r.workspace_id=$1 and r.id<>$2 and r.record->>'gate'='true' and r.state in ('passed','failed')
-            and r.created_at > now() - make_interval(days => $4) and f->>'file'=$3
-          order by r.created_at desc limit $5`,
-        [workspaceId, id, file.file, CI_FAILURE_HISTORY_LIMITS.days, CI_FAILURE_HISTORY_LIMITS.runs])).rows
+        `select f->>'status' as status,f->'tests' as tests from (
+          select test_results,created_at,id from ci_runs
+          where workspace_id=$1 and id<>$2 and record->>'gate'='true' and state in ('passed','failed')
+            and created_at > now() - make_interval(days => $4) and test_results->'files' @> $6::jsonb
+          order by created_at desc,id desc limit $5
+        ) r cross join lateral jsonb_array_elements(r.test_results->'files') f
+          where f->>'file'=$3 order by r.created_at desc,r.id desc`,
+        [workspaceId, id, file.file, CI_FAILURE_HISTORY_LIMITS.days, CI_FAILURE_HISTORY_LIMITS.runs,
+          JSON.stringify([{ file: file.file }])])).rows
       const names = file.tests.length ? file.tests.map(test => test.name) : [null]
       for (const name of names) {
         const seen = name === null ? rows : rows.filter(row => row.tests.some(test => test.name === name))

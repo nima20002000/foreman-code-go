@@ -187,6 +187,44 @@ describe('authenticated W07 passive telemetry carrier', () => {
     s.lifetime.abort(); await session.close(); await s.worker.close(); await s.service.close()
     expect(s.collectors[0]!.close).toHaveBeenCalledTimes(1)
   })
+  it.each(['challenge', 'ingest'] as const)('recovers from a transient database timeout during %s with a fresh sample', async phase => {
+    vi.useFakeTimers()
+    const s = setup()
+    const original = s.service.ports.sessions.active
+    const active = vi.spyOn(s.service.ports.sessions, 'active')
+    let calls = 0
+    active.mockImplementation(async (...args) => {
+      calls++
+      // Handshake, challenge authorization, then ingestion authorization.
+      if (calls === (phase === 'challenge' ? 2 : 3)) {
+        throw Object.assign(new Error('statement timeout'), { code: '57014' })
+      }
+      return original(...args)
+    })
+    const session = await startRemoteTelemetrySession({ service: s.service, binding,
+      signal: s.lifetime.signal, request: s.request })
+    const failures: unknown[] = []
+    void session.completion.catch(error => { failures.push(error) })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(s.request).toHaveBeenCalledTimes(phase === 'challenge' ? 0 : 1)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(s.request).toHaveBeenCalledTimes(phase === 'challenge' ? 1 : 2)
+      const challenges = s.request.mock.calls.map(([payload]) => (payload as { challenge: CollectionChallenge }).challenge.challengeId)
+      expect(new Set(challenges).size).toBe(challenges.length)
+      expect(failures).toEqual([])
+      expect(await s.service.availableComputerMemory({
+        hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+        applicationInstallationId: binding.workerInstallationId, bootId: binding.bootId,
+        keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
+      }, s.lifetime.signal)).toBe(1)
+    } finally {
+      s.lifetime.abort()
+      await session.close()
+      await s.worker.close()
+      await s.service.close()
+    }
+  })
   it('keeps collecting after a busy channel times out one sample', async () => {
     vi.useFakeTimers(); const s = setup()
     const delegate = s.request.getMockImplementation()!

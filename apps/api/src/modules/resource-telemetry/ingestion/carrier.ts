@@ -1,3 +1,5 @@
+import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
+import { componentLogger } from '../../diagnostics/logger.js'
 import { randomUUID } from 'node:crypto'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
@@ -11,6 +13,8 @@ import { ResourceTelemetryService, TelemetryRejected } from './service.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 import { DomainError } from '../../errors.js'
+
+const logger = componentLogger('resource-telemetry')
 
 /** Ready/lost hooks retain only the exact authenticated channel's passive collector. */
 export function createMainResourceTelemetryBindings(service: () => ResourceTelemetryService | undefined) {
@@ -55,7 +59,11 @@ export async function startRemoteTelemetrySession(input: {
     try {
       while (!lifetime.signal.aborted) {
         const issuedMono = input.service.ports.clock.monotonicMs()
-        const challenge = await input.service.challenge(context, lifetime.signal)
+        const challenge = await input.service.challenge(context, lifetime.signal).catch(error => {
+          if (!isTransientDatabaseOrSocketError(error)) throw error
+          logger.warn({ err: error }, 'Telemetry challenge database lookup failed; retrying at the next collection interval')
+          return null
+        })
         if (challenge) {
           // A busy channel only misses this sample; its stale age keeps readers from using it.
           const reply = await input.request({ operation: 'collect', challenge }, { signal: lifetime.signal, timeoutMs: TELEMETRY_LIMITS.freshMs })
@@ -69,7 +77,10 @@ export async function startRemoteTelemetrySession(input: {
           if (reply) {
             try { await input.service.ingest(context, JSON.stringify(reply.payload), lifetime.signal) }
             catch (error) {
-              if (!(error instanceof TelemetryRejected) || error.reason !== 'owner-binding' && error.reason !== 'challenge') throw error
+              if (isTransientDatabaseOrSocketError(error)) {
+                logger.warn({ err: error }, 'Telemetry sample database lookup failed; discarding the sample')
+              } else if (!(error instanceof TelemetryRejected)
+                || error.reason !== 'owner-binding' && error.reason !== 'challenge') throw error
             }
           }
         }

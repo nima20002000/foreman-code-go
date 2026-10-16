@@ -566,9 +566,12 @@ function configureMainTransport(composition: ProductionComposition) {
       if (!composition.jobRuntime) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'Original Main source and Job transfer services have not initialized.', 503)
       if (!isDeepStrictEqual(composition.deviceRuntime.endpointForDomains().captureRequest(binding.deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding, binding))
         throw new DomainError('RSYNC_CONNECTION_CONFLICT', 'Transfer lookup requires the actual current rsync channel.', 403)
-      const owners = (await database.pool.query<{ operation: string }>(`select operation from management_command_receipts where
-        (operation in ('source.package.admit','job.output.admit') and result #>> '{intent,transferId}'=$1)
-        or (operation='job.inputs.bind' and exists(select 1 from jsonb_array_elements(result->'transfers') item where item #>> '{intent,transferId}'=$1))`, [id])).rows
+      const owners = (await database.pool.query<{ operation: string }>(`select operation from management_command_receipts
+        where operation in ('source.package.admit','job.output.admit') and result->'intent'->>'transferId'=$1
+        union all
+        select operation from management_command_receipts
+        where operation='job.inputs.bind' and result->'transfers' @> $2::jsonb`,
+      [id, JSON.stringify([{ intent: { transferId: id } }])])).rows
       if (owners.length !== 1) throw new DomainError('RSYNC_TRANSFER_DENIED', 'Exactly one original source or Job admission must own the transfer.', 403)
       const operation = owners[0]!.operation
       if (operation === 'source.package.admit') return composition.jobRuntime.transfers.intent(id, binding)

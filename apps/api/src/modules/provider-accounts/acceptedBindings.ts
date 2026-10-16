@@ -58,10 +58,13 @@ export function assertAccountConfiguration(binding: ProviderAccountBinding, conf
 export class AcceptedProviderAccountBindings {
   constructor(private readonly accounts: ProviderAccountResolver) {}
 
-  async prepare(configuration: HarnessConfiguration, selection?: HarnessProfileSelection) {
+  async prepare(configuration: HarnessConfiguration, selection?: HarnessProfileSelection,
+    options: { signal?: AbortSignal } = {}) {
+    options.signal?.throwIfAborted()
     if (configuration.harness === 'opencode') return undefined
     if (!configuration.accountId) return legacyProviderAccountBinding(configuration, selection)
-    const selected = await this.accounts.resolve(configuration.harness, configuration.accountId, { allowDefault: false })
+    const selected = await this.accounts.resolve(configuration.harness, configuration.accountId, { allowDefault: false, ...options })
+    options.signal?.throwIfAborted()
     if (!selected?.binding) throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE',
       'The selected account has no qualified binding.', 409)
     if (selected.observation && selected.observation.status !== 'signed-in') {
