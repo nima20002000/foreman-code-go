@@ -97,7 +97,15 @@ export async function checksProfilesAcrossInstallationUpdate(executionHost: 'mai
       return fixture.details(next.run.id)
     }, value => value.run.executionState === 'completed', 'completion of the Run on the updated installation')
     expect(updatedRun.run.outcome).toBe('succeeded')
-  } finally {
+  } catch (error) {
+    // A failed cleanup must not replace the failure that made the scenario stop.
+    await cleanup().catch((cleanupError: unknown) => {
+      throw new AggregateError([error, cleanupError], 'The scenario failed and its cleanup failed too.')
+    })
+    throw error
+  }
+  await cleanup()
+  async function cleanup() {
     if (modelsBlocked) await fixture.provider.releaseModels()
     if (turnsBlocked) await fixture.provider.releaseWorkflowTurns()
     await fixture.close()
