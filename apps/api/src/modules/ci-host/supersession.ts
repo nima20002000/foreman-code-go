@@ -8,7 +8,7 @@ interface Candidate { run: CiRunRecord; requester: CiRunRecord['initiator'] }
 
 /** Active tickets of the same suite this requester initiated, or whose group it joined; `requester` is how the
  * replacement's requester asked for each one. */
-async function candidates(sql: SqlQuery, replacement: CiRunRecord, lock?: 'update'): Promise<Candidate[]> {
+async function candidates(sql: SqlQuery, replacement: CiRunRecord, lockIds?: string[]): Promise<Candidate[]> {
   const rows = (await sql.query<{ record: unknown; joined_principal: string | null; joined_execution: string | null }>(
     `select c.record,q.principal_id as joined_principal,q.execution_id as joined_execution from ci_runs c
     left join lateral (select principal_id,execution_id from ci_group_requesters q
@@ -19,9 +19,10 @@ async function candidates(sql: SqlQuery, replacement: CiRunRecord, lock?: 'updat
       and c.record->>'repository'=$2 and c.record->>'suite'=$3
       and (c.record#>>'{initiator,principalId}'=$4
         or ($5::text is not null and c.record#>>'{initiator,executionId}'=$5) or q.principal_id is not null)
-    order by c.created_at,c.id${lock ? ' for update of c' : ''}`,
+      ${lockIds ? 'and c.id=any($6::uuid[])' : ''}
+    order by c.created_at,c.id${lockIds ? ' for update of c' : ''}`,
   [replacement.workspaceId, replacement.repository, replacement.suite,
-    replacement.initiator.principalId, replacement.initiator.executionId])).rows
+    replacement.initiator.principalId, replacement.initiator.executionId, ...(lockIds ? [lockIds] : [])])).rows
   return rows.map(row => {
     const run = CiRunRecordSchema.parse(row.record)
     const initiated = run.initiator.principalId === replacement.initiator.principalId
@@ -64,9 +65,12 @@ export async function prepareCiSupersession(sql: SqlQuery, commits: CiCommits, r
 export async function validateCiSupersession(client: pg.PoolClient, replacement: CiRunRecord,
   prepared: Map<string, boolean> | undefined): Promise<CiRunRecord[] | null> {
   if (!prepared) return []
-  const rows = (await candidates(client, replacement, 'update')).map(candidate => candidate.run)
+  const rows = (await candidates(client, replacement)).map(candidate => candidate.run)
   if (rows.some(old => !protectedRun(old, replacement) && !prepared.has(old.id))) return null
-  return rows.filter(old => !protectedRun(old, replacement) && prepared.get(old.id))
+  const selected = rows.filter(old => !protectedRun(old, replacement) && prepared.get(old.id)).map(old => old.id)
+  if (!selected.length) return []
+  const locked = (await candidates(client, replacement, selected)).map(candidate => candidate.run)
+  return locked.filter(old => !protectedRun(old, replacement) && prepared.get(old.id))
 }
 
 /** Admission and cancellation intent share a transaction; dispatch retries unfinished cleanup. */
