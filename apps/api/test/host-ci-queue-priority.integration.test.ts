@@ -39,8 +39,8 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
       && run.computer?.hostRef.provider === 'github')).toBe(true)
     f.finish(read.partitions!.find(run => run.computer?.hostRef.kind === 'device')!.id, 0, 'Host slice completed.\n')
     // Observations rotate through running tickets, so the finished slice is noticed within a few passes.
+    await f.ci.dispatch()
     await expect.poll(async () => {
-      await settle(f.ci)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
       return read.partitions!.every(run => run.state === 'running')
     }, { timeout: 10_000 }).toBe(true)
@@ -114,7 +114,6 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
     await settle(f.ci)
     // Observations rotate through running tickets; wait until the typecheck parts have been observed.
     await expect.poll(async () => {
-      await settle(f.ci)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: checks.ticketId }))
       return read.partitions!.every(run => run.observation?.status === 'available')
     }, { timeout: 10_000 }).toBe(true)

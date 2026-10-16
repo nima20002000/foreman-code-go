@@ -3,6 +3,7 @@ import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 it('waits for computer capacity before saving an immutable partition plan', async () => {
   const f = await fixture()
@@ -29,7 +30,8 @@ it('waits for computer capacity before saving an immutable partition plan', asyn
     release()
     await f.value(f.operator, 'ci_computers_list', {})
     await f.ci.dispatch()
-    const ready = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const ready = await f.waitFor(f.operator, started.ticketId, output => output.partitions!.every(run =>
+      run.state === 'running' && run.observation?.status === 'available'))
     const shards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 14 * 2 ** 30 })
     for (const run of ready.partitions!) {
       expect(run).toMatchObject({ state: 'running', partition: { weights: [shards, shards] } })
@@ -52,7 +54,8 @@ it('splits integration over two build computers, reports progress and logs, and 
     expect(f.started.map(value => value.computer).sort()).toEqual(['builder', 'laptop'])
     expect(f.started.map(value => value.request.operation === 'start' && value.request.partition?.index).sort())
       .toEqual([0, 1])
-    const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const running = await f.waitFor(f.operator, started.ticketId, output =>
+      output.partitions!.every(run => run.state === 'running'))
     expect(running.run).toMatchObject({ state: 'running', suite: 'integration', repository: 'octo/site',
       partition: { index: 0, count: 2 }, computer: { label: expect.any(String) } })
     expect(running.partitions).toHaveLength(2)
@@ -65,7 +68,8 @@ it('splits integration over two build computers, reports progress and logs, and 
     // A finished integration ticket settles first; its log and results are collected by the pass that follows.
     await f.ci.dispatch()
     await f.ci.drain()
-    const passed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.partitions![0]!.ticketId }))
+    const passed = await ciRunReadback(input => f.value(f.operator, 'ci_get', input),
+      started.partitions![0]!.ticketId, 'passed')
     expect(passed.run).toMatchObject({ state: 'passed', exitCode: 0 })
     expect(passed.logTail).toBe('all passed\n')
     const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.partitions![1]!.ticketId }))
@@ -139,7 +143,8 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     })
     expect(slices.flat().sort()).toEqual([...files].sort())
     expect(slices.map(slice => slice.filter(file => heavy.includes(file)).length)).toEqual([1, 1])
-    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    const read = await f.waitFor(reader, started.ticketId, output => output.partitions!.every(run =>
+      run.state === 'running' && run.observation?.status === 'available'))
     expect(read.partitions).toHaveLength(2)
     const shards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 14 * 2 ** 30 })
     for (const run of read.partitions!) {
@@ -168,7 +173,7 @@ it('queues a run while every computer is busy and starts it on the first one tha
     await f.ci.drain()
     await f.ci.dispatch()
     await f.ci.drain()
-    const moved = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
+    const moved = await f.waitFor(f.operator, third.ticketId, output => output.run.state === 'running')
     expect(moved.run).toMatchObject({ state: 'running', computer: { label: f.started[0]!.computer }, message: null })
     expect((await f.call(f.operator, 'ci_logs_read', { ticketId: second.ticketId })).isError).not.toBe(true)
   } finally { await f.close() }

@@ -5,6 +5,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.
 import { DomainError } from '../src/modules/errors.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 import { rejectableDeferred } from './helpers/deferred.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 /** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
 async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
@@ -32,7 +33,9 @@ it('supersedes every queued and running part through MCP and preserves the repla
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'typecheck', commit: oldCommit, commandId: 'old-checks',
     }))
-    const before = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId }))
+    const before = await f.waitFor(f.operator, old.ticketId, output =>
+      output.partitions!.filter(run => run.state === 'running').length === 1
+        && output.partitions!.some(run => run.observation?.status === 'available'))
     expect(before.partitions!.map(run => run.state).sort()).toEqual(['queued', 'running'])
     const input = { suite: 'typecheck', commit: nextCommit, commandId: 'replacement-checks' }
     const denied = await f.connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], { workspaceIds: ['another-workspace'] })
@@ -44,7 +47,7 @@ it('supersedes every queued and running part through MCP and preserves the repla
     const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     // Superseded executor cleanup runs in the background dispatch pass.
     await f.ci.drain()
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId }))
+    const read = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), old.ticketId, 'canceled')
     expect(read.partitions).toHaveLength(2)
     for (const part of read.partitions!) {
       expect(part).toMatchObject({ state: 'canceled', supersededBy: next.ticketId,
@@ -62,7 +65,8 @@ it('supersedes every queued and running part through MCP and preserves the repla
       .toHaveLength(2)
     expect((await f.pool.query(`select outcome from management_audit where action='ci_run'`)).rows)
       .toContainEqual({ outcome: 'denied' })
-    const replacement = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId }))
+    const replacement = await f.waitFor(f.operator, next.ticketId, output =>
+      output.partitions!.some(run => run.state === 'running'))
     expect(replacement.partitions!.some(run => run.state === 'running')).toBe(true)
   } finally { await f.close() }
 })

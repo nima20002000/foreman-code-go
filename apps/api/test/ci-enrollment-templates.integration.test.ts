@@ -56,12 +56,13 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment: templates', () => {
 
         const updated = await client.callTool({ name: 'ci_enrollment_update', arguments: input })
         expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
-        await vi.waitFor(async () => {
-          const rows = (await f.db.pool.query<{ state: { state: string } }>(
-            'select state from ci_enrollment_computers where workspace_id=$1', [workspaceId])).rows
-          expect(rows).toHaveLength(f.computers.length)
-          expect(rows.every(row => row.state.state === 'templates-required')).toBe(true)
-        }, { timeout: 5000 })
+        await expect.poll(async () => (await read(readonly)).computers.map(computer => ({
+          state: computer.state, persisted: computer.updatedAt !== null,
+        })), { timeout: 5000 }).toEqual(f.computers.map(() => ({ state: 'templates-required', persisted: true })))
+        const rows = (await f.db.pool.query<{ state: { state: string } }>(
+          'select state from ci_enrollment_computers where workspace_id=$1', [workspaceId])).rows
+        expect(rows).toHaveLength(f.computers.length)
+        expect(rows.every(row => row.state.state === 'templates-required')).toBe(true)
         await f.enrollment.close()
         const readback = await read(readonly)
         expect(readback.computers[0]).toMatchObject({ state: 'templates-required', enabled: true,

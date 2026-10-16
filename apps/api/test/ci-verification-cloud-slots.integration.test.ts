@@ -117,6 +117,8 @@ it('keeps reserved cloud slots out of a gate plan and starts a fix verification 
     const gate = CiRunOutputSchema.parse(await f.value('ci_run', { suite: 'integration', scope: 'full', gate: true,
       commit: 'a'.repeat(40), commandId: randomUUID() }))
     await ci.dispatch()
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: gate.ticketId }))
+      .partitions!.filter(run => run.state === 'running' && run.computer?.hostRef.kind === 'cloud').length).toBe(4)
     const planned = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: gate.ticketId }))
     const parts = planned.partitions!
     expect(parts.some(run => run.plannedHostKey?.startsWith('cloud-'))).toBe(true)
@@ -129,7 +131,9 @@ it('keeps reserved cloud slots out of a gate plan and starts a fix verification 
 
     const fix = CiRunOutputSchema.parse(await f.value('ci_run', verification('b'.repeat(40))))
     await ci.dispatch()
-    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: fix.ticketId }))
+    const read = await ciReadWhen(database.pool, async () => CiGetOutputSchema.parse(await f.value('ci_get', {
+      ticketId: fix.ticketId,
+    })), output => output.run.state === 'running' && output.run.observation?.status === 'available')
     expect(read.run).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud' } } })
     expect(reserved.has(`cloud-${read.run.computer!.hostRef.slot}`)).toBe(true)
     const stored = (await database.pool.query('select record,host_key from ci_runs where id=$1', [fix.ticketId])).rows[0]

@@ -18,16 +18,15 @@ it.each(['full', 'affected'] as const)(
       expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
       const admitted = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(admitted)
-      const initial = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: admitted.ticketId }))
+      const initial = await f.waitFor(reader, admitted.ticketId, output =>
+        output.partitions!.every(run => run.state === 'running'))
       const fastRun = initial.partitions!.find(run => run.partition?.tier === 'fast')!
       const slowRun = initial.partitions!.find(run => run.partition?.tier === 'slow')!
       expect(fastRun.state).toBe('running')
       expect(slowRun.state).toBe('running')
       expect(slowRun).not.toHaveProperty('deferred')
       f.finish(fastRun.id, 1, 'Fast file failed.\n')
-      const afterFast = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
-        ticketId: fastRun.id, waitSeconds: 5,
-      }))
+      const afterFast = await f.waitFor(reader, fastRun.id, output => output.run.state === 'failed')
       expect(afterFast.partitions!.find(run => run.id === fastRun.id)).toMatchObject({ state: 'failed', exitCode: 1 })
       expect(afterFast.partitions!.find(run => run.id === slowRun.id)?.state).toBe('running')
       const launched = f.started.flatMap(({ request }) => request.operation === 'start'

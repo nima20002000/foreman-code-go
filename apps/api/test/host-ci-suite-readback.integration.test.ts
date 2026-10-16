@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 it.each([
   ['unit', 11], ['lint', 2], ['typecheck', 2], ['build', 2],
@@ -17,7 +18,9 @@ it.each([
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     expect(started.partitions).toHaveLength(count)
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const read = await f.waitFor(f.operator, started.ticketId, output => output.partitions!.some(run =>
+      run.state === 'running') && output.partitions!.every(run =>
+      run.state === 'queued' && run.message !== null || run.observation?.status === 'available'))
     expect(read.partitions).toHaveLength(count)
     expect(read.partitions!.every(run => run.suite === suite && run.part?.startsWith(`${suite}-`)
       && run.groupId === read.run.groupId)).toBe(true)
@@ -84,13 +87,8 @@ it('shares split suite and group log readback between authenticated HTTP and MCP
     expect(started.partitions).toHaveLength(2)
     await f.ci.dispatch()
     for (const [index, ticket] of started.partitions!.entries()) f.finish(ticket.ticketId, index, `result ${index}\n`)
-    // Completion reaches Main through background refresh, independently of HTTP or MCP reads.
-    await expect.poll(async () => {
-      const rows = (await f.pool.query<{ record: unknown }>(
-        'select record from ci_runs where group_id=(select group_id from ci_runs where id=$1)',
-        [started.ticketId])).rows
-      return rows.map(row => CiRunRecordSchema.parse(row.record).state).sort()
-    }, { timeout: 10_000 }).toEqual(['failed', 'passed'])
+    const completed = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), started.ticketId, 'passed')
+    expect(completed.partitions!.map(run => run.state).sort()).toEqual(['failed', 'passed'])
     const read = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}`, headers })
     const result = CiGetOutputSchema.parse(read.json())
     expect(result.group?.state).toBe('failed')

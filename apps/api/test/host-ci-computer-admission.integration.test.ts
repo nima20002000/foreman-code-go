@@ -8,6 +8,7 @@ import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { DomainError } from '../src/modules/errors.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 it('cancels queued and running runs and skips a computer without a GitHub login', async () => {
   const f = await fixture({ github: { builder: false } })
@@ -38,7 +39,7 @@ it('fails a ticket at once with the reason when the public mirror refuses its co
     }
     const run = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'private' }))
     await f.ci.dispatch()
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: run.ticketId }))
+    const read = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), run.ticketId, 'failed')
     expect(read.run).toMatchObject({ state: 'failed', message: expect.stringContaining('test/example.test.ts:3') })
     await f.ci.dispatch()
     expect(f.started).toHaveLength(0)
@@ -61,7 +62,9 @@ it('runs two host-only tickets on one computer and queues a third through authen
     await f.ci.dispatch()
     expect(f.started).toHaveLength(2)
     expect(f.started.every(start => start.computer === f.computers[0]!.label)).toBe(true)
-    const records = await Promise.all(tickets.map(ticketId => f.value(f.operator, 'ci_get', { ticketId })))
+    const records = await Promise.all(tickets.map((ticketId, index) => f.waitFor(f.operator, ticketId,
+      output => output.run.state === (index < 2 ? 'running' : 'queued')
+        && (index < 2 || output.run.message?.includes('all CI slots in use (2/2)') === true))))
     expect(records.map(record => CiGetOutputSchema.parse(record).run.state)).toEqual(['running', 'running', 'queued'])
     expect(CiGetOutputSchema.parse(records[2]).run.message).toContain('all CI slots in use (2/2)')
     const listed = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
@@ -70,7 +73,7 @@ it('runs two host-only tickets on one computer and queues a third through authen
       .toMatchObject({ slotsUsed: 0, slotsTotal: 1 })
     await f.value(f.operator, 'ci_cancel', { ticketId: tickets[0] })
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: tickets[2] })).run.state).toBe('running')
+    expect((await f.waitFor(f.operator, tickets[2]!, output => output.run.state === 'running')).run.state).toBe('running')
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: tickets[1] })).run.state).toBe('running')
   } finally { await f.close() }
 })
@@ -105,7 +108,7 @@ it.each([
     })
     f.finish(first.ticketId, 0, output.text, undefined, output.message)
     await f.ci.dispatch()
-    const finished = await f.waitFor(f.operator, first.ticketId, output => output.run.state === 'passed')
+    const finished = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), first.ticketId, 'passed')
     expect(finished).toMatchObject({ run: { state: 'passed', message: output.cleanMessage }, logTail: output.cleanText })
     const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', { ticketId: first.ticketId }))
     expect(logs.text).toBe(output.cleanText)

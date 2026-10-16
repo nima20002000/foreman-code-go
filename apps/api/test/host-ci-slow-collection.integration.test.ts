@@ -3,6 +3,7 @@ import { CiRunRecordSchema, type CiHostReply, type CiHostRun } from '@foreman-co
 import { afterEach, expect, it, vi } from 'vitest'
 import { deferred } from './helpers/deferred.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -48,7 +49,8 @@ it('settles finished tickets and keeps observing the rest while their result col
     slowResults.resolve()
     await f.ci.drain()
     for (const id of ids) {
-      await f.waitFor(f.operator, id, output => output.run.state === 'failed' && output.run.collection === 'complete')
+      const completed = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), id, 'failed')
+      expect(completed.run.collection).toBe('complete')
     }
   } finally {
     slowResults.resolve()

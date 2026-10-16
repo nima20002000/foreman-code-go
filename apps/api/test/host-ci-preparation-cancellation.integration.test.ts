@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 it('persists pending MCP cancellation during host preparation and confirms cleanup afterward', async () => {
   const f = await fixture()
@@ -49,7 +50,7 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     await dispatch
     await f.ci.dispatch()
     // The pending cancellation completes in a background observation that a dispatch pass starts but does not await.
-    const read = await f.waitFor(reader, result.ticketId, output => output.run.state === 'canceled')
+    const read = await ciRunReadback(input => f.value(reader, 'ci_get', input), result.ticketId, 'canceled')
     expect(read.run).toMatchObject({ state: 'canceled' })
     expect(read.run.cancellation).toBeUndefined()
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [result.ticketId])).rows[0])

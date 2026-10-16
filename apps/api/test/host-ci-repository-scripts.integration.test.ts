@@ -1,4 +1,4 @@
-import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
+import { CiLogsOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { genericCiRepository } from './helpers/genericCiRepository.js'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
@@ -44,9 +44,7 @@ it('runs another repository’s named parts through its own suite hook', async (
   try {
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'custom-hook' }))
     expect(started.partitions).toHaveLength(2)
-    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).group!.state, { timeout: 10_000 }).toBe('passed')
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    const read = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), started.ticketId, 'passed')
     expect(read.partitions!.map(run => run.part).sort()).toEqual(['build-api', 'build-other'])
     for (const run of read.partitions!) {
       expect(run.state).toBe('passed')
@@ -72,18 +70,14 @@ it.each([0, 1250])(
   const f = await fixture({ repositoryRunner: repository })
   try {
     const install = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'generic-install' }))
-    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: install.ticketId })).run.state, { timeout: 10_000 }).toBe('passed')
-    const installed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: install.ticketId }))
+    const installed = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), install.ticketId, 'passed')
     expect(installed.run).toMatchObject({ part: null, partition: null, step: 'install', exitCode: 0 })
     expect(installed.logTail).toContain('npm install')
     expect(installed.logTail).not.toContain('npm run install')
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [install.ticketId])).rows[0]!.record).toEqual(installed.run)
     const build = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'generic-failure' }))
-    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: build.ticketId })).run.state, { timeout: 10_000 }).toBe('failed')
-    const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: build.ticketId }))
+    const failed = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), build.ticketId, 'failed')
     expect(failed.run).toMatchObject({ part: null, partition: null, step: 'build', state: 'failed', exitCode: 7 })
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [build.ticketId])).rows[0]!.record).toEqual(failed.run)

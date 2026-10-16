@@ -13,6 +13,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/j
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { createTestPool } from './helpers/testPool.mjs'
 import { expectCiPreparationOutsideTransaction } from './helpers/ciPreparationTransactions.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -170,13 +171,17 @@ it('prepares supersession ancestry outside the lock and includes tickets admitte
     next = f.call('ci_run', { ...input, commandId: 'next', commit: nextCommit })
     await within(blocked.entered)
     const middle = await within(f.run({ ...input, commandId: 'middle', commit: middleCommit }))
-    await expect.poll(() => f.read(old.ticketId)).toMatchObject({ supersededBy: middle.ticketId, state: 'canceled' })
+    const oldRead = await ciRunReadback(async input => decodeMcpToolResult(await f.call('ci_get', input)),
+      old.ticketId, 'canceled')
+    expect(oldRead.run).toMatchObject({ supersededBy: middle.ticketId, state: 'canceled' })
     blocked.release()
     const result = await next
     expect(result.isError).not.toBe(true)
     const accepted = CiRunOutputSchema.parse(decodeMcpToolResult(result))
     // Supersession is recorded at admission; the cancellation may finish after a pending dispatch settles.
-    await expect.poll(() => f.read(middle.ticketId)).toMatchObject({ supersededBy: accepted.ticketId, state: 'canceled' })
+    const superseded = await ciRunReadback(async input => decodeMcpToolResult(await f.call('ci_get', input)),
+      middle.ticketId, 'canceled')
+    expect(superseded.run).toMatchObject({ supersededBy: accepted.ticketId, state: 'canceled' })
     expect((await f.pool.query(`select outcome from management_audit
       where action='ci.run' and target_key=$1 and details->>'commandId'='next'`, [f.workspaceId])).rows)
       .toEqual([{ outcome: 'succeeded' }])

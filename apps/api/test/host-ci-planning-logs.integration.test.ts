@@ -108,6 +108,9 @@ async function fixture(realLogs = false) {
         'apps/api/test/two.integration.test.ts', 'apps/api/test/three.integration.test.ts'] }))
     if (waitForDispatch) {
       await settleDispatch()
+      await expect.poll(async () => CiGetOutputSchema.parse(await value('ci_get', { ticketId: result.ticketId }))
+        .partitions!.filter(run => run.state === 'running').length)
+        .toBe(Math.min(computers.length, result.partitions!.length))
     }
     return result
   }
@@ -183,6 +186,8 @@ it('plans all admitted slices after an early sibling cancellation and keeps the 
     await f.value('ci_cancel', { ticketId: canceled })
     release()
     await f.settleDispatch()
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: canceled }))
+      .partitions!.filter(run => run.id !== canceled).map(run => run.state)).toEqual(['running', 'running'])
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: canceled }))
     expect(read.partitions!.filter(run => run.id !== canceled).map(run => run.state)).toEqual(['running', 'running'])
     expect(read.run.state).toBe('canceled')
@@ -209,6 +214,11 @@ it('plans a group split by the fifty-row placement page behind unavailable syste
     }
     release()
     await f.settleDispatch()
+    await expect.poll(async () => {
+      const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+      return read.partitions!.some(run => run.state === 'running')
+        && read.partitions!.every(run => run.partition?.weights?.length === 3)
+    }).toBe(true)
     const after = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
     expect(after.partitions!.some(run => run.state === 'running')).toBe(true)
     expect(after.partitions!.every(run => run.partition?.weights?.length === 3)).toBe(true)
@@ -296,9 +306,9 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     f.control.stopCode = 0
     f.control.code = 0
     await f.ci.dispatch()
-    const cancellationRead = CiGetOutputSchema.parse(await f.value('ci_get', {
-      ticketId: active.id, waitSeconds: 10,
-    }))
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
+      .run.state).toBe('canceled')
+    const cancellationRead = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
     expect(cancellationRead.run.state).toBe('canceled')
     await f.ci.dispatch()
     await f.ci.close()

@@ -144,7 +144,11 @@ async function fixture() {
     if (!run) throw new Error('The CI ticket did not start')
     remote.set(ticketId, { ...run, state, exitCode: state === 'passed' ? 0 : 1, finishedAt: new Date().toISOString() })
     await settle()
-    expect((await read(ticketId)).run).toMatchObject({ state, collection: 'complete' })
+    const completed = CiGetOutputSchema.parse(await call('ci_get', {
+      ticketId, waitUntil: 'group-terminal', waitSeconds: 10,
+    }))
+    expect(completed.wait?.status).toBe('settled')
+    expect(completed.run).toMatchObject({ state, collection: 'complete' })
   }
   /** The files a request actually sent to a build computer. */
   const sent = async (ticketId: string) => {

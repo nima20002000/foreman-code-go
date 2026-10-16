@@ -16,6 +16,7 @@ import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/servi
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 /** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
 async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
@@ -208,7 +209,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       if (request.operation === 'cancel') return { operation: 'cancel', run: { ...run, state: 'canceled' } }
       const cloudReply = await options.readCloud?.(computer, request)
       if (cloudReply) return cloudReply
-      return { operation: 'read', run, text: '', nextOffset: 0 }
+      return { operation: 'read', run: request.testResults ? { ...run, collection: 'unsupported' } : run,
+        text: '', nextOffset: 0 }
     },
   })
   const access = new PostgresAccessService(pool)
@@ -250,7 +252,10 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       }
       await settle(ci)
       const read = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
-      if (read.group?.state === 'passed') return
+      if (read.group?.state === 'passed') {
+        await ciRunReadback(input => value('ci_get', input), ticketId, 'passed')
+        return
+      }
     }
     throw new Error('The gate did not finish every assigned job')
   }

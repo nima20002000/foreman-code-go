@@ -13,6 +13,7 @@ import { HostCiService, type CiCommits, type HostCiEndpoint } from '../src/modul
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { ciReadWhen } from './helpers/ciReadWhen.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
+import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -109,9 +110,8 @@ it.each([
     await ci.close()
     ci = create()
     ci.start()
-    const complete = await ciReadWhen(pool, async () => CiGetOutputSchema.parse(await invoke('ci_get', {
-      ticketId: started.ticketId, testStatus: ['passed'],
-    })), output => output.run.collection === 'complete')
+    const complete = await ciRunReadback(input => invoke('ci_get', { ...input, testStatus: ['passed'] }),
+      started.ticketId, 'passed')
     expect(complete.run).toMatchObject({ state: 'passed', collection: 'complete', ...persistedPins })
     expect(complete.tests).toEqual(expectedTests)
     expect(starts).toBe(1)
