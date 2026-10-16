@@ -1235,7 +1235,7 @@ export class HostCiService {
       .finally(() => { this.superseding = undefined })
     const computers = await this.endpoint.computers()
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
-    this.prewarm.schedule(computers, parsed)
+    void withoutCiDatabasePriority(async () => this.prewarm.schedule(computers, parsed))
     this.dispatchRejections.retain(parsed)
     this.refreshComputerStatuses(computers)
     const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
