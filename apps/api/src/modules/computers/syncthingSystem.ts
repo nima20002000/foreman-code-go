@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, copyFile, mkdir, readFile, opendir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { SyncIdentitySchema, TailscaleAddressSchema, type SyncIdentity } from '@foreman-code/contracts/computer-accounts'
 import { systemPorts } from './accountProbe.js'
 import { createSyncthingAvailability } from './syncthingAvailability.js'
+import { SyncthingConflictScanner } from './syncthingConflictScan.js'
 import { DomainError } from '../errors.js'
 
 export interface SyncthingPorts {
@@ -26,6 +27,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
   const rootPath = join(home, '.local', 'share', 'foreman-code', 'shared-files')
   const processPorts = systemPorts(environment)
   const availability = createSyncthingAvailability(processPorts, UNIT)
+  const conflicts = new SyncthingConflictScanner()
   let prepared: { at: number; metadata: string; identity: SyncIdentity } | undefined
   const preparationMetadata = async (binary: string): Promise<string | null> => {
     try {
@@ -67,6 +69,9 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
       headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
     if (!response.ok) throw failure(`Syncthing ${method} request failed (${response.status}).`)
+    if (method === 'DELETE' && path.startsWith('/rest/config/folders/')) {
+      await conflicts.forget(join(rootPath, path.slice('/rest/config/folders/'.length)))
+    }
     const text = await response.text()
     return text ? JSON.parse(text) as unknown : null
   }
@@ -119,24 +124,7 @@ export function systemSyncthingPorts(environment: NodeJS.ProcessEnv = process.en
       await mkdir(path, { recursive: true, mode: 0o700 })
       signal?.throwIfAborted()
     },
-    conflicts: async (path, signal) => {
-      const names: string[] = []
-      let remaining = 10_000
-      const walk = async (directory: string, relative: string) => {
-        signal?.throwIfAborted()
-        for await (const entry of await opendir(directory)) {
-          signal?.throwIfAborted()
-          if (names.length >= 100 || remaining <= 0) return
-          remaining--
-          if (entry.name === '.stversions' || entry.name === '.stfolder') continue
-          const name = relative ? `${relative}/${entry.name}` : entry.name
-          if (entry.isFile() && entry.name.includes('.sync-conflict-')) names.push(name)
-          if (entry.isDirectory()) await walk(join(directory, entry.name), name)
-        }
-      }
-      await walk(path, '')
-      return names
-    },
+    conflicts: (path, signal) => conflicts.scan(path, signal),
     prepare: async (signal, assertCurrent = () => {}) => {
       const check = () => { signal?.throwIfAborted(); assertCurrent() }
       check()
