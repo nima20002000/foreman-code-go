@@ -12,10 +12,19 @@ import {
 
 describe('lost original remote replies', () => {
   it.each([
-    { code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', reason: 'not_retained', retryable: true },
-    { code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED', reason: 'not_captured', retryable: false },
-    { code: 'REMOTE_AUTHORITY_DENIED', reason: 'revoked', retryable: false },
-  ])('preserves execution retry classification through the device channel: $code', async ({ code, reason, retryable }) => {
+    { code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', reason: 'not_retained',
+      expectedCode: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', retryable: true },
+    { code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', reason: 'process_identity',
+      expectedCode: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', retryable: true },
+    { code: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', reason: 'not_retained',
+      expectedCode: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', retryable: true },
+    { code: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED', reason: 'not_captured',
+      expectedCode: 'REMOTE_NATIVE_SOURCE_NOT_CAPTURED', retryable: false },
+    { code: 'REMOTE_AUTHORITY_DENIED', reason: 'revoked',
+      expectedCode: 'REMOTE_AUTHORITY_DENIED', retryable: false },
+  ])('preserves execution retry classification through the device channel: $code ($reason)', async ({
+    code, reason, expectedCode, retryable,
+  }) => {
     const original = Object.assign(new Error('The original remote reply is unavailable.'), {
       code, details: { reason },
     })
@@ -31,13 +40,15 @@ describe('lost original remote replies', () => {
       const decoded = await channel.main.request('execution-v1', { method: 'physical-readout' }).catch(error => error)
       expect(decoded).toBeInstanceOf(DeviceApplicationError)
       expect(decoded).not.toBe(original)
-      expect(decoded.code).toBe(code)
+      expect(decoded.code).toBe(expectedCode)
       expect(isTransientExecutionError(decoded)).toBe(retryable)
       expect(decoded.retryable).toBe(retryable)
-      expect(deviceApplicationFailure(original)).toEqual({ code, retryable, class: retryable ? 'transient' : 'permanent' })
+      expect(deviceApplicationFailure(original)).toEqual({
+        code: expectedCode, retryable, class: retryable ? 'transient' : 'permanent',
+      })
       if (retryable) {
         const failure = transientExecutionFailure(decoded)
-        expect(failure).toMatchObject({ outcome: 'failed', error: { code, retryable: true } })
+        expect(failure).toMatchObject({ outcome: 'failed', error: { code: expectedCode, retryable: true } })
         expect(isTransientExecutionResult(failure)).toBe(true)
       }
     } finally {
