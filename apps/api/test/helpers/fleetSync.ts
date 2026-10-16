@@ -21,6 +21,7 @@ export const pluginRequest = (names: string[]): MaintenanceTaskStart => ({
 
 export function fakeComputer() {
   const codexMcp = new Set<string>()
+  const codexDefinitions = new Map<string, unknown>()
   const claudeMcp = new Map<string, unknown>()
   const codexPlugins = new Set<string>()
   const claudePlugins = new Map<string, boolean>()
@@ -49,8 +50,16 @@ export function fakeComputer() {
         return { code: 0, stdout: 'Updated Claude Code', stderr: '' }
       }
       if (args[0] === 'mcp') {
-        if (args[1] === 'list') return result([...codexMcp].map(name => ({ name })))
-        if (args[1] === 'add') codexMcp.add(args[2]!)
+        if (args[1] === 'list') return result([...codexMcp].map(name => ({ name, transport: codexDefinitions.get(name) })))
+        if (args[1] === 'add') {
+          codexMcp.add(args[2]!)
+          const separator = args.indexOf('--')
+          codexDefinitions.set(args[2]!, separator >= 0
+            ? { type: 'stdio', command: args[separator + 1], args: args.slice(separator + 2) }
+            : { type: 'streamable_http', url: args[args.indexOf('--url') + 1],
+              bearer_token_env_var: args.includes('--bearer-token-env-var')
+                ? args[args.indexOf('--bearer-token-env-var') + 1] : null })
+        }
         if (args[1] === 'remove' && binary.endsWith('codex')) codexMcp.delete(args[2]!)
         if (args[1] === 'add-json') claudeMcp.set(args[4]!, JSON.parse(args[5]!) as unknown)
         if (args[1] === 'remove' && binary.endsWith('claude')) claudeMcp.delete(args[4]!)
@@ -92,7 +101,7 @@ export function fakeComputer() {
   }
   const maintenance = new ComputerMaintenance(ports)
   return {
-    maintenance, ports, codexMcp, claudeMcp, codexPlugins, claudePlugins, calls, files,
+    maintenance, ports, codexMcp, codexDefinitions, claudeMcp, codexPlugins, claudePlugins, calls, files,
     fail: (predicate: typeof failure) => { failure = predicate },
   }
 }
