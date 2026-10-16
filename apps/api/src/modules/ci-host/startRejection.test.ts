@@ -11,6 +11,7 @@ import type { AppInteractionService } from '../interactions/app.js'
 import { PostgresAccessService } from '../access/postgres.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import { CI_RUN_ACTIONS, type CiAuthority } from '../jobs/ciAuthority.js'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
 
@@ -83,7 +84,7 @@ function ticketDatabase() {
   return { pool, rows }
 }
 
-function fixture(lostReplies: number, rejection: string | null) {
+function fixture(lostReplies: number, rejection: string | Error | null, options: { unchangedStatus?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
   const { pool, rows } = ticketDatabase()
   const caller: ManagementPrincipal = {
@@ -118,8 +119,8 @@ function fixture(lostReplies: number, rejection: string | null) {
         attempts++
         if (attempts <= lostReplies || rejection === null) throw new Error('Start response lost')
         if (attempts === lostReplies + 1) {
-          ready = false
-          throw new DomainError(rejection, 'The host did not start this ticket.', 409)
+          ready = options.unchangedStatus ?? false
+          throw rejection instanceof Error ? rejection : new DomainError(rejection, 'The host did not start this ticket.', 409)
         }
         const run: CiHostRun = { runId: request.runId, state: 'running', step: 'unit', exitCode: null,
           startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0, message: null }
@@ -169,7 +170,9 @@ function fixture(lostReplies: number, rejection: string | null) {
 }
 
 const rejections = ['CI_HOST_BUSY', 'COMPUTER_GITHUB_REQUIRED', 'CI_CLOUD_UNAVAILABLE',
-  'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'WORKER_RUNTIME_DRAINING']
+  'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'WORKER_RUNTIME_DRAINING',
+  'WORKER_UPDATING', 'WORKER_VERSION_SKEW', 'WORKER_STATUS_UNAVAILABLE', 'WORKER_BUNDLE_UNPUBLISHED',
+  new DeviceApplicationAdmissionError('admission_queue_full')]
 
 it.each(rejections.flatMap(code => [0, 1, 2].map(lostReplies => ({ code, lostReplies }))))(
   'requeues $code after $lostReplies lost replies and starts the MCP ticket on the next dispatch', async input => {
@@ -236,6 +239,29 @@ it('retains the MCP ticket assignment when all start outcomes remain unknown', a
       computer: { hostRef: computer.hostRef }, startedAt: null, dispatchAttempts: 3,
       dispatchRequest: { runId: ticketId }, message: expect.stringContaining('Ownership retained') })
     expect(f.rows.get(ticketId)?.host_key).toBe(computer.key)
+    expect(f.attempts()).toBe(3)
+  } finally {
+    await f.close()
+  }
+})
+
+
+it('backs off a refused recovery retry even when healthy status remains unchanged', async () => {
+  const f = fixture(1, 'WORKER_UPDATING', { unchangedStatus: true })
+  try {
+    const started = await f.call('ci_run', { suite: 'unit', scope: 'full', commit: 'a'.repeat(40) })
+    const { ticketId } = CiRunOutputSchema.parse(started.value)
+    for (let pass = 0; pass < 4; pass++) await f.dispatch()
+    expect(f.attempts()).toBe(2)
+    const queued = await f.call('ci_get', { ticketId, logTail: false })
+    expect(CiGetOutputSchema.parse(queued.value).run).toMatchObject({ state: 'queued', computer: null })
+    vi.setSystemTime(Date.now() + 59_999)
+    await f.dispatch()
+    expect(f.attempts()).toBe(2)
+    vi.setSystemTime(Date.now() + 6000)
+    await f.dispatch()
+    const accepted = await f.call('ci_get', { ticketId, logTail: false })
+    expect(CiGetOutputSchema.parse(accepted.value).run).toMatchObject({ state: 'running' })
     expect(f.attempts()).toBe(3)
   } finally {
     await f.close()

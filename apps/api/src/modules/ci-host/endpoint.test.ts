@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import { ProductionHostCiEndpoint } from './endpoint.js'
+import { rejectedCiStart } from './dispatch.js'
 import { reconcileCiHostStart } from './dispatchRecovery.js'
 import { CiPlanningSnapshot } from './planningSnapshot.js'
 import type { HostCiComputer } from './service.js'
@@ -181,4 +182,57 @@ it('spends a start retry only after a live status reports the assigned run absen
   await reconcileCiHostStart(services, run, computer, reply.operation === 'status' ? reply : null)
   expect(run).toMatchObject({ state: 'starting', dispatchAttempts: 2 })
   expect(retry).toHaveBeenCalledExactlyOnceWith(computer, run.dispatchRequest)
+})
+
+
+it('classifies a failure before Start delivery as a refusal and preserves ambiguous Start errors', async () => {
+  const computer: HostCiComputer = { key: 'fixture:main', hostRef: { kind: 'main', mainId: 'fixture-main' },
+    label: 'Main computer', priority: 60 }
+  const failure = new Error('Computer preferences unavailable')
+  const query = vi.fn().mockRejectedValueOnce(failure)
+  const handle = vi.fn().mockRejectedValue(failure)
+  const endpoint = new ProductionHostCiEndpoint({ query } as unknown as pg.Pool, 'fixture-main',
+    () => undefined, { handle })
+  const request = CiHostRequestSchema.parse({ operation: 'start',
+    runId: '11111111-1111-4111-8111-111111111111', repository: 'example/project',
+    commit: 'a'.repeat(40), suite: 'unit' })
+  const refusal = await endpoint.request(computer, request).catch(error => error)
+  expect(rejectedCiStart(refusal)).toBe(true)
+  expect(refusal).toMatchObject({ cause: failure })
+  expect(handle).not.toHaveBeenCalled()
+  expect(rejectedCiStart(failure)).toBe(false)
+})
+
+it('fetches another retention page after sending the first and keeps the five-minute sweep floor', async () => {
+  const computer: HostCiComputer = { key: 'fixture:main', hostRef: { kind: 'main', mainId: 'fixture-main' },
+    label: 'Main computer', priority: 60 }
+  const rows = Array.from({ length: 1001 }, (_, index) => ({
+    run_id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    state: 'passed', finished_at: '2026-01-01T00:00:00Z', collection: null, rank: String(index + 201),
+  }))
+  const requests: string[][] = []
+  const query = vi.fn(async (_sql: string, parameters: unknown[]) => {
+    const limit = parameters[3] as number | undefined
+    const offset = parameters[4] as number | undefined ?? 0
+    if (offset > 0) expect(requests).toHaveLength(1)
+    return { rows: rows.slice(offset, limit === undefined ? undefined : offset + limit) }
+  })
+  const status = { operation: 'status' as const, ready: true, reasons: [], cpuCount: 8,
+    memoryBytes: 16 * 2 ** 30, runs: [], cleanupSupported: true }
+  const endpoint = new ProductionHostCiEndpoint({ query } as unknown as pg.Pool, 'fixture-main', () => undefined, {
+    handle: async payload => {
+      const request = CiHostRequestSchema.parse(payload)
+      if (request.operation === 'status' && request.cleanupRunIds) {
+        requests.push([...request.cleanupRunIds])
+        return { ...status, removedRunIds: request.cleanupRunIds }
+      }
+      return status
+    },
+  })
+  await endpoint.request(computer, { operation: 'status' })
+  await expect.poll(() => requests.length).toBe(2)
+  expect(requests).toEqual([rows.slice(0, 1000).map(row => row.run_id), rows.slice(1000).map(row => row.run_id)])
+  expect(query).toHaveBeenCalledTimes(2)
+  await endpoint.request(computer, { operation: 'status' })
+  expect(query).toHaveBeenCalledTimes(2)
 })

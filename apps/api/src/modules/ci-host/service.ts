@@ -16,6 +16,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
+import { errorMessage } from '../../shared/errorMessage.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { reportServiceFailure, trackService } from '../diagnostics/serviceHealth.js'
 import { planCiParts, runsOnCircleCi, unitPartOf } from './parts.js'
@@ -28,7 +29,7 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { buildComputerGatePart, splitUnavailableGateParts } from './gateFallback.js'
 import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
-import { saveQueuedCiRun, ciMessages, withCiTicketLock, type CiTicketSql } from './dispatch.js'
+import { saveQueuedCiRun, ciMessages, withCiTicketLock, structuralCiStartRejection, type CiTicketSql } from './dispatch.js'
 import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
 import { CiDispatchRejections } from './dispatchRejections.js'
 import { collectCiResults } from './resultCollection.js'
@@ -865,9 +866,15 @@ export class HostCiService {
     return this.dispatching
   }
 
-  private dispatchServices() {
+  private dispatchServices(computer: HostCiComputer) {
+    const status = this.planningEndpoint.dispatchStatus(computer)
     return { pool: this.pool, endpoint: this.endpoint,
       read: (id: string, workspaceId: string, sql: SqlQuery) => this.read(id, workspaceId, sql),
+      rejected: (run: CiRunRecord, rejectedComputer: HostCiComputer, error: unknown) => {
+        const message = errorMessage(error, 'CI start was refused.')
+        this.dispatchRejections.record(run.id, rejectedComputer, status, message,
+          { structural: structuralCiStartRejection(error) })
+      },
       settle: (run: CiRunRecord, computer: HostCiComputer, state: CiDispatchState,
         options: { client: CiTicketSql }) => options.client.transaction(
         client => this.settle(run, computer, state, { client })),
@@ -875,11 +882,11 @@ export class HostCiService {
   }
 
   private sendDispatch(run: CiRunRecord, computer: HostCiComputer) {
-    return sendCiDispatch(this.dispatchServices(), run, computer)
+    return sendCiDispatch(this.dispatchServices(computer), run, computer)
   }
 
   private reconcileHostStart(run: CiRunRecord, computer: HostCiComputer, status: CiHostStatus | null) {
-    return reconcileCiHostStart(this.dispatchServices(), run, computer, status)
+    return reconcileCiHostStart(this.dispatchServices(computer), run, computer, status)
   }
 
   expireOverdueRuns(now = new Date()): Promise<number> {
@@ -1376,9 +1383,6 @@ export class HostCiService {
         if (outcome === 'pending') return
         run = await this.read(run.id, run.workspaceId)
         if (run.state !== 'queued') return
-        if (outcome === 'busy' || outcome === 'rejected') {
-          this.dispatchRejections.record(run.id, computer, status, run.providerMessage ?? run.message ?? outcome)
-        }
         assignments.delete(run.id)
         if (outcome === 'busy') used.set(computer.key, totals.get(computer.key) ?? 1)
         else releaseSlot(computer)

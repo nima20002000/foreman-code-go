@@ -32,6 +32,7 @@ import { ciTicketChangesMigration } from './ciTicketChangesMigration.js'
 import { ciGroupWaitMigration } from './ciGroupWaitMigration.js'
 import { ciRecoveryIndexesMigration } from './ciRecoveryIndexesMigration.js'
 import { ciRequestSharingMigration } from './ciRequestSharingMigration.js'
+import { ciDirectoryRetentionMigration } from './ciDirectoryRetentionMigration.js'
 import { ciSharedActivityMigration } from './ciSharedActivityMigration.js'
 import { ciRequesterHistoryMigration } from './ciRequesterHistoryMigration.js'
 import { stateDeadlinesMigration } from './stateDeadlinesMigration.js'
@@ -968,6 +969,7 @@ export const migrations = [
   ciRequestSharingMigration,
   ciRequesterHistoryMigration,
   ciSharedActivityMigration,
+  ciDirectoryRetentionMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

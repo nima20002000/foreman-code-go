@@ -20,6 +20,7 @@ interface DispatchServices {
   pool: pg.Pool
   endpoint: HostCiEndpoint
   read(id: string, workspaceId: string, client: SqlQuery): Promise<CiRunRecord>
+  rejected?(run: CiRunRecord, computer: HostCiComputer, error: unknown): void
   settle(run: CiRunRecord, computer: HostCiComputer, state: CiDispatchState,
     options: { client: CiTicketSql }): Promise<boolean>
 }
@@ -48,7 +49,8 @@ export async function sendCiDispatch(services: DispatchServices, run: CiRunRecor
 async function sendAssignedDispatch(services: DispatchServices, run: CiRunRecord,
   computer: HostCiComputer, client: CiTicketSql) {
   if (computer.hostRef.kind === 'cloud') {
-    const result = await dispatchCloudTicket(client, services.endpoint, computer, run)
+    const result = await dispatchCloudTicket(client, services.endpoint, computer, run,
+      error => services.rejected?.(run, computer, error))
     if (result.outcome === 'settled') await services.settle(result.run, computer, result.observed, { client })
     return result.outcome
   }
@@ -75,6 +77,7 @@ async function sendAssignedDispatch(services: DispatchServices, run: CiRunRecord
       return 'settled'
     }
     if (!await releaseCiDispatch(client, run, computer, (error as Error).message, { clearRetry: true })) return 'pending'
+    services.rejected?.(run, computer, error)
     return (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected'
   }
   await services.settle(run, computer, reply.run, { client })

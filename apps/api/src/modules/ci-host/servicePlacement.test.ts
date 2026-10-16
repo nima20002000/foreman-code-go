@@ -1045,3 +1045,64 @@ it('keeps GitHub integration slots free when the only queued check is blocked be
     await f.service.close()
   }
 })
+
+
+it.each(['CI_HOST_BUSY', 'CI_CLOUD_UNAVAILABLE'])(
+  'retries transient %s after bounded backoff when healthy status never changed', async code => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+    const peer: HostCiComputer = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
+    const f = fleet(records, [cloud, peer])
+    const request = f.endpoint.request
+    let attempts = 0
+    vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+      if (input.operation === 'start' && ++attempts === 1) {
+        throw new DomainError(code, 'Transient capacity refusal', 409)
+      }
+      return request(computer, input)
+    })
+    try {
+      await f.service.dispatch()
+      expect(attempts).toBe(1)
+      expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+      vi.setSystemTime(Date.now() + 59_999)
+      await f.service.dispatch()
+      expect(attempts).toBe(1)
+      vi.setSystemTime(Date.now() + 6000)
+      await f.service.dispatch()
+      expect(attempts).toBe(2)
+      expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: cloud.hostRef } })
+    } finally {
+      await f.service.close()
+    }
+  },
+)
+
+it('keeps structural protocol rejections blocked across time until executor status changes', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'build', partition: null }))
+  const slots = new Map([[host.key, 1]])
+  const f = fleet(records, [host], new Map(), new Set(), slots)
+  const request = f.endpoint.request
+  let attempts = 0
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (computer, input) => {
+    if (input.operation === 'start' && ++attempts === 1) {
+      throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', 'Update Worker protocol', 409)
+    }
+    return request(computer, input)
+  })
+  try {
+    await f.service.dispatch()
+    vi.setSystemTime(Date.now() + 86_400_000)
+    await f.service.dispatch()
+    expect(attempts).toBe(1)
+    expect(records[0]?.state).toBe('queued')
+    slots.set(host.key, 2)
+    vi.setSystemTime(Date.now() + 6000)
+    await f.service.dispatch()
+    expect(attempts).toBe(2)
+    expect(records[0]?.state).toBe('running')
+  } finally {
+    await f.service.close()
+  }
+})
