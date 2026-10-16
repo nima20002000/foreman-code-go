@@ -99,6 +99,7 @@ export const SourceReservationReclamationRequestSchema = z.object({ version: z.l
   reservationId: z.uuid(), reclamationId: z.uuid() }).strict()
 export const SourceReservationReclamationSchema = z.object({ reservationId: z.uuid(), reclamationId: z.uuid(),
   operationId: IdSchema, scopeId: z.string().min(1), expiresAt: z.string().datetime(),
+  removeRetained: z.literal(true).optional(),
   roots: z.array(SourceRootRecordSchema).min(1).max(1024),
   owner: SourceOperationOwnerSchema.nullable() }).strict()
 export type SourceReservationReclamation = z.infer<typeof SourceReservationReclamationSchema>

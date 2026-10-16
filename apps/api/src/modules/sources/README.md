@@ -6,7 +6,7 @@ The source namespace is separate from FileRevision, document upload policy and n
 
 `PrivateSourceMaterializer` accepts the immutable manifest, a destination-owned RootBinding and exact W08 attempt pins. Its mandatory authorization callback must validate current W07 identity/auth revisions, placement/attempt ownership, root revisions, access mode and source approval; caller-supplied paths are never sufficient authorization. Linux procfs directory descriptors anchor component operations, with mode-0700 roots owned by the worker and ancestors protected against replacement by other principals (trusted sticky parents require worker-owned entries). Root identities include device, inode and mount ID. This qualification excludes hostile processes sharing the worker's UID or control over its private root; such a deployment must return unsupported. A filesystem or platform lacking these guarantees must not relax the sandbox.
 
-Every materialization reserves a new UUID directory. An exclusive-write binding claims rootId exclusively across revisions; a read-only binding gives each execution its own claim, so concurrent Agents (for example a retained Orchestrator and its requester) can share the root while each attempt still serializes on its execution's claim. The materializer then verifies all entries and atomically activates only inside its fresh private reservation. References are copied, never hardlinked. Failed/uncertain claims survive restart. Only W08/W01 ownership reconciliation can release the exact receipt's claim; disconnect alone cannot. Automated deletion is deliberately absent. A failed attempt with no receipt requires explicit ownership reconciliation by the composing service; retrying blindly cannot recover authority.
+Every materialization reserves a new UUID directory. An exclusive-write binding claims rootId exclusively across revisions; a read-only binding gives each execution its own claim, so concurrent Agents (for example a retained Orchestrator and its requester) can share the root while each attempt still serializes on its execution's claim. The materializer then verifies all entries and atomically activates only inside its fresh private reservation. References are copied, never hardlinked. Failed/uncertain claims survive restart. Only W08/W01 ownership reconciliation can release the exact receipt's claim; disconnect alone cannot. Age alone cannot release an active claim. Closed execution copies can be reclaimed under byte pressure after Run and native closure are confirmed. A failed attempt with no receipt requires explicit ownership reconciliation by the composing service; retrying blindly cannot recover authority.
 
 Source limits: 4,096 regular files, 16 MiB per file, 128 MiB expanded/package bytes, depth 32, 30 seconds preparation and two active materializations per service. Materialization space estimates include three byte copies plus entry overhead; retained directories still consume actual free space. `PostgresSourceReservations` serializes the aggregate host/filesystem budget across main processes (1 GiB charged physical copies, four preparing operations, two active/uncertain materializations); staging and retained copies remain charged. The host transfer composition consumes the original preparation reservation. No archive extractor or document upload-limit change is included.
 
@@ -86,6 +86,23 @@ slot, and 64 slots. At most 32 preparations may be pending. Qualified verificati
 pool byte and slot ceilings still apply independently.
 Capacity denials include the exhausted budgets, charged usage, measured CPU and
 memory, and admission limits so slot pressure can be distinguished from disk pressure.
+
+Before an ordinary byte-capacity denial becomes final, admission reclaims the
+oldest eligible retained execution copies on that host/filesystem, retrying with
+a fresh measurement after each removal. Only closed copies of completed Runs
+qualify. Pending Run cleanup, undelivered interactions, unsettled reviews, dirty
+worktrees and shared-tree references protect their copies. Main fences the
+original reservation and the authenticated Worker rechecks ownership, native
+closure and filesystem identity before deletion. Each removal is logged and
+audited. Interrupted removal keeps its charge and resumes through reservation
+reconciliation. Verification pool budgets remain separate.
+
+Execution copies are disposable source storage. Their removal preserves saved
+Run/execution results, Git branch refs, canonical snapshots and published files.
+FileRevision expiry and `file_retention` preferences continue to govern file
+bytes independently. Active writer pressure remains retryable; a request that
+cannot fit after eligible copies are reclaimed reports a capacity failure with
+the measured limits and remaining usage.
 
 Completed workflow executions release active source ownership after their original
 native lifetime closes, including occurrences within a running Loop. Cleanup removes

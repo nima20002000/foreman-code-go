@@ -12,6 +12,8 @@ import type { SourceReclamationResult } from './reclaimSourceReservation.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import { withSourceOperationExclusion } from './sourceOperationExclusion.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
+import { oldestRetainedMaterialization } from './retainedMaterializations.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 async function hasActiveAdmission(sql: GraphSqlClient, operationId: string): Promise<boolean> {
   const active = await sql.query(`select 1 from job_executions e where e.operation_id=$1
@@ -102,6 +104,21 @@ export class MaterializationReservationCleanup {
     await this.reconciliation
   }
 
+  async reclaimOldestRetained(scopeId: string): Promise<boolean> {
+    const attempted: string[] = []
+    for (;;) {
+      const candidate = await oldestRetainedMaterialization(this.pool, scopeId, undefined, attempted)
+      if (!candidate) return false
+      attempted.push(candidate.reservation_id)
+      const reclaimed = await withSourceOperationExclusion(candidate.owner_id, () =>
+        this.reconcileCandidate(candidate, error => {
+          componentLogger('byte-transfer').warn({ err: error, reservationId: candidate.reservation_id, scopeId },
+            'Retained source reclamation deferred')
+        }, { removeRetained: true }))
+      if (reclaimed) return true
+    }
+  }
+
   private async defer(reservationId: string, failures: number): Promise<void> {
     const delayMs = failures === 0 ? 0 : Math.min(900_000, 30_000 * 2 ** Math.min(5, failures - 1))
     await this.pool.query(`update source_storage_reservations
@@ -126,6 +143,9 @@ export class MaterializationReservationCleanup {
       || Date.parse(grant.expiresAt) <= Date.now() || !await admissionRemainsClosed(sql, grant.operationId)) {
       throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The original source cleanup no longer has authority.', 409)
     }
+    if (grant.removeRetained && !await oldestRetainedMaterialization(sql, grant.scopeId, reservationId)) {
+      throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The retained source is still needed by its Run.', 409)
+    }
     for (const root of grant.roots) {
       const registration = await assertDeviceHostInstallation(sql, root.selection.hostRef,
         root.binding.workerInstallationId ?? root.binding.mainId)
@@ -137,15 +157,26 @@ export class MaterializationReservationCleanup {
     return grant
   }
 
-  private async fence(reservationId: string) {
+  private async fence(reservationId: string, options: { removeRetained?: true } = {}) {
     return this.transaction(async sql => {
       const candidate = (await sql.query<{ record: SourceReservation }>(`select record from source_storage_reservations
-        where reservation_id=$1 and state in ('preparing','owned','uncertain')`, [reservationId])).rows[0]
+        where reservation_id=$1 and (state in ('preparing','owned','uncertain')
+          or ($2::boolean and state='retained'))`, [reservationId, options.removeRetained ?? false])).rows[0]
       if (!candidate) return null
-      const reservation = candidate.record
+      let reservation = candidate.record
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-reconcile:${reservation.ownerId}`])
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${reservation.scopeId}`])
-      if (!await admissionInactive(sql, reservation.ownerId)) return null
+      if (options.removeRetained) {
+        const current = (await sql.query<{ record: SourceReservation }>(`select record
+          from source_storage_reservations where reservation_id=$1 and state='retained' for update`, [reservationId])).rows[0]
+        if (!current) return null
+        reservation = current.record
+      }
+      const removeRetained = options.removeRetained ?? reservation.reclamation?.removeRetained
+      if (removeRetained && !await oldestRetainedMaterialization(sql, reservation.scopeId, reservationId)) return null
+      if (removeRetained) {
+        if (await hasActiveAdmission(sql, reservation.ownerId)) return null
+      } else if (!await admissionInactive(sql, reservation.ownerId)) return null
       const materialization = (await sql.query<{ record: unknown }>(
         'select record from source_execution_materializations where operation_id=$1', [reservation.ownerId])).rows[0]
       const reconciliation = (await sql.query<{ reconciliation_id: string; owner: unknown }>(`select reconciliation_id,owner
@@ -184,11 +215,12 @@ export class MaterializationReservationCleanup {
       }
       if (owner) owner = SourceOperationOwnerSchema.parse({ ...owner, preparationClosed: true })
       const grant = SourceReservationReclamationSchema.parse({ reservationId, scopeId: reservation.scopeId,
+        ...(removeRetained ? { removeRetained } : {}),
         operationId: reservation.ownerId, reclamationId: reservation.reclamation?.reclamationId
           ?? reconciliation?.reconciliation_id ?? randomUUID(),
         expiresAt: new Date(Date.now() + 300_000).toISOString(), roots, owner })
       await sql.query(`update source_storage_reservations set state='uncertain',record=$2::jsonb
-        where reservation_id=$1 and state in ('preparing','owned','uncertain')`,
+        where reservation_id=$1 and state in ('preparing','owned','uncertain','retained')`,
       [reservationId, JSON.stringify({ ...reservation, reclamation: grant })])
       await this.authorize(sql, reservationId, grant.reclamationId)
       return grant
@@ -210,9 +242,9 @@ export class MaterializationReservationCleanup {
   }
 
   private async reconcileCandidate(candidate: { reservation_id: string; retry: SourceReservation['cleanupRetry'] },
-    report?: (error: unknown) => void): Promise<boolean> {
+    report?: (error: unknown) => void, options: { removeRetained?: true } = {}): Promise<boolean> {
     try {
-      const grant = await this.fence(candidate.reservation_id)
+      const grant = await this.fence(candidate.reservation_id, options)
       if (!grant) {
         await this.defer(candidate.reservation_id, candidate.retry?.failures ?? 0)
         return false
@@ -261,8 +293,13 @@ export class MaterializationReservationCleanup {
           values($1,'system','source.materialization.reservation.release',$2,'succeeded',$3::jsonb)`,
         [grant.roots[0]!.ownerPrincipalId, grant.roots[0]!.binding.workspaceId,
           JSON.stringify({ reservationId: grant.reservationId, operationId: grant.operationId,
-            reclamationId: grant.reclamationId, scopeId: grant.scopeId })])
+            reclamationId: grant.reclamationId, scopeId: grant.scopeId,
+            ...(grant.removeRetained ? { reason: 'capacity' } : {}) })])
       })
+      if (grant.removeRetained && !result.retained) {
+        componentLogger('byte-transfer').info({ reservationId: grant.reservationId, operationId: grant.operationId,
+          scopeId: grant.scopeId }, 'Reclaimed retained source materialization for capacity')
+      }
       return true
     } catch (error) {
       await this.defer(candidate.reservation_id, (candidate.retry?.failures ?? 0) + 1)

@@ -41,6 +41,7 @@ import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
 import { prepareRunSources } from './runSource.js'
 import { authorizationReadSnapshot } from '../access/authorizationReadSnapshot.js'
+import { SourceCapacityErrorDetailsSchema } from '@foreman-code/contracts'
 
 export type { SourceExecutionHostPort }
 type Transport = 'http' | 'mcp'
@@ -48,6 +49,7 @@ type Sql = GraphSqlClient
 interface ApprovalRow { approved_source_id: string; snapshot_id: string; input_hash: string; state: string;
   origin: { location: RunExecutionLocation; mainId: string; ownerId: string; reservation: SourceReservation; repository?: string; approvedPaths?: string[] }; request: unknown }
 interface SourceLifecycle {
+  reclaimRetained?: ((scopeId: string) => Promise<boolean>) | undefined
   adopted?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
   preparationClosed?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined
   closed?: ((record: SourceMaterializationRecord) => Promise<void>) | undefined
@@ -119,14 +121,27 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   private async capacityTransaction<T>(work: (sql: pg.PoolClient) => Promise<T>,
     beforeRetry?: () => Promise<void>): Promise<T> {
-    try {
-      return await this.transaction(work)
-    } catch (error) {
-      if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY') throw error
-      await this.reconcileCaptures()
-      await this.releaseUnusedSnapshots(undefined, true)
-      await beforeRetry?.()
-      return this.transaction(work)
+    let reconciledSnapshots = false
+    let noReclaimableCopies = false
+    for (;;) {
+      try {
+        return await this.transaction(work)
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'SOURCE_CAPACITY' || noReclaimableCopies) throw error
+        if (!reconciledSnapshots) {
+          await this.reconcileCaptures()
+          await this.releaseUnusedSnapshots(undefined, true)
+          reconciledSnapshots = true
+        } else {
+          const capacity = SourceCapacityErrorDetailsSchema.safeParse(error.details)
+          if (!capacity.success || capacity.data.pool === 'verification' || !this.lifecycle.reclaimRetained
+            || !capacity.data.exhausted.some(limit => limit === 'retained_bytes' || limit === 'available_bytes')
+            || capacity.data.usage.requestedBytes > capacity.data.limits.bytes) throw error
+          noReclaimableCopies = !await this.lifecycle.reclaimRetained(capacity.data.scopeId)
+        }
+        // Re-measure after deletion and retry admission under the filesystem lock.
+        await beforeRetry?.()
+      }
     }
   }
   async resolveApprovedSource(sql: Sql, principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource> {

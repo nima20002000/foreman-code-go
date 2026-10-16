@@ -163,6 +163,7 @@ export class PostgresSourceReservations {
         'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409, {
           scopeId: request.scopeId,
           retryable,
+          pool: capacity.verification ? 'verification' : 'ordinary',
           exhausted,
           usage: { usedBytes, retainedBytes, pendingBytes, preparing, activeMaterializations,
             requestedBytes: request.reservedBytes },

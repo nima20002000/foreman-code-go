@@ -253,7 +253,7 @@ it('removes a closed retained copy through the authenticated Worker reclamation 
     operationId: f.owner.identity.operationId, reservationId: randomUUID(),
     rootPolicyId: f.root.selection.rootPolicyId, rootPolicyRevision: f.root.selection.rootPolicyRevision,
     sourceBindingHash: prepared.receipt.placementHash, finalDispatchBindingHash: null, state: 'closed' })
-  const grant = { reservationId: record.reservationId, reclamationId: randomUUID(),
+  const grant: SourceReservationReclamation = { reservationId: record.reservationId, reclamationId: randomUUID(),
     operationId: record.operationId, expiresAt: f.owner.identity.expiresAt, roots: [f.root],
     owner: { ...f.owner, record, preparationClosed: true }, scopeId: 'worker-filesystem', removeRetained: true }
   f.currentReclamation.mockResolvedValue(grant)

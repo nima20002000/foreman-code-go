@@ -6,6 +6,7 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 export const SourceCapacityErrorDetailsSchema = z.object({
   scopeId: z.string().min(1).max(512),
   retryable: z.boolean(),
+  pool: z.enum(['ordinary', 'verification']).optional(),
   exhausted: z.array(z.enum(['retained_bytes', 'available_bytes', 'preparations', 'materializations'])).min(1).max(4),
   usage: z.object({
     usedBytes: count,

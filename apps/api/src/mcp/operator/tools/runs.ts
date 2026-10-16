@@ -89,6 +89,8 @@ export const runTools = [
     requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
     enabled: s => !!s.runs,
     description: 'Request one Run of the explicit saved version. Accepted Run authority survives starter-token expiry; '
+      + 'Source admission reclaims eligible closed copies from completed Runs when byte capacity is full. '
+      + 'Active writer pressure retries with backoff; run_get exposes persisted capacity diagnostics. '
       + 'owner revocation, current scopes, Stop and completion still apply. Every new workflow uses semantics 3, with or without '
       + 'repeat. Default Codex Agents use approvalPolicy never and need no routed workflow approval handler; sandbox restrictions '
       + 'still apply. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In '
