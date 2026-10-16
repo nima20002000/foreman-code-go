@@ -195,7 +195,8 @@ it.each(['github', 'circleci'] as const)('retains oversized timing inputs for af
 })
 
 it('uses the same learned timings when only a full-suite slice exceeds the provider budget', async () => {
-  const files = Array.from({ length: 700 }, (_, index) => `apps/api/test/file-${String(index).padStart(4, '0')}.integration.test.ts`)
+  // Enough interleaved files that the larger slice exceeds CircleCI's parameter limit even in the compact "d:" form.
+  const files = Array.from({ length: 1500 }, (_, index) => `apps/api/test/file-${String(index).padStart(4, '0')}.integration.test.ts`)
   const durations = Object.fromEntries([...files, ...['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)]
     .map(file => [file, 1]))
   const f = await fixture(Object.fromEntries(files.map(file => [file, ''])), { provider: 'circleci' })
