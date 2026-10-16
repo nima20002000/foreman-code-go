@@ -1,11 +1,13 @@
 import { execFile, type ExecFileException } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { homedir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { testFixtureCacheRoot } from '../../../scripts/test-fixture-cache.mjs'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { compileApiFixture } from './helpers/compiledApiFixture.js'
@@ -110,25 +112,33 @@ it('loads the compiled API using only its deployed production dependencies', asy
   const dependencies = { root: join(testFixtureCacheRoot(), 'api-dependencies'), source }
   const release = join(directory, 'release')
   const destination = join(release, 'apps/api')
-  // The repository's clone-or-copy import writes ~800 MB per dependency-cache miss, which on a busy disk outlasts
-  // the file's deadline; hard links reuse the store's files and deploy the same production packages.
-  const environment: NodeJS.ProcessEnv = {
-    ...process.env, npm_config_offline: 'true', pnpm_config_package_import_method: 'hardlink',
+  // Test homes are private and pnpm 11 ignores npm_config_* settings, so a dependency-cache miss would download
+  // every production package into an empty store. Reuse the repository install's store and metadata like the
+  // installed restart fixture; hard links keep the miss from copying ~800 MB out of that store.
+  const { storeDir } = parse(await readFile(join(repository, 'node_modules/.modules.yaml'), 'utf8')) as {
+    storeDir: string
   }
+  const ciMetadataCache = join(repository, '.logs/pnpm-metadata')
+  const metadataCache = process.env.npm_config_cache_dir
+    || (existsSync(ciMetadataCache) ? ciMetadataCache : join(userInfo().homedir, '.cache/pnpm'))
+  const packageStore = ['--prefer-offline', '--store-dir', storeDir, '--cache-dir', metadataCache,
+    '--package-import-method=hardlink']
   // Every child process is killed after a bounded time and reports the fixture step it was running.
-  const child = async (step: string, command: string, args: string[], options: { cwd: string, env: NodeJS.ProcessEnv }) => {
+  const child = async (step: string, timeoutMs: number, command: string, args: string[],
+    options: { cwd: string, env: NodeJS.ProcessEnv }) => {
     try {
-      return await execute(command, args, { ...options, timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 })
+      return await execute(command, args, { ...options, timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 })
     } catch (cause) {
       const failure = cause as ExecFileException
-      const detail = failure.killed ? `exceeded 30000 ms and was killed: ${failure.message}` : failure.message
+      const detail = failure.killed ? `exceeded ${timeoutMs} ms and was killed: ${failure.message}` : failure.message
       throw new Error(`Production runtime fixture step "${step}" failed: ${detail}`, { cause })
     }
   }
   const run = async (command: string, args: string[]) => {
     // This source is discarded after deployment, so it needs no development dependency restoration.
     if (args.includes('install')) return
-    await child(`${command} ${args.join(' ')}`, command, args, { cwd: source, env: environment })
+    await child(`${command} ${args.join(' ')}`, 45_000, command, [...args, ...packageStore],
+      { cwd: source, env: process.env })
   }
   try {
     const prepareSource = async () => {
@@ -164,14 +174,14 @@ it('loads the compiled API using only its deployed production dependencies', asy
     await mkdir(join(release, 'packages/contracts/src'), { recursive: true })
     await cp(join(repository, 'packages/contracts/src/productEnvironment.mjs'),
       join(release, 'packages/contracts/src/productEnvironment.mjs'))
-    const { stdout } = await child('load the deployed production API', process.execPath, ['--input-type=module', '-e',
+    const { stdout } = await child('load the deployed production API', 30_000, process.execPath, ['--input-type=module', '-e',
       'const api = await import(process.argv[1]); console.log(typeof api.buildProductionApp);',
       pathToFileURL(join(destination, 'dist/production.js')).href], { cwd: destination, env: process.env })
     expect(stdout.trim()).toBe('function')
     const project = join(directory, 'ci-project')
     const context = join(directory, 'ci-context')
     const { commit: captured, environment: gitEnvironment } = await createLocalProductionProject(project)
-    const { stdout: runtimeOutput } = await child('build the CI runtime context', process.execPath, ['--input-type=module', '-e', [
+    const { stdout: runtimeOutput } = await child('build the CI runtime context', 30_000, process.execPath, ['--input-type=module', '-e', [
       'import { readFile } from "node:fs/promises";',
       'import { join } from "node:path";',
       'import { pathToFileURL } from "node:url";',
