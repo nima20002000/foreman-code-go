@@ -86,6 +86,26 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it.each(['close', 'closeForRestart'] as const)('cancels the device request when %s reaches its deadline', async method => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const session = await f.proxy.createSession(f.start)
+    let enteredSignal: AbortSignal | undefined
+    f.request.mockImplementation(async (_method, _payload, signal) => {
+      enteredSignal = signal
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    })
+    const controller = new AbortController()
+    const error = new Error('Cleanup deadline reached')
+    const close = f.proxy[method] as (reference: typeof session, signal?: AbortSignal) => Promise<void>
+    const result = close.call(f.proxy, session, controller.signal).catch((failure: unknown) => failure)
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledTimes(2))
+    expect(enteredSignal).toBe(controller.signal)
+    controller.abort(error)
+    expect(await result).toBe(error)
+  })
+
   it('disposes a failed startup by stopping its accepted operation without inventing a native session', async () => {
     const f = setup(() => ({ events: [], pendingInteractions: [] }))
     delete f.receipt.native

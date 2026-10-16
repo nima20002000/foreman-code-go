@@ -38,7 +38,8 @@ function fixture() {
   if (placement.hostRef.kind !== 'device') throw new Error('Expected device placement')
   const connection = { mainId, deviceId: placement.hostRef.deviceId, ...registration,
     bootId: randomUUID(), connectionGeneration: 1 }
-  const state = { grant: true, origin: connection, cleanup: false, stopped: false, receipt: true, reviewer: undefined as unknown, reviewsPending: false, configuration: undefined as ExecutionFactsResult['configuration'] | undefined,
+  const state = { grant: true, origin: connection, cleanup: false, failedExecutionId: undefined as string | undefined,
+    stopped: false, receipt: true, reviewer: undefined as unknown, reviewsPending: false, configuration: undefined as ExecutionFactsResult['configuration'] | undefined,
     harness: undefined as ExecutionFactsResult['harness'] | undefined, version: approvalFixture().version }
   const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
     phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
@@ -52,7 +53,8 @@ function fixture() {
       placement, operation_id: intent.operationId, execution_id: intent.executionId, run_id: intent.runId,
       node_id: intent.nodeId, binding_hash: intent.bindingHash, attempt_id: intent.attemptId,
       authorization_principal_id: 'principal', workspace_id: 'workspace', workflow_id: 'workflow',
-      execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup, granted: state.grant,
+      execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup,
+      failed: state.failedExecutionId === intent.executionId, granted: state.grant,
       connection: state.origin, receipt: state.receipt ? receipt : null, receipt_present: state.receipt, entered: true }], rowCount: 1 }
     if (text.startsWith('select r.record as run')) return { rows: state.reviewer ? [state.reviewer] : [],
       rowCount: state.reviewer ? 1 : 0 }
@@ -61,7 +63,8 @@ function fixture() {
     if (text.startsWith('select 1 from review_jobs')) return { rows: state.reviewsPending ? [{}] : [],
       rowCount: state.reviewsPending ? 1 : 0 }
     if (text.includes('from runs r')) return { rows: [{ authorization_principal_id: 'principal', workspace_id: 'workspace',
-      workflow_id: 'workflow', execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup }], rowCount: 1 }
+      workflow_id: 'workflow', execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup,
+      failed: state.failedExecutionId === intent.executionId }], rowCount: 1 }
     if (text.includes('execution_dispatch_owner_grants')) return { rows: [], rowCount: state.grant ? 1 : 0 }
     if (text.includes('remote_dispatch_origins')) return { rows: [{ connection: state.origin }], rowCount: 1 }
     if (text.includes('remote_execution_receipts')) return { rows: state.receipt ? [{ receipt }] : [], rowCount: state.receipt ? 1 : 0 }
@@ -80,7 +83,7 @@ function fixture() {
   const client = { query: sql.query, on() {}, removeListener() {}, release() {} }
   const extension = createExecutionAuthorityExtension({ connect: async () => client } as unknown as pg.Pool,
     locations, producer)
-  const request = (action: 'read' | 'control' = 'read') => extension.handle!(
+  const request = (action: 'read' | 'control' | 'stop' = 'read') => extension.handle!(
     { version: 1, intent, placement, action }, { binding: connection } as Parameters<NonNullable<typeof extension.handle>>[1])
   const readFacts = () => extension.handle!({ method: 'read-facts',
     authorization: { version: 1, intent, placement, action: 'read' } },
@@ -109,6 +112,23 @@ function retainReviewer(f: ReturnType<typeof fixture>) {
 }
 
 describe('remote cleanup authorization', () => {
+  it('lets the Worker stop and read back only the failed attempt while retaining its owner and device checks', async () => {
+    const f = fixture()
+    f.state.failedExecutionId = f.intent.executionId
+    await expect(f.authorize('stop')).resolves.toEqual({ cleanupOnly: true })
+    await expect(f.request('stop')).resolves.toMatchObject({ payload: { action: 'stop', cleanupOnly: true } })
+    await expect(f.request('read')).resolves.toMatchObject({ payload: { action: 'read', cleanupOnly: true } })
+    expect(f.state.cleanup).toBe(false)
+    f.state.failedExecutionId = 'sibling-execution'
+    await expect(f.request('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    f.state.failedExecutionId = f.intent.executionId
+    f.state.grant = false
+    await expect(f.request('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    f.state.grant = true
+    ports.installation.mockResolvedValue({ authorizationRevision: 2, keyRevision: 1 })
+    await expect(f.request('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+  })
+
   it.each(['permission', 'source', 'root', 'harness'])('keeps Stop and closure readback after %s invalidation', async defect => {
     const f = fixture()
     f.state.cleanup = true

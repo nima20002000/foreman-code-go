@@ -60,7 +60,8 @@ beforeEach(() => {
 })
 
 function fixture() {
-  const state = { session: null as NativeSessionReference | null, stored: undefined as RemoteOperationReceipt | undefined }
+  const state = { session: null as NativeSessionReference | null, stored: undefined as RemoteOperationReceipt | undefined,
+    cleanup: new Date('2026-10-01T00:00:00.000Z') as Date | undefined }
   const receipt: RemoteOperationReceipt = {
     schemaVersion: 1, intent: ports.intent as RemoteOperationReceipt['intent'], connection: ports.connection,
     workerIncarnationId: '44444444-4444-4444-8444-444444444444', sequence: 4,
@@ -75,6 +76,9 @@ function fixture() {
     if (text.includes('from remote_dispatch_origins')) return { rows: [{ connection: ports.connection }], rowCount: 1 }
     if (text.includes('from remote_execution_receipts')) {
       return { rows: state.stored ? [{ receipt: state.stored }] : [], rowCount: state.stored ? 1 : 0 }
+    }
+    if (text.includes('from run_cleanup_intents')) {
+      return { rows: state.cleanup ? [{ requested_at: state.cleanup }] : [], rowCount: state.cleanup ? 1 : 0 }
     }
     return { rows: [], rowCount: 0 }
   })
@@ -98,6 +102,82 @@ function fixture() {
   })
   return { state, receipt, request, composition, owner, close: () => connection.close() }
 }
+
+function runningFixture() {
+  const f = fixture()
+  delete f.receipt.terminal
+  f.receipt.phase = 'running'
+  f.receipt.stopFence = false
+  f.state.stored = structuredClone(f.receipt)
+  f.state.session = { harness: 'codex', providerVersion: 'fixture', nativeSessionId: f.receipt.native!.sessionId }
+  return f
+}
+
+it('sends the same fenced Stop after cold restart until physical closure is confirmed', async () => {
+  const f = runningFixture()
+  const commands: unknown[] = []
+  const signal = new AbortController().signal
+  f.request.mockImplementation(async payload => {
+    const frame = payload as { method: string; command?: unknown }
+    if (frame.method === 'control') {
+      commands.push(frame.command)
+      if (commands.length > 1) {
+        f.receipt.phase = 'confirmed_terminal'
+        f.receipt.stopFence = true
+        f.receipt.sequence++
+        f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'd'.repeat(64) }
+      }
+    }
+    return { payload: { status: 'known', receipt: structuredClone(f.receipt) } }
+  })
+  try {
+    await expect(f.composition.confirmClosedExecution('execution', signal, f.owner)).resolves.toBe(false)
+    await expect(f.composition.confirmClosedExecution('execution', signal, f.owner)).resolves.toBe(true)
+    expect(commands).toHaveLength(2)
+    expect(commands[0]).toEqual(commands[1])
+    expect(commands[0]).toMatchObject({ operationId: f.receipt.intent.operationId,
+      attemptId: f.receipt.intent.attemptId, executionId: 'execution', native: f.receipt.native,
+      owner: f.receipt.intent.owner, action: { kind: 'stop' } })
+    expect(f.request.mock.calls.every(call => call[1]?.signal === signal)).toBe(true)
+    expect(f.state.stored).toEqual(f.receipt)
+    expect(ports.closed).toHaveBeenCalled()
+  } finally { await f.close() }
+})
+
+it.each(['cleanup', 'authority', 'native'] as const)(
+  'does not send a cold Stop after its %s changes', async defect => {
+    const f = runningFixture()
+    if (defect === 'cleanup') f.state.cleanup = undefined
+    if (defect === 'authority') ports.authority.mockRejectedValue(new DomainError('REMOTE_AUTHORITY_DENIED', 'Revoked', 403))
+    if (defect === 'native') f.state.stored!.native = { ...f.receipt.native!, sessionId: 'replacement-session' }
+    try {
+      await expect(f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner))
+        .rejects.toBeInstanceOf(DomainError)
+      expect(f.request).toHaveBeenCalledTimes(1)
+      expect(ports.persist).not.toHaveBeenCalled()
+    } finally { await f.close() }
+  },
+)
+
+it('requires physical closure even after cold Stop reports a terminal result', async () => {
+  const f = runningFixture()
+  ports.closed.mockReturnValue(false)
+  f.request.mockImplementation(async payload => {
+    if ((payload as { method: string }).method === 'control') {
+      f.receipt.phase = 'confirmed_terminal'
+      f.receipt.stopFence = true
+      f.receipt.sequence++
+      f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'd'.repeat(64) }
+    }
+    return { payload: { status: 'known', receipt: structuredClone(f.receipt) } }
+  })
+  try {
+    await expect(f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner))
+      .resolves.toBe(false)
+    expect(f.request.mock.calls.map(call => (call[0] as { method: string }).method)).toEqual(['status', 'control'])
+    expect(ports.persist).not.toHaveBeenCalled()
+  } finally { await f.close() }
+})
 
 it('persists proven cold closure when Main crashed before binding the native session', async () => {
   const f = fixture()
