@@ -107,6 +107,8 @@ export class HostCiRunner {
   private draining = false
   // Background eviction checks live runs because a start can arrive during the filesystem scan.
   private readonly activeRunRepositories = new Map<string, string>()
+  private cacheRevision = 0
+  private sweptCacheRevision = -1
   private cacheSweepAt = -Infinity
   private cacheSweepPending: Promise<void> | undefined
   private startingRepository: string | undefined
@@ -301,6 +303,13 @@ export class HostCiRunner {
       runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
   }
 
+  private trackCacheWriter(runId: string, repository?: string) {
+    if (this.activeRunRepositories.get(runId) === repository) return
+    if (repository === undefined) this.activeRunRepositories.delete(runId)
+    else this.activeRunRepositories.set(runId, repository)
+    this.cacheRevision++
+  }
+
   private cleanCaches() {
     if (this.cacheSweepPending) return
     const activeRepositories = () => {
@@ -310,9 +319,12 @@ export class HostCiRunner {
     }
     this.cacheSweepPending = (async () => {
       const now = this.ports.now().getTime()
-      if (now - this.cacheSweepAt >= 5 * 60_000) {
+      // Writer transitions trigger fresh walks; external changes are picked up by the hourly scan.
+      const revision = this.cacheRevision
+      if (revision !== this.sweptCacheRevision || now - this.cacheSweepAt >= 60 * 60_000) {
         await sweepHostCiCache(this.root, { activeRepositories })
         this.cacheSweepAt = now
+        this.sweptCacheRevision = revision
       }
       if (!this.activeRunRepositories.size && !this.startingRun && !this.preparing.size) {
         await rm(join(this.root, 'vitest-cache'), { recursive: true, force: true })
@@ -435,7 +447,7 @@ export class HostCiRunner {
       ...(request.notice ? { notice: request.notice } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
-    this.activeRunRepositories.set(meta.runId, meta.repository)
+    this.trackCacheWriter(meta.runId, meta.repository)
     return meta
   }
 
@@ -476,7 +488,7 @@ export class HostCiRunner {
         if (!current.cancellationRequested && error instanceof DomainError && error.code === 'CI_HOST_BUSY') {
           await this.writeMeta({ ...current, state: 'queued', finishedAt: null, exitCode: null,
             message: error.message })
-          this.activeRunRepositories.delete(meta.runId)
+          this.trackCacheWriter(meta.runId)
           throw error
         }
         await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null,
@@ -972,8 +984,8 @@ export class HostCiRunner {
     const directory = this.runDirectory(runId)
     // Settled runs have nothing to reconcile. Each lock spawns a flock process, and status polls read every run.
     const settled = !['starting', 'running'].includes(meta.state)
-    if (settled) this.activeRunRepositories.delete(runId)
-    else this.activeRunRepositories.set(runId, meta.repository)
+    if (settled) this.trackCacheWriter(runId)
+    else this.trackCacheWriter(runId, meta.repository)
     const reconciled = settled || await withHostCiRunLock(directory, async () => {
       await this.reconcile(await this.readMeta(runId), preparing)
       return true
@@ -983,7 +995,7 @@ export class HostCiRunner {
       // A live launcher can still be writing metadata after systemd accepted the service.
       meta = { ...meta, state: 'running' }
     }
-    if (!['starting', 'running'].includes(meta.state)) this.activeRunRepositories.delete(runId)
+    if (!['starting', 'running'].includes(meta.state)) this.trackCacheWriter(runId)
     if (!['starting', 'running'].includes(meta.state) && !preparing && !this.preparing.has(runId)) {
       if (!meta.cleaned) {
         const clone = join(this.root, 'git', ...meta.repository.split('/'))
