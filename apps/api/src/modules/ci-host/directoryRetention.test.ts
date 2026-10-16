@@ -105,7 +105,7 @@ it.each([false, true])('selects and removes the execution directory after reassi
     await client.query(`insert into ci_runs (id,state,record)
       select id,state,record from jsonb_to_recordset($1::jsonb) as x(id text,state text,record jsonb)`,
     [JSON.stringify([...retained, { id: ticketId, state: 'passed', record }])])
-    const candidates = await ciDirectoryCleanupCandidates({ query: client.query.bind(client) } as pg.Pool, host, now)
+    const candidates = await ciDirectoryCleanupCandidates(client, host, now)
     expect(candidates).toEqual(f.options.runIds)
     expect(candidates).not.toContain(ticketId)
     expect(candidates).not.toContain(retryId)
