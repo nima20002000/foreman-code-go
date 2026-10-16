@@ -7,12 +7,6 @@ import { fixture } from './helpers/hostCiMcpFixture.js'
 import { rejectableDeferred } from './helpers/deferred.js'
 import { ciRunReadback } from './helpers/ciRunReadback.js'
 
-/** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
-async function settle(service: { dispatch(): Promise<void>; drain(): Promise<void> }) {
-  await service.dispatch()
-  await service.drain()
-}
-
 it('supersedes every queued and running part through MCP and preserves the replacement across retries', async () => {
   const oldCommit = 'a'.repeat(40)
   const nextCommit = 'b'.repeat(40)
@@ -99,7 +93,9 @@ it('keeps main, explicit keep, unrelated branch, suite, requester and non-descen
       suite: 'typecheck', commit: '1'.repeat(40), commandId: 'latest-checks',
     }))
     for (const [index, ticketId] of tickets.entries()) {
-      const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId }))
+      const read = index === 3
+        ? await ciRunReadback(input => f.value(f.operator, 'ci_get', input), ticketId, 'canceled')
+        : CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId }))
       if (index === 3) {
         expect(read.run).toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
       } else {
@@ -138,7 +134,7 @@ it('retries superseded running cleanup before releasing its computer slot', asyn
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'a'.repeat(40), commandId: 'cleanup-old',
     }))
-    await settle(f.ci)
+    await f.waitFor(f.operator, old.ticketId, output => output.run.state === 'running')
     offline = true
     const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'b'.repeat(40), commandId: 'cleanup-next',
@@ -151,10 +147,10 @@ it('retries superseded running cleanup before releasing its computer slot', asyn
     expect(f.started).toHaveLength(1)
     offline = false
     await replacementStarted.promise
-    await settle(f.ci)
-    expect((await read(old.ticketId)).run)
+    const canceled = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), old.ticketId, 'canceled')
+    expect(canceled.run)
       .toMatchObject({ state: 'canceled', message: `superseded by ${next.ticketId}` })
-    expect((await read(next.ticketId)).run.state)
+    expect((await f.waitFor(f.operator, next.ticketId, output => output.run.state === 'running')).run.state)
       .toBe('running')
   } finally { await f.close() }
 })
@@ -175,12 +171,12 @@ it('supersedes detached Agent commits only within that execution while reading w
     }))
     const renewed = await f.connectAgent!()
     const next = await call({ suite: 'install', commit: 'b'.repeat(40), commandId: 'agent-next' }, renewed)
-    const read = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: old.ticketId } })
-    expect(CiGetOutputSchema.parse(decodeMcpToolResult(read)).run)
+    const read = await ciRunReadback(input => f.value(f.agent!, 'ci_get', input), old.ticketId, 'canceled')
+    expect(read.run)
       .toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
     const replacement = await renewed.callTool({ name: 'ci_get', arguments: { ticketId: next.ticketId } })
     expect(CiGetOutputSchema.parse(decodeMcpToolResult(replacement)).run.initiator.principalId)
-      .not.toBe(CiGetOutputSchema.parse(decodeMcpToolResult(read)).run.initiator.principalId)
+      .not.toBe(read.run.initiator.principalId)
     const operatorRead = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: operator.ticketId }))
     expect(operatorRead.run.state).toBe('queued')
     const workspaceRead = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: operator.ticketId } })
@@ -208,7 +204,8 @@ it('resolves branches of existing tickets before superseding them and protects e
     }))
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: main.ticketId })).run.state)
       .toBe('queued')
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: feature.ticketId })).run)
+    const canceled = await ciRunReadback(input => f.value(f.operator, 'ci_get', input), feature.ticketId, 'canceled')
+    expect(canceled.run)
       .toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
   } finally { await f.close() }
 })

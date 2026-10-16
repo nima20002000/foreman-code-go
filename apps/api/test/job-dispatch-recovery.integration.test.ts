@@ -63,6 +63,7 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
         revalidateAccepted: async () => {}, adoptFinalBinding: async () => {}, accept: async (_sql, _principal, _workspace, spec) => ({ ...spec, source: { ...spec.source, materializationId: randomUUID(), materializationDigest: '1'.repeat(64) } }) },
       dispatch, artifacts: { list: async () => [], read: async () => { throw new Error('No physical artifact.') } },
     })
+    const queueWake = vi.spyOn(jobs, 'wakeQueue')
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } }, operator: { access, services: { jobs, commands } as unknown as OperatorServices } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
     const connect = async (token: string) => {
@@ -79,7 +80,10 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     const start = await app.inject({ method: 'POST', url: `${root}/executions`, headers, payload: command })
     expect(start.statusCode).toBe(200)
     expect(['pending-admission', 'accepted']).toContain(start.json().admission.kind)
-    await expect(jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING', details: { retryable: true } })
+    // Start already wakes the queue; await that work instead of requesting a second recovery scan.
+    expect(queueWake).toHaveBeenCalledTimes(1)
+    await expect(queueWake.mock.results[0]!.value).rejects
+      .toMatchObject({ code: 'JOB_DISPATCH_PENDING', details: { retryable: true } })
     expect(JSON.stringify(start.json())).not.toContain('secret')
     const original = (await pool.query('select e.record,d.delivery_attempted,d.receipt_sequence,d.last_receipt from job_executions e join job_dispatch_intents d on d.execution_id=e.id where e.workspace_id=$1', [workspaceId])).rows
     expect(original).toHaveLength(1)
@@ -100,7 +104,8 @@ it.skipIf(!process.env.JOB_DISPATCH_DATABASE_URL).each(['fixed', 'auto'] as cons
     const retry = await client.callTool({ name: 'job_start', arguments: { workspaceId, ...command } })
     expect(retry.isError).not.toBe(true)
     expect(decodeMcpToolResult(retry)).toEqual({ admission: { kind: 'accepted', ticketId: tickets[0]!.id, executionId: execution.id } })
-    await expect(jobs.wakeQueue()).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
+    expect(queueWake).toHaveBeenCalledTimes(2)
+    await expect(queueWake.mock.results[1]!.value).rejects.toMatchObject({ code: 'JOB_DISPATCH_PENDING' })
     expect(request.mock.calls.map(([, , raw]) => (raw as { method: string }).method))
       .toEqual(['job-dispatch', 'job-status', 'job-dispatch'])
     const cancel = await client.callTool({ name: 'job_cancel', arguments: { workspaceId, executionId: execution.id, commandId: randomUUID() } })

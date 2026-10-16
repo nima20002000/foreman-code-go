@@ -672,7 +672,15 @@ export class HostCiService {
   private async cancelAssignedTicket(run: CiRunRecord, sql: CiTicketSql, audit?: CiCancellation) {
     const computer = await this.computer(run.computer!.hostRef)
     const state = await cancelAssignedCiTicket(this.endpoint, computer, run)
-    await sql.transaction(client => this.settle(run, computer, state, { client, audit }))
+    await sql.transaction(async client => {
+      // Observations can update the ticket while the executor acknowledges cancellation.
+      await client.query('select id from ci_runs where id=$1 for update', [run.id])
+      const current = await this.read(run.id, run.workspaceId, client)
+      if (!['starting', 'running'].includes(current.state)
+        || !isDeepStrictEqual(current.computer?.hostRef, run.computer!.hostRef)
+        || ciExecutionRunId(current) !== ciExecutionRunId(run)) return
+      await this.settle(current, computer, state, { client, audit })
+    })
   }
 
   private async cancelSuperseded() {
