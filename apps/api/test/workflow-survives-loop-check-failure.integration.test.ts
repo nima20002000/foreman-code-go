@@ -8,6 +8,24 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
+  // Every native event and terminal of a Run commits through its one serialized database connection, so
+  // completing a turn takes longer as the machine gets busier. A wait therefore fails when committed
+  // progress stalls for the window, not when the commits are merely slow.
+  const persistedProgress = async () => (await fixture.base.db.pool.query<{ progress: string }>(
+    `select (select count(*) from harness_native_events n join harness_executions e on e.id=n.execution_id
+       where e.run_id=$1)::text || ':' || (select count(*) from harness_executions
+       where run_id=$1 and record->>'state'='completed')::text as progress`, [fixture.base.f.run.id])).rows[0]!.progress
+  async function readUntilStalled<T>(read: () => Promise<T>, accept: (value: T) => boolean, description: string) {
+    for (let last = await persistedProgress(); ; ) {
+      try {
+        return await readUntil(read, accept, { timeoutMs: 2_000, minimumReadIntervalMs: 250, description })
+      } catch (error) {
+        const current = await persistedProgress()
+        if (current === last) throw error
+        last = current
+      }
+    }
+  }
   let before: Awaited<ReturnType<typeof fixture.active>>
   beforeAll(async () => { fixture = await faultWorkflowFixture({ loop: true }) }, 10_000)
   // The first check is due one 10 second interval after the entry node finishes, so launching the Run
@@ -35,9 +53,9 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     fixture.worker.replay.channels.get(turn.sessionId)!.notify('turn/completed', {
       threadId: turn.sessionId, turn: structuredClone(native),
     })
-    await readUntil(fixture.readExecutions, executions =>
+    await readUntilStalled(fixture.readExecutions, executions =>
       executions.find(execution => execution.id === check.id)?.state === 'completed',
-    { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'the failed loop check being recorded' })
+    'the failed loop check being recorded')
     const failed = await fixture.read()
     expect(failed.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(failed.cleanupPending).toBe(false)
@@ -45,10 +63,10 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
       state: 'running', attempt: 1, nativeSessionId: remote.nativeSessionId,
     })
     fixture.release()
-    await readUntil(fixture.readExecutions, executions =>
+    await readUntilStalled(fixture.readExecutions, executions =>
       [fixture.affected.id, fixture.sibling.id].every(nodeId => executions.some(execution =>
         execution.workflowNodeId === nodeId && execution.result?.outcome === 'succeeded')),
-    { timeoutMs: 2_000, minimumReadIntervalMs: 250, description: 'successful sibling work after the failed check' })
+    'successful sibling work after the failed check')
     const details = await fixture.read()
     expect(details.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
     expect(details.executions.filter(execution => execution.result?.outcome === 'failed').map(execution => execution.id))
