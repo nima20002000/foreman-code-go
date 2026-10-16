@@ -1,4 +1,5 @@
-import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, integrationPartition } from '@foreman-code/contracts'
+import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema,
+  integrationPartition } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
@@ -86,17 +87,13 @@ it.each([false, true])('sizes each partition by measured computer speed with sta
   const pendingStatus = new Promise<void>(resolve => { releaseStatus = resolve })
   let markStatusRequested!: () => void
   const statusRequested = new Promise<void>(resolve => { markStatusRequested = resolve })
-  let markStarted!: () => void
-  const firstStarted = new Promise<void>(resolve => { markStarted = resolve })
   const request = f.endpoint.request.bind(f.endpoint)
   f.endpoint.request = async (computer, input) => {
     if (staggered && input.operation === 'status' && computer.key === f.computers[1]!.key) {
       markStatusRequested()
       await pendingStatus
     }
-    const reply = await request(computer, input)
-    if (input.operation === 'start') markStarted()
-    return reply
+    return request(computer, input)
   }
   try {
     const historyFile = 'apps/api/test/history.integration.test.ts'
@@ -116,16 +113,17 @@ it.each([false, true])('sizes each partition by measured computer speed with sta
     const speeds = await readExecutorSpeeds(f.pool, f.endpoint)
     expect(speeds.get(f.computers[0]!.key)).toMatchObject({ throughput: 2 })
     expect(speeds.get(f.computers[1]!.key)).toMatchObject({ throughput: 1 })
+    // The immutable plan uses the ready fleet; both measured computers must be ready before admission.
+    const readiness = f.value(f.operator, 'ci_computers_list', {})
+    if (staggered) await statusRequested
+    expect(f.started).toEqual([])
+    releaseStatus()
+    const computers = CiComputersOutputSchema.parse(await readiness).computers
+    expect(computers).toHaveLength(2)
+    expect(computers.map(computer => computer.ready)).toEqual([true, true])
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'weighted',
       partitions: 2 }))
     await f.ci.dispatch()
-    if (staggered) {
-      await statusRequested
-      await firstStarted
-      releaseStatus()
-      await f.value(f.operator, 'ci_computers_list', {})
-      await f.ci.dispatch()
-    }
     const requests = f.started.map(value => ({ computer: value.computer,
       partition: value.request.operation === 'start' ? value.request.partition : undefined }))
     expect(requests).toHaveLength(2)
