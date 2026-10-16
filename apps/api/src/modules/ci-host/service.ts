@@ -157,7 +157,6 @@ export class HostCiService {
     }
     this.reads = new HostCiReads(pool, authority, {
       endpoint: this.endpoint,
-      readRun: (id, workspaceId) => this.read(id, workspaceId),
       computer: hostRef => this.computer(hostRef),
       smokeTargets: runs => this.smokeTargets(runs),
     })

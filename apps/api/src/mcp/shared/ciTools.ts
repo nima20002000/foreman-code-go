@@ -55,7 +55,9 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'max(3 \u00d7 expectedDurationMs, 120 seconds); a cloud part that fails before its first test is retried once on another '
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
     + 'test also failed it, so a known flake is recognized. sharing lists every requester (principalId, executionId, '
-    + 'initiator, active) when identical requests joined the group. Agents with ci_get read every ticket of their workspace.',
+    + 'initiator, active) when identical requests joined the group. Agents with ci_get read every ticket of their workspace. '
+    + 'CI_RUN_NOT_FOUND includes up to five recent groups you requested or joined, scoped to your execution when present, '
+    + 'in the message and details.recentTickets (lead ticketId, suite, scope, group state, createdAt in UTC).',
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
     + 'systemd), saved buildAllowancePercent, allowedCpuCount, CPU and memory within that allowance, '
     + 'used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
@@ -70,7 +72,9 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'that no other requester still shares.',
   ci_logs_read: `Read a CI ticket\u2019s full log from its computer: omit afterOffset for the last maxBytes (at most ${CI_LOG_MAX_BYTES}), `
     + 'or page forward with nextOffset. group=true pages every part of the ticket\u2019s group within the same budget. '
-    + 'Queued tickets return CI_NOT_STARTED.',
+    + 'Queued tickets return CI_NOT_STARTED. CI_RUN_NOT_FOUND includes up to five recent groups you requested or joined, '
+    + 'scoped to your execution when present, in the message and details.recentTickets '
+    + '(lead ticketId, suite, scope, group state, createdAt in UTC).',
   ci_list: 'List CI tickets the Agents of one Run requested or joined as identical requests, newest first (at most 500). '
     + 'Optional executionId filters before the limit. Each ticket includes suite, part, '
     + 'partition, scope, state, step, computer and placement (host, github or circleci), timing, the requesting '

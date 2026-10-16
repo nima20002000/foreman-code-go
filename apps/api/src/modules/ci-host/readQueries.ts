@@ -15,6 +15,7 @@ import { readHostCiLog } from './logRead.js'
 import { ciExecutionRunId } from './executionAttempt.js'
 import { CiTicketChanges } from './ticketChanges.js'
 import { ciGroupSharing } from './requestSharing.js'
+import { missingCiTicket } from './missingTicket.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -42,7 +43,6 @@ type HostRef = HostCiComputer['hostRef']
 type TicketReadInput = CiGetInput & { workspaceId?: string | undefined }
 interface CiReadHost {
   endpoint: HostCiEndpoint
-  readRun(id: string, workspaceId: string): Promise<CiRunRecord>
   computer(hostRef: HostRef): Promise<HostCiComputer>
   smokeTargets(runs: CiRunRecord[]): Promise<Map<string, HostRef>>
 }
@@ -57,6 +57,16 @@ export class HostCiReads {
   }
 
   close() { this.changes.close() }
+
+  private async readTicket(caller: ManagementPrincipal, scope: Awaited<ReturnType<CiAuthority['resolve']>>,
+    input: Pick<TicketReadInput, 'ticketId' | 'logTail'>) {
+    const row = (await this.pool.query<{ record: unknown; log_tail: string }>(
+      `select record${input.logTail === false ? '' : ',log_tail'} from ci_runs where id=$1 and workspace_id=$2`,
+      [input.ticketId, scope.workspaceId])).rows[0]
+    if (!row) throw await missingCiTicket(this.pool, input.ticketId, scope.workspaceId,
+      { principalId: caller.id, executionId: scope.executionId ?? null })
+    return row
+  }
 
   private async queuePosition(id: string): Promise<number | undefined> {
     const rows = (await this.pool.query<{ id: string; position: number }>(`select id,position from
@@ -119,10 +129,7 @@ export class HostCiReads {
   private async snapshot(caller: ManagementPrincipal, input: TicketReadInput) {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
-      const row = (await this.pool.query<{ record: unknown; log_tail: string }>(
-        `select record${input.logTail === false ? '' : ',log_tail'} from ci_runs where id=$1 and workspace_id=$2`,
-        [input.ticketId, scope.workspaceId])).rows[0]
-      if (!row) throw new DomainError('CI_RUN_NOT_FOUND', 'No such CI run in this workspace.', 404)
+      const row = await this.readTicket(caller, scope, input)
       const run = CiRunRecordSchema.parse(row.record)
       const group = (await this.pool.query<{ record: unknown }>(
         `select record from ci_runs where group_id=$1 and workspace_id=$2
@@ -175,7 +182,8 @@ export class HostCiReads {
     status?: CiTestStatus[] | undefined }) {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
-      const run = await this.host.readRun(input.ticketId, scope.workspaceId)
+      const row = await this.readTicket(caller, scope, { ticketId: input.ticketId, logTail: false })
+      const run = CiRunRecordSchema.parse(row.record)
       return { ticketId: run.id, tests: await this.testResults(run.id, scope.workspaceId, input.status) }
     })
   }
@@ -213,7 +221,8 @@ export class HostCiReads {
     afterOffset?: number | undefined; maxBytes?: number | undefined; group?: boolean | undefined }) {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
-      const run = await this.host.readRun(input.ticketId, scope.workspaceId)
+      const row = await this.readTicket(caller, scope, { ticketId: input.ticketId, logTail: false })
+      const run = CiRunRecordSchema.parse(row.record)
       const maxBytes = Math.min(input.maxBytes ?? CI_LOG_MAX_BYTES, CI_LOG_MAX_BYTES)
       if (input.group) {
         const group = (await this.pool.query<{ record: unknown }>(
