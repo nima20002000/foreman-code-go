@@ -14,15 +14,15 @@ class Socket extends EventEmitter {
   peer?: Socket
   closed = false
   readonly frames: Record<string, unknown>[] = []
-  rejectsMaintenanceObservation = false
+  rejectsObservation = false
 
   send(text: string) {
     const frame = JSON.parse(text) as Record<string, unknown>
     this.frames.push(frame)
     queueMicrotask(() => {
-      // Model the previous receiver, which closes on maintenance observation admission.
-      if (this.peer?.rejectsMaintenanceObservation && frame.type === 'application-open'
-        && frame.namespace === 'computer-maintenance-v2' && frame.admission === 'observation') {
+      // Model the previous receiver, which closes on observation admission.
+      if (this.peer?.rejectsObservation && frame.type === 'application-open'
+        && frame.admission === 'observation') {
         this.peer.close()
         return
       }
@@ -86,7 +86,7 @@ function fixture(ignoreAbort = new Set<string>(), workerSupportsMaintenanceObser
     const { namespace, version, role, maxJsonBytes, maxBinaryBytes } = descriptor
     return { namespace, version, role, maxJsonBytes, maxBinaryBytes }
   })
-  rawWorker.rejectsMaintenanceObservation = !workerSupportsMaintenanceObservation
+  rawWorker.rejectsObservation = !workerSupportsMaintenanceObservation
   const extensions = negotiateDeviceExtensions(mainDescriptors, workerDescriptors)
   const parent = new AbortController()
   const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket,
@@ -303,4 +303,34 @@ it('expires and cancels queued observations without making short requests busy',
     queue.close(new Error('closed'))
     for (const release of releases) release()
   }
+})
+
+
+it.each(observationRequests)('keeps $method usable with a Worker that has no execution observation capability', async payload => {
+  vi.useFakeTimers()
+  const f = fixture(new Set(), false)
+  try {
+    const result = f.request('main', 'execution-v1', { ...payload, id: 'readout' })
+    await vi.advanceTimersByTimeAsync(0)
+    const opens = f.rawMain.frames.filter(frame => frame.type === 'application-open' && frame.kind === 'request')
+    expect(opens.at(-1)).toMatchObject({ namespace: 'execution-v1', version: 1 })
+    expect(opens.at(-1)).not.toHaveProperty('admission')
+    expect(f.rawWorker.closed).toBe(false)
+    expect(f.started).toContain('readout')
+    f.release('readout')
+    expect(await result).toEqual({ payload: 'readout' })
+  } finally { await f.close() }
+})
+
+it('advertises execution observation support and negotiates it only with a capable peer', () => {
+  const registration = { namespace: 'execution-v1', version: 1, role: 'client' as const,
+    maxJsonBytes: 1_048_576, maxBinaryBytes: 0 }
+  const main = extensionDescriptors([registration])
+  const worker = extensionDescriptors([{ ...registration, role: 'server', handle: async () => ({ payload: null }) }])
+  expect(main[0]).toMatchObject({ observationAdmission: true })
+  expect(worker[0]).toMatchObject({ observationAdmission: true })
+  expect(negotiateDeviceExtensions(main, worker)[0]).toMatchObject({ observationAdmission: true })
+  expect(negotiateDeviceExtensions(main, [{ ...registration, role: 'server' }])[0])
+    .not.toHaveProperty('observationAdmission')
+  expect(negotiateDeviceExtensions([registration], worker)[0]).not.toHaveProperty('observationAdmission')
 })

@@ -9,6 +9,8 @@ import { DeviceApplicationChannel, extensionDescriptors, type DeviceExtensionReg
 import { adaptDeviceSocket } from '../src/modules/devices/deviceWire.js'
 import { deriveDispatch, freezePlacement } from '../src/modules/placement/binding.js'
 import { DomainError } from '../src/modules/errors.js'
+import { agentFileReader } from '../src/modules/ci-host/agentFileReader.js'
+import { AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE } from '@foreman-code/contracts/source-materialization'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -275,6 +277,7 @@ describe('authenticated namespace carrier mechanics', () => {
     ['NATIVE_ARTIFACT_CONTEXT_PENDING', true],
     ['NATIVE_ARTIFACT_AUTHORITY_DENIED', false],
     ['WORKER_WORKFLOW_UNAVAILABLE', true],
+    ['WORKER_RUNTIME_DRAINING', true],
     ['backpressure', true],
     ['job-publication-pending', true],
     ['source-repository-uncertain', false],
@@ -741,4 +744,59 @@ describe('authenticated namespace carrier mechanics', () => {
     pair.rawMain.send(JSON.stringify({ type: 'application-chunk', id, offset: 1, data: Buffer.from('{}').toString('base64') })); await flush()
     expect(handler).not.toHaveBeenCalled(); expect(pair.rawWorker.closed).toBe(true); await pair.close()
   })
+})
+
+
+it('cancels a captured request during bundle checking before any request reaches the socket', async () => {
+  let releaseCheck!: () => void
+  const checking = new Promise<void>(resolve => { releaseCheck = resolve })
+  const beforeRequest = vi.fn(() => checking)
+  const raw = new Socket()
+  const parent = new AbortController()
+  const caller = new AbortController()
+  const registration = { namespace: 'execution-v1', version: 1, role: 'client' as const,
+    maxJsonBytes: 1024, maxBinaryBytes: 0 }
+  const extensions = negotiateDeviceExtensions([registration], [{ ...registration, role: 'server' }])
+  const channel = new DeviceApplicationChannel({ side: 'main', binding, socket: adaptDeviceSocket(raw),
+    signal: parent.signal, extensions, registrations: [registration], beforeRequest })
+  const request = channel.captureRequest('execution-v1').request({ method: 'start' }, { signal: caller.signal })
+    .catch((error: unknown) => error)
+  try {
+    await flush()
+    expect(beforeRequest).toHaveBeenCalledOnce()
+    caller.abort()
+    releaseCheck()
+    await flush()
+    expect(raw.frames.map(text => JSON.parse(text)).filter(frame => frame.type === 'application-open')).toEqual([])
+    expect(await request).toMatchObject({ code: 'cancelled' })
+  } finally {
+    releaseCheck()
+    channel.close()
+    await request
+    await channel.join()
+  }
+})
+
+it('retrieves a remote Agent snapshot taking longer than thirty seconds within its application budget', async () => {
+  vi.useFakeTimers()
+  const commit = 'a'.repeat(40)
+  const bundleBase64 = 'YWFh'.repeat(10 * 1024 * 1024 / 4)
+  const pair = setup(async () => ({ payload: { commit, bundleBase64 } }),
+    { maxJsonBytes: AGENT_SNAPSHOT_JSON_BYTES, maxBinaryBytes: 0 }, 600_000, undefined, AGENT_SNAPSHOT_NAMESPACE)
+  pair.rawMain.latencyMs = 50
+  pair.rawWorker.latencyMs = 50
+  const read = agentFileReader(() => ({
+    capabilities: () => pair.main.capabilities(),
+    request: (_deviceId, namespace, payload, options) => pair.main.request(namespace, payload, options),
+  }))
+  try {
+    const result = read({ kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId }, '/project', commit)
+      .catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(40_000)
+    const snapshot = await result as Awaited<ReturnType<typeof read>>
+    expect(snapshot).not.toBeInstanceOf(Error)
+    expect(snapshot).toEqual({ commit, bundle: expect.any(Buffer) })
+    expect(snapshot.bundle?.equals(Buffer.from(bundleBase64, 'base64'))).toBe(true)
+    expect(pair.rawMain.closed).toBe(false)
+  } finally { await pair.close() }
 })

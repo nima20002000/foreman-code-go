@@ -1,10 +1,10 @@
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../errors.js'
-import { waitForDeviceRetry } from './deviceRequestRetry.js'
+import { deviceRequestTimeoutMs, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { DeviceConnectionError } from './deviceWire.js'
 
-/** How long in-flight remote work waits for the same Worker boot to reconnect after its link drops. */
-export const deviceReconnectTimeoutMs = 75_000
+/** Allow Worker and Main reconciliation plus connection setup and backoff for the same Worker boot. */
+export const deviceReconnectTimeoutMs = 2 * deviceRequestTimeoutMs + 30_000
 
 type DeviceInstallation = Pick<DeviceConnectionIdentity,
   'mainId' | 'deviceId' | 'workerInstallationId' | 'keyRevision' | 'authorizationRevision' | 'bootId'>

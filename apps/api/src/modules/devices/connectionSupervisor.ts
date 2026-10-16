@@ -6,6 +6,9 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { deviceRequestTimeoutMs } from './deviceRequestRetry.js'
+
+const healthyConnectionMs = 60_000
 
 export class DeviceConnectionSupervisor {
   private state: DeviceConnectionView = { desired: false, phase: 'disconnected', generation: 0, failure: null }
@@ -69,6 +72,7 @@ export class DeviceConnectionSupervisor {
       const cancel = () => attempt.abort()
       signal.addEventListener('abort', cancel, { once: true })
       let socket: DeviceSocket | undefined
+      let readyAt: number | undefined
       try {
         this.update('connecting')
         const registration = this.options.refresh
@@ -122,13 +126,14 @@ export class DeviceConnectionSupervisor {
         if ((frame.mainIdentityProof as { mainApplicationVersion: string }).mainApplicationVersion !== frame.appVersion) throw new DeviceConnectionError('wrong-main')
         if (attempt.signal.aborted) break
         const binding = { ...registration.identity, connectionEpoch: frame.connectionEpoch, connectionGeneration: hello.connectionGeneration }
-        this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, this.options.handshakeMs ?? 10_000)
+        this.update('synchronizing'); await withDeviceDeadline(this.options.reconcile(binding, attempt.signal), attempt.signal, deviceRequestTimeoutMs)
         if (attempt.signal.aborted) break
         sendFrame(socket, { type: 'ready', connectionEpoch: binding.connectionEpoch })
         this.channel = new DeviceApplicationChannel({ side: 'worker', binding, socket, signal: attempt.signal, extensions,
           ...(typeof frame.observedAt === 'string' && Number.isFinite(Date.parse(frame.observedAt))
             ? { mainTime: Date.parse(frame.observedAt) } : {}), registrations: this.options.extensions ?? [] })
-        this.update('ready'); failures = 0
+        readyAt = Date.now()
+        this.update('ready')
         await this.channel.run(iterator, this.options.heartbeatMs ?? 15_000)
       } catch (error) {
         if (signal.aborted) break
@@ -140,6 +145,7 @@ export class DeviceConnectionSupervisor {
         attempt.abort(); socket?.close(); this.socket = undefined
         this.channel?.close(); this.channel = undefined
         this.update('backoff', code)
+        if (readyAt !== undefined && Date.now() - readyAt >= healthyConnectionMs) failures = 0
         const baseDelay = 500 * 2 ** Math.min(failures++, 6)
         const delay = Math.min(30_000, baseDelay * (0.75 + (this.options.random?.() ?? Math.random()) * 0.5))
         await pause(delay, signal)
