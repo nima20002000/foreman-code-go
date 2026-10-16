@@ -32,6 +32,7 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
   let jobReference: JobWorkflowExecutionReference
   let queueNow: Date
   const clients: Client[] = []
+  const path = () => `/api/management/workspaces/${workflow.run.workspaceId}/jobs/workflows/${workflow.run.workflowId}/executions`
   const headers = () => ({ authorization: `Bearer ${reader.token}` })
   async function connect(token: string) {
     const client = new Client({ name: 'workflow-history-test', version: '1' })
@@ -128,16 +129,19 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
   })
 
   it('reads both provenance paths, immutable names and every page in newest order', async () => {
+    const firstHttp = await app.inject({ method: 'GET', url: path(), headers: headers() })
+    expect(firstHttp.statusCode).toBe(200)
+    const first = WorkflowJobPageSchema.parse(firstHttp.json())
+    expect(first.items).toHaveLength(50)
+    expect(first.items.every(item => item.name === 'Queued build')).toBe(true)
+    expect(first.items.some(item => item.execution.workflow)).toBe(true)
+    expect(first.items.some(item => item.execution.initiatingAgent)).toBe(true)
     const client = await connect(reader.token)
     const tools = await client.listTools()
     expect(tools.tools.some(tool => tool.name === 'job_workflow_list')).toBe(true)
     const firstMcp = await client.callTool({ name: 'job_workflow_list', arguments: input() })
     expect(firstMcp.isError).not.toBe(true)
-    const first = WorkflowJobPageSchema.parse(decodeMcpToolResult(firstMcp))
-    expect(first.items).toHaveLength(50)
-    expect(first.items.every(item => item.name === 'Queued build')).toBe(true)
-    expect(first.items.some(item => item.execution.workflow)).toBe(true)
-    expect(first.items.some(item => item.execution.initiatingAgent)).toBe(true)
+    expect(decodeMcpToolResult(firstMcp)).toEqual(first)
     const second = await client.callTool({ name: 'job_workflow_list', arguments: { ...input(), cursor: first.nextCursor } })
     expect(second.isError).not.toBe(true)
     const last = WorkflowJobPageSchema.parse(decodeMcpToolResult(second))
@@ -147,6 +151,9 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     expect(ids).toEqual(executions.map(item => item.id).reverse())
     const persisted = await queue.jobs.repository.execution(database.pool, workflow.run.workspaceId, ids[0]!)
     expect(first.items[0]!.execution).toEqual(persisted)
+    const lastHttp = await app.inject({ method: 'GET', headers: headers(),
+      url: `${path()}?cursor=${encodeURIComponent(JSON.stringify(first.nextCursor))}` })
+    expect(lastHttp.json()).toEqual(last)
   })
 
   it('returns empty history for a saved workflow without linked jobs', async () => {
@@ -157,6 +164,11 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     const result = await client.callTool({ name: 'job_workflow_list', arguments: { ...input(), workflowId: emptyId } })
     const expected = { ...input(), workflowId: emptyId, items: [], nextCursor: null }
     expect(decodeMcpToolResult(result)).toEqual(expected)
+    const http = await app.inject({ method: 'GET',
+      url: path().replace(workflow.run.workflowId, emptyId),
+      headers: { authorization: `Bearer ${writer.token}` } })
+    expect(http.statusCode).toBe(200)
+    expect(http.json()).toEqual(expected)
   })
 
   it('opens node and Agent CI results with workflow-scoped grants over HTTP and MCP', async () => {
@@ -193,14 +205,16 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     }
   })
 
-  it('denies other-workflow callers over MCP and audits denial', async () => {
+  it('denies other-workflow callers over HTTP and MCP and audits denial', async () => {
+    const http = await app.inject({ method: 'GET', url: path(), headers: { authorization: `Bearer ${denied.token}` } })
+    expect(http.statusCode).toBe(403)
     const client = await connect(denied.token)
     const result = await client.callTool({ name: 'job_workflow_list', arguments: input() })
     expect(result.isError).toBe(true)
     expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
     const audits = await database.pool.query('select source from management_audit where principal_id=$1 and outcome=$2',
       [denied.principal.id, 'denied'])
-    expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['mcp']))
+    expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
   })
 
   it('reads workflow-wide queued CI and retained preacceptance outcomes with scoped HTTP and MCP', async () => {
@@ -341,7 +355,7 @@ describe.skipIf(!postgresEnabled)('workflow job history HTTP and Operator MCP', 
     }
     const audits = await database.pool.query('select source from management_audit where principal_id=$1 and outcome=$2',
       [otherRun.principal.id, 'denied'])
-    expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['mcp']))
+    expect(audits.rows.map(row => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
   })
 
   it('rechecks live grants on an existing authenticated MCP session', async () => {

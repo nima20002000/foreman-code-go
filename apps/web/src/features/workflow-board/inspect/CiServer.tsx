@@ -9,6 +9,7 @@ import { useFloatingCurve } from '../../graph/signalEdge'
 import { formatClock, formatDuration } from '../../run-subagents/presentation'
 import { ciComputerLabel, ciJobLabel } from './runLiveStatus'
 import { runInspectionQueryKey } from './queries'
+import { WorkflowJobs } from './WorkflowJobs'
 import { CI_PLACEMENT_LABELS, ciJobDuration, isActiveCiJob, runCiApi, type CiServerSummary } from './ciServer'
 import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import { isApiAccessError } from '../../../shared/api/accessError'
@@ -55,10 +56,11 @@ const testTone: Record<CiTestStatus, Tone> = { passed: 'success', failed: 'dange
 const STATUSES: readonly CiTestStatus[] = ['failed', 'skipped', 'passed']
 const label = (value: string) => value[0]!.toUpperCase() + value.slice(1)
 
-type Tab = 'jobs' | 'tests' | 'log'
+type Tab = 'jobs' | 'tests' | 'log' | 'workflow-jobs'
 /** The CI server's jobs for this Run; a job opens its test results and log tail. */
-export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncated, error, loading, ticketId }: {
+export function CiServerDialog({ open, onOpenChange, scope, workflow, jobs, names, truncated, error, loading, ticketId }: {
   open: boolean; onOpenChange(open: boolean): void; scope?: RepeatGraphScopeV3 | undefined; jobs: readonly CiRunJob[]
+  workflow?: { workspaceId: string; workflowId: string } | undefined
   names: ReadonlyMap<string, string>; truncated: boolean; error: boolean; loading: boolean
   ticketId?: string | undefined
 }) {
@@ -88,6 +90,8 @@ export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncat
         content: selected && scope ? <CiJobTests scope={scope} job={selected} agent={agent(selected)}
         statuses={statuses} onStatusesChange={setStatuses} /> : null },
       { value: 'log', label: 'Log', disabled: !selected || !scope, content: selected && scope ? <CiJobLog scope={scope} job={selected} /> : null },
+      ...(workflow ? [{ value: 'workflow-jobs', label: 'Workflow jobs',
+        content: <WorkflowJobs key={JSON.stringify(workflow)} {...workflow} /> }] : []),
     ]} /></> : null}
   </Dialog>
 }

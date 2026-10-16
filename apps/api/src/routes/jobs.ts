@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
+import { JobDefinitionSaveRecordSchema, JobDefinitionSpecRecordSchema, WorkflowJobListInputSchema } from '@foreman-code/contracts/job-verification'
 import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema,
   JobLaunchValidationInputSchema } from '@foreman-code/contracts/job-admission'
+import { DomainError } from '../modules/errors.js'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
 import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryApproveSchema } from '@foreman-code/contracts/job-cancellation-recovery'
@@ -12,6 +13,24 @@ interface Scope {
 }
 export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
   const root='/api/management/workspaces/:workspaceId/jobs'
+  app.get<{ Params: Scope; Querystring: Record<string, string> }>(`${root}/workflows/:workflowId/executions`,
+    request => {
+      const { limit, cursor, ...rest } = request.query
+      let parsedCursor: unknown
+      if (cursor !== undefined) {
+        try {
+          parsedCursor = JSON.parse(cursor)
+        } catch {
+          throw new DomainError('INVALID_REQUEST', 'The job history cursor is invalid.', 400)
+        }
+      }
+      const input = WorkflowJobListInputSchema.parse({ ...rest,
+        ...(limit === undefined ? {} : { limit: Number(limit) }),
+        ...(cursor === undefined ? {} : { cursor: parsedCursor }),
+      })
+      return service.listWorkflowExecutions(requirePrincipal(request), request.params.workspaceId,
+        request.params.workflowId, input)
+    })
   app.get<{Params:Scope}>(`${root}/choices`,async request=>service.choices(requirePrincipal(request),request.params.workspaceId))
   app.get<{Params:Scope}>(`${root}/workflow-executions/:runId/:nodeExecutionId`,async request=>({reference:await service.getWorkflowExecutionReference(requirePrincipal(request),request.params.workspaceId,request.params.runId,request.params.nodeExecutionId)}))
   app.get<{Params:Scope}>(`${root}/definitions`,async request=>({definitions:await service.listDefinitions(requirePrincipal(request),request.params.workspaceId)}))

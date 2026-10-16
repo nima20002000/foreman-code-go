@@ -1,7 +1,13 @@
 import { memo, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, type EdgeProps, type NodeProps } from '@xyflow/react'
 import { AgentNodeView } from '../../shared/ui/nocturne/Canvas'
 import type { ActivitySnapshotV1 } from '@foreman-code/contracts'
+import { CiServerNode, type CiServerFlowNode } from '../workflow-board/inspect/CiServer'
+import { isActiveCiJob, runCiApi } from '../workflow-board/inspect/ciServer'
+import { runInspectionQueryKey } from '../workflow-board/inspect/queries'
+import { useBoardCiServer } from '../workflow-board/inspect/useBoardCiServer'
+import '../workflow-board/inspect/inspection.css'
 import { ciNodePresentation } from './ciPresentation'
 import { SignalEdgeShape } from '../graph/SignalEdgeShape'
 import { useResponsiveGraphViewport } from '../graph/useResponsiveGraphViewport'
@@ -39,7 +45,7 @@ const SavedConnection = memo(function SavedConnection(props: EdgeProps<SavedBoar
     <SignalEdgeShape id={props.id} curve={curve} kind={edge.kind} />
   </g>
 })
-const nodeTypes = { savedBoardNode: SavedAgent }, edgeTypes = { savedBoardEdge: SavedConnection }
+const nodeTypes = { savedBoardNode: SavedAgent, ciServer: CiServerNode }, edgeTypes = { savedBoardEdge: SavedConnection }
 const fitViewOptions = { padding: 0.2, minZoom: 0.02, maxZoom: 1 }
 const proOptions = { hideAttribution: true }
 
@@ -48,7 +54,7 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
   snapshot: AvailableRunBoardSnapshot; activitySnapshot?: ActivitySnapshotV1 | undefined
   onInspectNode?: (nodeId: string) => void
 }) {
-  const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport<SavedBoardNode, SavedBoardEdge>({
+  const { containerRef, onInit, onMove, onManualMove } = useResponsiveGraphViewport<SavedBoardNode | CiServerFlowNode, SavedBoardEdge>({
     fitViewOptions,
   })
   const { nodes, edges } = useMemo(() => {
@@ -58,6 +64,19 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
     }
     return projected
   }, [snapshot, activitySnapshot, onInspectNode])
+  const scope = useMemo(() => ({ workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId,
+    runId: snapshot.runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 as const }), [snapshot])
+  const ciList = useQuery({
+    queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'],
+    queryFn: ({ signal }) => runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal }),
+    retry: false, refetchInterval: (query) => !query.state.error && query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false,
+  })
+  const names = useMemo(() => new Map(snapshot.nodes.map((node) => [node.id, node.name])), [snapshot.nodes])
+  const towerNodes = useMemo(() => nodes.map((node) => ({ position: node.position, ...node.data.snapshot.size })), [nodes])
+  const ci = useBoardCiServer({ nodes: towerNodes, names, scope, workflow: { workspaceId: scope.workspaceId, workflowId: scope.workflowId },
+    jobs: ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined,
+    truncated: ciList.data?.truncated ?? false, error: ciList.isError, loading: ciList.isPending })
+  const flowNodes = useMemo(() => [...nodes, ci.node], [nodes, ci.node])
   return <div ref={containerRef} className="run-board-canvas" data-testid="run-board-canvas" onKeyDown={(event) => {
     // History keystrokes must not bubble into an ancestor's authoring shortcuts.
     event.stopPropagation()
@@ -66,7 +85,7 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
       || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's')) event.preventDefault()
   }}>
     <ReactFlowProvider>
-      <ReactFlow<SavedBoardNode, SavedBoardEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlow<SavedBoardNode | CiServerFlowNode, SavedBoardEdge> nodes={flowNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         {...READ_ONLY_FLOW_PROPS} fitView fitViewOptions={fitViewOptions} minZoom={0.02} maxZoom={2}
         onInit={onInit} onMove={onMove}
         proOptions={proOptions} preventScrolling={false} aria-label="Saved Run graph"
@@ -77,5 +96,6 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
           onZoomIn={onManualMove} onZoomOut={onManualMove} />
       </ReactFlow>
     </ReactFlowProvider>
+    {ci.dialog}
   </div>
 }

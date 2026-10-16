@@ -21,8 +21,9 @@ import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
 import type { EditGraph } from './AuthoringFields'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { SelectedRunCanvas } from '../../workflow-board/inspect/SelectedRunCanvas'
-import { CiServerDialog, CiServerNode, type CiServerFlowNode } from '../../workflow-board/inspect/CiServer'
-import { CI_SERVER_NODE_ID, ciServerFlowNode, ciServerSummary } from '../../workflow-board/inspect/ciServer'
+import { CiServerNode, type CiServerFlowNode } from '../../workflow-board/inspect/CiServer'
+import { CI_SERVER_NODE_ID } from '../../workflow-board/inspect/ciServer'
+import { useBoardCiServer } from '../../workflow-board/inspect/useBoardCiServer'
 import '@xyflow/react/dist/style.css'
 
 export type OpenAgentPanel = { nodeId: string; panel: AgentPanel }
@@ -126,7 +127,7 @@ const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>
     {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
 })
 const nodeTypes = { agent: DraftAgent, job: DraftJob, ciServer: CiServerNode }, edgeTypes = { typed: TypedEdge }
-const idleCiServer = ciServerSummary([])
+const noNames: ReadonlyMap<string, string> = new Map()
 const fitViewOptions = RESPONSIVE_FIT_OPTIONS
 const proOptions = { hideAttribution: true }
 export type DraftCanvasHandle = { flush(): void; cancel(): void }
@@ -151,10 +152,9 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   const [adapter] = useState(() => createGraphGeometryAdapter(topology.nodes))
   const [nodes, setNodes] = useState(topology.nodes)
   const [connecting, setConnecting] = useState(false)
-  const [ciOpen, setCiOpen] = useState(false)
   // Every Board shows the CI server automatically; it is never a workflow node and cannot be added by hand.
-  const ciServer = useMemo(() => ciServerFlowNode(nodes, idleCiServer, () => setCiOpen(true)), [nodes])
-  const flowNodes = useMemo<(GraphNode | CiServerFlowNode)[]>(() => ciServer ? [...nodes, ciServer] : nodes, [nodes, ciServer])
+  const ci = useBoardCiServer({ nodes, names: noNames, workflow: { workspaceId: graph.workspaceId, workflowId: graph.id } })
+  const flowNodes = useMemo<(GraphNode | CiServerFlowNode)[]>(() => [...nodes, ci.node], [nodes, ci.node])
   const selectedIds = useGraphPresentation((state) => state.selectedNodeIds)
   const presentation = useGraphPresentationStore()
   useLayoutEffect(() => { setNodes(adapter.reconcile(topology.nodes, selectedIds)) }, [adapter, topology.nodes, selectedIds])
@@ -247,7 +247,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       </ReactFlow>}
       {children}
     </div>
-    {selectedRun ? null : <CiServerDialog open={ciOpen} onOpenChange={setCiOpen} jobs={[]} names={new Map()} truncated={false} error={false} loading={false} />}
+    {selectedRun ? null : ci.dialog}
     {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} panels={panels} layout={topology.nodes} geometry={geometry} /> : null}
   </CanvasContext.Provider>
 })
