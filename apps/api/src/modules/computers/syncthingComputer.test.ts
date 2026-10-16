@@ -1,11 +1,11 @@
 import { deferred } from '../../../test/helpers/deferred.js'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { SyncComputerStateSchema, SyncIdentitySchema } from '@foreman-code/contracts/computer-accounts'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
 import { fakeSyncthing, workerSyncId } from '../../../test/helpers/syncthing.js'
 
 const fixtures: Awaited<ReturnType<typeof fakeSyncthing>>[] = []
-afterEach(async () => { await Promise.all(fixtures.splice(0).map(fixture => fixture.close())) })
+afterEach(async () => { await Promise.all(fixtures.splice(0).map(fixture => fixture.close())); vi.restoreAllMocks(); vi.useRealTimers() })
 async function fixture() {
   const rest = await fakeSyncthing()
   fixtures.push(rest)
@@ -62,8 +62,10 @@ it('reports connectivity, syncing, errors and conflicts and retains prior config
   f.connections[workerSyncId] = { connected: true }
   f.states.set(sharedFolderId('workspace'), { state: 'syncing' })
   f.conflicts.set(`/main/shared/${sharedFolderId('workspace')}`, ['nested/file.sync-conflict-20261008.txt'])
-  expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0])
-    .toMatchObject({ connected: true, state: 'syncing', conflicts: ['nested/file.sync-conflict-20261008.txt'] })
+  await vi.waitFor(async () => {
+    expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0])
+      .toMatchObject({ connected: true, state: 'syncing', conflicts: ['nested/file.sync-conflict-20261008.txt'] })
+  })
   f.states.set(sharedFolderId('workspace'), { state: 'error', pullErrors: 2 })
   expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0])
     .toMatchObject({ state: 'error', message: '2 files failed to sync.' })
@@ -126,4 +128,45 @@ it('cancels configuration during preparation before publishing folders', async (
   await expect(f.computer.handle({ operation: 'configure', workspaceId: 'canceled', enabled: true, peers: [] },
     { signal: abort.signal })).rejects.toBe(reason)
   expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
+})
+
+
+it('keeps configuration and scoped folder reads independent of conflict scans', async () => {
+  const f = await fixture()
+  const scans = vi.spyOn(f.ports, 'conflicts')
+  for (const workspaceId of ['workspace-a', 'workspace-b']) {
+    await f.computer.handle({ operation: 'configure', workspaceId, enabled: true, peers: [] })
+  }
+  const state = SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status', workspaceId: 'workspace-a' }))
+  expect(state.folders.map(folder => folder.workspaceId)).toEqual(['workspace-a'])
+  expect(scans).not.toHaveBeenCalled()
+})
+
+it('returns status during a pending background scan and caches conflicts for five minutes', async () => {
+  const f = await fixture()
+  await f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true, peers: [] })
+  const entered = deferred(), release = deferred()
+  const names = ['copy.sync-conflict-20261008.txt']
+  const scans = vi.spyOn(f.ports, 'conflicts').mockImplementation(async () => {
+    entered.resolve()
+    await release.promise
+    return names
+  })
+  const status = f.computer.handle({ operation: 'status' })
+  try {
+    await entered.promise
+    const completed = vi.fn()
+    void status.then(completed)
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledOnce())
+  } finally { release.resolve(); await status }
+  await vi.waitFor(async () => {
+    expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders[0]?.conflicts)
+      .toEqual(names)
+  })
+  for (let index = 0; index < 3; index++) await f.computer.handle({ operation: 'status' })
+  expect(scans).toHaveBeenCalledOnce()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.advanceTimersByTime(300_000)
+  await f.computer.handle({ operation: 'status' })
+  await vi.waitFor(() => expect(scans).toHaveBeenCalledTimes(2))
 })

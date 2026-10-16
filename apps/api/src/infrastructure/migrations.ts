@@ -61,6 +61,7 @@ import { activityCommandSourcesMigration } from './activityCommandSourcesMigrati
 import { harnessInstanceSettingsMigration } from '../modules/harnesses/instanceSettings/migration.js'
 import { harnessInstanceProfileEvidenceMigration } from '../modules/harnesses/instanceSettings/profileMigration.js'
 import { computerSyncMigration } from './computerSyncMigration.js'
+import { computerSyncIdentityMigration } from './computerSyncIdentityMigration.js'
 import { buildComputersMigration } from './buildComputersMigration.js'
 import { ciRuntimePreparationMigration } from './ciRuntimePreparationMigration.js'
 import { ciRuntimeMainComputerMigration } from './ciRuntimeMainComputerMigration.js'
@@ -917,6 +918,7 @@ export const migrations = [
   jobRuntimeCaptureWithoutApprovalMigration,
   buildComputerRoleMigration,
   computerSyncMigration,
+  computerSyncIdentityMigration,
   ciRuntimePreparationMigration,
   buildComputerPriorityMigration,
   retiredHarnessCredentialsMigration,

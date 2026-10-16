@@ -21,7 +21,7 @@ import type { DeviceApplicationRequestOptions } from '../devices/deviceApplicati
 import { fakeSyncthing, mainSyncId, workerSyncId } from '../../../test/helpers/syncthing.js'
 
 const cleanups: (() => Promise<void>)[] = []
-afterEach(async () => { await Promise.all(cleanups.splice(0).map(close => close())); vi.restoreAllMocks() })
+afterEach(async () => { await Promise.all(cleanups.splice(0).map(close => close())); vi.restoreAllMocks(); vi.useRealTimers() })
 async function fixture() {
   const mainId = randomUUID()
   const devices = [randomUUID(), randomUUID()].map(deviceId => ({ mainId, deviceId,
@@ -41,6 +41,7 @@ async function fixture() {
   const updateOnly: ManagementPrincipal = { ...writer, id: 'update-only',
     grants: [{ actions: ['settings:update'], scope: {} }] }
   const principals = new Map([['writer', writer], ['reader', reader], ['update-only', updateOnly]])
+  const identities = new Map<string, { target: unknown; identity: unknown }>()
   const preferences = new Map<string, { target: DeviceProvisioningTarget; revision: string; enabled: boolean }>()
   const workspaces = [{ id: 'workspace-a', name: 'Client/Web', active: true }, { id: 'workspace-b', name: 'Client-Web', active: true }]
   const hosts = [{ workspace_id: 'workspace-a', host: targets[1]!.hostRef,
@@ -56,6 +57,11 @@ async function fixture() {
     }
     if (text.includes('from agents')) return { rows: hosts }
     if (text.includes('from workspaces')) return { rows: values.length ? workspaces.filter(row => row.id === values[0]) : workspaces }
+    if (text.includes('from computer_sync_identities')) return { rows: [...identities.values()] }
+    if (text.includes('insert into computer_sync_identities')) {
+      identities.set(`${values[0]}:${values[1]}`, { target: JSON.parse(values[1] as string),
+        identity: JSON.parse(values[2] as string) })
+    }
     const key = `${values[0]}:${values[1]}`
     if (text.includes('select target,revision')) return { rows: preferences.has(key) ? [preferences.get(key)!] : [] }
     if (text.includes('insert into computer_sync_preferences')) {
@@ -88,7 +94,7 @@ async function fixture() {
     } }
   const createService = () => new ComputerSyncService(pool, mainId, () => endpoint, commands, computers[0])
   return { service: createService(), createService, targets, rest, computers, workspaces, hosts, devices,
-    writer, reader, principals, preferences, denied, commands, pool, endpoint }
+    writer, reader, principals, preferences, identities, denied, commands, pool, endpoint }
 }
 
 it('serves authenticated Agent context while optional shared-file installation is pending', async () => {
@@ -457,3 +463,69 @@ for (const target of ['local', 'remote'] as const) {
     expect(signals).toHaveLength(1)
   })
 }
+
+
+it('allows a cold remote setup to finish beyond the channel default deadline', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const request = f.endpoint.request.bind(f.endpoint)
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (deviceId, namespace, payload, options) => {
+    const input = SyncChannelRequestSchema.parse(payload)
+    if (input.request.operation !== 'identity') return request(deviceId, namespace, payload, options)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const setup = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Channel request timed out')), options?.timeoutMs ?? 30_000)
+      setTimeout(() => { clearTimeout(timeout); resolve() }, 45_000)
+    })
+    entered.resolve()
+    await setup
+    vi.useRealTimers()
+    return request(deviceId, namespace, payload, options)
+  })
+  const result = f.service.reconcile().then(() => null, error => error)
+  await entered.promise
+  await vi.advanceTimersByTimeAsync(45_000)
+  expect(await result).toBeNull()
+  expect(await f.rest[1]!.rest('GET', '/rest/config/folders')).toHaveLength(1)
+})
+
+it.each(['persisted', 'unresolved'] as const)('reconciles membership after restart with a %s offline identity', async mode => {
+  const f = await fixture()
+  await f.service.reconcile()
+  if (mode === 'unresolved') f.identities.clear()
+  const offlineDeviceId = f.devices[0]!.deviceId
+  const onlineHost = { ...f.hosts[0]!, host: f.targets[2]!.hostRef,
+    installation_id: f.targets[2]!.applicationInstallationId }
+  f.hosts.push(onlineHost)
+  const request = f.endpoint.request.bind(f.endpoint)
+  vi.spyOn(f.endpoint, 'request').mockImplementation((id, namespace, payload, options) => {
+    if (id === offlineDeviceId) throw new DomainError('COMPUTER_OFFLINE', 'Peer offline.', 409)
+    return request(id, namespace, payload, options)
+  })
+  const restarted = f.createService()
+  await expect(restarted.reconcile()).rejects.toThrow()
+  const folders = () => f.rest[0]!.rest('GET', '/rest/config/folders') as Promise<{ id: string; devices: { deviceID: string }[] }[]>
+  expect((await folders()).find(folder => folder.id === sharedFolderId('workspace-a'))?.devices)
+    .toEqual([{ deviceID: mainSyncId }, { deviceID: workerSyncId }, { deviceID: f.rest[2]!.identity.deviceId }])
+  f.hosts.splice(f.hosts.indexOf(onlineHost), 1)
+  await expect(f.createService().reconcile()).rejects.toThrow()
+  expect((await folders()).find(folder => folder.id === sharedFolderId('workspace-a'))?.devices)
+    .toEqual([{ deviceID: mainSyncId }, { deviceID: workerSyncId }])
+  if (mode === 'unresolved') return
+  f.devices.splice(0, 1)
+  await f.createService().reconcile()
+  expect((await folders()).find(folder => folder.id === sharedFolderId('workspace-a'))?.devices)
+    .toEqual([{ deviceID: mainSyncId }])
+})
+
+it('reads a shared folder without inventorying conflicts or unrelated workspace states', async () => {
+  const f = await fixture()
+  await f.service.reconcile()
+  const scans = vi.spyOn(f.rest[0]!.ports, 'conflicts').mockRejectedValue(new Error('Tree unavailable'))
+  const rest = vi.spyOn(f.rest[0]!.ports, 'rest')
+  expect(await f.service.sharedFolder('workspace-a', { kind: 'main' }))
+    .toBe(`/computer-0/shared/${sharedFolderId('workspace-a')}`)
+  expect(scans).not.toHaveBeenCalled()
+  expect(rest.mock.calls.filter(([, path]) => path.startsWith('/rest/db/status')))
+    .toEqual([['GET', `/rest/db/status?folder=${sharedFolderId('workspace-a')}`, undefined, expect.any(AbortSignal)]])
+})

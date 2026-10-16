@@ -27,9 +27,10 @@ export const SyncComputerStateSchema = z.object({
 }).strict()
 export const SyncComputerRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('identity') }).strict(),
-  z.object({ operation: z.literal('status') }).strict(),
+  z.object({ operation: z.literal('status'), workspaceId: IdSchema.optional() }).strict(),
   z.object({ operation: z.literal('configure'), workspaceId: IdSchema,
-    enabled: z.boolean(), peers: z.array(SyncPeerSchema) }).strict(),
+    enabled: z.boolean(), peers: z.array(SyncPeerSchema),
+    preserveUnknownPeers: z.boolean().optional(), knownPeerIds: z.array(SyncthingDeviceIdSchema).optional() }).strict(),
 ])
 export const SyncChannelRequestSchema = z.object({
   target: DeviceProvisioningTargetSchema, request: SyncComputerRequestSchema,
