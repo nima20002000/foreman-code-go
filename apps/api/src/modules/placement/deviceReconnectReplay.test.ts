@@ -7,6 +7,7 @@ import { remoteNativeManager } from './workerCarrier.js'
 import { deviceEndpointCarrier } from './deviceEndpointCarrier.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DeviceConnectionError } from '../devices/deviceWire.js'
+import { deviceReconnectTimeoutMs } from '../devices/deviceReconnect.js'
 
 const capabilities = { provider: 'codex', providerVersion: '0.154.0', persistentSessions: true, reconnect: true,
   sameRequestResponses: true, cancellation: true, history: true, configurationInspection: true, mcpDetection: true,
@@ -83,11 +84,17 @@ describe('in-flight native requests across a dropped device link', () => {
     const f = fixture()
     f.dropDuringFirstDelivery(() => {})
     const result = f.manager.capabilities()
+    let completed = false
+    void result.then(() => { completed = true }, () => { completed = true })
     const settled = expect(result).rejects.toMatchObject({ code: 'DEVICE_LINK_DROPPED', status: 503,
       message: expect.stringMatching(/connection to the computer dropped/) })
     await vi.advanceTimersByTimeAsync(60_000)
+    expect(completed).toBe(false)
     expect(f.deliver).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(30_000)
+    expect(deviceReconnectTimeoutMs).toBe(270_000)
+    await vi.advanceTimersByTimeAsync(deviceReconnectTimeoutMs - 60_000 - 1)
+    expect(completed).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
     await settled
     expect(f.deliver).toHaveBeenCalledTimes(1)
   })

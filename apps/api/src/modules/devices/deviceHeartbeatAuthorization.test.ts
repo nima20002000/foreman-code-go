@@ -12,11 +12,11 @@ class Socket extends EventEmitter {
   bufferedAmount = 0
   closed = false
   peer?: Socket
-  frames: { type: string }[] = []
+  frames: { type: string; mainReady?: true }[] = []
 
   send(text: string) {
     if (this.closed) throw new Error('Socket closed')
-    this.frames.push(JSON.parse(text) as { type: string })
+    this.frames.push(JSON.parse(text) as { type: string; mainReady?: true })
     queueMicrotask(() => {
       if (!this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
     })
@@ -111,12 +111,17 @@ it('answers heartbeats and keeps serving a recently authorized link while its au
   const read = deferred()
   f.setValidation(() => read.promise)
   try {
+    expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong')).toEqual([
+      expect.objectContaining({ type: 'pong', mainReady: true }),
+      expect.objectContaining({ type: 'pong' }),
+    ])
     const requests = Array.from({ length: 8 }, (_, index) =>
       f.worker.request('test-echo', { index }).catch((error: unknown) => error))
     await vi.advanceTimersByTimeAsync(35_000)
     expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
     expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
-    expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong')).toHaveLength(3)
+    expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong').map(frame => frame.mainReady))
+      .toEqual([true, undefined, undefined, undefined])
     expect(f.revalidate).toHaveBeenCalledTimes(1)
     expect(await Promise.all(requests)).toEqual(Array.from({ length: 8 }, (_, index) => ({ payload: { index } })))
     await vi.advanceTimersByTimeAsync(120_000)
