@@ -113,7 +113,7 @@ describe('scenario MCP recovery', () => {
 it.each(['save', 'check'] as const)('retains cleanup ownership when profile %s fails', async stage => {
   const mainId = '11111111-1111-4111-8111-111111111111'
   const hostRef = { kind: 'main' as const, mainId }
-  const owned = new Map<string, HarnessProfileSelection>()
+  const owned = new Map<string, Pick<HarnessProfileSelection, 'instanceId' | 'target'>>()
   let saved: Record<string, unknown> | undefined
   const error = new Error('Profile operation failed')
   const callTool = vi.fn<Client['callTool']>(async request => {
@@ -144,4 +144,20 @@ it.each(['save', 'check'] as const)('retains cleanup ownership when profile %s f
   expect([...owned.values()][0]).toMatchObject({ instanceId: saved!.instanceId, target: saved!.target })
   await disableCiProfiles(client, owned.values())
   expect(callTool.mock.calls.at(-1)?.[0]).toMatchObject({ name: 'harness_instance_save', arguments: { enabled: false } })
+})
+
+it('aborts an in-flight read at its deadline without retrying beyond it', async () => {
+  const started = Date.now()
+  const callTool = vi.fn<Client['callTool']>(async (_request, options) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(success), 60_000)
+    options?.signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(options.signal!.reason)
+    }, { once: true })
+  }))
+  const pending = expect(callCiToolResult({ callTool }, 'run_get', {}, { deadline: started + 10_000 }))
+    .rejects.toThrow('Timed out')
+  await Promise.all([pending, vi.runAllTimersAsync()])
+  expect(Date.now() - started).toBe(10_000)
+  expect(callTool).toHaveBeenCalledTimes(1)
 })

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { Client } from '@modelcontextprotocol/client'
 import { expect, it, vi } from 'vitest'
 import { AgentCiReportSchema, readAgentCiReport, readCiLog,
   requireCiStateOrder } from './helpers/crossComputerCiReadback.js'
@@ -68,4 +69,28 @@ it.each([
   ['lost', 'starting', 'passed'],
 ])('rejects changes after terminal CI state: %j', (...states) => {
   expect(() => requireCiStateOrder(states)).toThrow()
+})
+
+it('applies the collection deadline to a ticket log request', async () => {
+  vi.useFakeTimers()
+  try {
+    const started = Date.now()
+    const callTool = vi.fn<Client['callTool']>(async (_request, options) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve({ content: [], structuredContent: {
+        text: 'complete', nextOffset: 8, logBytes: 8, maxBytes: 65_536,
+      } }), 60_000)
+      options?.signal?.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(options.signal.reason)
+      }, { once: true })
+    }))
+    const pending = expect(readCiLog({ callTool }, { workspaceId: 'workspace', ticketId: randomUUID() }, {
+      deadline: started + 10_000,
+    })).rejects.toThrow('Timed out')
+    await Promise.all([pending, vi.runAllTimersAsync()])
+    expect(Date.now() - started).toBe(10_000)
+    expect(callTool).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.useRealTimers()
+  }
 })
