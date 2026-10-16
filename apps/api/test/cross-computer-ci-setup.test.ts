@@ -127,7 +127,8 @@ it.each(['save', 'check'] as const)('retains cleanup ownership when profile %s f
           environment: { generation: '1', provenance: 'terminal', cwd: '/project', path: '/bin' } } }],
     } }
     if (request.name === 'harness_instance_save') {
-      const { commandId: _command, expectedRevision: _revision, ...value } = request.arguments!
+      const value = Object.fromEntries(Object.entries(request.arguments!)
+        .filter(([key]) => key !== 'commandId' && key !== 'expectedRevision'))
       saved = { ...value, revision: 1, instanceRevision: '1', driverId: 'codex',
         configurationFingerprint: 'profile', qualification: 'unqualified', configuration: ciHarness }
       if (stage === 'save' && value.enabled) throw error

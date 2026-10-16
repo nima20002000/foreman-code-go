@@ -79,9 +79,10 @@ it('applies the collection deadline to a ticket log request', async () => {
       const timer = setTimeout(() => resolve({ content: [], structuredContent: {
         text: 'complete', nextOffset: 8, logBytes: 8, maxBytes: 65_536,
       } }), 60_000)
-      options?.signal?.addEventListener('abort', () => {
+      const signal = options?.signal
+      signal?.addEventListener('abort', () => {
         clearTimeout(timer)
-        reject(options.signal.reason)
+        reject(signal.reason)
       }, { once: true })
     }))
     const pending = expect(readCiLog({ callTool }, { workspaceId: 'workspace', ticketId: randomUUID() }, {

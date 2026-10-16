@@ -149,5 +149,5 @@ it.each([1, 2])('gives demo Agents executable node tests and full-suite retries 
   }
   const seeded = graph.nodes[1]!
   if (seeded.kind === 'job') throw new Error('Expected a CI Agent')
-  expect(seeded.initialPrompt.includes('deliberately implement trim-only')).toBe(workflowIndex === 1)
+  expect(!!seeded.initialPrompt?.includes('deliberately implement trim-only')).toBe(workflowIndex === 1)
 })

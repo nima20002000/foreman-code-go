@@ -162,14 +162,19 @@ describe('authenticated W07 passive telemetry carrier', () => {
     const worker = new DeviceApplicationChannel({ side: 'worker', binding, socket: workerSocket, signal: s.lifetime.signal,
       extensions, registrations: [s.worker.extension] })
     const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 10000), worker.run(workerSocket.messages[Symbol.asyncIterator](), 5000)]
-    for (const task of tasks) void task.catch(() => undefined)
+    for (const task of tasks) void task.catch(() => { /* ignore: closing the test channels ends both run loops. */ })
     try {
       const c = await s.challenge(), response = await main.request('resource-telemetry', { operation: 'collect', challenge: c })
       expect(response.payload).toEqual(batch(c))
       await expect(s.service.ingest(remoteTelemetryContext(binding), JSON.stringify(response.payload), s.lifetime.signal)).resolves.toMatchObject({ status: 'accepted' })
       expect(revalidate).toHaveBeenCalled()
       granted = false
-      await expect(main.request('resource-telemetry', { operation: 'collect', challenge: c })).rejects.toThrow('permission')
+      // Channels reuse a successful authorization for two minutes; the next request after that rechecks it.
+      const now = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 120_000)
+      try {
+        await expect(main.request('resource-telemetry', { operation: 'collect', challenge: c })).rejects.toThrow('permission')
+      } finally { clock.mockRestore() }
       expect(s.createCollector).toHaveBeenCalledTimes(1)
     } finally {
       s.lifetime.abort(); main.close(); worker.close(); await Promise.allSettled(tasks)

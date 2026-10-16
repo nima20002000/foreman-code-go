@@ -8,9 +8,11 @@ import { WorkerUpdater, downloadWorkerArtifact } from '../../../../worker/src/up
 import { ComputerMaintenance } from './maintenance.js'
 import { fakeComputer, fakeFleet } from '../../../test/helpers/fleetSync.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
-import { WorkerError } from '../../../../worker/src/diagnostics.mjs'
 import * as artifacts from './workerArtifacts.js'
 import { DeviceConnectionError } from '../devices/deviceWire.js'
+
+const diagnosticsPath = new URL('../../../../worker/src/diagnostics.mjs', import.meta.url).href
+const { WorkerError } = await import(diagnosticsPath) as { WorkerError: new (code: string) => Error & { code: string } }
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2' }

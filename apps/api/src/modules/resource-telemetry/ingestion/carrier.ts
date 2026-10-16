@@ -14,7 +14,7 @@ import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 import { DomainError } from '../../errors.js'
 
-const logger = componentLogger('resource-telemetry')
+const logger = componentLogger('devices')
 
 /** Ready/lost hooks retain only the exact authenticated channel's passive collector. */
 export function createMainResourceTelemetryBindings(service: () => ResourceTelemetryService | undefined) {

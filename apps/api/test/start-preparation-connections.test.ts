@@ -71,7 +71,9 @@ it('forwards preparation cancellation to the provider resolver', async () => {
     received = options?.signal
     throw new Error('Resolver reached')
   } })
-  await expect(accounts.prepare({ ...f.configurations[0]!.record.harness, accountId: 'account' }, undefined,
+  const harness = f.configurations[0]!.record.harness
+  if (harness.harness !== 'codex') throw new Error('Expected a Codex configuration')
+  await expect(accounts.prepare({ ...harness, accountId: 'account' }, undefined,
     { signal })).rejects.toThrow('Resolver reached')
   expect(received).toBe(signal)
 })
