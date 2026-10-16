@@ -5,6 +5,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { faultWorkflowFixture } from './helpers/faultWorkflowFixture.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { measureIntegrationPhase } from './helpers/integrationPhase.js'
 
 describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
@@ -27,22 +28,24 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     }
   }
   let before: Awaited<ReturnType<typeof fixture.active>>
-  beforeAll(async () => { fixture = await faultWorkflowFixture({ loop: true }) }, 10_000)
+  beforeAll(async () => { fixture = await measureIntegrationPhase('probe-fixture', () => faultWorkflowFixture({ loop: true })) }, 10_000)
   // The first check is due one 10 second interval after the entry node finishes, so launching the Run
   // in setup keeps that unavoidable wait from sharing the case's budget with startup.
   beforeAll(async () => {
-    await fixture.launch()
-    before = await fixture.active()
+    await measureIntegrationPhase('probe-entry', () => fixture.prepareEntry())
+    await measureIntegrationPhase('probe-launch', () => fixture.launch())
+    before = await measureIntegrationPhase('probe-active', () => fixture.active())
   }, 12_000)
   afterAll(async () => { await fixture?.close() }, 10_000)
 
   it('records a failed check while sibling work completes and the loop remains active', async () => {
     const remote = before.executions.find(execution => execution.workflowNodeId === fixture.affected.id)!
-    const checking = await readUntil(fixture.readExecutions, executions => executions.some(execution =>
+    const checking = await measureIntegrationPhase('probe-tick', () => readUntil(fixture.readExecutions, executions => executions.some(execution =>
       execution.workflowNodeId === fixture.entry.id && execution.state === 'running'
         && typeof execution.input === 'object' && execution.input !== null && 'tick' in execution.input
         && fixture.worker.replay.starts.some(turn => turn.correlationId === `execution:${execution.id}`)),
-    { timeoutMs: 12_000, minimumReadIntervalMs: 250, description: 'the scheduled loop check beside graph work' })
+    { timeoutMs: 12_000, minimumReadIntervalMs: 250, description: 'the scheduled loop check beside graph work' }))
+    const postTick = performance.now()
     const check = checking.find(execution => typeof execution.input === 'object'
       && execution.input !== null && 'tick' in execution.input)!
     const turn = fixture.worker.replay.starts.find(item => item.correlationId === `execution:${check.id}`)!
@@ -97,5 +100,6 @@ describe.runIf(postgresEnabled)('workflow resilience to a failed loop check', ()
     } })).isError).toBe(true)
     expect(await fixture.base.runs.get(fixture.base.f.run.id))
       .toMatchObject({ executionState: 'running', outcome: 'pending' })
+    console.info(`[integration-phase] workflow-survives-loop-check-failure.integration.test.ts probe-post ${Math.round(performance.now() - postTick)}`)
   }, 19_000)
 })
