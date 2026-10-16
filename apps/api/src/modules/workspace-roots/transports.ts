@@ -102,8 +102,11 @@ export const workspaceRootTools = [
 
 /** Not a catalogued Operator tool: it is listed with the composed workspace-root service. */
 export function registerWorkspaceRootAdoptionTool(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
-  commands: Commands): void {
-  server.registerTool(TOOLS.adopt, adoption, input => invoke(principal, commands, TOOLS.adopt, () => service.adopt(principal, 'mcp', input)))
+  commands: Commands, principalForCall = () => principal): void {
+  server.registerTool(TOOLS.adopt, adoption, input => {
+    const caller = principalForCall()
+    return invoke(caller, commands, TOOLS.adopt, () => service.adopt(caller, 'mcp', input))
+  })
 }
 export function registerWorkspaceRootTools(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
   commands: Commands): void {

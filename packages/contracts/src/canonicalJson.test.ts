@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   canonicalGraphJson, canonicalJson, canonicalJsonLocaleOrderLegacy, canonicalJsonNumericKeysFirstLegacy, canonicalJsonValueLegacy,
 } from './canonicalJson.js'
@@ -56,5 +56,46 @@ describe('canonicalJsonNumericKeysFirstLegacy', () => {
 
   it('exposes the same order as a value for embedding in a larger record', () => {
     expect(JSON.stringify({ harness: canonicalJsonValueLegacy(fixture) })).toBe(`{"harness":${canonicalJsonNumericKeysFirstLegacy(fixture)}}`)
+  })
+})
+
+
+describe('canonicalGraphJson byte accounting', () => {
+  it('counts a fragmented document without allocating an encoded buffer for each fragment', () => {
+    const value = Array.from({ length: 1000 }, (_, index) => ({ index, value: 'é☃😀' }))
+    const expected = canonicalJson(value)
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode')
+    try {
+      expect(canonicalGraphJson(value, Buffer.byteLength(expected))).toBe(expected)
+      expect(encode.mock.calls.length).toBeLessThanOrEqual(1)
+    } finally { encode.mockRestore() }
+  })
+
+  it.each(['', 'ascii', 'é', '☃', '😀', '\ud800', '\udc00', '\ud800x\udc00', '"\\\n\u0000'])
+    ('preserves JSON bytes and the exact UTF-8 boundary for %j in values and keys', text => {
+      const value = { [text]: [text, null, true, false, -0, 1.5e-7] }
+      const expected = canonicalJson(value)
+      const bytes = Buffer.byteLength(expected)
+      expect(canonicalGraphJson(value, bytes)).toBe(expected)
+      expect(canonicalGraphJson(value, bytes + 1)).toBe(expected)
+      expect(() => canonicalGraphJson(value, bytes - 1)).toThrow('GRAPH_JSON_LIMIT')
+    })
+
+  it('retains empty-document, depth, node and invalid-input limits', () => {
+    expect(canonicalGraphJson('', 2)).toBe('""')
+    expect(() => canonicalGraphJson('', 1)).toThrow('GRAPH_JSON_LIMIT')
+    expect(() => canonicalGraphJson(null, 0)).toThrow('GRAPH_JSON_LIMIT')
+    for (const limit of [-1, 0.5, Infinity, NaN]) {
+      expect(() => canonicalGraphJson(null, limit)).toThrow('GRAPH_JSON_LIMIT')
+    }
+    let nested: unknown = null
+    for (let depth = 0; depth < 33; depth++) nested = [nested]
+    expect(() => canonicalGraphJson(nested)).toThrow('GRAPH_JSON_LIMIT')
+    expect(() => canonicalGraphJson(Array(100_000).fill(null))).toThrow('GRAPH_JSON_LIMIT')
+    const cyclic: unknown[] = []
+    cyclic.push(cyclic)
+    for (const invalid of [undefined, Infinity, new Date(), cyclic, [, 1], { get value() { throw new Error('getter evaluated') } }]) {
+      expect(() => canonicalGraphJson(invalid)).toThrow('GRAPH_JSON_INVALID')
+    }
   })
 })

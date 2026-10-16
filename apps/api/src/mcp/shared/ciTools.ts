@@ -1,3 +1,4 @@
+import { collectBoundTools, type BoundTool } from './catalog.js'
 import type { McpServer } from '@modelcontextprotocol/server'
 import { CiRunInputSchema, OperatorCiRunInputSchema, CiRunOutputSchema,
   CiGetInputSchema, OperatorCiGetInputSchema, CiGetOutputSchema,
@@ -116,11 +117,34 @@ export function ciCapabilities(context: CiContext, resource: AuthorizedResource)
     .map(name => ({ name, actions: actions[name], detail: CI_TOOL_DESCRIPTIONS[name] }))
 }
 
-export function registerCiTools(server: McpServer, context: CiContext) {
+const catalogs = new WeakMap<object, {
+  ci: HostCiService; roles: Map<string, BoundTool<CiContext>[]>
+}>()
+
+export function registerCiTools(server: McpServer, context: CiContext): void {
+  const ci = context.services.ci
+  if (!ci) return
+  let cached = catalogs.get(context.services)
+  if (!cached || cached.ci !== ci) {
+    cached = { ci, roles: new Map() }
+    catalogs.set(context.services, cached)
+  }
+  const audience = context.principal.audience
+  let tools = cached.roles.get(audience)
+  if (!tools) {
+    tools = collectBoundTools(context, registerCiToolDefinitions)
+    cached.roles.set(audience, tools)
+  }
+  const available = audience === 'operator' ? new Set(ciCapabilities(context, {}).map(tool => tool.name)) : undefined
+  for (const tool of tools) {
+    if (!available || available.has(tool.name as CiTool)) tool.register(server, context)
+  }
+}
+
+function registerCiToolDefinitions(server: McpServer, context: CiContext): void {
   const ci = context.services.ci
   if (!ci) return
   const operator = context.principal.audience === 'operator'
-  const available = (name: CiTool) => !operator || ciCapabilities(context, {}).some(tool => tool.name === name)
   const invoke = async (name: CiTool, work: () => Promise<unknown>) => {
     try { return toolResult(await work()) }
     catch (caughtError) {
@@ -143,37 +167,37 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     }
   }
   const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  if (available('ci_run')) server.registerTool('ci_run', {
+  server.registerTool('ci_run', {
     description: CI_TOOL_DESCRIPTIONS.ci_run,
     inputSchema: operator ? OperatorCiRunInputSchema : CiRunInputSchema,
     outputSchema: CiRunOutputSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   }, input => invoke('ci_run', () => ci.run(context.principal, input)))
-  if (available('ci_get')) server.registerTool('ci_get', {
+  server.registerTool('ci_get', {
     description: CI_TOOL_DESCRIPTIONS.ci_get,
     inputSchema: operator ? OperatorCiGetInputSchema : CiGetInputSchema,
     outputSchema: CiGetOutputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, (input, extra) => invoke('ci_get', () => ci.get(context.principal, input,
     context.signal ? AbortSignal.any([context.signal, extra.mcpReq.signal]) : extra.mcpReq.signal)))
-  if (available('ci_computers_list')) server.registerTool('ci_computers_list', {
+  server.registerTool('ci_computers_list', {
     description: CI_TOOL_DESCRIPTIONS.ci_computers_list,
     inputSchema: operator ? OperatorCiGetInputSchema.pick({ workspaceId: true }) : z.object({}).strict(),
     outputSchema: CiComputersOutputSchema, annotations: read,
   }, input => invoke('ci_computers_list', () => ci.computers(context.principal, input)))
-  if (available('ci_cancel')) server.registerTool('ci_cancel', {
+  server.registerTool('ci_cancel', {
     description: CI_TOOL_DESCRIPTIONS.ci_cancel,
     inputSchema: operator ? OperatorCiCancelInputSchema : CiCancelInputSchema,
     outputSchema: CiCancelOutputSchema,
     annotations: { ...read, readOnlyHint: false, destructiveHint: true },
   }, input => invoke('ci_cancel', () => ci.cancel(context.principal, input)))
-  if (available('ci_logs_read')) server.registerTool('ci_logs_read', {
+  server.registerTool('ci_logs_read', {
     description: CI_TOOL_DESCRIPTIONS.ci_logs_read,
     inputSchema: operator ? OperatorCiLogsInputSchema : CiLogsInputSchema,
     outputSchema: CiLogsOutputSchema, annotations: read,
   }, input => invoke('ci_logs_read', () => ci.logs(context.principal, input)))
   // A Run's whole CI list is for the Operator; Agents read workspace tickets with ci_get.
-  if (operator && available('ci_list')) server.registerTool('ci_list', {
+  if (operator) server.registerTool('ci_list', {
     description: CI_TOOL_DESCRIPTIONS.ci_list,
     inputSchema: OperatorCiListInputSchema, outputSchema: CiListOutputSchema, annotations: read,
   }, input => invoke('ci_list', () => ci.list(context.principal, input)))
