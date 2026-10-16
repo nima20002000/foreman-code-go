@@ -6,6 +6,9 @@ describe.runIf(postgresEnabled)('native interruption without an answer', () => {
   let fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>
   beforeAll(async () => {
     fixture = await faultWorkflowFixture()
+    await fixture.prepareEntry()
+  }, 10_000)
+  beforeAll(async () => {
     await fixture.launch()
     await fixture.active()
   }, 10_000)
