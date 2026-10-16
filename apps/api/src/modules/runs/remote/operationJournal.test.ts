@@ -31,6 +31,9 @@ describe('durable remote ownership', () => {
     await expect(journal.acknowledgeTurn(intent.operationId, 'retry-turn', { previousTurnId: 'foreign' }))
       .rejects.toThrow('Capacity retry no longer owns the previous turn')
     await journal.acknowledgeTurn(intent.operationId, 'retry-turn', { previousTurnId: native.turnId })
+    expect(await journal.status(intent.operationId)).toMatchObject({ receipt: {
+      nativeTurnRetries: [{ previousTurnId: native.turnId, turnId: 'retry-turn' }],
+    } })
     const status = await journal.status(intent.operationId)
     expect(status.status === 'known' && status.receipt.native).toMatchObject({
       sessionId: native.sessionId, turnId: 'retry-turn',

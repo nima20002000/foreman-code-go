@@ -14,6 +14,8 @@ const ports = vi.hoisted(() => ({
   acknowledge: vi.fn(),
   acknowledgeReply: vi.fn(),
   publish: vi.fn(),
+  prefetch: vi.fn(),
+  releaseExecution: vi.fn(),
   intent: { runId: 'run', nodeId: 'node', executionId: 'execution', operationId: 'operation', technicalAttempt: 1 },
   connection: { mainId: 'main', deviceId: 'device', workerInstallationId: 'worker', bootId: 'boot',
     keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 },
@@ -37,7 +39,8 @@ vi.mock('./remoteReceiptCommit.js', () => ({
 }))
 vi.mock('../runs/remote/workflowPhysicalVerification.js', () => ({
   createRemoteWorkflowPhysicalVerification: () => ({
-    prefetch: async () => ({ kind: 'original-remote-physical' }),
+    prefetch: ports.prefetch,
+    releaseExecution: ports.releaseExecution,
     bind: vi.fn(),
     acknowledge: ports.acknowledge,
     acknowledgeReply: ports.acknowledgeReply,
@@ -54,6 +57,7 @@ vi.mock('./remoteNativeSource.js', async () => {
       },
       capture(_id: string, source: WorkflowOriginalNativeSource) { return sources.get(remoteWorkflowSourceDigest(source)) },
       verify: { read: (original: unknown) => original },
+      release: vi.fn(),
     }
   } }
 })
@@ -61,6 +65,8 @@ import { createProductionRemoteWorkflow } from './productionRemoteWorkflow.js'
 
 beforeEach(() => {
   vi.clearAllMocks()
+  ports.prefetch.mockResolvedValue({ kind: 'original-remote-physical' })
+  ports.releaseExecution.mockReturnValue(false)
   ports.acknowledge.mockReset()
   ports.acknowledgeReply.mockReset()
   ports.acknowledgeReply.mockResolvedValue({})
@@ -95,7 +101,7 @@ async function fixture() {
     composition.capture({ owner } as Parameters<typeof composition.capture>[0], captured)
     return captured
   }
-  return { composition, capture }
+  return { composition, capture, callbacks, receipt }
 }
 
 it('retires 32 obsolete originals and acknowledges a newer current observation', async () => {
@@ -146,4 +152,28 @@ it('retries a failed history acknowledgment rather than treating it as delivered
   await f.composition.afterCommit(await f.capture(1))
   expect(ports.acknowledgeReply.mock.calls.map(([item]) => item.source.history.correlationId))
     .toEqual(['observation:0', 'observation:0', 'observation:1'])
+})
+
+it('passes the execution lifetime into physical prefetch', async () => {
+  const f = await fixture()
+  const controller = new AbortController()
+  const source: WorkflowOriginalNativeSource = { type: 'boundary' }
+  await f.callbacks.observeOriginalSource!(f.receipt, source, controller.signal)
+  expect(ports.prefetch).toHaveBeenLastCalledWith(f.receipt, expect.anything(), source, controller.signal)
+})
+
+it('releases execution bindings only after final settlement and both acknowledgments', async () => {
+  const f = await fixture()
+  ports.acknowledge.mockResolvedValue({})
+  const capture = await f.capture(0)
+  await f.composition.afterCommit(capture)
+  expect(f.composition.isRemote('execution')).toBe(true)
+  ports.releaseExecution.mockReturnValue(true)
+  ports.acknowledgeReply.mockRejectedValueOnce(new Error('Link lost'))
+  await f.composition.afterCommit(capture)
+  expect(f.composition.isRemote('execution')).toBe(true)
+  await f.composition.afterCommit(capture)
+  expect(f.composition.binding('execution')).toBeUndefined()
+  expect(f.composition.isRemote('execution')).toBe(false)
+  expect(() => f.composition.capture({} as Parameters<typeof f.composition.capture>[0], capture)).not.toThrow()
 })
