@@ -50,8 +50,9 @@ export class DeviceRequestQueue {
       waiting: this.waiting.length, byNamespace: Object.fromEntries(this.namespaces) }
   }
 
-  async acquire({ priority, stop, bulk = false, observation = false, namespace = 'unlabeled', signal }:
-    RequestSlot & { signal?: AbortSignal | undefined }): Promise<() => void> {
+  async acquire({ priority, stop, bulk = false, observation = false, namespace = 'unlabeled', signal,
+    timeoutMs = deviceForegroundWaitMs }:
+    RequestSlot & { signal?: AbortSignal | undefined; timeoutMs?: number }): Promise<() => void> {
     if (this.failure) throw this.failure
     if (signal?.aborted) throw new DeviceApplicationError('cancelled')
     const slot = { priority, stop, bulk, observation, namespace }
@@ -85,7 +86,7 @@ export class DeviceRequestQueue {
       }
       const cancel = () => waiter.reject(new DeviceApplicationError('cancelled'))
       const timer = setTimeout(() => waiter.reject(new DeviceApplicationAdmissionError('admission_queue_timeout')),
-        deviceForegroundWaitMs)
+        timeoutMs)
       this.waiting.push(waiter)
       signal?.addEventListener('abort', cancel, { once: true })
     })

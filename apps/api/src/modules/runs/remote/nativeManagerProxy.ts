@@ -36,6 +36,9 @@ const HistoryResponseSchema = z.object({
   history: RemoteNativeHistorySchema, context: ContextSnapshotSchema.nullable().optional(), status: StatusSchema,
   page: DeviceHistoryPageSchema,
 }).strict()
+function expiredPhysicalReply(error: unknown): boolean {
+  return error instanceof DeviceApplicationError && error.code === 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED'
+}
 export interface RemoteNativeManagerOptions {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
@@ -274,6 +277,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     let sequence = review ? this.receipt?.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.afterSequence ?? -1 : -1
     let submitted = false
     let providerId: string | undefined
+    let expiredReplies = 0
     streaming: while (true) {
       signal?.throwIfAborted()
       const requestedSequence = sequence
@@ -321,8 +325,6 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
             sequence = gap.toSequence
             if (Date.now() - observedAt >= 30_000 || !isDeepStrictEqual(receipt, this.receipt)) continue streaming
           }
-          sequence = event.sequence
-          this.streamHistory!.afterSequence = sequence
           // A caller may refresh history between yields. Use its current original
           // receipt; the Worker still verifies this exact event in that history.
           const currentReceipt = this.receipt!
@@ -333,6 +335,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
             providerId = currentId
             submitted = true
           }
+          try {
+            await this.observeSource(currentReceipt, {
+              type: 'event', event: { ...event, executionId: this.intent.executionId },
+            }, signal)
+          } catch (error) {
+            if (!expiredPhysicalReply(error) || expiredReplies++ >= 4) throw error
+            // Re-read this execution's history; an evicted reply says nothing about its native process.
+            continue streaming
+          }
+          expiredReplies = 0
+          sequence = event.sequence
+          if (this.streamHistory?.value === value.history) this.streamHistory.afterSequence = sequence
           if (event.type === 'turn.capacity_retry' && event.payload.turnId === providerId && providerId) {
             await input.onRetry?.(providerId)
             providerId = undefined
@@ -342,9 +356,6 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
             await input.onSubmitted?.(event.payload.turnId)
             providerId = event.payload.turnId
           }
-          await this.observeSource(currentReceipt, {
-            type: 'event', event: { ...event, executionId: this.intent.executionId },
-          }, signal)
           yield event
         }
       } finally {
@@ -421,27 +432,34 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     return this.readHistory(session, this.historyCorrelation, signal)
   }
   private async readHistory(session: NativeSessionReference, correlationId?: string, signal?: AbortSignal): Promise<NativeHistory> {
-    this.assertSession(session)
-    signal?.throwIfAborted()
-    const streamed = this.streamHistory
-    if (streamed && (!correlationId || streamed.value.correlationId === correlationId)
-      && Date.now() - streamed.observedAt < 30_000 && isDeepStrictEqual(streamed.receipt, this.receipt)) {
-      const history = this.projectHistory(streamed.value)
-      await this.observeSource(streamed.receipt, { type: 'history', history }, signal)
-      return history
+    for (let attempt = 0; ; attempt++) {
+      this.assertSession(session)
+      signal?.throwIfAborted()
+      try {
+        const streamed = this.streamHistory
+        if (streamed && (!correlationId || streamed.value.correlationId === correlationId)
+          && Date.now() - streamed.observedAt < 30_000 && isDeepStrictEqual(streamed.receipt, this.receipt)) {
+          const history = this.projectHistory(streamed.value)
+          await this.observeSource(streamed.receipt, { type: 'history', history }, signal)
+          return history
+        }
+        const value = await this.historyResponse(await this.request('history', {
+          ...(correlationId ? { correlationId } : {}),
+          ...(streamed ? { afterSequence: streamed.afterSequence } : {}),
+        }, signal), signal)
+        await this.status(value.status)
+        if (correlationId) this.assertHistoryIdentity(value.history, session, correlationId, this.receipt!)
+        if (value.context !== undefined) this.context = value.context
+        if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now(),
+          afterSequence: streamed.afterSequence, page: value.page }
+        const history = this.projectHistory(value.history)
+        await this.observeSource(this.receipt!, { type: 'history', history }, signal)
+        return history
+      } catch (error) {
+        if (!expiredPhysicalReply(error) || attempt >= 4) throw error
+        this.streamHistory = undefined
+      }
     }
-    const value = await this.historyResponse(await this.request('history', {
-      ...(correlationId ? { correlationId } : {}),
-      ...(streamed ? { afterSequence: streamed.afterSequence } : {}),
-    }, signal), signal)
-    await this.status(value.status)
-    if (correlationId) this.assertHistoryIdentity(value.history, session, correlationId, this.receipt!)
-    if (value.context !== undefined) this.context = value.context
-    if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now(),
-      afterSequence: streamed.afterSequence, page: value.page }
-    const history = this.projectHistory(value.history)
-    await this.observeSource(this.receipt!, { type: 'history', history }, signal)
-    return history
   }
   async observeBoundary(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
     this.assertSession(session)

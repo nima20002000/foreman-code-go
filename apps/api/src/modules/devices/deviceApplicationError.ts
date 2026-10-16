@@ -62,6 +62,7 @@ const classes: Readonly<Record<string, FailureClass>> = {
   REMOTE_OBSERVATION_NOT_AUTHENTICATED: 'permanent',
   REMOTE_NATIVE_PHYSICAL_UNAVAILABLE: 'transient',
   REMOTE_NATIVE_PHYSICAL_BACKPRESSURE: 'transient',
+  REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED: 'transient',
   REMOTE_NATIVE_SOURCE_NOT_CAPTURED: 'permanent',
   REMOTE_NATIVE_SOURCE_BACKPRESSURE: 'transient',
   REMOTE_ARTIFACT_PHYSICAL_UNAVAILABLE: 'permanent',
@@ -127,6 +128,11 @@ export function deviceApplicationFailure(error: unknown): DeviceApplicationFailu
     return failure('timeout', 'transient')
   }
   const proposed = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+  // Losing a cached reply requires a fresh observation of the same process, not another execution attempt.
+  if (proposed === 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE'
+    && (error as { details?: { reason?: unknown } }).details?.reason === 'not_retained') {
+    return failure('REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED', 'transient')
+  }
   if (typeof proposed === 'string' && Object.hasOwn(classes, proposed)) {
     const details = readinessCodes.has(proposed)
       ? WorkerBundleReadinessSchema.safeParse((error as { details?: unknown }).details) : undefined
