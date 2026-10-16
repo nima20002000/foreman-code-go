@@ -263,8 +263,9 @@ export async function remoteReviewProduction(options: {
     if (mainService) closes.push(mainService.close)
     if (mainService) await execute(provider.binary, ['--version'], { env: logEnvironment })
     let mainFailure = ''
-    const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
+    const failures: Array<{ code: string; runId: string | null; namespace?: unknown; tool?: unknown;
       phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
+    let failuresSeen = 0
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
       if (mainService) {
@@ -308,20 +309,21 @@ export async function remoteReviewProduction(options: {
             })
           }
           const event = parsed as { level?: unknown; code?: unknown; errorCode?: unknown; stackFrames?: unknown;
-            namespace?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
+            namespace?: unknown; tool?: unknown; runId?: unknown; err?: { code?: unknown; stack?: unknown; message?: unknown; type?: unknown }; msg?: unknown;
             phase?: unknown; errorType?: unknown; errorLocation?: unknown }
           const code = event.err?.code ?? event.code ?? event.errorCode
             ?? (event.msg === 'Device extension request failed' ? 'DEVICE_EXTENSION_FAILED' : undefined)
             ?? (event.msg === 'Operator tool failed' ? 'OPERATOR_TOOL_FAILED' : undefined)
           if (!['warn', 'error', 'fatal'].includes(String(event.level)) || typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{1,127}$/.test(code)) continue
           const frames = Array.isArray(event.stackFrames)
-            ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 2) : []
+            ? event.stackFrames.filter((frame): frame is string => typeof frame === 'string').slice(0, 4) : []
           const sourceMessage = event.err?.message
           const errorDetail = code === 'source-reconciliation-unconfirmed' && typeof sourceMessage === 'string'
             && /^Process \d+ (?:still |could not be inspected|exceeded )/.test(sourceMessage)
             ? sourceMessage.slice(0, 200) : undefined
+          failuresSeen += 1
           failures.push({ code, phase: event.phase, errorType: event.errorType ?? event.err?.type,
-            errorDetail,
+            errorDetail, tool: typeof event.tool === 'string' ? event.tool : undefined,
             namespace: typeof event.namespace === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(event.namespace)
               ? event.namespace : undefined,
             errorLocation: event.errorLocation ?? (frames.length ? frames.map(frame => frame.trim()).join(' ') : undefined)
@@ -405,8 +407,19 @@ export async function remoteReviewProduction(options: {
       return client.callTool({ name, arguments: args })
     }
     async function value(name: string, args: Record<string, unknown>) {
+      const seenBefore = failuresSeen
       const response = await call(name, args)
       if (response.isError) {
+        // Main logs an unclassified tool failure asynchronously; report it with the error instead of a stale list.
+        if (JSON.stringify(response.content).includes('INTERNAL_ERROR')) {
+          await readUntil(async () => failures.slice(Math.max(0, failures.length - (failuresSeen - seenBefore))),
+            recent => recent.some(failure => failure.tool === name),
+            { timeoutMs: 1_000, minimumReadIntervalMs: 25, description: `the Main log of the failed ${name}` })
+            .catch((error: unknown) => {
+              // ignore: the failure is reported below without the Main log line when none arrives.
+              void error
+            })
+        }
         throw new Error(`${name}: ${JSON.stringify(response.content)}\nNative failure codes: ${JSON.stringify(failures.slice(-8))}`)
       }
       return decodeMcpToolResult(response)
