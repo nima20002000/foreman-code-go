@@ -71,6 +71,7 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
     if (bytes > limit) throw new HarnessExecutionError('NATIVE_HISTORY_TOO_LARGE', 'Native history identifiers exceed the page limit.')
   }
   let cursor = afterSequence ?? nextSequence - 1
+  if (afterSequence !== undefined) delete value.gap
   if (afterSequence !== undefined && afterSequence + 1 < firstSequence) {
     value.gap = { fromSequence: afterSequence + 1, toSequence: firstSequence - 1, reason: 'retention' }
     cursor = firstSequence - 1
@@ -78,6 +79,14 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   const candidates = afterSequence === undefined
     ? [...history.events].reverse() : history.events.filter(event => event.sequence > afterSequence)
   for (const event of candidates) {
+    const gap = history.gap
+    if (afterSequence !== undefined && event.sequence > cursor + 1 && gap
+      && gap.fromSequence <= cursor + 1 && gap.toSequence === event.sequence - 1) {
+      // A leading retention gap and an internal gap need separate pages.
+      if (value.gap) break
+      value.gap = { ...gap, fromSequence: cursor + 1 }
+      cursor = gap.toSequence
+    }
     const eventBytes = Buffer.byteLength(JSON.stringify(event)) + 1
     if (events.length >= 1024 || bytes + eventBytes > limit) {
       // One page can describe only one skipped range; return an existing gap before skipping this event.
@@ -95,10 +104,18 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
     }
     bytes += eventBytes
   }
+  const trailingGap = history.gap
+  if (afterSequence !== undefined && !value.gap && trailingGap
+    && trailingGap.fromSequence <= cursor + 1 && trailingGap.toSequence >= cursor + 1
+    && !candidates.some(event => event.sequence > cursor)) {
+    value.gap = { ...trailingGap, fromSequence: cursor + 1 }
+    cursor = trailingGap.toSequence
+  }
   if (afterSequence === undefined) value.firstRetainedSequence = events[0]?.sequence ?? nextSequence
   const original: NativeHistory = { ...history, events,
-    firstRetainedSequence: value.firstRetainedSequence ?? firstSequence, nextSequence,
-    ...(value.gap === undefined ? {} : { gap: value.gap }) }
+    firstRetainedSequence: value.firstRetainedSequence ?? firstSequence, nextSequence }
+  if (value.gap) original.gap = value.gap
+  else delete original.gap
   return { history: value, page: { nextAfterSequence: cursor, hasMore: cursor < nextSequence - 1,
     ...(metadata ? { metadata } : {}) }, [historySource]: original }
 }
