@@ -22,6 +22,10 @@ import {
 } from './deviceRequestQueue.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
+/** A link whose authority was confirmed this recently keeps serving work while the database is slow or short of
+ * connections. Revocation closes the link directly, and every heartbeat still re-reads its authority. */
+const authorizationReuseMs = 120_000
+
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
 export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
   /** Domain handler MUST validate its execution/job/transfer grant and immutable target. */
@@ -79,6 +83,8 @@ export class DeviceApplicationChannel {
   private outboundBytes = 0
   private failure: Error | undefined
   private authorization: Promise<void> | undefined
+  // The endpoint admits a link only after a live authorization read.
+  private authorizedAt = Date.now()
   private heartbeatAuthorizing = false
   private readonly detach: () => void
   constructor(private readonly options: {
@@ -125,11 +131,14 @@ export class DeviceApplicationChannel {
     if (!extension || !allowed) throw new DeviceApplicationError('unavailable')
     return extension
   }
-  private async authorized() {
+  private async authorized(fresh = false) {
     this.current()
-    if (this.options.revalidate) {
-      // Share only an in-flight read; every later operation still validates live authority.
-      this.authorization ??= this.track(this.options.revalidate()).finally(() => { this.authorization = undefined })
+    if (this.options.revalidate && (fresh || Date.now() - this.authorizedAt >= authorizationReuseMs)) {
+      if (!this.authorization) {
+        const startedAt = Date.now()
+        this.authorization = this.track(this.options.revalidate().then(() => { this.authorizedAt = startedAt }))
+          .finally(() => { this.authorization = undefined })
+      }
       try {
         await withDeviceDeadline(this.authorization, this.abort.signal, 10_000)
       } catch (error) {
@@ -148,7 +157,7 @@ export class DeviceApplicationChannel {
   private revalidateHeartbeat() {
     if (this.heartbeatAuthorizing) return
     this.heartbeatAuthorizing = true
-    void this.track(this.authorized()).catch(error => {
+    void this.track(this.authorized(true)).catch(error => {
       if (this.abort.signal.aborted) return
       if (error instanceof DeviceApplicationError && error.retryable) {
         componentLogger('devices').warn({ err: error, deviceId: this.binding.deviceId,

@@ -13,6 +13,7 @@ import { requiresWorkerBundle } from './workerAdmission.js'
 import { isTransientDatabaseOrSocketError } from '@foreman-code/contracts/failure'
 import { DomainError } from '../errors.js'
 import { DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
+import { withoutCiDatabasePriority } from '../../infrastructure/ciDatabasePriority.js'
 
 export type AuthenticatedDevice = DevicePrincipal
 
@@ -174,7 +175,9 @@ export class DeviceEndpoint {
             clockSkewMs: workerTime === null ? null : workerTime - mainTime,
             clockReason: workerClockReason(workerTime, mainTime) })
         },
-        registrations: this.options.extensions ?? [], revalidate: async () => { try { await this.track(this.options.auth.revalidateDevice(principal, 'heartbeat')) } catch (error) { throw authorizationFailure(error) } }, onObservedFrame: (observedAt) => {
+        registrations: this.options.extensions ?? [],
+        // One read serves every operation on the link, so it never borrows a CI dispatch caller's reserved connections.
+        revalidate: async () => { try { await this.track(withoutCiDatabasePriority(() => this.options.auth.revalidateDevice(principal, 'heartbeat'))) } catch (error) { throw authorizationFailure(error) } }, onObservedFrame: (observedAt) => {
         if (!current() || !session?.presence) return
         session.presence = Object.freeze({ ...session.presence, lastSeenAt: observedAt })
         if (session.ready) this.options.presence(session.presence)
