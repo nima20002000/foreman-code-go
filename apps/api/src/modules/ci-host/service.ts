@@ -811,7 +811,7 @@ export class HostCiService {
         savedLogTail,
         run.supersededBy ?? null, run.state, JSON.stringify(run), setupRequeue],
       next, run.cancellation ?? audit, client)
-    if (terminal && run.gate && run.suite === 'integration') invalidateExecutorSpeeds(this.pool)
+    if (terminal && run.gate && run.suite === 'integration') invalidateExecutorSpeeds(this.planningEndpoint)
     if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message: messages.message },
       'CI ticket queued for another computer')
     return Boolean(saved.rowCount)

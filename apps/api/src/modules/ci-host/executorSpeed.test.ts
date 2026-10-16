@@ -256,7 +256,7 @@ it('reuses one speed estimate between planning passes until a gate ticket finish
   await Promise.all([readExecutorSpeeds(pool, fleet), readExecutorSpeeds(pool, fleet)])
   await readExecutorSpeeds(pool, fleet)
   expect(historyLoads).toBe(1)
-  invalidateExecutorSpeeds(pool)
+  invalidateExecutorSpeeds(fleet)
   await readExecutorSpeeds(pool, fleet)
   expect(historyLoads).toBe(2)
 })
