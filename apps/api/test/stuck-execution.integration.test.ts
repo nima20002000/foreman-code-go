@@ -11,6 +11,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { intervalRuntime } from './helpers/intervalRuntime.js'
+import { measuredCiPages } from './helpers/measuredCiPages.js'
 
 it('reports an idle running execution after every CI ticket ends, without stopping it, through authenticated MCP',
   async () => {
@@ -62,6 +63,19 @@ it('reports an idle running execution after every CI ticket ends, without stoppi
         [ticket.id, ticket.workspaceId, ticket.groupId, ticket.state, JSON.stringify(ticket)])
       }
       expect(await bugs.detectStuckExecutions(idleMs, observedAt)).toBe(0)
+      // Other executions' finished tickets accumulate in the workspace; detection reads only this execution's.
+      const unrelated = await runtime.db.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,log_tail)
+        select u.id,t.workspace_id,u.id,'canceled',t.record||jsonb_build_object('id',u.id::text,'groupId',u.id::text,
+            'state','canceled','initiator',t.record->'initiator'||jsonb_build_object('executionId','unrelated-'||u.id::text)),
+          (select string_agg(md5(u.id::text||g::text),'') from generate_series(1,40) g)
+        from ci_runs t cross join (select gen_random_uuid() as id from generate_series(1,3000)) u where t.id=$1`,
+      [tickets[1]!.id])
+      expect(unrelated.rowCount).toBe(3000)
+      await runtime.db.pool.query('analyze ci_runs')
+      const measured = measuredCiPages(runtime.db.pool)
+      expect(await new BugReportService(measured.pool, commands).detectStuckExecutions(idleMs, observedAt)).toBe(0)
+      // The unrelated tickets span hundreds of heap pages; this execution's 24 tickets need a handful.
+      expect(measured.pages.max).toBeLessThan(100)
       await runtime.db.pool.query(`update ci_runs set state='running',record=record||'{"state":"running"}'::jsonb
         where id=$1`, [tickets[0]!.id])
       expect(await bugs.detectStuckExecutions(idleMs, observedAt)).toBe(0)

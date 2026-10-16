@@ -73,8 +73,13 @@ export function expireCiRun(run: CiRunRecord, now: Date): CiRunRecord | null {
 export async function expireOverdueCiRuns(pool: pg.Pool, now = new Date(),
   reconcile?: (run: CiRunRecord, hostKey: string | null) => Promise<CiRunRecord>): Promise<number> {
   const rows = (await pool.query<{ id: string; state: string; record: unknown; host_key: string | null }>(
-    `select id,state,record,host_key from ci_runs
-    where record->'deadlineExceeded' is null and (state in ('queued','starting','running')
+    // Candidates come from the state and recovery indexes; reading every ticket's record took seconds.
+    `select id,state,record,host_key from ci_runs where id in (
+      select id from ci_runs where state in ('queued','starting','running')
+      union
+      select id from ci_runs where state in ('starting','running') or record->>'collection'='pending'
+        or state in ('passed','failed','canceled','lost') and record#>>'{observation,status}'='unavailable')
+    and record->'deadlineExceeded' is null and (state in ('queued','starting','running')
       or record->>'collection'='pending' or record#>>'{observation,status}'='unavailable')`)).rows
   let expired = 0
   for (const row of rows) {

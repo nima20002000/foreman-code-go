@@ -5,8 +5,14 @@ select coalesce((select max(sequence) from recent),0)::text as high_water,
   coalesce((select min(sequence) from retained),0)::text as retained_from,
   (select count(*) from recent)::integer as observed`
 
-/** Extract protocol metadata and recorded work results without native provider bodies. */
-export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
+/** Extract protocol metadata and recorded work results without native provider bodies.
+ * Compressed jsonb is decompressed again by every operator that reads it: the Board snapshot and each
+ * native event are copied once into plain jsonb before the per-row projections read them. */
+export const RUN_ACTIVITIES_PAGE_SQL = `with board as materialized (
+  select run_id,workspace_id,workflow_id,workflow_version_id,record#>'{}' as record
+  from run_board_snapshots where run_id=$1
+)
+select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
   coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
   coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,e.tick_index as execution_tick_index,
   j.id as job_execution_id,j.attempt_id as job_attempt_id,j.operation_id as job_operation_id,
@@ -109,7 +115,7 @@ left join ci_runs cq on a.kind='ci_state_changed'
   and cq.record->>'suite'=a.payload#>>'{ci,suite}'
   and coalesce(cq.record->'part','null'::jsonb) is not distinct from a.payload#>'{ci,part}'
   and e.record->>'agentConfigurationVersionId'=r.record->'agentConfigurationVersionIds'->>e.agent_id
-left join run_board_snapshots s on s.run_id=r.id and s.workspace_id=r.workspace_id
+left join board s on s.run_id=r.id and s.workspace_id=r.workspace_id
   and s.workflow_id=r.workflow_id and s.workflow_version_id=r.workflow_version_id
 left join workflow_job_executions w on w.run_id=a.run_id and w.job_execution_id=a.payload->>'jobExecutionId'
 left join run_repeat_executions x on x.run_id=w.run_id and x.execution_id=w.node_execution_id and x.executor_kind='job'
@@ -126,11 +132,11 @@ left join lateral (
         'type',case n0.record#>>'{payload,method}' when 'item/started' then 'item.started' when 'item/completed' then 'item.completed'
           when 'turn/started' then 'turn.started' when 'turn/completed' then 'turn.completed' else 'native.notification' end,
         'subagent',true,'payload',(n0.record#>'{payload,params}') || jsonb_build_object('nativeMethod',n0.record#>>'{payload,method}'))
-    else n0.record end as record
+    else n0.record#>'{}' end as record
   from harness_native_events n0 where n0.execution_id=a.harness_execution_id
     and n0.sequence=case when a.kind='harness_output'
       and (a.payload->>'nativeEventSequence') ~ '^[0-9]{1,9}$'
-      then (a.payload->>'nativeEventSequence')::integer end) n on true
+      then (a.payload->>'nativeEventSequence')::integer end offset 0) n on true
 where a.run_id=$1 and a.sequence __COMPARATOR__ $2::bigint and a.sequence<=$3::bigint
   and a.sequence>=$4::bigint
 order by a.sequence __ORDER__ limit $5`

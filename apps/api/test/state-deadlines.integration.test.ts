@@ -6,6 +6,7 @@ import { withTransaction } from '../src/infrastructure/transaction.js'
 import { sweepStateDeadlines } from '../src/modules/diagnostics/stateDeadlines.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { deferred } from './helpers/deferred.js'
+import { measuredCiPages } from './helpers/measuredCiPages.js'
 import { graphFixture } from './eng04-graph-composition-fixture.js'
 
 it('records Run activity while a Run writer holds the Run and then writes activity, without deadlocking', async () => {
@@ -104,6 +105,41 @@ it('fails overdue CI tickets in the database and keeps a running executor\'s slo
     expect(saved.get(running.id)).toMatchObject({ state: 'failed', host_key: 'main:main', record: { collection: 'failed',
       observation: { status: 'unavailable' }, deadlineExceeded: { code: 'CI_RUN_DEADLINE_EXCEEDED', executor: 'retained' } } })
     expect(await sweepStateDeadlines(db.pool, sources)).toMatchObject({ ci: 0 })
+  } finally {
+    await graph.app.close()
+    await db.close()
+  }
+}, 60_000)
+
+it('finds overdue CI tickets without reading every finished ticket', async () => {
+  const db = await currentDatabase()
+  const graph = await graphFixture(db, { form: 'single' })
+  const queued = CiRunRecordSchema.parse({
+    id: randomUUID(), workspaceId: graph.scope.workspaceId, groupId: randomUUID(), suite: 'lint', commit: 'a'.repeat(40),
+    repository: 'example/project', partition: null, state: 'queued', computer: null, step: null, exitCode: null, message: null,
+    queuedAt: new Date(Date.now() - 7 * 60 * 60_000).toISOString(), startedAt: null, finishedAt: null,
+    initiator: { principalId: graph.writer.principal.id, executionId: null } })
+  try {
+    await db.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,$4,$5::jsonb)`,
+      [queued.id, queued.workspaceId, queued.groupId, queued.state, JSON.stringify(queued)])
+    // Finished tickets accumulate: every full integration run adds a hundred.
+    const finished = await db.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,log_tail)
+      select u.id,t.workspace_id,u.id,'passed',t.record||jsonb_build_object('id',u.id::text,'groupId',u.id::text,
+          'state','passed','exitCode',0,'finishedAt',t.record->'queuedAt'),
+        (select string_agg(md5(u.id::text||g::text),'') from generate_series(1,40) g)
+      from ci_runs t cross join (select gen_random_uuid() as id from generate_series(1,3000)) u where t.id=$1`, [queued.id])
+    expect(finished.rowCount).toBe(3000)
+    await db.pool.query('analyze ci_runs')
+    const measured = measuredCiPages(db.pool)
+    const pool = { query: async (text: string, values?: unknown[]) => {
+      const client = await measured.pool.connect()
+      try { return await client.query(text, values) } finally { client.release() }
+    } } as unknown as typeof db.pool
+    expect(await expireOverdueCiRuns(pool, new Date())).toBe(1)
+    // The finished tickets span hundreds of heap pages; the one overdue ticket needs a handful.
+    expect(measured.pages.max).toBeLessThan(100)
+    const saved = (await db.pool.query<{ state: string }>('select state from ci_runs where id=$1', [queued.id])).rows[0]
+    expect(saved?.state).toBe('failed')
   } finally {
     await graph.app.close()
     await db.close()

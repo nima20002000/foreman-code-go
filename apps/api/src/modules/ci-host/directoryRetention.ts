@@ -14,19 +14,22 @@ export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRec
   delete hostRef.slot
   const rows = (await pool.query<{ run_id: string; state: string; finished_at: string | null;
     collection: string | null; rank: string }>(`
-    with attempts as (
-      select id::text as run_id, state, record->>'finishedAt' as finished_at,
-        record->>'collection' as collection, record#>'{computer,hostRef}' as host_ref
-      from ci_runs where record->'setupRetry' is null
+    with tickets as materialized (
+      -- Each operator on a stored record reads it from TOAST again: extract the fields once per ticket.
+      select c.id::text as run_id, c.state, x."finishedAt" as finished_at, x.collection,
+        x.computer->'hostRef' as host_ref, x."setupRetry" as setup_retry
+      from ci_runs c cross join lateral jsonb_to_record(c.record)
+        as x("finishedAt" text, collection text, computer jsonb, "setupRetry" jsonb)
+      where c.state in ('passed','failed','canceled','lost')
+    ), attempts as (
+      select run_id, state, finished_at, collection, host_ref from tickets where setup_retry is null
       union all
-      select id::text, state, record->>'finishedAt', record->>'collection',
-        record#>'{setupRetry,failedComputer}' from ci_runs where record->'setupRetry' is not null
+      select run_id, state, finished_at, collection, setup_retry->'failedComputer' from tickets where setup_retry is not null
       union all
-      select record#>>'{setupRetry,runId}', state, record->>'finishedAt', record->>'collection',
-        record#>'{computer,hostRef}' from ci_runs where record->'setupRetry' is not null
+      select setup_retry->>'runId', state, finished_at, collection, host_ref from tickets where setup_retry is not null
     ), ranked as (
       select *, row_number() over (order by finished_at::timestamptz desc nulls first, run_id desc) as rank
-      from attempts where host_ref @> $1::jsonb and state in ('passed','failed','canceled','lost')
+      from attempts where host_ref @> $1::jsonb
     )
     select run_id,state,finished_at,collection,rank from ranked where rank > $2`,
   [JSON.stringify(hostRef), CI_DIRECTORY_KEEP])).rows
