@@ -43,13 +43,15 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   if (!registration || registration.keyRevision !== pin.registration!.keyRevision
     || registration.authorizationRevision !== pin.registration!.authorizationRevision) denied()
   const row = snapshot?.row ?? (await sql.query<{ authorization_principal_id: string; workspace_id: string; workflow_id: string;
-    execution_state: string; stopped: boolean; cleanup: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
+    execution_state: string; stopped: boolean; cleanup: boolean; failed: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
       r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped,
-      exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
+      exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup,
+      exists(select 1 from approval_execution_state b where b.execution_id=e.id
+        and b.failure_result is not null) as failed
       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2${share('for share of r,e')}`,
     [current!.runId, current!.executionId])).rows[0]
   if (!row) denied()
-  const cleanup = row!.cleanup && (input.action === 'stop' || input.action === 'read')
+  const cleanup = (row!.cleanup || row!.failed) && (input.action === 'stop' || input.action === 'read')
   const grantCount = snapshot ? Number(snapshot.row.granted) : (await sql.query(`select 1 from execution_dispatch_owner_grants
     where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked${share('for share')}`,
     [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])).rowCount
@@ -74,7 +76,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
       || !sameWorkflowValue(receipt.data.connection, connection))) denied()
     resident = receipt.success && receipt.data.native !== undefined
-    if (input.action === 'stop' && !row!.cleanup
+    if (input.action === 'stop' && !row!.cleanup && !row!.failed
       && (!receipt.success || !await canCloseRetainedRemoteReviewer(sql, receipt.data))) denied()
   }
   // Cleanup observes and cancels the admitted owner even when it can no longer launch.

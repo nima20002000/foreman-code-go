@@ -328,13 +328,13 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
   /** Positively close every transport owned by this exact manager, including
    * creates that failed before a native ID was returned. Never infer disposal
    * from an empty local session map. New writes stay fenced after any attempt. */
-  dispose(): Promise<void> {
+  dispose(signal?: AbortSignal): Promise<void> {
     this.closing = true
     if (this.disposal) return this.disposal
     if (!this.manager.dispose) return Promise.reject(new DomainError('NATIVE_DISPOSAL_UNSUPPORTED',
       'The native manager cannot prove closure of an unbound transport.', 409))
     const active = [...this.active.values()]
-    const operation = Promise.resolve().then(() => this.manager.dispose!()).then(async () => {
+    const operation = Promise.resolve().then(() => this.manager.dispose!(signal)).then(async () => {
       await Promise.all(active.map((lease) => lease.finished))
     }).catch((error: unknown) => {
       if (this.disposal === operation) this.disposal = undefined
@@ -781,9 +781,12 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     })
   }
 
-  private async closeOwned(session: NativeSessionReference, restart: boolean): Promise<void> {
+  private async closeOwned(session: NativeSessionReference,
+    options: { restart: boolean; signal: AbortSignal | undefined }): Promise<void> {
+    const { restart, signal } = options
+    signal?.throwIfAborted()
     const close = (manager: NativeHarnessSessionManager) => restart && manager.closeForRestart
-      ? manager.closeForRestart(session) : manager.close(session)
+      ? manager.closeForRestart(session, signal) : manager.close(session, signal)
     const releasing = this.releasing.get(session.nativeSessionId)
     if (releasing) await releasing
     let active = this.active.get(session.nativeSessionId)
@@ -804,19 +807,23 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           || error !== active.guard.signal.reason) throw error
         // Restart can abort observation while its ownership check is awaiting SQL.
         await active.finished
-        return this.closeOwned(session, restart)
+        return this.closeOwned(session, options)
       }
       active.observedStatus = 'disconnected'
       return close(this.manager)
     }
-    return this.withLane(session, `close-${randomUUID()}`, undefined, async (manager, lease) => {
+    return this.withLane(session, `close-${randomUUID()}`, signal, async (manager, lease) => {
       lease.observedStatus = lease.previous.observedStatus === 'idle' ? 'idle' : 'disconnected'
       await close(manager)
     })
   }
 
-  close(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, false) }
-  closeForRestart(session: NativeSessionReference): Promise<void> { return this.closeOwned(session, true) }
+  close(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
+    return this.closeOwned(session, { restart: false, signal })
+  }
+  closeForRestart(session: NativeSessionReference, signal?: AbortSignal): Promise<void> {
+    return this.closeOwned(session, { restart: true, signal })
+  }
 }
 
 async function waitForSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {

@@ -27,10 +27,12 @@ function fixture() {
     selectedSemantic: option.semantic, nativeResponse: { decision: 'approved' }, deliveryState: 'not_started', decidedAt: now, createdAt: now, updatedAt: now }
   const state = { receipt: receipt as RemoteOperationReceipt | undefined, interaction: interaction as DurableInteraction | undefined,
     cleanup: new Date(now) as Date | undefined, reviewer: undefined as unknown, reviewsPending: false,
-    owned: true, queries: [] as string[], control: undefined as unknown }
-  const raw = { query: async (text: string) => {
+    owned: true, queries: [] as string[], control: undefined as unknown, failedExecutionId: undefined as string | undefined }
+  const raw = { query: async (text: string, values: unknown[] = []) => {
     state.queries.push(text)
-    const rows = text.startsWith('select r.record as run') ? state.reviewer ? [state.reviewer] : []
+    const rows = text.includes('from approval_execution_state')
+      ? state.failedExecutionId === values[0] ? [{}] : []
+      : text.startsWith('select r.record as run') ? state.reviewer ? [state.reviewer] : []
       : text.startsWith('select 1 from review_jobs') ? state.reviewsPending ? [{}] : []
       : text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
       : text.startsWith('select record') ? state.interaction ? [{ record: state.interaction }] : []
@@ -72,6 +74,24 @@ function retainReviewer(f: ReturnType<typeof fixture>) {
 }
 
 describe('SQL-only admitted remote control preparation', () => {
+  it('uses the persisted failure to stop only its abandoned attempt without fencing the Run', async () => {
+    const f = fixture()
+    f.state.cleanup = undefined
+    f.state.failedExecutionId = intent.executionId
+    try {
+      const command = await f.prepare('stop')
+      expect(command).toMatchObject({ operationId: intent.operationId, attemptId: intent.attemptId,
+        executionId: intent.executionId, native, owner: intent.owner, action: { kind: 'stop' } })
+      expect(await f.prepare('stop')).toEqual(command)
+      expect(f.state.cleanup).toBeUndefined()
+      f.state.failedExecutionId = 'sibling-execution'
+      await expect(f.prepare('stop')).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })
+      f.state.failedExecutionId = intent.executionId
+      f.state.receipt!.native = { ...native, sessionId: 'replacement-session' }
+      await expect(f.prepare('stop')).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })
+    } finally { await f.db.close() }
+  })
+
   it('targets the retained session for Run cleanup while review turns can still advance', async () => {
     const f = fixture()
     retainReviewer(f)

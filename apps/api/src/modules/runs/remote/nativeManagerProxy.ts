@@ -489,27 +489,27 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })
     return history
   }
-  async close(session: NativeSessionReference) {
+  async close(session: NativeSessionReference, signal?: AbortSignal) {
     this.assertSession(session)
-    if (this.receipt?.phase !== 'confirmed_terminal') await this.status(await this.request('status', {}))
-    if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session)
+    if (this.receipt?.phase !== 'confirmed_terminal') await this.status(await this.request('status', {}, signal))
+    if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session, signal)
     if (this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native closure is unconfirmed')
   }
-  async dispose() {
+  async dispose(signal?: AbortSignal) {
     if (!this.prepareAttempted) return
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') {
-      await this.status(await this.request('status', {}))
+      await this.status(await this.request('status', {}, signal))
     }
     if (!this.detached && this.receipt && !this.receipt.native && !this.receipt.entryAttempted
       && !this.receipt.terminal) {
-      await this.status(await this.request('control', { command: preparationStop(this.intent) }))
+      await this.status(await this.request('control', { command: preparationStop(this.intent) }, signal))
     }
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native disposal is unconfirmed')
   }
-  async closeForRestart(session: NativeSessionReference) {
+  async closeForRestart(session: NativeSessionReference, signal?: AbortSignal) {
     this.assertSession(session)
     if (this.detached) return
-    await this.history(session)
+    await this.history(session, signal)
     this.detached = true
   }
 }
