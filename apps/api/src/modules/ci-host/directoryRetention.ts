@@ -9,7 +9,7 @@ export const CI_DIRECTORY_PAGE_SIZE = 1000
 const terminalStates = new Set(['passed', 'failed', 'canceled', 'lost'])
 
 /** Main's saved ticket, including its executor attempts, determines which local directories can expire. */
-export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRecord['computer'], now = Date.now(),
+export async function ciDirectoryCleanupCandidates(pool: Pick<pg.Pool, 'query'>, host: CiRunRecord['computer'], now = Date.now(),
   options: { offset?: number } = {}) {
   if (!host) return []
   const hostRef = { ...host.hostRef }
@@ -19,18 +19,20 @@ export async function ciDirectoryCleanupCandidates(pool: pg.Pool, host: CiRunRec
     with tickets as materialized (
       -- Each operator on a stored record reads it from TOAST again: extract the fields once per ticket.
       select c.id::text as run_id, c.state, x."finishedAt" as finished_at, x.collection,
-        x.computer->'hostRef' as host_ref, x."setupRetry" as setup_retry
+        x.computer->'hostRef' as host_ref, x."setupRetry" as setup_retry, x."executionRunId" as execution_run_id
       from ci_runs c cross join lateral jsonb_to_record(c.record)
-        as x("finishedAt" text, collection text, computer jsonb, "setupRetry" jsonb)
+        as x("finishedAt" text, collection text, computer jsonb, "setupRetry" jsonb, "executionRunId" text)
       where c.state in ('passed','failed','canceled','lost')
         and ((c.record#>'{computer,hostRef}') @> $1::jsonb
           or (c.record#>'{setupRetry,failedComputer}') @> $1::jsonb)
     ), attempts as (
-      select run_id, state, finished_at, collection, host_ref from tickets where setup_retry is null
+      select coalesce(execution_run_id,run_id) as run_id, state, finished_at, collection, host_ref
+        from tickets where setup_retry is null
       union all
       select run_id, state, finished_at, collection, setup_retry->'failedComputer' from tickets where setup_retry is not null
       union all
-      select setup_retry->>'runId', state, finished_at, collection, host_ref from tickets where setup_retry is not null
+      select coalesce(execution_run_id,setup_retry->>'runId'), state, finished_at, collection, host_ref
+        from tickets where setup_retry is not null
     ), ranked as (
       select *, row_number() over (order by finished_at::timestamptz desc nulls first, run_id desc) as rank
       from attempts where host_ref @> $1::jsonb

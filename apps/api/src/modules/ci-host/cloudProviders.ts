@@ -31,7 +31,7 @@ export interface CloudRun {
   provenance?: CiHostRun['provenance']
   collection?: { log: boolean; artifacts: boolean; unavailableAt?: string
     retry?: { since: string; attempts: number; nextAttemptAt: string } }
-  cancellation?: { at: string; canceledIds: string[]; completedAt?: string }
+  cancellation?: { at: string; canceledIds: string[]; completedAt?: string; requeue?: boolean }
   dispatchHistory?: { at: string; providerRunId: string | null }[]
   /** Live progress kept while the run is followed: steps already written to the log, the running step's output
    * bytes written so far, and bytes written in all. */
