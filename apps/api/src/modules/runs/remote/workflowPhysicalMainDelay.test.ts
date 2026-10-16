@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import { DeviceApplicationError, deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
+import { deviceRequestTimeoutMs, waitForDeviceRetry } from '../../devices/deviceRequestRetry.js'
+import { DeviceConnectionError } from '../../devices/deviceWire.js'
 import { DomainError } from '../../errors.js'
 import { nativePersistenceRedactor } from '../../interactions/nativePersistence.js'
 import { beforeGraphCommit } from '../../run-graph/connection.js'
@@ -165,7 +167,7 @@ it.each(['backpressure', 'timeout', 'unavailable', 'DATABASE_READ_TIMEOUT', '40P
   },
 )
 
-it('keeps retrying busy Main replies beyond a verification window without replacing the attempt', async () => {
+it('keeps retrying Main database timeouts beyond a verification window without replacing the attempt', async () => {
   const f = await physicalFixture()
   vi.useFakeTimers()
   const startedAt = Date.now()
@@ -176,7 +178,7 @@ it('keeps retrying busy Main replies beyond a verification window without replac
   for (let count = 0; count < 6; count++) {
     f.request.mockImplementationOnce(async () => {
       await new Promise(resolve => setTimeout(resolve, 15_000))
-      throw new DeviceApplicationError('unavailable')
+      throw new DeviceApplicationError('DATABASE_READ_TIMEOUT')
     })
   }
   try {
@@ -192,6 +194,99 @@ it('keeps retrying busy Main replies beyond a verification window without replac
     await f.sqlConnection.close()
   }
 })
+
+it.each([
+  ['publication', 'revoked'], ['precommit', 'revoked'],
+  ['publication', 'expired'], ['precommit', 'expired'],
+] as const)('rejects %s with a connected Worker and an %s execution credential', async (stage, reason) => {
+  const f = await physicalFixture()
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try {
+    const original = await f.bind()
+    const deny = () => {
+      now += 65_000
+      if (reason === 'revoked') f.credential.revoked = true
+      else f.credential.expiresAt = now - 1
+    }
+    await expect(f.sqlConnection.transaction(async sql => {
+      const verify = () => f.producer.assertOriginal(sql, f.owner, original)
+      if (stage === 'publication') deny()
+      await verify()
+      beforeGraphCommit(sql, verify)
+      if (stage === 'precommit') deny()
+    })).rejects.toMatchObject({
+      code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'execution_authorization' },
+    })
+    expect(f.currentBinding()).toEqual(f.context.binding)
+    expect(f.request).toHaveBeenCalledOnce()
+  } finally {
+    await f.sqlConnection.close()
+  }
+})
+
+it('reads the Worker again after slow publication outlives the cached history', async () => {
+  const f = await physicalFixture()
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try {
+    const original = await f.bind()
+    const query = f.query.getMockImplementation()!
+    f.query.mockImplementationOnce(async text => {
+      now += 65_000
+      return query(text)
+    })
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+    f.readout.expiresAt = new Date(now + 60_000).toISOString()
+    await f.producer.prefetch(f.readout.receipt, f.placement, f.source)
+    expect(f.request).toHaveBeenCalledTimes(2)
+  } finally {
+    await f.sqlConnection.close()
+  }
+})
+
+it('does not extend an expired observation into a later publication operation', async () => {
+  const f = await physicalFixture()
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try {
+    const original = await f.bind()
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+    now += 65_000
+    await expect(f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original)))
+      .rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+    expect(f.request).toHaveBeenCalledOnce()
+  } finally {
+    await f.sqlConnection.close()
+  }
+})
+
+it.each(['timeout', 'unavailable'] as const)(
+  'bounds unanswered physical RPCs reported as %s while the Worker stays connected', async code => {
+    const f = await physicalFixture()
+    const controller = new AbortController()
+    vi.useFakeTimers()
+    const failure = code === 'timeout' ? new DeviceConnectionError(code) : new DeviceApplicationError(code)
+    f.request.mockImplementation(async (_payload, options) => {
+      await waitForDeviceRetry(options!.timeoutMs!, controller.signal)
+      throw failure
+    })
+    let settled: { error?: unknown } | undefined
+    const result = f.producer.prefetch(f.readout.receipt, f.placement, f.source, controller.signal)
+      .then(() => { settled = {} }, error => { settled = { error } })
+    try {
+      await vi.advanceTimersByTimeAsync(5 * deviceRequestTimeoutMs + 10_000)
+      expect(settled).toEqual({ error: failure })
+      expect(f.request).toHaveBeenCalledTimes(5)
+      expect(f.currentBinding()).toEqual(f.context.binding)
+    } finally {
+      controller.abort()
+      await result
+      vi.useRealTimers()
+      await f.sqlConnection.close()
+    }
+  },
+)
 
 it.each(['denied', 'disconnected'] as const)('does not retry a %s physical authority check', async reason => {
   const failure = new DeviceApplicationError(reason === 'denied' ? 'AUTH_REVOKED' : 'transport')

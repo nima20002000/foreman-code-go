@@ -58,7 +58,15 @@ interface Prepared {
   assertAcknowledgmentCurrent(): void
   acknowledge(sourceDigest:string, options?: { retire: true }):Promise<RemoteWorkflowPhysicalAck>
 }
-interface Bound extends Prepared { owner: RunOwnership; lifetime: RemoteWorkflowMainLifetime;publications:Set<GraphTransactionSql>;replyPublications:Set<GraphTransactionSql>;terminalPublications:Set<GraphTransactionSql>;terminalCapture?:WorkflowNativeCapture }
+interface Bound extends Prepared {
+  owner: RunOwnership
+  lifetime: RemoteWorkflowMainLifetime
+  processingSql?: GraphTransactionSql
+  publications: Set<GraphTransactionSql>
+  replyPublications: Set<GraphTransactionSql>
+  terminalPublications: Set<GraphTransactionSql>
+  terminalCapture?: WorkflowNativeCapture
+}
 interface WorkflowPhysicalTerminal {
   original: VerifiedRemoteOriginalSource
   capture: Bound
@@ -288,7 +296,6 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
     return result
   }
   // Network waits have their own deadline; freshness comes from the returned Worker observation.
-  let expiresAt = Infinity
   let rebootClosed = false
   const assertRegisteredConnection = () => {
     signal?.throwIfAborted()
@@ -301,10 +308,9 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   const assertCurrent = () => {
     assertRegisteredConnection()
     if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
-    // Main's processing time does not age an authenticated reply while its connection remains current.
-    expiresAt = Date.now() + 60_000
   }
   const request = async (payload: unknown) => {
+    let ordinaryFailures = 0
     for (let attempt = 0; ; attempt++) {
       assertRegisteredConnection()
       try {
@@ -317,7 +323,8 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
         const failure = deviceApplicationFailure(error)
         if (!failure.retryable || ['transport', 'DEVICE_LINK_DROPPED', 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE']
           .includes(failure.code)) throw error
-        // Main being busy must not consume this healthy remote attempt's retry budget.
+        // Only an identified Main database timeout leaves the ordinary RPC budget untouched.
+        if (failure.code !== 'DATABASE_READ_TIMEOUT' && ordinaryFailures++ >= 4) throw error
         await waitForDeviceRetry(Math.min(2_000, 250 * 2 ** attempt), signal)
       }
     }
@@ -334,7 +341,7 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
     if (next.bytes !== undefined) return unavailable('readout_binary')
     return next.payload
   }, signal)
-  expiresAt = Math.min(Date.now() + 60_000, Date.parse(readout.expiresAt))
+  const expiresAt = Math.min(Date.now() + 60_000, Date.parse(readout.expiresAt))
   if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
   assertSource(readout, source, placement)
   rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
@@ -434,7 +441,18 @@ async function readRemoteBindingRows(sql: GraphTransactionSql, capture: Bound, r
   const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [intent.operationId])).rows[0]
   if (!origin || !same(DeviceConnectionIdentitySchema.parse(origin.connection), receipt.connection)) return unavailable('dispatch_connection')
   // accepted marks terminal result acceptance, after physical proof/adoption.
-  const executionRow = (await sql.query<{ record: unknown }>('select record from harness_executions where id=$1 and run_id=$2 for share', [intent.executionId, intent.runId])).rows[0]
+  const executionRow = (await sql.query<{ record: unknown; authorized: boolean }>(`select e.record,
+    (e.worker_credentials_closed_at is null or $3='reviewer') and exists(
+      select 1 from worker_credential_bindings b join management_principals p on p.id=b.principal_id
+      where b.execution_id=e.id and b.run_id=e.run_id and b.agent_id=e.agent_id and b.purpose=$3
+        and b.revoked_at is null and p.revoked_at is null and p.expires_at>clock_timestamp()
+        and p.audience='worker' and p.agent_id=b.agent_id) as authorized
+    from harness_executions e where e.id=$1 and e.run_id=$2 for share of e`,
+  [intent.executionId, intent.runId, lifetime.review ? 'reviewer' : 'workflow'])).rows[0]
+  const committedPublication = retained && [...capture.publications].some(didGraphTransactionCommit)
+  if (!committedPublication && !receipt.stopFence && !executionRow?.authorized) {
+    return unavailable('execution_authorization')
+  }
   const execution = HarnessExecutionSchema.safeParse(executionRow?.record)
   if (!execution.success || execution.data.id !== lifetime.execution.id
     || execution.data.agentId !== lifetime.execution.agentId || execution.data.attempt !== intent.technicalAttempt
@@ -540,6 +558,11 @@ async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunO
   const published=readout.output?.kind==='published-artifacts'
   const check = () => {
     owner.assertOwned()
+    // An admitted operation may finish slow Main work; later operations need fresh evidence.
+    if (!retained && capture.processingSql !== sql) {
+      if (capture.processingSql && capture.isExpired()) return unavailable('connection_expired')
+      capture.processingSql = sql
+    }
     if(retained){
       if(!published||!readout.closure||!same(input.endpoint().currentBinding(capture.binding.deviceId),capture.binding)
         ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)

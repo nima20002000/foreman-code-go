@@ -70,7 +70,7 @@ import { createRemoteNativeSourceChannel } from '../../../placement/remoteNative
 import { VerifiedRemoteEvidence } from '../resultBridge.js'
 import { ExclusiveGraphConnection } from '../../../run-graph/connection.js'
 import { repeatExecutionIdentity } from '../../repeatResolution.js'
-import { DeviceApplicationChannel } from '../../../devices/deviceApplicationChannel.js'
+import { DeviceApplicationChannel, type CapturedDeviceApplicationRequest } from '../../../devices/deviceApplicationChannel.js'
 import { DeviceApplicationError } from '../../../devices/deviceApplicationError.js'
 import { deferred } from '../../../../../test/helpers/deferred.js'
 
@@ -621,8 +621,10 @@ export async function physicalFixture(relativeCwd='') {
   const entry={phase:'entered',reservation,transition:{phase:'entered',reservation,launchDigest:`sha256:${'e'.repeat(64)}`},source_id:'actual-unit-entry',source_digest:`sha256:${'f'.repeat(64)}`}
   const lane={owner_agent_id:execution.agentId,harness:n.session.harness,native_session_id:n.session.nativeSessionId,generation:'2',token:lifetime.lane!.token,
     correlation:`execution:${execution.id}`,provider_id:'original-turn',held:true}
-  const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}}),currentBinding=vi.fn(()=>f.context.binding)
+  const request=vi.fn<CapturedDeviceApplicationRequest['request']>(async()=>({payload:readout}))
+  const currentBinding=vi.fn(()=>f.context.binding)
   const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:typeof source}}[]=[]
+  const credential = { revoked: false, expiresAt: Date.now() + 3_600_000 }
   // Authenticated carrier/SQL/process observations are explicit unit doubles.
   // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
   const producer=createRemoteWorkflowPhysicalVerification({endpoint:()=>({currentBinding,captureRequest:()=>({binding:f.context.binding,request})})})
@@ -638,7 +640,8 @@ export async function physicalFixture(relativeCwd='') {
     if(text.includes('execution_native_placements'))return {rows:[{record:f.nativePlacement}],rowCount:1}
     if(text.includes('source_execution_materializations'))return {rows:[{record:f.nativePlacement.materialization,state:f.nativePlacement.materialization.state}],rowCount:1}
     if(text.includes('remote_dispatch_origins'))return {rows:[{connection}],rowCount:1}
-    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:true}],rowCount:1}
+    if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:true,
+      authorized:!credential.revoked&&credential.expiresAt>Date.now()}],rowCount:1}
     if(text.includes('workflow_native_entries'))return {rows:[entry],rowCount:1}
     if(text.includes('workflow_native_proofs'))return {rows:canonicalProofs.map(row=>({...row,original:row.record.original})),rowCount:canonicalProofs.length}
     if(text.includes('execution_native_sessions'))return {rows:[{reference:n.session}],rowCount:1}
@@ -662,5 +665,5 @@ export async function physicalFixture(relativeCwd='') {
     return original
   }
   return {...f,registry:n.registry,snapshot:n.snapshot,session:n.session,launch:n.launch,connection,captured,journal,readout,source,execution,lifetime,
-    entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs}
+    entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs,credential}
 }
