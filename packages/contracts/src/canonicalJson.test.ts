@@ -71,8 +71,8 @@ describe('canonicalGraphJson byte accounting', () => {
     } finally { encode.mockRestore() }
   })
 
-  it.each(['', 'ascii', 'é', '☃', '😀', '\ud800', '\udc00', '\ud800x\udc00', '"\\\n\u0000'])
-    ('preserves JSON bytes and the exact UTF-8 boundary for %j in values and keys', text => {
+  it.each(['', 'ascii', 'é', '☃', '😀', '\ud800', '\udc00', '\ud800x\udc00', '"\\\n\u0000'])(
+    'preserves JSON bytes and the exact UTF-8 boundary for %j in values and keys', text => {
       const value = { [text]: [text, null, true, false, -0, 1.5e-7] }
       const expected = canonicalJson(value)
       const bytes = Buffer.byteLength(expected)
@@ -94,7 +94,7 @@ describe('canonicalGraphJson byte accounting', () => {
     expect(() => canonicalGraphJson(Array(100_000).fill(null))).toThrow('GRAPH_JSON_LIMIT')
     const cyclic: unknown[] = []
     cyclic.push(cyclic)
-    for (const invalid of [undefined, Infinity, new Date(), cyclic, [, 1], { get value() { throw new Error('getter evaluated') } }]) {
+    for (const invalid of [undefined, Infinity, new Date(), cyclic, Object.assign(new Array<unknown>(2), { 1: 1 }), { get value() { throw new Error('getter evaluated') } }]) {
       expect(() => canonicalGraphJson(invalid)).toThrow('GRAPH_JSON_INVALID')
     }
   })
