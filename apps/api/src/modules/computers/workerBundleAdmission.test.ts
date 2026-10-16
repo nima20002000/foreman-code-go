@@ -7,6 +7,7 @@ import type { BuildComputerSettings } from '../settings/buildComputers.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { JobSql } from '../jobs/repository.js'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
 it.each([
   ['execution-v1', { method: 'prepare' }],
@@ -160,4 +161,44 @@ it('rechecks queued work without blocking maintenance probes behind occupied req
     await f.close()
     await Promise.allSettled(queued ? [queued] : [])
   }
+})
+
+it('checks the running bundle without waiting for slow full maintenance inspections', async () => {
+  const f = await workerBundleFixture()
+  const release = f.holdFullStatus()
+  try {
+    f.match()
+    await expect(f.endpoint.assertWorkerBundleReady(f.identity.deviceId)).resolves.toBeUndefined()
+    await expect(f.request('execution-v1', { method: 'start-turn' })).resolves.toEqual({ payload: { method: 'start-turn' } })
+    f.status.worker.contentSha256 = 'e'.repeat(64)
+    f.status.worker.manifestSha256 = 'd'.repeat(64)
+    await expect(f.endpoint.assertWorkerBundleReady(f.identity.deviceId))
+      .rejects.toMatchObject({ code: 'WORKER_VERSION_SKEW' })
+  } finally {
+    release()
+    await f.close()
+  }
+}, 20_000)
+
+it('reports a Worker that cannot report its running bundle as a retryable domain error', async () => {
+  const f = await workerBundleFixture()
+  try {
+    f.match()
+    f.failStatus(new DeviceApplicationError('unavailable'))
+    const failure = await f.endpoint.assertWorkerBundleReady(f.identity.deviceId).then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(DomainError)
+    expect(failure).toMatchObject({ code: 'WORKER_STATUS_UNAVAILABLE', status: 503,
+      details: { retryable: true, reason: 'unavailable' } })
+  } finally { await f.close() }
+})
+
+it('treats a Worker that predates bundle-only status as running an unknown bundle', async () => {
+  const f = await workerBundleFixture()
+  try {
+    f.match()
+    // An older Worker's strict request schema rejects the scoped status request.
+    f.bundleStatus.mockRejectedValue(new Error('Unrecognized key: scope'))
+    await expect(f.endpoint.assertWorkerBundleReady(f.identity.deviceId)).rejects.toMatchObject({
+      code: 'WORKER_VERSION_SKEW', details: { expected: f.expected, running: null, updatePhase: null } })
+  } finally { await f.close() }
 })
