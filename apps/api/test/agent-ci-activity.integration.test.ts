@@ -431,17 +431,19 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
     try {
       const ticket = await f.submit({ suite: 'install' })
       // Other Runs' finished tickets accumulate in the workspace: every full integration run adds a hundred.
-      await f.database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,log_tail)
+      const unrelated = await f.database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,log_tail)
         select u.id,t.workspace_id,u.id,'canceled',t.record||jsonb_build_object('id',u.id::text,'groupId',u.id::text,
             'state','canceled','initiator',t.record->'initiator'||jsonb_build_object('executionId','unrelated-'||u.id::text)),
           (select string_agg(md5(u.id::text||g::text),'') from generate_series(1,40) g)
         from ci_runs t cross join (select gen_random_uuid() as id from generate_series(1,3000)) u where t.id=$1`,
       [ticket.ticketId])
+      expect(unrelated.rowCount).toBe(3000)
       await f.database.pool.query('analyze ci_runs')
       const measured = measuredCiPages(f.database.pool)
       const runs = new RunManagementService(measured.pool, f.graph.commands, {} as never, {} as never,
         new WorkspaceLocationService(f.database.pool, f.graph.commands))
       const details = await runs.get(f.reader.principal, f.graph.scope.workspaceId, f.graph.run.id)
+      expect(details.executions).toContainEqual(expect.objectContaining({ id: f.executionId, runId: f.graph.run.id }))
       expect(details.activitySnapshot?.queued).toContainEqual(ciRef(ticket.ticketId, f.executionId))
       // The unrelated tickets span hundreds of heap pages; the Run's own ticket needs a handful.
       expect(measured.pages.max).toBeLessThan(100)
