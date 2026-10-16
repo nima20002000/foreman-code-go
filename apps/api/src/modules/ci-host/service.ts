@@ -44,6 +44,8 @@ import { cancelAssignedCiTicket } from './assignedCancellation.js'
 import { ciExecutionRunId } from './executionAttempt.js'
 import { CI_BUSY_TICKET, expireOverdueCiRuns } from './deadlines.js'
 import { ciCachedNotice, planCachedSelection, recordCiResultCache, type CachedSelection } from './resultCacheStore.js'
+import { ciRequestKey, joinCiRequest, registerCiRequest, releaseCiRequester, releaseStoppedRun,
+  spareSharedSupersession } from './requestSharing.js'
 import type { AgentSnapshots, CiCommits, CiMirrorInput, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
 export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
@@ -298,11 +300,25 @@ export class HostCiService {
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, actions) },
       perform: async client => {
         const { runs, durations, cacheKeys, logTail } = prepared!
-        const { groupId, commit, priority, priorityReason, cachedFiles } = runs[0]!
-        const result = CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
+        const { groupId, commit, priority, priorityReason, cachedFiles, initiator } = runs[0]!
+        // An identical request already queued or running in this workspace is joined instead of queueing tickets.
+        const requestKey = runs[0]!.state === 'queued' ? ciRequestKey(input, runs[0]!) : null
+        const shared = requestKey ? await joinCiRequest(client, scope.workspaceId, requestKey, initiator, commandId) : null
+        const result = shared?.output ?? CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
           ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}),
           ...(cachedFiles?.length ? { cachedFiles } : {}) })
-        if (!input.gate) await supersedeCiRuns(client, runs[0]!, superseded, { source, commandId })
+        if (!input.gate) {
+          await supersedeCiRuns(client, { ...runs[0]!, id: result.ticketId },
+            await spareSharedSupersession(client, superseded, initiator), { source, commandId })
+        }
+        if (shared) {
+          await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+            values($1,$2,'ci.join',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
+            JSON.stringify({ commandId, groupId: shared.groupId, ticketId: result.ticketId })])
+          markPhase('postMs')
+          return result
+        }
+        if (requestKey) await registerCiRequest(client, scope.workspaceId, groupId, requestKey, result)
         for (const run of runs) {
           await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations,result_cache_keys,log_tail)
             values($1,$2,$3,$6,$4::jsonb,$5::jsonb,$7::jsonb,$8)`, [run.id, run.workspaceId, groupId, serializeCiJson(run),
@@ -560,9 +576,15 @@ export class HostCiService {
 
   async cancel(caller: ManagementPrincipal,
     input: { workspaceId?: string | undefined; ticketId: string; commandId?: string | undefined },
-    source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord }> {
+    source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord; detached?: { remainingRequesters: number } }> {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
     const run = await this.read(input.ticketId, scope.workspaceId)
+    if (['queued', 'starting', 'running'].includes(run.state)) {
+      // A requester of a group that identical requests share only leaves it while others still need it.
+      const remainingRequesters = await releaseCiRequester(this.pool, run,
+        { principalId: caller.id, executionId: scope.executionId ?? null })
+      if (remainingRequesters) return { run, detached: { remainingRequesters } }
+    }
     this.stoppingRuns += 1
     try {
       // Persist intent before trying the executor lock, even while its start reply is pending.
@@ -584,10 +606,11 @@ export class HostCiService {
     try {
       // Drain dispatch before selecting tickets, including starts awaiting their provider reply.
       await this.dispatching
-      const tickets = (await this.pool.query<{ id: string }>(`select c.id from ci_runs c
-        join harness_executions e on e.id=c.record#>>'{initiator,executionId}'
-        where e.run_id=$1 and c.workspace_id=$2 and c.state in ('queued','starting','running')
-        order by c.id`, [runId, intent.workspace_id])).rows
+      // Groups other requesters still share keep running; the Run's Agents only leave them.
+      const groups = await releaseStoppedRun(this.pool, runId, intent.workspace_id)
+      const tickets = groups.length ? (await this.pool.query<{ id: string }>(`select id from ci_runs
+        where workspace_id=$1 and group_id=any($2::uuid[]) and state in ('queued','starting','running')
+        order by id`, [intent.workspace_id, groups])).rows : []
       const audit: CiCancellation = {
         principalId: intent.record.principalId,
         source: intent.record.source,

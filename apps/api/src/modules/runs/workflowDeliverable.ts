@@ -13,7 +13,7 @@ const terminalVerdicts = new WeakMap<Queryable, Map<string, Promise<ExecutionRes
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** References are valid only for records this same execution created. */
+/** References are valid only for records this same execution created, or CI groups it joined as an identical request. */
 export async function referencesCreatedByExecution(db: Queryable, kind: OutputReferenceKind, values: readonly string[] | undefined,
   workspaceId: string, executionId: string): Promise<ReadonlySet<string>> {
   if (kind !== 'ciTicket') return new Set()
@@ -22,7 +22,8 @@ export async function referencesCreatedByExecution(db: Queryable, kind: OutputRe
   if (ids?.length === 0) return new Set()
   const result = await db.query(`select id from ci_runs
     where ($1::uuid[] is null or id=any($1::uuid[]))
-      and workspace_id=$2 and record#>>'{initiator,executionId}'=$3`,
+      and workspace_id=$2 and (record#>>'{initiator,executionId}'=$3 or group_id in (select q.group_id
+        from ci_group_requesters q where q.workspace_id=$2 and q.execution_id=$3))`,
   [ids, workspaceId, executionId])
   const existing = new Set(result.rows.map(row => row.id))
   if (values === undefined) return existing

@@ -24,6 +24,12 @@ export function readAgentCiReport(output: unknown): AgentCiReport {
   return AgentCiReportSchema.parse(routed.success ? routed.data.data.latestDeliverable : value)
 }
 
+/** Whether the Agent execution requested the group: it initiated it, or joined it as an identical request. */
+export function ciGroupRequestedBy(group: CiReadback, executionId: string): boolean {
+  return group.run.initiator.executionId === executionId
+    || Boolean(group.sharing?.requesters.some(requester => !requester.initiator && requester.executionId === executionId))
+}
+
 export function ciTerminal(state: string): boolean {
   return TerminalStateSchema.safeParse(state).success
 }

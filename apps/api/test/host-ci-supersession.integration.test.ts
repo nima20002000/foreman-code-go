@@ -83,8 +83,9 @@ it('keeps main, explicit keep, unrelated branch, suite, requester and non-descen
       })).ticketId)
     }
     const other = await f.connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
+    // Another requester's own ticket on another commit; an identical request would join the group instead.
     const foreign = CiRunOutputSchema.parse(await f.value(other, 'ci_run', {
-      suite: 'typecheck', commit: commits[3], commandId: 'another-requester',
+      suite: 'typecheck', commit: '9'.repeat(40), commandId: 'another-requester',
     }))
     const withoutCi = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(withoutCi, 'ci_run', {
@@ -164,8 +165,9 @@ it('supersedes detached Agent commits only within that execution while reading w
       return CiRunOutputSchema.parse(decodeMcpToolResult(result))
     }
     const old = await call({ suite: 'install', commit: 'a'.repeat(40), commandId: 'agent-old' })
+    // A separate Operator request on the same commit; an identical request would join the Agent's group instead.
     const operator = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      suite: 'install', commit: 'a'.repeat(40), commandId: 'operator-detached',
+      suite: 'install', commit: 'a'.repeat(40), scope: 'full', commandId: 'operator-detached',
     }))
     const renewed = await f.connectAgent!()
     const next = await call({ suite: 'install', commit: 'b'.repeat(40), commandId: 'agent-next' }, renewed)

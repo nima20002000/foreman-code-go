@@ -4,16 +4,31 @@ import type { CiCommits } from './service.js'
 import { serializeCiJson } from './text.js'
 import type { SqlQuery } from '../../infrastructure/transaction.js'
 
-async function candidates(sql: SqlQuery, replacement: CiRunRecord, lock?: 'update'): Promise<CiRunRecord[]> {
-  const rows = (await sql.query<{ record: unknown }>(`select record from ci_runs
-    where workspace_id=$1 and state in ('queued','starting','running')
-      and record->>'repository'=$2 and record->>'suite'=$3
-      and (record#>>'{initiator,principalId}'=$4
-        or ($5::text is not null and record#>>'{initiator,executionId}'=$5))
-    order by created_at,id${lock ? ' for update' : ''}`,
+interface Candidate { run: CiRunRecord; requester: CiRunRecord['initiator'] }
+
+/** Active tickets of the same suite this requester initiated, or whose group it joined; `requester` is how the
+ * replacement's requester asked for each one. */
+async function candidates(sql: SqlQuery, replacement: CiRunRecord, lock?: 'update'): Promise<Candidate[]> {
+  const rows = (await sql.query<{ record: unknown; joined_principal: string | null; joined_execution: string | null }>(
+    `select c.record,q.principal_id as joined_principal,q.execution_id as joined_execution from ci_runs c
+    left join lateral (select principal_id,execution_id from ci_group_requesters q
+      where q.workspace_id=c.workspace_id and q.group_id=c.group_id and q.detached_at is null and not q.initiator
+        and (q.principal_id=$4 or ($5::text is not null and q.execution_id=$5))
+      order by q.joined_at limit 1) q on true
+    where c.workspace_id=$1 and c.state in ('queued','starting','running')
+      and c.record->>'repository'=$2 and c.record->>'suite'=$3
+      and (c.record#>>'{initiator,principalId}'=$4
+        or ($5::text is not null and c.record#>>'{initiator,executionId}'=$5) or q.principal_id is not null)
+    order by c.created_at,c.id${lock ? ' for update of c' : ''}`,
   [replacement.workspaceId, replacement.repository, replacement.suite,
     replacement.initiator.principalId, replacement.initiator.executionId])).rows
-  return rows.map(row => CiRunRecordSchema.parse(row.record))
+  return rows.map(row => {
+    const run = CiRunRecordSchema.parse(row.record)
+    const initiated = run.initiator.principalId === replacement.initiator.principalId
+      || (replacement.initiator.executionId !== null && run.initiator.executionId === replacement.initiator.executionId)
+    return { run, requester: initiated || row.joined_principal === null ? run.initiator
+      : { principalId: row.joined_principal, executionId: row.joined_execution } }
+  })
 }
 
 function protectedRun(old: CiRunRecord, replacement: CiRunRecord): boolean {
@@ -26,16 +41,16 @@ export async function prepareCiSupersession(sql: SqlQuery, commits: CiCommits, r
     || replacement.branch === replacement.defaultBranch) return undefined
   const prepared = new Map<string, boolean>()
   const ancestry = new Map<string, boolean>()
-  for (const old of await candidates(sql, replacement)) {
+  for (const { run: old, requester } of await candidates(sql, replacement)) {
     prepared.set(old.id, false)
     if (protectedRun(old, replacement)) continue
     const branch: string | null | undefined = old.branch === undefined
       ? await commits.branch?.(old.repository, replacement.defaultBranch, old.commit) : old.branch
     if (branch === undefined || branch === replacement.defaultBranch || branch === old.defaultBranch) continue
     const sameExecution = replacement.initiator.executionId !== null
-      && old.initiator.executionId === replacement.initiator.executionId
+      && requester.executionId === replacement.initiator.executionId
     const sameBranch = replacement.branch !== null && branch === replacement.branch
-      && old.initiator.principalId === replacement.initiator.principalId
+      && requester.principalId === replacement.initiator.principalId
     if (!sameExecution && !sameBranch) continue
     if (!ancestry.has(old.commit)) {
       ancestry.set(old.commit, await commits.isAncestor(replacement.repository, old.commit, replacement.commit))
@@ -49,7 +64,7 @@ export async function prepareCiSupersession(sql: SqlQuery, commits: CiCommits, r
 export async function validateCiSupersession(client: pg.PoolClient, replacement: CiRunRecord,
   prepared: Map<string, boolean> | undefined): Promise<CiRunRecord[] | null> {
   if (!prepared) return []
-  const rows = await candidates(client, replacement, 'update')
+  const rows = (await candidates(client, replacement, 'update')).map(candidate => candidate.run)
   if (rows.some(old => !protectedRun(old, replacement) && !prepared.has(old.id))) return null
   return rows.filter(old => !protectedRun(old, replacement) && prepared.get(old.id))
 }

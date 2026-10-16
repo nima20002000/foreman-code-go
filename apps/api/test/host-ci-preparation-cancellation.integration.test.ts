@@ -48,7 +48,8 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     release()
     await dispatch
     await f.ci.dispatch()
-    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: result.ticketId }))
+    // The pending cancellation completes in a background observation that a dispatch pass starts but does not await.
+    const read = await f.waitFor(reader, result.ticketId, output => output.run.state === 'canceled')
     expect(read.run).toMatchObject({ state: 'canceled' })
     expect(read.run.cancellation).toBeUndefined()
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [result.ticketId])).rows[0])

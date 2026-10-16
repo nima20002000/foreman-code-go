@@ -7,7 +7,7 @@ import { RunActivitiesPageSchema, SavedRunDetailsSchema,
   type RunActivityPublic, type SavedRunDetails, type RunExecutionsPage } from '@foreman-code/contracts/wave25'
 import type { z } from 'zod'
 import { callCiTool, type PreparedCiWorkflow } from './crossComputerCiSetup.js'
-import { ciTerminal, type CiReadback } from './crossComputerCiReadback.js'
+import { ciGroupRequestedBy, ciTerminal, type CiReadback } from './crossComputerCiReadback.js'
 import { waitForCi } from './crossComputerCiWait.js'
 
 export type RunningCiWorkflow = PreparedCiWorkflow & { runId: string }
@@ -70,12 +70,19 @@ async function captureWorkflowActivity(client: Client, workflow: RunningCiWorkfl
 
 function recordCiGroup(workflow: RunningCiWorkflow, readback: CiReadback, observation: ScenarioObservation) {
   const executionId = readback.run.initiator.executionId ?? ''
-  const execution = observation.runs.get(workflow.runId)?.executions.find(item => item.id === executionId)
+  // A group another Run's Agent joined belongs to the Run of the Agent that initiated it.
+  const owner = [...observation.runs.values()].find(details => details.executions.some(item => item.id === executionId))
+  const execution = owner?.executions.find(item => item.id === executionId)
   for (const run of readback.partitions ?? [readback.run]) {
     const observed: TicketObservation = observation.tickets.get(run.id) ?? {
       ticketId: run.id, workspaceId: workflow.workspace.workspaceId, workflowId: workflow.graph.id,
-      runId: workflow.runId, agentId: execution?.agentId ?? '', initiatingExecutionId: executionId,
+      runId: workflow.runId, agentId: '', initiatingExecutionId: executionId,
       timeline: [], latest: run,
+    }
+    if (owner && execution) {
+      observed.runId = owner.run.id
+      observed.workflowId = owner.run.workflowId
+      observed.agentId = execution.agentId
     }
     if (!isDeepStrictEqual(observed.latest, run) || !observed.timeline.length) {
       observed.timeline.push({ observedAt: new Date().toISOString(), run })
@@ -148,8 +155,7 @@ export async function pollCiScenario(client: Client, workflows: RunningCiWorkflo
       if (details.run.outcome !== 'succeeded') return true
       return details.executions.filter(execution => execution.result?.outcome === 'succeeded')
         .filter(execution => workflow.assignments.some(agent => agent.agentId === execution.agentId && agent.suite))
-        .every(execution => [...observation.groups.values()].some(group =>
-          group.run.initiator.executionId === execution.id))
+        .every(execution => [...observation.groups.values()].some(group => ciGroupRequestedBy(group, execution.id)))
     })
     const terminal = [...observation.tickets.values()].every(ticket => ciTerminal(ticket.latest.state)
       && ticket.latest.collection !== 'pending')
