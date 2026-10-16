@@ -22,7 +22,7 @@ it('closes a persisted completed retained reviewer only after its reviews settle
     // Copy migrated columns and defaults without unrelated foreign-key fixtures.
     for (const table of ['harness_executions', 'review_jobs', 'remote_execution_receipts',
       'run_cleanup_intents', 'run_checkpoint_owners', 'runs', 'workflow_versions',
-      'agent_configuration_versions', 'execution_native_sessions']) {
+      'agent_configuration_versions', 'execution_native_sessions', 'approval_execution_state']) {
       await pool.query(`create table ${table} (like public.${table} including defaults including indexes)`)
     }
     const native = { sessionId: 'reviewer-session', turnId: 'workflow-turn', processIdentityDigest: 'a'.repeat(64) }
