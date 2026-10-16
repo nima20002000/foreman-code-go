@@ -547,6 +547,10 @@ async function configureWorkerComputers(composition: InstalledWorkerComposition)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_MAINTENANCE_STALE', 'Computer maintenance requires the actual authenticated worker channel.', 409)
       }
+      // Main's bundle check before Start and Worker admission needs only the updater state, never the slow full inspection.
+      if (request.operation === 'status' && request.scope === 'worker') {
+        return { payload: MaintenanceReplySchema.parse({ operation: 'worker', worker: await input.workerUpdate?.status() ?? null }) }
+      }
       composition.maintenance ??= readInstalledWorkflowConfiguration(composition.configuration)
         .then(selected => {
         // Maintenance reads the binaries this Worker actually runs; an update moves the Codex selection with it.

@@ -110,7 +110,8 @@ export const runTools = [
       + 'Production installation rejects new Starts with RUN_START_MAINTENANCE; retry the same command '
       + 'after installation. Verified receipt readback remains available. Concurrent Starts share a 30-second '
       + 'deadline for command, runner and workspace locks; RUN_START_BUSY is retryable with the same commandId and '
-      + 'input. Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle '
+      + 'input. WORKER_STATUS_UNAVAILABLE means a Worker did not report its running bundle; retry the same command. '
+      + 'Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle '
       + 'qualification; graph read support is not admission. Retry only the same command for verified receipt '
       + 'readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
     outputSchema: ManualRunStartResultSchema,

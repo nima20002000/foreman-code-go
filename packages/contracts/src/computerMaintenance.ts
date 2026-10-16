@@ -65,7 +65,8 @@ export const MaintenanceTaskStartSchema = z.discriminatedUnion('kind', [
 export type MaintenanceTaskStart = z.infer<typeof MaintenanceTaskStartSchema>
 
 export const MaintenanceRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('status') }).strict(),
+  /** scope 'worker' reads only the Worker update state, without the slow harness, registry and OS inspections. */
+  z.object({ operation: z.literal('status'), scope: z.literal('worker').optional() }).strict(),
   z.object({ operation: z.literal('start'), commandId: z.uuid(), task: MaintenanceTaskStartSchema }).strict(),
 ])
 
@@ -141,6 +142,7 @@ const MaintenanceTaskLimitSchema = z.number().int().min(1).max(50)
 
 export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status'), status: MaintenanceStatusSchema }).strict(),
+  z.object({ operation: z.literal('worker'), worker: WorkerUpdateStatusSchema.nullable() }).strict(),
   z.object({ operation: z.literal('start'), task: MaintenanceTaskSchema }).strict(),
 ])
 
