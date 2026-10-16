@@ -206,10 +206,6 @@ class Projection {
     const owners = new Set([...entries(this.root)].filter(name => name !== 'closed'))
     this.listedOwners.clear()
     for (const owner of owners) this.listedOwners.add(owner)
-    for (const name of entries(join(this.root, 'closed'))) {
-      const match = /^([0-9a-f]{64})\.json$/.exec(name)
-      if (match) owners.add(match[1]!)
-    }
     return [...owners]
   }
   /** A changed root lists owner names only; unchanged owners keep their rows and watches. */

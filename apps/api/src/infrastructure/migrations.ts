@@ -1,4 +1,5 @@
 import { ciFailureHistoryMigration } from './ciFailureHistoryMigration.js'
+import { commandReceiptRetentionMigration } from './commandReceiptRetentionMigration.js'
 import { activityHistoryIndexesMigration } from './activityHistoryIndexesMigration.js'
 import { artifactTransferLookupMigration } from './artifactTransferLookupMigration.js'
 import { jobInputTransferLookupMigration } from './jobInputTransferLookupMigration.js'
@@ -972,6 +973,7 @@ export const migrations = [
   ciSharedActivityMigration,
   ciDirectoryRetentionMigration,
   ciFailureHistoryMigration,
+  commandReceiptRetentionMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

@@ -7,6 +7,7 @@ import type { ActivityScope, NativeSessionReference } from '@foreman-code/contra
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 
 import { commandInputHash } from '../commands/postgres.js'
+import { expiredCommandResult } from '../commands/receiptRetention.js'
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from '../harnesses/errors.js'
 import { responseValueDigest } from '../interactions/delivery.js'
@@ -131,7 +132,9 @@ export class NativeConversationControlCommands<State> {
     // All control kinds share the same namespace; changing kind or target also conflicts.
     const admitted = await this.pool.query(`with claimed as (
       insert into management_command_receipts (principal_id,operation,command_id,target_key,input_hash,result)
-      values ($1,$2,$3,$4,$5,$7::jsonb)
+      select $1,$2,$3,$4,$5,$7::jsonb
+      where not exists (select 1 from management_audit where principal_id=$1 and action=$2
+        and details->>'commandId'=$3 and details->>'phase'='reserved')
       on conflict (principal_id,operation,command_id) do nothing returning 1
     ) insert into management_audit (principal_id,source,action,target_key,outcome,details)
       select $1,$6,$2,$4,'uncertain',jsonb_build_object('commandId',$3::text,'phase','reserved') from claimed returning 1`,
@@ -139,7 +142,12 @@ export class NativeConversationControlCommands<State> {
     if (!admitted.rowCount) {
       const prior = (await this.pool.query<Receipt<State>>(`select target_key,input_hash,result from management_command_receipts
         where principal_id=$1 and operation=$2 and command_id=$3`, key)).rows[0]
-      if (!prior) throw unconfirmed(requestId, this.contract.prefix)
+      if (!prior) {
+        const expired = await this.pool.query(`select details->>'commandId' as command_id from management_audit
+          where principal_id=$1 and action=$2 and details->>'commandId'=$3 and details->>'phase'='reserved' limit 1`, key)
+        if (expired.rows.length) throw expiredCommandResult()
+        throw unconfirmed(requestId, this.contract.prefix)
+      }
       if (prior.target_key !== conversationId || prior.input_hash !== hash) {
         throw new DomainError(`${this.contract.prefix}_REQUEST_CONFLICT`, 'This request ID was already used for a different control or input.', 409)
       }

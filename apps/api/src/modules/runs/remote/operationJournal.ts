@@ -330,6 +330,15 @@ export class RemoteOperationJournal {
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     return (await this.archivedReceipt(operationId)) !== undefined
   }
+  /** Workflow retirement follows Main's physical acknowledgement or source-preparation closure. */
+  async isNativeOwnerSettled(owner: string): Promise<boolean> {
+    await this.tail
+    if (this.closed || this.faulted) throw new Error('Journal unavailable: recovery required')
+    if (!owner.startsWith('execution:')) return false
+    const archived = await this.runtimeArchive.read(owner)
+    return archived?.kind === 'workflow' && archived.receipt.intent.executionId === owner.slice('execution:'.length)
+      && Boolean(archived.receipt.terminal)
+  }
   retireSettled(intent: DispatchIntent, sequence: number) {
     return this.change(async data => {
       const archived = await this.archivedReceipt(intent.operationId)

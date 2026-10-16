@@ -173,7 +173,12 @@ export class InstalledWorkflowRecovery {
     signal.throwIfAborted()
     if (!receipt.native) throw new Error('Original native ownership is unavailable')
     const capture = this.read(receipt)
-    const candidates = this.registry.snapshot().launches.filter(row => row.owner === `execution:${receipt.intent.executionId}`
+    const launches = [...this.registry.snapshot().launches]
+    if (capture && !launches.some(row => row.launchId === capture.launch.launchId)) {
+      const archived = this.registry.closedRegistration(capture.launch.owner, capture.launch.launchId)
+      if (archived) launches.push(archived)
+    }
+    const candidates = launches.filter(row => row.owner === `execution:${receipt.intent.executionId}`
       && remoteWorkflowProcessDigest(receipt.connection, capture?.intent ?? receipt.intent, row)
         === receipt.native!.processIdentityDigest)
     if (candidates.length !== 1) throw new Error('Original native registry owner is missing or ambiguous')
@@ -184,7 +189,7 @@ export class InstalledWorkflowRecovery {
     })
     await this.registry.closeRegistration(this.registry.scope(original.owner), original.launchId, signal)
     if (!await this.registry.closeOwner(original.owner, signal)) throw new Error('Original native closure is unconfirmed')
-    const closed = this.registry.snapshot().launches.find(row => row.launchId === original.launchId)
+    const closed = this.registry.closedRegistration(original.owner, original.launchId)
     if (!closed || closed.lifecycle !== 'closed' || !closed.closureEvidence) {
       throw new Error('Original native closure evidence is missing')
     }
