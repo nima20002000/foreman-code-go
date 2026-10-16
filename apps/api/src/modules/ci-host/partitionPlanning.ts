@@ -8,6 +8,9 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { executorSpeedKey, readExecutorSpeeds } from './executorSpeed.js'
 import { buildComputerIntegrationShards } from './capacity.js'
 
+/** How long weighting waits for a computer's live status it does not hold yet. */
+const LIVE_STATUS_MS = 1000
+
 /** Statuses planning already holds; reading them never waits on a Worker. */
 interface PlanningStatuses {
   dispatchStatus?(computer: HostCiComputer): CiHostStatus | undefined
@@ -93,8 +96,19 @@ export async function weighCiPartitions(pool: pg.Pool,
   return queued.map(run => replaced.get(run.id) ?? run).filter(run => run.state === 'queued' && !run.computer)
 }
 
-/** Weights from measured history and the statuses dispatch already holds. A computer without either gets the mean
- * of the others; its status is refreshed in the background for the next pass instead of delaying this one. */
+/** A computer's live status, waited for at most LIVE_STATUS_MS; a slower read keeps refreshing for the next pass. */
+async function liveStatus(endpoint: HostCiEndpoint, computer: HostCiComputer): Promise<CiHostStatus | undefined> {
+  let timer: NodeJS.Timeout | undefined
+  const reply = await Promise.race([
+    endpoint.request(computer, { operation: 'status' })
+      .catch(fallbackOnError(null, 'jobs', 'read CI computer status', { computer: computer.key })),
+    new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LIVE_STATUS_MS) }),
+  ]).finally(() => clearTimeout(timer))
+  return reply?.operation === 'status' ? reply : undefined
+}
+
+/** Weights from measured history and computer statuses: the ones dispatch already holds, otherwise a live read
+ * bounded per computer. A computer without either gets the mean of the others. */
 async function throughput(pool: pg.Pool, endpoint: HostCiEndpoint & PlanningStatuses,
   computers: HostCiComputer[]): Promise<Map<string, number>> {
   const measurements = await readExecutorSpeeds(pool, endpoint)
@@ -104,14 +118,8 @@ async function throughput(pool: pg.Pool, endpoint: HostCiEndpoint & PlanningStat
     if (measured && typeof measured !== 'number') speed.set(computer.key, measured.conservativeThroughput)
   }
   if (speed.size === computers.length) return speed
-  const statuses = computers.map(computer => {
-    const status = endpoint.dispatchStatus?.(computer) ?? endpoint.lastStatus?.(computer)
-    if (!status) {
-      void endpoint.request(computer, { operation: 'status' })
-        .catch(fallbackOnError(null, 'jobs', 'read CI computer status', { computer: computer.key }))
-    }
-    return { computer, status }
-  })
+  const statuses = await Promise.all(computers.map(async computer => ({ computer,
+    status: endpoint.dispatchStatus?.(computer) ?? endpoint.lastStatus?.(computer) ?? await liveStatus(endpoint, computer) })))
   let measuredWork = 0
   let measuredShards = 0
   for (const { computer, status } of statuses) {
