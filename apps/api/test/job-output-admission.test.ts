@@ -77,6 +77,19 @@ async function fixture() {
   return {admission,input,binding,job,records,reserve,query,pool,authority,receipt,clock:()=>now,endpoint,loseGrant:()=>{liveGrant=false},revoked:()=>{revoked=true},loseOwner:()=>{liveOwner=false},rebind:()=>{binding.connectionEpoch=randomUUID()},offline:()=>{ready=false},expire:()=>{now=new Date(expires)},rootChange:()=>{rootRevision++},revokeRoot:()=>{rootRevoked=true},advance:()=>{now=new Date(now.getTime()+3600_001)},finalize:(state='ready',allocation='finalized')=>{canonicalState=state;allocationState=allocation}}
 }
 describe('main-owned job output admission and actual byte receiver',()=>{
+  it('retries a failed canonical reservation and persists one original output admission',async()=>{
+    const f=await fixture()
+    f.reserve.mockRejectedValueOnce(new Error('Canonical reservation unavailable'))
+    await expect(f.admission.admit(f.input)).rejects.toThrow('Canonical reservation unavailable')
+    expect(f.records.size).toBe(0)
+    const created=await f.admission.admit(f.input)
+    await expect(f.admission.admit(f.input,'mcp')).resolves.toEqual(created)
+    const stored=await f.admission.requireAdmission(f.input)
+    expect(stored.intent).toEqual(created)
+    expect(stored.input).toEqual(f.input)
+    expect(f.records.size).toBe(1)
+    expect(f.reserve).toHaveBeenCalledTimes(2)
+  })
   it('issues original main IDs once, rejects caller IDs/changed payload and resolves current scoped context',async()=>{
     const f=await fixture(),first=await f.admission.onAuthenticatedChannel(f.binding,()=>f.admission.admit(f.input))
     const again=await f.admission.onAuthenticatedChannel(f.binding,()=>f.admission.admit(f.input,'mcp'))

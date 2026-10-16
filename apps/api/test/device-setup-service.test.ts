@@ -28,9 +28,23 @@ function fixture(){
   vi.spyOn(pg,'Pool').mockImplementation(function(){return pool} as never)
   const service=new PostgresDeviceAccessService(pool as unknown as pg.Pool,mainId,undefined,()=>available?{endpoint:'wss://192.168.1.12:7443/device/connect',available:true,reason:null}:{endpoint:null,available:false,reason:'listener-not-started'})
   const input={commandId:randomUUID(),identityRequestCode:workerIdentityRequestCode(identity),endpoint:'wss://192.168.1.12:7443/device/connect',scopes:['connect','heartbeat'] as ('connect'|'heartbeat')[]}
-  return {service,principal,input,query,receipts,get grants(){return grants},get registrations(){return registrations},unavailable:()=>{available=false},revoke:()=>{revoked=true}}
+  return {service,principal,input,query,receipts,get grants(){return grants},get registrations(){return registrations},unavailable:()=>{available=false},available:()=>{available=true},revoke:()=>{revoked=true}}
 }
 describe('actual setup approval service with original command/grant persistence',()=>{
+  it('retries setup after the listener becomes available and persists one original enrollment',async()=>{
+    const f=fixture()
+    f.unavailable()
+    await expect(f.service.createSetupCode(f.principal,f.input)).rejects.toMatchObject({code:'DEVICE_SETUP_ENDPOINT_UNAVAILABLE'})
+    expect(f.grants).toBe(0)
+    expect(f.receipts.size).toBe(0)
+    f.available()
+    const created=await f.service.createSetupCode(f.principal,f.input,'http')
+    await expect(f.service.createSetupCode(f.principal,f.input,'mcp')).resolves.toEqual(created)
+    expect(decodeWorkerEnrollmentCode(created.enrollmentCode).enrollment.mainId).toBe(created.registration.mainId)
+    expect(f.grants).toBe(1)
+    expect(f.registrations).toEqual([created.registration])
+    expect(f.receipts.size).toBe(2)
+  })
   it('creates one grant and registration, returns one original code on retries, and stores no private code/grant in outer receipt',async()=>{
     const f=fixture(),first=await f.service.createSetupCode(f.principal,f.input,'http'),retry=await f.service.createSetupCode(f.principal,f.input,'mcp')
     expect(retry).toEqual(first);expect(f.grants).toBe(1);expect(f.registrations).toHaveLength(1)
