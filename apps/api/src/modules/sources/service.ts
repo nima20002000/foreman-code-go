@@ -180,14 +180,14 @@ export class PostgresSourceService implements SourceAdmissionPort {
         if (prior && prior.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original source approval no longer has retained bytes; command retry cannot resurrect it.', 410)
       },
       perform: async () => {
-        // Existing workspace/host ownership is checked before location.snapshot
-        // probes its persisted path; input has no filesystem selector.
+        // Authorize before reading the workspace's server-owned paths.
         const readOrigin = async (sql: pg.PoolClient) => {
           const live = await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
-          // The location snapshot locks the workspace for update; lock it first so concurrent captures queue
-          // instead of deadlocking on a share-lock upgrade.
-          await sql.query('select 1 from workspaces where id=$1 for update', [input.workspaceId])
+          // Assigned folders need the snapshot's update lock before any share locks.
+          if (!repository || repository.prepared) {
+            await sql.query('select 1 from workspaces where id=$1 for update', [input.workspaceId])
+          }
           await this.host(sql); await this.workspace(sql, input.workspaceId)
           const existing = (await sql.query<ApprovalRow>('select * from source_approvals where requested_by=$1 and command_id=$2 for update', [principal.id, input.commandId])).rows[0]
           if (existing) {
@@ -196,12 +196,16 @@ export class PostgresSourceService implements SourceAdmissionPort {
             return existing
           }
           const location = repository ? await this.repositoryOrigin(sql, input.workspaceId, input.expectedLocationRevision, repository)
-            : await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
+            : await this.locations.snapshotAssigned(sql, input.workspaceId, input.expectedLocationRevision)
           return { location, ownerId: live.ownerId }
         }
         const prepared = await this.captureTransaction(readOrigin)
+        if ('location' in prepared && (!repository || repository.prepared)) {
+          await this.locations.revalidateSnapshot(input.workspaceId, prepared.location, 'read-only')
+        }
         const approvedPaths = 'location' in prepared
           ? await approvedGitTreePaths(prepared.location.rootPath, input.commit) : []
+        let capacity = 'location' in prepared ? await this.store.storageCapacity() : undefined
         const capturedOrigin = 'location' in prepared
           ? await this.capacityTransaction<ApprovalRow | { reused: ApprovedSource }>(async sql => {
           const current = await readOrigin(sql)
@@ -230,10 +234,12 @@ export class PostgresSourceService implements SourceAdmissionPort {
               }
             }
           }
-          // Authorize first, then probe only the server-owned canonical namespace.
-          const fs = await this.store.storageIdentity(), approvedSourceId = randomUUID(), snapshotId = randomUUID()
-          const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(null, null, fs), ownerKind: 'capture', ownerId: snapshotId,
-            reservedBytes: SOURCE_LIMITS.bytes + sourceStructureBytes(approvedPaths) })
+          const approvedSourceId = randomUUID()
+          const snapshotId = randomUUID()
+          const reservation = await this.reservations.reserve(sql, {
+            scopeId: this.scope(null, null, capacity!.filesystem), ownerKind: 'capture', ownerId: snapshotId,
+            reservedBytes: SOURCE_LIMITS.bytes + sourceStructureBytes(approvedPaths),
+          }, { capacity: capacity! })
           const configured = WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
             'select record from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!.record).repository
           const origin = { location, mainId: this.mainId, ownerId, reservation,
@@ -243,7 +249,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
             values($1,$2,$3,$4,$5,$6,$7,'capturing',$8::jsonb,$9::jsonb)`, [approvedSourceId, snapshotId, input.workspaceId, ownerId, principal.id,
             input.commandId, commandInputHash(input), JSON.stringify(origin), JSON.stringify(input)])
           return { approved_source_id: approvedSourceId, snapshot_id: snapshotId, input_hash: commandInputHash(input), state: 'capturing', origin, request: input }
-        }) : prepared
+        }, async () => { capacity = await this.store.storageCapacity() }) : prepared
         if ('reused' in capturedOrigin) return capturedOrigin.reused
         let origin = capturedOrigin
         return this.store.withCaptureLock(origin.snapshot_id, async () => {
@@ -308,7 +314,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'Workspace location changed during source capture.', 409)
     }
     if (repository.prepared) {
-      const location = await this.locations.snapshot(sql, workspaceId, expectedLocationRevision, 'read-only')
+      const location = await this.locations.snapshotAssigned(sql, workspaceId, expectedLocationRevision)
       if (location.rootPath !== repository.clone) {
         throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'The prepared project location changed.', 409)
       }
@@ -382,20 +388,22 @@ export class PostgresSourceService implements SourceAdmissionPort {
           throw new DomainError('SOURCE_REPOSITORY_REQUIRED', 'Set the workspace GitHub repository before running CI on an Agent\'s files.', 409)
         }
         const location = await this.transaction(async sql => {
-          // Lock exclusively first: the location snapshot below locks this row for update, and two concurrent
-          // approvals each holding a share lock would deadlock on that upgrade.
+          // Assigned folders need the snapshot's update lock before any share locks.
+          const lock = !repository || repository.prepared ? ' for update' : ''
           const row = (await sql.query<{ location_revision: string }>(
-            'select location_revision from workspaces where id=$1 for update', [input.workspaceId])).rows[0]
+            `select location_revision from workspaces where id=$1${lock}`, [input.workspaceId])).rows[0]
           await this.workspace(sql, input.workspaceId)
           if (prepared && Number(row!.location_revision) !== prepared.locationRevision) {
             throw new DomainError('SOURCE_APPROVAL_CONFLICT', 'The prepared project location changed.', 409)
           }
           return repository ? this.repositoryOrigin(sql, input.workspaceId, Number(row!.location_revision), repository)
-            : this.locations.snapshot(sql, input.workspaceId, Number(row!.location_revision), 'read-only')
+            : this.locations.snapshotAssigned(sql, input.workspaceId, Number(row!.location_revision))
         })
+        if (!repository || repository.prepared) {
+          await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
+        }
         commit ??= (await qualifiedGit(location.rootPath,
           ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim()
-        if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
         return SourceApproveInputSchema.parse({ workspaceId: input.workspaceId, commandId: input.commandId,
           expectedLocationRevision: location.locationRevision, commit,
           executablePolicy })
