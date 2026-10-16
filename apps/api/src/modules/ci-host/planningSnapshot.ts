@@ -4,6 +4,8 @@ import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationErr
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
 const FRESHNESS_MS = 5000
+/** How long dispatch keeps using the last successful read while a slower refresh of it is still running. */
+const REFRESHING_MS = 30_000
 
 interface StatusSnapshot {
   at: number
@@ -16,8 +18,8 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
   private fleet: { at: number; computers: HostCiComputer[] } | undefined
   private fleetPending: Promise<HostCiComputer[]> | undefined
   private readonly statuses = new Map<string, StatusSnapshot>()
-  /** The latest ready answer per computer, however old; planning sizes from it while a fresh read runs. */
-  private readonly lastKnown = new Map<string, CiHostStatus>()
+  /** The latest answer per computer, however old; planning sizes from it while a fresh read runs. */
+  private readonly lastKnown = new Map<string, { at: number; status: CiHostStatus }>()
 
   constructor(private readonly endpoint: HostCiEndpoint) {}
 
@@ -35,7 +37,7 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
   observeStatus(computer: HostCiComputer, reply: CiHostReply) {
     if (reply.operation === 'status') {
       this.statuses.set(canonicalJson(computer), { at: Date.now(), status: reply })
-      this.lastKnown.set(canonicalJson(computer), reply)
+      this.lastKnown.set(canonicalJson(computer), { at: Date.now(), status: reply })
     } else if (reply.run.state === 'failed' || reply.run.state === 'lost') {
       this.invalidate(computer)
     }
@@ -48,7 +50,14 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
 
   /** The newest status read for planning, fresh or not. Dispatch still validates readiness itself. */
   lastStatus(computer: HostCiComputer): CiHostStatus | undefined {
-    return this.lastKnown.get(canonicalJson(computer))
+    return this.lastKnown.get(canonicalJson(computer))?.status
+  }
+
+  /** Dispatch's view: the fresh status, or the last successful one while its refresh is still running. A failed
+   * read clears it, so a computer that stops answering is not dispatched to for longer than REFRESHING_MS. */
+  dispatchStatus(computer: HostCiComputer): CiHostStatus | undefined {
+    const last = this.lastKnown.get(canonicalJson(computer))
+    return this.status(computer) ?? (last && Date.now() - last.at < REFRESHING_MS ? last.status : undefined)
   }
 
   status(computer: HostCiComputer): CiHostStatus | undefined {
@@ -82,7 +91,7 @@ export class CiPlanningSnapshot implements HostCiEndpoint {
         && error instanceof DeviceApplicationAdmissionError && error.reason === 'background_yield') {
         // Yielding preserves the answer, but its age still requires a refresh on the next read.
         this.statuses.set(key, { at: previous.at, status: previous.status })
-        this.lastKnown.set(key, previous.status)
+        this.lastKnown.set(key, { at: previous.at, status: previous.status })
         return previous.status
       }
       throw error

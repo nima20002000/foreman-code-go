@@ -1161,7 +1161,7 @@ export class HostCiService {
     const unavailable = new Map<string, string>()
     const gateShards = new Map<string, number>()
     for (const computer of computers) {
-      const status = this.planningEndpoint.status(computer)
+      const status = this.planningEndpoint.dispatchStatus(computer)
       const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
       totals.set(computer.key, status?.ready ? slots : 0)
       if (!status?.ready) unavailable.set(computer.key, status?.reasons.join('; ') || 'Worker CI status unavailable')
