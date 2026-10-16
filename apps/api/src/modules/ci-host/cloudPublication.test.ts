@@ -57,7 +57,10 @@ it('cancels pending publication promptly and never triggers its workflow after t
     repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full', deferMirror: true })
   try {
     await promptly(start)
-    expect(await promptly(f.cloud.handle({ operation: 'cancel', runId }))).toMatchObject({ run: { state: 'canceled' } })
+    expect(await promptly(f.cloud.handle({ operation: 'cancel', runId }))).toMatchObject({ run: {
+      state: 'starting', mirrorPublication: { state: 'pending' },
+      message: 'Cancellation requested; waiting for the provider to stop.',
+    } })
     release()
     await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
     expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))

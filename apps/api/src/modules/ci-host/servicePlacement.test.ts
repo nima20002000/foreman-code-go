@@ -9,6 +9,7 @@ import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { planIntegrationParts } from './integrationParts.js'
 import { readExecutorSpeeds } from './executorSpeed.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 function deferred() {
   let resolve!: () => void
@@ -106,16 +107,16 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
           slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation === 'read') {
-        const record = records.find(run => run.id === request.runId)!
+        const record = records.find(run => ciExecutionRunId(run) === request.runId)!
         return { operation: 'read', text: '', nextOffset: 0,
-          run: { runId: record.id, state: record.state, step: record.step,
+          run: { runId: request.runId, state: record.state, step: record.step,
             startedAt: record.startedAt ?? record.queuedAt, finishedAt: record.finishedAt,
             exitCode: record.exitCode, message: record.message, logBytes: 0 } }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
       if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
       if (occupied.has(computer.key)) throw new DomainError('CI_HOST_BUSY', 'All CI slots are in use', 409)
-      const assigned = CiRunRecordSchema.parse(records.find(record => record.id === request.runId))
+      const assigned = CiRunRecordSchema.parse(records.find(record => ciExecutionRunId(record) === request.runId))
       started.push({ computer, request, assigned })
       return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'integration',
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
@@ -290,7 +291,10 @@ it('moves an expired cloud dispatch to another computer and preserves the lookup
   expect(f.started).toHaveLength(1)
   expect(f.started[0]!.computer.key).toBe(host.key)
   expect(f.started[0]!.assigned).toMatchObject({ unstartedProviders: ['circleci'],
+    executionHistory: [{ runId: records[0]!.id, hostRef: cloud.hostRef }],
     messageHistory: expect.arrayContaining([reason, expect.stringContaining('queued for another computer')]) })
+  expect(f.started[0]!.request).toMatchObject({ runId: records[0]!.executionRunId })
+  expect(records[0]!.executionRunId).not.toBe(records[0]!.id)
   expect(records[0]!.state).toBe('running')
 })
 
