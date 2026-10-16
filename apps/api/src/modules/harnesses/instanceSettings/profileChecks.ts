@@ -151,9 +151,9 @@ export class HostHarnessInstanceProfileChecks {
       signal.throwIfAborted()
       await assertDeviceHostInstallation(client, value.target.hostRef, value.target.applicationInstallationId)
     }
+    let result: { override: HostHarnessOverride; proof: HostHarnessProfileEvidence }
     try {
-      const result = await this.qualifyAutomatically(input, checkId, authorize, signal)
-      if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, signal)
+      result = await this.qualifyAutomatically(input, checkId, authorize, signal)
     } catch (error) {
       if (this.stopping.signal.aborted || staleQualification(error)) throw error
       const failure = qualificationError(error)
@@ -178,6 +178,8 @@ export class HostHarnessInstanceProfileChecks {
       })
       throw failure
     }
+    // Discovery follows the committed native result; its failure must not replace that result.
+    if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, signal)
   }
   recheckInstallation(input: AutomaticHostProfileCheck): Promise<void> {
     const hostKey = harnessHostKey(input.host)
@@ -227,6 +229,8 @@ export class HostHarnessInstanceProfileChecks {
       const installation = input.installation(saved)
       const checkId = randomUUID()
       let value = saved
+      let result: { override: HostHarnessOverride; proof: HostHarnessProfileEvidence }
+      const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
       try {
         if (!installation?.installed || !installation.installationFingerprint) throw new DomainError(
           'HARNESS_INSTALLATION_UNAVAILABLE', 'The updated harness installation is unavailable.', 409)
@@ -241,12 +245,9 @@ export class HostHarnessInstanceProfileChecks {
           })
         }
         if (preparationFailure && value.driverId === 'codex') throw preparationFailure
-        const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
         const request = { commandId: checkId, instanceId: value.instanceId,
           expectedRevision: value.revision, target: value.target }
-        const result = await this.qualifyAutomatically(request, checkId, input.authorize, bounded)
-        if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
-        batch.pendingProfiles!.delete(profileKey(value))
+        result = await this.qualifyAutomatically(request, checkId, input.authorize, bounded)
       } catch (error) {
         input.signal.throwIfAborted()
         if (staleQualification(error)) {
@@ -284,7 +285,15 @@ export class HostHarnessInstanceProfileChecks {
           [`harness-instance:${value.instanceId}`, JSON.stringify({ checkId, code: failure.code })])
         })
         failures.push(error)
+        return
       }
+      try {
+        if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
+      } catch (error) {
+        input.signal.throwIfAborted()
+        failures.push(error)
+      }
+      batch.pendingProfiles!.delete(profileKey(value))
     }, batch)
     if (failures.length) throw new AggregateError(failures, 'Automatic harness profile checks failed.')
   }
