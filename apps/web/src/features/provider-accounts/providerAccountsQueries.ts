@@ -122,7 +122,7 @@ export function useProviderAccountModels(binding?: ProviderAccountBinding, obser
   return useQuery({ queryKey: [...providerAccountKey(binding), 'models', observationGeneration ?? null, observationSequence ?? null],
     enabled: Boolean(binding) && !sessionIsSwitching(), retry: false, refetchOnReconnect: 'always',
     // A newer observation of the same account reloads the catalog; the previous one stays until it lands.
-    placeholderData: (previous, previousQuery) => previousQuery
+    placeholderData: (previous: Awaited<ReturnType<typeof providerAccountsClient.models>> | undefined, previousQuery) => previousQuery
       && previousQuery.queryKey.slice(0, -1).join('\u0000') === [...providerAccountKey(binding), 'models', observationGeneration ?? null].join('\u0000')
       ? previous : undefined,
     queryFn: async ({ signal }) => {
