@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 
 const priority = new AsyncLocalStorage<{ signal?: AbortSignal | undefined }>()
 
-/** Only CI admission and dispatch may borrow the reserved database connections. */
+/** Only short CI dispatch operations may borrow the reserved database connections. */
 export function withCiDatabasePriority<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   return priority.run({ signal }, work)
 }

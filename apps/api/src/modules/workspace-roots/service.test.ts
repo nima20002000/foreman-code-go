@@ -40,7 +40,7 @@ function fixture() {
     return { rows: [], rowCount: 1 }
   })
   const client = { query, release: vi.fn() }
-  const pool = { connect: async () => client, query, end: async () => undefined } as unknown as pg.Pool
+  const pool = { options: {}, connect: async () => client, query, end: async () => undefined, on: () => undefined } as unknown as pg.Pool
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return pool })
   let policy: WorkspaceRootPolicy | undefined
   const roots: WorkspaceRootPolicyPort = { list: vi.fn(async () => ({ workspaceId: 'workspace', policies: policy ? [policy] : [], allowlists: [allowlist], readiness: 'metadata-only' as const })),
