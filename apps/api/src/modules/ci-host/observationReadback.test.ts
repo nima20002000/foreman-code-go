@@ -32,10 +32,20 @@ function fixture() {
   })
   let tail = 'saved output'
   let writes = 0
+  let recordBytes = 0
   let output = 'fresh output'
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
-      const next = CiRunRecordSchema.parse(JSON.parse(values![3] as string))
+      if (sql.startsWith('update ci_runs set state=$2, host_key=$3, log_tail=')) {
+        const nextTail = typeof values![5] === 'string' ? values![5] : tail
+        if (nextTail === tail) return { rows: [], rowCount: 0 }
+        writes++
+        tail = nextTail
+        return { rows: [], rowCount: 1 }
+      }
+      const replacement = values![3]
+      if (typeof replacement === 'string') recordBytes += Buffer.byteLength(replacement)
+      const next = replacement === null ? record : CiRunRecordSchema.parse(JSON.parse(replacement as string))
       const nextTail = typeof values![5] === 'string' ? values![5] : tail
       if (JSON.stringify(next) === JSON.stringify(record) && nextTail === tail) return { rows: [], rowCount: 0 }
       writes++
@@ -91,7 +101,7 @@ function fixture() {
     const data = response.body.split('\n').find(line => line.startsWith('data: '))
     return data ? JSON.parse(data.slice(6)) : response.json()
   }
-  return { ci, create, call, requests, writes: () => writes, setOutput: (value: string) => { output = value }, setState: (value: typeof observedState) => { observedState = value }, setTransport: (value: typeof transport) => { transport = value }, read: () => ({ record, tail }),
+  return { ci, create, call, requests, writes: () => writes, recordBytes: () => recordBytes, setOutput: (value: string) => { output = value }, setState: (value: typeof observedState) => { observedState = value }, setTransport: (value: typeof transport) => { transport = value }, read: () => ({ record, tail }),
     failure: (value: typeof fail) => { fail = value },
     close: async () => { await ci.close(); await app.close() } }
 }
@@ -122,6 +132,27 @@ it('persists unavailable observation, bounded retry timing and sanitized cause t
     expect(recovered).toMatchObject({ run: { state: 'running', message: 'Lint in progress',
       observation: { status: 'available', consecutiveFailures: 0, lastError: null,
         lastSuccessAt: expect.any(String), nextAttemptAt: null } }, logTail: 'fresh output' })
+  } finally { await f.close() }
+})
+
+it('updates log output without replacing the unchanged ticket record and preserves MCP readback', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'))
+  const f = fixture()
+  try {
+    f.read().record.files = Array.from({ length: 200 }, (_, index) => `src/features/example-${index}.test.ts`)
+    f.failure(null)
+    await f.ci.dispatch()
+    const previous = structuredClone(f.read().record)
+    const bytes = f.recordBytes()
+    vi.setSystemTime(Date.now() + 1000)
+    f.setOutput('additional output')
+    await f.ci.dispatch()
+    expect(f.read()).toEqual({ record: previous, tail: 'additional output' })
+    expect(f.recordBytes()).toBe(bytes)
+    const output = CiGetOutputSchema.parse(decodeMcpToolResult((await f.call()).result))
+    expect(output).toMatchObject({ run: previous, logTail: 'additional output' })
+    expect(JSON.stringify(await f.call('denied'))).toContain('ACCESS_DENIED')
   } finally { await f.close() }
 })
 
