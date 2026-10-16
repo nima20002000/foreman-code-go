@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { retryStartupDatabase } from './startupDatabase.js'
+import { retryStartupDatabase, runBackgroundPassAtStartup } from './startupDatabase.js'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -60,4 +60,25 @@ it('checks runtime cancellation before retrying a failed database operation', as
     if (closing) throw reason
   } })).rejects.toBe(reason)
   expect(operation).toHaveBeenCalledOnce()
+})
+
+it.each([
+  new Error('Connection terminated due to connection timeout'),
+  new Error('timeout exceeded when trying to connect'),
+  new Error('Connection terminated unexpectedly'),
+  Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }),
+])('reports a transient failure of a background pass at startup so the next tick retries it: %s', async failure => {
+  const report = vi.fn()
+  await expect(runBackgroundPassAtStartup(() => Promise.reject(failure), report)).resolves.toBeUndefined()
+  expect(report).toHaveBeenCalledExactlyOnceWith(failure)
+})
+
+it.each([
+  Object.assign(new Error('password authentication failed'), { code: '28P01' }),
+  Object.assign(new Error('relation "runs" does not exist'), { code: '42P01' }),
+  new Error('Invalid startup configuration'),
+])('still fails startup on a permanent background pass error: %s', async failure => {
+  const report = vi.fn()
+  await expect(runBackgroundPassAtStartup(() => Promise.reject(failure), report)).rejects.toBe(failure)
+  expect(report).not.toHaveBeenCalled()
 })
