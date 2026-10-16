@@ -18,8 +18,8 @@ function visitedRows(plan: Plan): number {
 }
 
 async function principal(pool: pg.Pool) {
-  await pool.query(`insert into management_principals(id,name,audience,grants,expires_at)
-    values('retention-operator','Operator','operator','[]'::jsonb,'2099-01-01')`)
+  await pool.query(`insert into management_principals(id,name,audience,token_hash,grants,expires_at)
+    values('retention-operator','Operator','operator','retention-operator-token-hash','[]'::jsonb,'2099-01-01')`)
 }
 
 async function seed(pool: pg.Pool, count: number, pending = false) {

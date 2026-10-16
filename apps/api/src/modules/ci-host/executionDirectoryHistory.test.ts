@@ -31,7 +31,7 @@ async function observe(run: CiRunRecord, computer: HostCiComputer, state: CiHost
       const terminal = state === 'failed' || state === 'passed'
       return { operation: 'read', text: '', nextOffset: 0, run: {
         runId: request.runId, state, step: null, logBytes: 0,
-        startedAt: assigned.startedAt, finishedAt: terminal ? new Date().toISOString() : null,
+        startedAt: assigned.startedAt ?? new Date().toISOString(), finishedAt: terminal ? new Date().toISOString() : null,
         exitCode: terminal ? Number(state === 'failed') : null, message: null,
         ...(state === 'failed' ? { testsStarted: false } : {}),
       } }
