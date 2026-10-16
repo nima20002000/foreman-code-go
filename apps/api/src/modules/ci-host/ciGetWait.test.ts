@@ -312,7 +312,7 @@ it('reports the requested ticket from the same read as the group that settled', 
   try {
     const stale = f.read()
     f.persist({ state: 'passed', exitCode: 0, collection: 'complete' })
-    const sibling = CiRunRecordSchema.parse({ ...f.read(), id: '33333333-3333-4333-8333-333333333333', part: 'unit-api' })
+    const sibling = CiRunRecordSchema.parse({ ...f.read(), id: '33333333-3333-4333-8333-333333333333', part: 'lint-api' })
     // The ticket row is read first; the group read that follows already sees the collection finish.
     f.query.mockImplementationOnce(async () => ({ rows: [{ record: { ...stale, state: 'passed', exitCode: 0,
       collection: 'pending' }, log_tail: '' }] }))
