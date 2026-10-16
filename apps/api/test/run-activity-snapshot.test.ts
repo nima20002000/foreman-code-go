@@ -3,14 +3,18 @@ import { describe, expect, it } from 'vitest'
 import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { readRunActivitySnapshot } from '../src/modules/runs/activitySnapshot.js'
 import { projectNativeActivityFacts } from '../src/modules/runs/nativeActivitySnapshot.js'
+import type { ActivityReadRow } from '../src/modules/runs/activityProjection.js'
+import { ciActivityFromRecord } from '../src/modules/runs/agentCiSnapshot.js'
 import { CiRunRecordSchema } from '@foreman-code/contracts'
 
 const scope = { workspaceId: 'ws', workflowId: 'wf', runId: 'run', workflowVersionId: 'version' }
 const version = { id: 'version', workspaceId: 'ws', workflowId: 'wf', definition: { nodes: [], edges: [] } } as unknown as WorkflowVersionV3
 function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob = false,
-  cis: Record<string, unknown>[] = [], movingCi = false) {
+  cis: Record<string, unknown>[] = [], movingCi = false, activities: ActivityReadRow[] = []) {
   let reads = 0
   const sql = { query: async (text: string) => {
+    if (text.startsWith('select a.sequence')) return { rows: activities }
+    if (text.startsWith('with normalized')) return { rows: [] }
     if (text.includes('from runs where')) { reads++; return { rows: [{ revision: moving && reads > 1 ? '4' : '3', stopped: false, outcome: 'pending', execution_state: 'running' }] } }
     if (text.includes('from harness_executions e left join')) return { rows: [
       { id: 'A', attempt: 1, revision: '7', native_revision: '0', state: 'running', outcome: null, started_at: '2026-10-01T00:00:00.000Z', native_session_id: 'native-A', harness: 'codex' },
@@ -22,7 +26,6 @@ function fixture(moving = false, jobs: Record<string, unknown>[] = [], movingJob
     if (text.includes('from workflow_job_executions w join job_executions')) return { rows: jobs.map((job) => ({ ...job,
       revision: movingJob && reads > 1 ? '10' : job.revision })) }
     if (text.includes('as high_water')) return { rows: [{ high_water: '9007199254740993', retained_from: '1', observed: 1 }] }
-    if (text.startsWith('select a.sequence') || text.startsWith('with normalized')) return { rows: [] }
     throw new Error(`Unexpected snapshot SQL ${text}`)
   } } as unknown as Pick<pg.PoolClient, 'query'>
   return sql
@@ -58,6 +61,33 @@ describe('Run activity snapshot', () => {
       .rejects.toMatchObject({ code: 'ACTIVITY_SNAPSHOT_CONFLICT' })
     await expect(readRunActivitySnapshot(fixture(false, [], false, [{ ...ci, agent_id: 'foreign' }]), scope, ownedVersion))
       .rejects.toMatchObject({ code: 'ACTIVITY_OWNER_CONFLICT' })
+  })
+  it('attributes shared CI activity to each requesting execution', async () => {
+    const record = CiRunRecordSchema.parse({ id: '00000000-0000-4000-8000-000000000001',
+      groupId: '00000000-0000-4000-8000-000000000002', workspaceId: scope.workspaceId,
+      suite: 'install', repository: 'example/project', commit: 'a'.repeat(40), partition: null, state: 'running',
+      computer: null, step: null, exitCode: null, message: null,
+      queuedAt: '2026-10-01T00:00:02.000Z', startedAt: null, finishedAt: null,
+      initiator: { principalId: 'worker', executionId: 'A' } })
+    const requesters = ['A', 'C']
+    const nodes = requesters.map(id => ({ id: `node-${id}`, kind: 'agent' as const, agentId: `agent-${id}` }))
+    const ownedVersion = { ...version, definition: { ...version.definition, nodes } } as WorkflowVersionV3
+    const cis = requesters.map((id, index) => ({ id: record.id, revision: '3', execution_id: id,
+      agent_id: nodes[index]!.agentId, node_id: nodes[index]!.id, pinned: true, record }))
+    const activities: ActivityReadRow[] = requesters.map((id, index) => ({ sequence: String(index + 1),
+      source: 'backend', kind: 'ci_state_changed', occurred_at: new Date(record.queuedAt),
+      harness_execution_id: id, execution_node_id: nodes[index]!.id, execution_agent_id: nodes[index]!.agentId,
+      execution_attempt: index + 1, work_activation_id: null, result_outcome: null, native: null,
+      ci_ticket_id: record.id, ci_activity: ciActivityFromRecord(record), safe_payload: {} }))
+    const read = await readRunActivitySnapshot(fixture(false, [], false, cis, false, activities), scope, ownedVersion)
+    expect(read.active.filter(work => work.ref.kind === 'ci').map(work => work.ref))
+      .toEqual(requesters.map(executionId => expect.objectContaining({ ticketId: record.id, executionId })))
+    for (const activity of read.activities) {
+      const executionId = activity.order === '1' ? 'A' : 'C'
+      expect(activity.owner).toMatchObject({ kind: 'ci', ticketId: record.id, executionId })
+      expect(activity.parent).toMatchObject({ executionId })
+    }
+    expect(read.activities).toHaveLength(2)
   })
   it('keeps two active executions, queued newest B, and independent exact source revisions', async () => {
     const value = await readRunActivitySnapshot(fixture(), scope, version)

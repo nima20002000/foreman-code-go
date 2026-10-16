@@ -7,6 +7,7 @@ import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutp
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
   type AcceptedRepeatStartV1, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
+import { BugReportPageSchema } from '@foreman-code/contracts/management'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { beginTransaction, commitTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { buildApp } from '../src/app.js'
@@ -107,11 +108,12 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
   const runs = new RunManagementService(database.pool, graph.commands, {} as never, {} as never, locations)
   const credentials = new Wave25WorkerCredentialService(database.pool, graph.access)
   const worker = await credentials.issueForExecution(executionId)
+  const bugReports = new BugReportService(database.pool, graph.commands)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     appMcp: { access: graph.access, commands: graph.commands,
       interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands),
-      bugReports: new BugReportService(database.pool, graph.commands) },
-    operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci } as never } })
+      bugReports },
+    operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci, bugReports } as never } })
   const reader = await graph.credential([{ actions: ['runs:read'], scope: { runIds: [graph.run.id] } }])
   const denied = await graph.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
   const request = { workspaceId: graph.scope.workspaceId, runId: graph.run.id, limit: 100 }
@@ -191,6 +193,74 @@ const ciRef = (ticketId: string, executionId: string) => expect.objectContaining
 
 describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
   afterEach(() => { vi.useRealTimers() })
+
+  it.each(['same-run', 'another-run'] as const)(
+    'reports shared CI for every requester in %s through MCP and Board activity', async location => {
+      const f = await fixture({ form: 'parallel' })
+      try {
+        const ticket = await f.submit({ suite: 'install' })
+        const other = location === 'same-run' ? f.graph : await anotherWorkflow(f)
+        const joinedNode = agentWorkflowNode(other.version.definition.nodes[1])
+        const joinedExecutionId = randomUUID()
+        await f.insertExecution(joinedExecutionId, other.run.id, joinedNode)
+        const credential = await f.credentials.issueForExecution(joinedExecutionId)
+        const token = credential.environment.variables.GRAPHQL_MCP_TOKEN!
+        const joined = CiRunOutputSchema.parse(await f.value(token, 'ci_run', {
+          suite: 'install', commandId: randomUUID(),
+        }))
+        expect(joined).toMatchObject({ ticketId: ticket.ticketId, joined: true })
+        const shared = CiGetOutputSchema.parse(await f.value(token, 'ci_get', { ticketId: ticket.ticketId }))
+        expect(shared.sharing?.requesters.map(requester => requester.executionId).sort())
+          .toEqual([f.executionId, joinedExecutionId].sort())
+        const operator = await f.graph.credential([{ actions: [...CI_GET_ACTIONS, 'runs:read', 'bug_reports:read'],
+          scope: { workspaceIds: [f.graph.scope.workspaceId] } }])
+        const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', { runId: other.run.id }))
+        expect(listed.jobs).toContainEqual(expect.objectContaining({ ticketId: ticket.ticketId,
+          requester: expect.objectContaining({ executionId: joinedExecutionId }) }))
+        const board = RunBoardSnapshotGetResultSchema.parse(await f.value(operator.token, 'run_board_snapshot_get', {
+          workspaceId: other.scope.workspaceId, workflowId: other.scope.workflowId, runId: other.run.id,
+        }))
+        expect(board.activitySnapshot?.active).toContainEqual(expect.objectContaining({
+          ref: ciRef(ticket.ticketId, joinedExecutionId),
+        }))
+        const scope = { workspaceId: other.scope.workspaceId, runId: other.run.id }
+        const activities = async () => RunActivitiesPageSchema.parse(await f.value(operator.token,
+          'run_activities_get_v1', scope))
+        expect((await activities()).items).toContainEqual(expect.objectContaining({
+          refs: expect.objectContaining({ ciTicketId: ticket.ticketId, executionId: joinedExecutionId }),
+          ci: expect.objectContaining({ state: 'queued' }),
+        }))
+        f.online()
+        await f.get(ticket.ticketId)
+        f.finish(ticket.ticketId, 'passed')
+        await f.get(ticket.ticketId)
+        const events = (await activities()).items.filter(item => item.refs.ciTicketId === ticket.ticketId
+          && item.refs.executionId === joinedExecutionId)
+        expect(events.map(item => item.ci?.state)).toEqual(['queued', 'starting', 'running', 'passed'])
+        const terminalBoard = RunBoardSnapshotGetResultSchema.parse(await f.value(operator.token,
+          'run_board_snapshot_get', { workspaceId: other.scope.workspaceId,
+            workflowId: other.scope.workflowId, runId: other.run.id }))
+        const joinedActivities = terminalBoard.activitySnapshot?.activities.filter(item => item.ci?.id === ticket.ticketId
+          && item.parent?.kind === 'execution' && item.parent.executionId === joinedExecutionId)
+        expect(joinedActivities).toHaveLength(4)
+        expect(joinedActivities!.every(item => item.owner.kind === 'ci'
+          && item.owner.executionId === joinedExecutionId)).toBe(true)
+        await f.database.pool.query(`update harness_executions set record=record||'{"state":"running"}'::jsonb
+          where id=any($1::text[])`, [[f.executionId, joinedExecutionId]])
+        const bugs = new BugReportService(f.database.pool, f.graph.commands)
+        const idleMs = 3_600_000
+        expect(await bugs.detectStuckExecutions(idleMs, new Date(Date.now() + 2 * idleMs))).toBe(2)
+        const reports = BugReportPageSchema.parse(await f.value(operator.token, 'bug_reports_list', {
+          workspaceId: f.graph.scope.workspaceId,
+        }))
+        expect(reports.items.map(report => report.id).sort()).toEqual([
+          `bug-report-stuck-${f.executionId}`, `bug-report-stuck-${joinedExecutionId}`,
+        ].sort())
+        expect(reports.items.every(report => report.happened.message.includes('1 CI tickets'))).toBe(true)
+        const denied = await f.call(f.denied.token, 'run_activities_get_v1', scope)
+        expect(denied.error || denied.result?.isError).toBeTruthy()
+      } finally { await f.close() }
+    })
 
   it('lets another node read and cancel workspace CI tickets while a node without ci_get is denied', async () => {
     const f = await fixture({ form: 'parallel', deniedCiReader: true })
