@@ -9,6 +9,7 @@ import { expect, it } from 'vitest'
 import { testFixtureCacheRoot } from '../../../scripts/test-fixture-cache.mjs'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { compileApiFixture } from './helpers/compiledApiFixture.js'
+import { createLocalProductionProject } from './helpers/localProductionProject.js'
 
 const fixtureRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
 
@@ -159,17 +160,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
     expect(stdout.trim()).toBe('function')
     const project = join(directory, 'ci-project')
     const context = join(directory, 'ci-context')
-    await mkdir(project)
-    await writeFile(join(project, 'package.json'), '{"packageManager":"pnpm@11.27.0"}\n')
-    await writeFile(join(project, 'pnpm-lock.yaml'), 'lockfileVersion: 9\npackages: {}\n')
-    await writeFile(join(project, 'pnpm-workspace.yaml'), 'minimumReleaseAge: 2880\n')
-    const gitEnvironment = Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => !key.startsWith('GIT_')))
-    const git = (args: string[]) => execute('git', args, { cwd: project, env: gitEnvironment })
-    await git(['init', '-q'])
-    await git(['add', '.'])
-    await git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'])
-    const { stdout: captured } = await git(['rev-parse', 'HEAD'])
+    const { commit: captured, environment: gitEnvironment } = await createLocalProductionProject(project)
     const { stdout: runtimeOutput } = await execute(process.execPath, ['--input-type=module', '-e', [
       'import { readFile } from "node:fs/promises";',
       'import { join } from "node:path";',
@@ -187,7 +178,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
       'containerfile: (await readFile(join(output, "Containerfile"), "utf8")).length,',
       'verification: (await readFile(join(output, "verification/verify-repository.mjs"), "utf8")).length }));',
     ].join('\n'), pathToFileURL(join(destination, 'dist/modules/jobs/ciRuntimeContext.mjs')).href,
-    project, context, captured.trim()], {
+    project, context, captured], {
       cwd: destination, env: gitEnvironment, timeout: 30_000, maxBuffer: 1024 * 1024,
     })
     const runtimeResult = JSON.parse(runtimeOutput) as {
@@ -195,7 +186,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
       finalizeVerification: string
     }
     expect(runtimeResult.digest).toMatch(/^[a-f0-9]{64}$/u)
-    expect(runtimeResult.sourceCommit).toBe(captured.trim())
+    expect(runtimeResult.sourceCommit).toBe(captured)
     expect(runtimeResult.lock).toEqual({ lockfileVersion: 9, packages: {} })
     expect(runtimeResult.containerfile).toBeGreaterThan(0)
     expect(runtimeResult.verification).toBeGreaterThan(0)
