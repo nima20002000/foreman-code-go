@@ -93,6 +93,35 @@ it.each([
   expect(vi.getTimerCount()).toBe(0)
 })
 
+it('keeps waiting while the observed value progresses past the stall deadline', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  const started = performance.now()
+  const read = vi.fn(async () => Math.floor((performance.now() - started) / 50))
+  const result = readUntil(read, step => step >= 6, {
+    timeoutMs: 100, description: 'progressing Run', progress: step => step,
+  })
+  const resolved = expect(result).resolves.toBe(6)
+  await vi.advanceTimersByTimeAsync(400)
+  await resolved
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('times out once the observed value stops progressing', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  const started = performance.now()
+  const read = vi.fn(async () => Math.min(2, Math.floor((performance.now() - started) / 50)))
+  let settled = false
+  const result = readUntil(read, step => step >= 6, {
+    timeoutMs: 100, description: 'stalled Run', progress: step => step,
+  }).finally(() => { settled = true })
+  const rejected = expect(result).rejects.toThrow('Timed out waiting for stalled Run. No progress for 100 ms; last progress: 2')
+  await vi.advanceTimersByTimeAsync(150)
+  expect(settled).toBe(false)
+  await vi.advanceTimersByTimeAsync(100)
+  await rejected
+  expect(vi.getTimerCount()).toBe(0)
+})
+
 it('observes subscribed external progress before a short deadline', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   const started = performance.now()
