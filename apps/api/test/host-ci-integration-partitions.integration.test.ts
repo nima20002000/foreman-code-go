@@ -1,7 +1,9 @@
-import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, integrationPartition } from '@foreman-code/contracts'
+import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema,
+  integrationPartition } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
+import { readExecutorSpeeds } from '../src/modules/ci-host/executorSpeed.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 import { ciRunReadback } from './helpers/ciRunReadback.js'
 
@@ -79,8 +81,20 @@ it('splits integration over two build computers, reports progress and logs, and 
   } finally { await f.close() }
 })
 
-it('sizes each partition by the measured speed of the computer it is planned for', async () => {
+it.each([false, true])('sizes each partition by measured computer speed with staggered readiness=%s', async staggered => {
   const f = await fixture()
+  let releaseStatus!: () => void
+  const pendingStatus = new Promise<void>(resolve => { releaseStatus = resolve })
+  let markStatusRequested!: () => void
+  const statusRequested = new Promise<void>(resolve => { markStatusRequested = resolve })
+  const request = f.endpoint.request.bind(f.endpoint)
+  f.endpoint.request = async (computer, input) => {
+    if (staggered && input.operation === 'status' && computer.key === f.computers[1]!.key) {
+      markStatusRequested()
+      await pendingStatus
+    }
+    return request(computer, input)
+  }
   try {
     const historyFile = 'apps/api/test/history.integration.test.ts'
     const historyDurations = { [historyFile]: 400_000 }
@@ -96,6 +110,17 @@ it('sizes each partition by the measured speed of the computer it is planned for
         values($1,$2,$3,'passed',$4::jsonb,$5::jsonb)`,
         [run.id, f.workspaceId, run.groupId, JSON.stringify(run), JSON.stringify(historyDurations)])
     }
+    const speeds = await readExecutorSpeeds(f.pool, f.endpoint)
+    expect(speeds.get(f.computers[0]!.key)).toMatchObject({ throughput: 2 })
+    expect(speeds.get(f.computers[1]!.key)).toMatchObject({ throughput: 1 })
+    // The immutable plan uses the ready fleet; both measured computers must be ready before admission.
+    const readiness = f.value(f.operator, 'ci_computers_list', {})
+    if (staggered) await statusRequested
+    expect(f.started).toEqual([])
+    releaseStatus()
+    const computers = CiComputersOutputSchema.parse(await readiness).computers
+    expect(computers).toHaveLength(2)
+    expect(computers.map(computer => computer.ready)).toEqual([true, true])
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'weighted',
       partitions: 2 }))
     await f.ci.dispatch()
@@ -108,7 +133,10 @@ it('sizes each partition by the measured speed of the computer it is planned for
     expect(byComputer.laptop! / byComputer.builder!).toBeCloseTo(2, 1)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run.partition?.weights).toEqual(weights)
-  } finally { await f.close() }
+  } finally {
+    releaseStatus()
+    await f.close()
+  }
 })
 
 it('persists the heavy-file partition plan through authenticated MCP and denies a read-only caller', async () => {
