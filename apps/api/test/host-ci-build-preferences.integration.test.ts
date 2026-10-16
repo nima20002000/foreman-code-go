@@ -42,6 +42,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     const starts: string[] = []
     const requests = new Map<string, CiHostRequest>()
     const outdated = new Set<string>()
+    const cancelAcknowledgements = new Set<string>()
     const request = async (computer: string, input: CiHostRequest): Promise<CiHostReply> => {
       if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
         ...(!outdated.has(computer) ? { startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION } : {}),
@@ -57,6 +58,8 @@ it('honors persisted MCP build participation and priority while retaining assign
       }
       const entry = runs.get(input.runId)!
       if (input.operation === 'cancel') {
+        // The computer acknowledges cancellation only after the caller sees the pending response.
+        if (!cancelAcknowledgements.has(input.runId)) return { operation: 'cancel', run: entry.run }
         entry.run = { ...entry.run, state: 'canceled', finishedAt: new Date().toISOString() }
         return { operation: 'cancel', run: entry.run }
       }
