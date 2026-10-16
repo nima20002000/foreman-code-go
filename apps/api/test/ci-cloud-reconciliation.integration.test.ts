@@ -80,6 +80,18 @@ it.each(['starting', 'running'] as const)('retains transient CircleCI ownership 
     expect(f.control.canceled).toEqual([])
     f.advance(75_000)
     await ci.dispatch()
+    await ci.drain()
+    const pending = CiGetOutputSchema.parse(decodeMcpToolResult(await reader.callTool({ name: 'ci_get',
+      arguments: { workspaceId, ticketId: record.id } })))
+    expect(pending.run).toMatchObject({ id: record.id, state, finishedAt: null,
+      computer: { hostRef: computer.hostRef }, message: expect.stringContaining('Cancellation could not be confirmed') })
+    expect((await pool.query('select host_key,record from ci_runs where id=$1', [record.id])).rows[0])
+      .toMatchObject({ host_key: computer.key, record: { state, finishedAt: null } })
+    expect(f.control.canceled).toEqual(['pipeline-1'])
+    f.control.error = ''
+    f.control.outcome = 'canceled'
+    f.advance(4_001)
+    await ci.dispatch()
     const recovered = await ciReadWhen(pool, async () => CiGetOutputSchema.parse(decodeMcpToolResult(
       await reader.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: record.id } }),
     )), output => output.run.state === 'queued')

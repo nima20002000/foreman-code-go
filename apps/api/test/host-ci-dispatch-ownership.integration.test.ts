@@ -306,9 +306,13 @@ it.each(['github', 'circleci'] as const)(
         hostRef: { kind: 'device', mainId: 'test-main', deviceId: 'replacement' } }
       f.computers.push(replacement)
       await settle(restarted.at(-1)!)
-      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'running',
-        computer: { hostRef: replacement.hostRef } })
-      expect(f.starts[0]!.request.runId).toBe(ticket.ticketId)
+      const running = await f.read(ticket.ticketId)
+      expect(running).toMatchObject({ id: ticket.ticketId, state: 'running',
+        computer: { hostRef: replacement.hostRef }, executionRunId: expect.any(String) })
+      expect(running.executionRunId).not.toBe(ticket.ticketId)
+      expect(f.starts[0]!.request.runId).toBe(running.executionRunId)
+      expect((await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0].record)
+        .toEqual(running)
     } finally {
       await Promise.all(restarted.map(service => service.close()))
       await f.close()

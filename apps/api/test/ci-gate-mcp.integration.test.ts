@@ -16,6 +16,7 @@ import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/servi
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
+import { ciExecutionRunId } from '../src/modules/ci-host/executionAttempt.js'
 import { ciRunReadback } from './helpers/ciRunReadback.js'
 
 /** Dispatch passes hand observations and follow-up passes to background work; settle waits for all of it. */
@@ -244,7 +245,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   }
   const finishGate = async (ticketId: string) => {
     const initial = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
-    const ids = new Set(initial.partitions!.map(run => run.id))
+    const ids = new Set(initial.partitions!.map(ciExecutionRunId))
     for (let wave = 0; wave < initial.partitions!.length; wave++) {
       for (const [id, run] of runs) {
         if (ids.has(id)) runs.set(id, { ...run, state: 'passed', exitCode: 0,
@@ -309,6 +310,18 @@ it.each(['cloud', 'build'] as const)(
           ? computer.key === 'cloud-spare' : computer.hostRef.kind !== 'cloud')))
       cloud.advance(75_000)
       await settle(f.ci)
+      const pending = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+      expect(pending.run).toMatchObject({ id: part.id, state: 'running', finishedAt: null,
+        computer: { hostRef: part.computer!.hostRef } })
+      expect(pending.run.unstartedProviders).toBeUndefined()
+      expect(cloud.control.canceled).toEqual(['pipeline-1'])
+      expect((await database.pool.query('select record,host_key from ci_runs where id=$1', [part.id])).rows[0])
+        .toMatchObject({ record: { state: 'running', computer: { hostRef: part.computer!.hostRef } },
+          host_key: expect.any(String) })
+      cloud.control.error = ''
+      cloud.control.outcome = 'canceled'
+      cloud.advance(4_001)
+      await settle(f.ci)
       const recovered = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
       expect(recovered.run).toMatchObject({ id: part.id, groupId: part.groupId, state: 'running',
         commit: part.commit, files: part.files, unstartedProviders: ['circleci'],
@@ -317,8 +330,12 @@ it.each(['cloud', 'build'] as const)(
       else expect(recovered.run.computer!.hostRef.kind).not.toBe('cloud')
       expect(recovered.run.computer!.hostRef).not.toEqual(part.computer!.hostRef)
       expect(cloud.control.canceled).toEqual(['pipeline-1'])
+      expect(recovered.run.executionRunId).toEqual(expect.any(String))
+      expect(recovered.run.executionRunId).not.toBe(part.id)
       expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === part.id))
-        .toHaveLength(2)
+        .toHaveLength(1)
+      expect(f.started.filter(value => value.request.operation === 'start'
+        && value.request.runId === recovered.run.executionRunId)).toHaveLength(1)
       expect((await database.pool.query('select record,host_key from ci_runs where id=$1', [part.id])).rows[0])
         .toMatchObject({ record: recovered.run, host_key: expect.any(String) })
       const denied = await f.connect('ungranted')

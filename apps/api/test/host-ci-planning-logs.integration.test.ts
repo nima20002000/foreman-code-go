@@ -44,6 +44,11 @@ async function fixture(realLogs = false) {
         if (!control.stopCode) control.state = 'inactive'
         return { code: control.stopCode, stdout: '', stderr: '' }
       }
+      if (file === 'systemctl' && args.includes('show')) {
+        const stdout = args.filter(argument => argument.endsWith('.service')).map(unit =>
+          `Id=${unit}\nLoadState=loaded\nActiveState=${control.state}`).join('\n\n')
+        return { code: control.code, stdout, stderr: '' }
+      }
       return { code: control.code, stdout: control.state, stderr: '' }
     } }
   const runner = new HostCiRunner(root, ports, {})
