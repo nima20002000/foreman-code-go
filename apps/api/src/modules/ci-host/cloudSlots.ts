@@ -1,12 +1,32 @@
 import type pg from 'pg'
 import type { CiHostRequest, CiRunRecord } from '@foreman-code/contracts'
 import { withTransaction } from '../../infrastructure/transaction.js'
+import { ciDatabasePriority, waitForCiDispatch } from '../../infrastructure/ciDatabasePriority.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { claimCiDispatch } from './dispatch.js'
 import { CI_BUSY_TICKET } from './deadlines.js'
 import type { HostCiComputer } from './serviceTypes.js'
 
 const log = componentLogger('jobs')
+const slotClaims = new WeakMap<pg.Pool, Promise<void>>()
+
+/** Queue claims before leasing a connection, leaving the other reserved connection for admission and readiness. */
+function queueSlotClaim<T>(pool: pg.Pool, work: () => Promise<T>): Promise<T> {
+  return waitForCiDispatch(async () => {
+    const previous = slotClaims.get(pool) ?? Promise.resolve()
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    slotClaims.set(pool, pending)
+    await previous
+    try {
+      ciDatabasePriority()?.signal?.throwIfAborted()
+      return await work()
+    } finally {
+      release()
+      if (slotClaims.get(pool) === pending) slotClaims.delete(pool)
+    }
+  })
+}
 
 /** Cloud slots a gate leaves free for non-gate tickets, such as fix verifications, unless the product sets another count. */
 export const DEFAULT_RESERVED_CLOUD_SLOTS = 4
@@ -56,7 +76,12 @@ export function withoutReservedCloudSlots(computers: HostCiComputer[], count: nu
 
 /** A cloud slot runs one ticket. The claim holds the slot's lock and rechecks persisted assignments, so a dispatcher
  * working from an older capacity snapshot cannot start a second ticket on a busy slot. */
-export async function claimCiSlot(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
+export function claimCiSlot(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
+  request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | 'busy' | null> {
+  return queueSlotClaim(pool, () => claimSlot(pool, run, computer, request))
+}
+
+async function claimSlot(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
   request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | 'busy' | null> {
   if (computer.hostRef.kind !== 'cloud') return claimCiDispatch(pool, run, computer, request)
   return withTransaction(pool, async client => {
