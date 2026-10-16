@@ -159,7 +159,7 @@ test('partial staging failure leaves installed version intact and removes own st
   assert.equal((await readdir(join(f.root, 'versions'))).some((name) => name.startsWith('.stage-')), false);
 });
 
-test('killed updater leaves current intact and blocks retry until explicit owned-lock recovery', async (t) => {
+test('killed updater leaves current intact and releases the install lock for retry', async (t) => {
   const f = await fixture(t); await installVersion(f);
   const first = await readlink(join(f.root, 'current'));
   f.manifest.version = '1.1.0'; f.approvedManifestSha256 = await f.save();
@@ -178,23 +178,27 @@ test('killed updater leaves current intact and blocks retry until explicit owned
   child.kill('SIGKILL');
   await closed;
   assert.equal(await readlink(join(f.root, 'current')), first);
-  await assert.rejects(installVersion(f), /install_busy/);
-  await assert.rejects(rollbackVersion(rollback), /install_busy/);
-  // Explicit recovery applies only to this test-owned, known-dead installer.
-  await rm(join(f.root, '.install-lock'), { recursive: true });
+  await assert.rejects(installVersion(f), /update_not_approved/);
   await installVersion({ ...f, updatePolicy: async () => true });
   assert.notEqual(await readlink(join(f.root, 'current')), first);
   await rollbackVersion(rollback);
   assert.equal(await readlink(join(f.root, 'current')), first);
 });
 
-test('read-only app root fails without changing installed version', async (t) => {
+test('read-only app root permits idempotent install but rejects a version change', async (t) => {
   const f = await fixture(t); await installVersion(f);
   const first = await readlink(join(f.root, 'current'));
-  await chmod(f.root, 0o500); t.after(() => chmod(f.root, 0o700).catch(() => {}));
-  await assert.rejects(installVersion(f), { code: 'EACCES' });
-  assert.equal(await readlink(join(f.root, 'current')), first);
-  await chmod(f.root, 0o700);
+  await chmod(f.root, 0o500);
+  try {
+    await installVersion(f);
+    assert.equal(await readlink(join(f.root, 'current')), first);
+    f.manifest.version = '1.1.0';
+    f.approvedManifestSha256 = await f.save();
+    await assert.rejects(installVersion({ ...f, updatePolicy: async () => true }), { code: 'EACCES' });
+    assert.equal(await readlink(join(f.root, 'current')), first);
+  } finally {
+    await chmod(f.root, 0o700);
+  }
 });
 
 test('rollback verifies retained bytes and cannot reactivate tampered code', async (t) => {

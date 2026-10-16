@@ -5,6 +5,7 @@ import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
 import { RuntimeShutdown } from '../src/infrastructure/runtimeShutdown.js'
+import { deviceRequestTimeoutMs } from '../src/modules/devices/deviceRequestRetry.js'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -249,7 +250,8 @@ it.each([
         return error
       })
       // The heartbeat stopper's bounded wait is shorter than the native operation.
-      await vi.advanceTimersByTimeAsync(timeout ? 10_001 : 1_001)
+      await vi.advanceTimersByTimeAsync(timeout ? 2 * deviceRequestTimeoutMs + 1 : 1_001)
+      if (!timeout) expect(lifecycle.pending()).toEqual(['workflow engine'])
       if (timeout) {
         // Both production phases time out without abandoning the captured operation.
         expect(await closing).toBeInstanceOf(AggregateError)

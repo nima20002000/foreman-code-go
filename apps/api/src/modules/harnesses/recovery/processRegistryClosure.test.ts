@@ -104,7 +104,7 @@ it('prunes aged closed owner directories while preserving original closure readb
       expect(await registry.closeOwner(observation.owner)).toBe(true)
       await registry.closeRegistration(registry.scope(observation.owner), observation.launchId)
     }
-    expect(registry.snapshot().launches).toEqual(expect.arrayContaining(observations))
+    expect(registry.snapshot().launches).toEqual([])
     expect(await registry.closeOwner('unknown-owner')).toBe(false)
     expect(existsSync(root)).toBe(true)
   } finally { rmSync(directory, { recursive: true, force: true }) }
@@ -170,6 +170,7 @@ it('archives owners that age after an earlier maintenance sweep finished', async
     const registry = new NativeProcessRegistry(root)
     expect(existsSync(ownerDirectory)).toBe(false)
     expect(await registry.closeOwner(observation.owner)).toBe(true)
-    expect(registry.snapshot().launches).toContainEqual(observation)
+    expect(registry.closedRegistration(observation.owner, observation.launchId)).toEqual(observation)
+    expect(registry.snapshot().launches).toEqual([])
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })

@@ -9,6 +9,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresCommandReceiptRetention } from '../src/modules/commands/receiptRetention.js'
 import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
@@ -68,11 +69,15 @@ it('production recovery drains every delivery page and coalesces concurrent tick
     .mockResolvedValueOnce({ nextCursor: null, errors: [] })
   vi.spyOn(production.engine, 'reconcile').mockResolvedValue()
   const report = vi.fn()
-  await Promise.all([production.reconcile(report), production.reconcile(report)])
+  const first = production.reconcile(report)
+  const second = production.reconcile(report)
+  expect(second).toBe(first)
+  await Promise.all([first, second])
   expect(BugReportService.prototype.detectStuckExecutions)
     .toHaveBeenCalledExactlyOnceWith(DEFAULT_STUCK_EXECUTION_IDLE_MS)
   expect(recover.mock.calls).toEqual([[{ limit: 100 }], [{ limit: 100, afterId: 'next-interaction' }]])
   expect(RunWorktrees.prototype.cleanup).toHaveBeenCalledExactlyOnceWith(report)
+  expect(PostgresCommandReceiptRetention.prototype.prune).toHaveBeenCalledExactlyOnceWith()
   expect(report).not.toHaveBeenCalled()
 })
 
@@ -103,6 +108,7 @@ beforeEach(() => {
   vi.spyOn(InteractionService.prototype, 'respond').mockImplementation(respond)
   vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
   vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue(undefined)
+  vi.spyOn(PostgresCommandReceiptRetention.prototype, 'prune').mockResolvedValue(0)
   vi.spyOn(BugReportService.prototype, 'detectStuckExecutions').mockResolvedValue(0)
   vi.spyOn(PostgresAccessService.prototype, 'authenticate').mockImplementation(async (token, audience) => {
     const allowed = Array.isArray(audience) ? audience.includes(principal.audience) : principal.audience === audience

@@ -211,14 +211,17 @@ describe('incremental native registry', () => {
       // Each construction archives only a few aged owners, so archiving interleaves with launches.
       let now = 0
       const clock = vi.spyOn(performance, 'now').mockImplementation(() => (now += 30))
+      const closed: ReturnType<typeof f.receipt>[] = []
       try {
         for (let index = 0; index < history; index++) {
           const retired = f.receipt(randomUUID(), `retired-owner-${index}`)
+          closed.push(retired)
           age(retired.path)
           age(join(retired.ownerDirectory, 'retired.json'))
         }
         let registry = new NativeProcessRegistry(f.root)
-        expect(registry.snapshot().launches).toHaveLength(history)
+        // Archived owners leave the hot snapshot; their closure remains addressable below.
+        registry.snapshot()
         io.inventories = 0
         for (let launch = 0; launch < 3; launch++) {
           registry = new NativeProcessRegistry(f.root)
@@ -232,8 +235,12 @@ describe('incremental native registry', () => {
             launchId: scope.launchId, lifecycle: 'closed',
           }))
         }
-        expect(registry.snapshot().launches).toHaveLength(history + 3)
+        expect(registry.snapshot().launches.filter(row => row.owner.startsWith('execution:publication-')))
+          .toHaveLength(3)
         inventories.push(io.inventories)
+        for (const retired of closed) {
+          expect(registry.closedRegistration(retired.observation.owner, retired.id)).toEqual(retired.observation)
+        }
       } finally {
         clock.mockRestore()
         rmSync(f.root, { recursive: true, force: true })
