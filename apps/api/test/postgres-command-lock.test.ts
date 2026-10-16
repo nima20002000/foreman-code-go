@@ -20,8 +20,8 @@ it('ends an expired session lock wait with a retryable domain error before execu
   const client = { release, query: async (statement: string) => ({
     rows: statement.includes('advisory_lock(') ? [{ locked: false }] : [], rowCount: 0,
   }) }
-  const pool = { options: {}, connect: vi.fn() }
-  const dedicatedPool = { connect: vi.fn(async () => client), end }
+  const pool = { options: {}, connect: vi.fn(), end: vi.fn() }
+  const dedicatedPool = { connect: vi.fn(async () => client), end, on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return dedicatedPool } as never)
   vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(600_001)
   const perform = vi.fn(async () => 'captured')
@@ -34,7 +34,7 @@ it('ends an expired session lock wait with a retryable domain error before execu
   expect(pool.connect).not.toHaveBeenCalled()
   expect(dedicatedPool.connect).toHaveBeenCalledOnce()
   expect(release).toHaveBeenCalledOnce()
-  expect(end).toHaveBeenCalledOnce()
+  expect(end).not.toHaveBeenCalled()
 })
 
 it.each([0, 0.99])('backs off contended session locks with bounded jitter (random=%s)', async random => {
@@ -51,9 +51,9 @@ it.each([0, 0.99])('backs off contended session locks with bounded jitter (rando
     }
     return { rows: [] }
   } }
-  const dedicatedPool = { connect: async () => client, end: vi.fn(async () => undefined) }
+  const dedicatedPool = { connect: async () => client, end: vi.fn(async () => undefined), on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return dedicatedPool } as never)
-  const coordinator = new PostgresCommandCoordinator({ options: {} } as pg.Pool)
+  const coordinator = new PostgresCommandCoordinator({ options: {}, end: vi.fn() } as unknown as pg.Pool)
   const perform = vi.fn(async () => 'captured')
   const pending = coordinator.execute({ principal, source: 'mcp', operation: 'capture',
     commandId: 'capture', targetKey: 'workspace', payload: {}, dedicatedConnection: true, perform })
@@ -68,7 +68,7 @@ it.each([0, 0.99])('backs off contended session locks with bounded jitter (rando
   expect(Math.max(...gaps)).toBeLessThanOrEqual(1000)
   expect(perform).toHaveBeenCalledOnce()
   expect(client.release).toHaveBeenCalledOnce()
-  expect(dedicatedPool.end).toHaveBeenCalledOnce()
+  expect(dedicatedPool.end).not.toHaveBeenCalled()
 })
 
 it('keeps the ten-minute deadline while backing off a permanently contended lock', async () => {
@@ -84,9 +84,9 @@ it('keeps the ten-minute deadline while backing off a permanently contended lock
     }
     return { rows: [] }
   } }
-  const dedicatedPool = { connect: async () => client, end: vi.fn(async () => undefined) }
+  const dedicatedPool = { connect: async () => client, end: vi.fn(async () => undefined), on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return dedicatedPool } as never)
-  const coordinator = new PostgresCommandCoordinator({ options: {} } as pg.Pool)
+  const coordinator = new PostgresCommandCoordinator({ options: {}, end: vi.fn() } as unknown as pg.Pool)
   const perform = vi.fn()
   const failure = coordinator.execute({ principal, source: 'mcp', operation: 'capture',
     commandId: 'capture', targetKey: 'workspace', payload: {}, dedicatedConnection: true, perform,
@@ -97,5 +97,5 @@ it('keeps the ten-minute deadline while backing off a permanently contended lock
   expect(attempts).toBeLessThan(1000)
   expect(perform).not.toHaveBeenCalled()
   expect(client.release).toHaveBeenCalledOnce()
-  expect(dedicatedPool.end).toHaveBeenCalledOnce()
+  expect(dedicatedPool.end).not.toHaveBeenCalled()
 })

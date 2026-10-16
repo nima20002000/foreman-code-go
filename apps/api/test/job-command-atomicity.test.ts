@@ -52,7 +52,7 @@ function fixture(options: { receipt?: unknown; failReceipt?: boolean } = {}) {
     return { rows: text.startsWith('select principal_id, input_hash') && options.receipt ? [options.receipt] : [], rowCount: 0 }
   }
   const client = { query, release: vi.fn() }
-  const pool = { options: {}, connect: async () => client, end: vi.fn(async () => undefined) }
+  const pool = { options: {}, connect: async () => client, end: vi.fn(async () => undefined), on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return pool } as never)
   return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), committed,
     inTransaction: () => inTransaction, rolledBack: () => rolledBack }

@@ -80,7 +80,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
       return { rows: [], rowCount: 0 }
     }) }
   }
-  const pool = { options: {}, connect: async () => makeClient(), end }
+  const pool = { options: {}, connect: async () => makeClient(), end, on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return { ...pool } } as never)
   return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), releases, end, secondLock, state }
 }
@@ -99,7 +99,7 @@ describe('retained command preparation ownership', () => {
     expect(await first).toEqual({ value: { id: 'accepted-job' }, replayed: false })
     expect(await second).toEqual({ value: { id: 'accepted-job' }, replayed: true })
     expect(prepare).toHaveBeenCalledOnce(); expect(perform).toHaveBeenCalledOnce()
-    expect(f.releases).toHaveBeenCalledTimes(2); expect(f.end).toHaveBeenCalledTimes(2)
+    expect(f.releases).toHaveBeenCalledTimes(2); expect(f.end).not.toHaveBeenCalled()
   })
 
   it('fails changed command input before repeating preparation', async () => {
@@ -124,7 +124,7 @@ describe('retained command preparation ownership', () => {
     }])
     expect(f.state.receiptWrites).toBe(0)
     expect(f.state.unlocks).toBe(1)
-    expect(f.releases).toHaveBeenCalledOnce(); expect(f.end).toHaveBeenCalledOnce()
+    expect(f.releases).toHaveBeenCalledOnce(); expect(f.end).not.toHaveBeenCalled()
   })
 
   it('does not prepare bytes or read receipts when initial live authority is denied', async () => {
@@ -165,6 +165,6 @@ describe('retained command preparation ownership', () => {
     expect(await f.coordinator.execute({ ...command, prepare: async () => undefined, perform: async () => 'accepted' }))
       .toEqual({ value: 'accepted', replayed: false })
     expect(f.releases).toHaveBeenCalledWith(expect.objectContaining({ message: 'unlock failed' }))
-    expect(f.end).toHaveBeenCalledOnce()
+    expect(f.end).not.toHaveBeenCalled()
   })
 })
