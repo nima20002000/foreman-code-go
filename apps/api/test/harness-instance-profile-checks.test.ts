@@ -12,12 +12,15 @@ import { DeviceApplicationError } from '../src/modules/devices/deviceApplication
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import type { HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
+import type { NativeQualificationRetention } from '../src/modules/harnesses/installedNativeQualificationRetention.js'
+import { completedNativeQualificationChecks } from '../src/modules/harnesses/installedNativeQualification.js'
+import { HostHarnessOverrideService } from '../src/modules/harnesses/instanceSettings/service.js'
 
 vi.mock('../src/modules/devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: vi.fn() }))
 
 const mainId = '00000000-0000-4000-8000-000000000001'
 const principal: ManagementPrincipal = { id: 'writer', name: 'Writer', audience: 'operator', revokedAt: null, expiresAt: '9999-12-31T00:00:00.000Z', grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }] }
-function fixture() {
+function fixture(nativeRetention?: NativeQualificationRetention) {
   let current: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: '1', target: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, harnessInstallationId: 'codex', installationFingerprint: 'sha' },
     presetId: 'local-default:codex', driverId: 'codex', enabled: true, configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }, configurationFingerprint: 'profile-sha', qualification: 'unqualified' }
   const client = { query: vi.fn(async () => undefined) } as unknown as pg.PoolClient
@@ -46,10 +49,13 @@ function fixture() {
   const authorize = vi.fn(async () => undefined)
   const proof = (value: HostHarnessOverride): HostHarnessProfileEvidence => ({ target: value.target, instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint, driverId: value.driverId,
     driverRevision: '1', protocolRevision: '1', suiteRevision: 'suite', environmentGeneration: 'env', connectionGeneration: 'local', authenticated: true, compatible: true, qualified: true, checkedAt: new Date().toISOString() })
-  const qualify = vi.fn(async (value: HostHarnessOverride) => { expect(readTransaction).toBe(false); return proof(value) })
-  const service = new HostHarnessInstanceProfileChecks(settings, proofs, commands, { authorize }, { qualify })
+  const qualify = vi.fn(async (value: HostHarnessOverride, _input: { checkId: string; signal: AbortSignal }) => {
+    expect(readTransaction).toBe(false)
+    return proof(value)
+  })
+  const service = new HostHarnessInstanceProfileChecks(settings, proofs, commands, { authorize }, { qualify }, nativeRetention)
   const input = { commandId: randomUUID(), instanceId: current.instanceId, expectedRevision: current.revision, target: current.target }
-  return { service, qualify, append, proof, input, authorize, settings, commands,
+  return { service, qualify, append, proof, input, authorize, settings, commands, proofs,
     seed: (evidence: HostHarnessProfileEvidence, value = current) => stored.set(`previous:${value.instanceId}`, { value, proof: evidence }),
     setOverride: (value: HostHarnessOverride) => { current = value; profiles.set(value.instanceId, value) },
     change: () => {
@@ -107,8 +113,8 @@ describe('explicit exact-host native profile checks', () => {
   })
 })
 
-function workerFixture() {
-  const f = fixture()
+function workerFixture(nativeRetention?: NativeQualificationRetention) {
+  const f = fixture(nativeRetention)
   const binding = { mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
     keyRevision: 1, authorizationRevision: 1, connectionGeneration: 2, connectionEpoch: randomUUID() }
   const host = { kind: 'device' as const, mainId, deviceId: binding.deviceId }
@@ -124,6 +130,75 @@ function workerFixture() {
     connectionGeneration: harnessConnectionGeneration(binding) }))
   return { ...f, binding, host, override }
 }
+
+describe('persisted native profile failures', () => {
+  it.each(['requested', 'installation'] as const)(
+    'keeps the native reason when discovery fails after a %s check commits', async mode => {
+      let release!: () => void
+      const refreshBlocked = new Promise<void>(resolve => { release = resolve })
+      let refreshed!: () => void
+      const refreshStarted = new Promise<void>(resolve => { refreshed = resolve })
+      const refreshFailure = new DeviceApplicationError('timeout')
+      const retention: NativeQualificationRetention = {
+        retain: async () => async () => {},
+        refresh: async () => {
+          refreshed()
+          await refreshBlocked
+          throw refreshFailure
+        },
+      }
+      const f = workerFixture(retention)
+      f.seed(f.proof(f.override))
+      const failure = { code: 'CODEX_MODEL_UNAVAILABLE', message: 'The selected native model is unavailable.' }
+      f.qualify.mockImplementation(async (value, input) => {
+        const checkedAt = new Date().toISOString()
+        const binarySha256 = 'a'.repeat(64)
+        return { ...f.proof(value), authenticated: null, compatible: null, qualified: false, failure,
+          completedNativeQualification: { purpose: 'explicit-host-qualification', checkId: input.checkId,
+            binding: f.binding, target: value.target, binarySha256,
+            record: { harness: 'codex', version: '0.156.1', binarySha256, profile: 'codex-0.156',
+              suiteRevision: 'codex-live-5', status: 'failed', startedAt: checkedAt, checkedAt,
+              failureReason: failure.message, checks: completedNativeQualificationChecks().map(id => ({
+                id, passed: id !== 'selected-profile', detail: id === 'selected-profile' ? failure.code : null,
+              })) } },
+        }
+      })
+      const installation: HarnessInstallationRecord = { hostRef: f.host,
+        harnessInstallationId: f.override.target.harnessInstallationId,
+        installationFingerprint: f.override.target.installationFingerprint,
+        driverId: 'codex', driverRevision: '1', protocolRevision: '1', environmentGeneration: 'env',
+        connectionGeneration: harnessConnectionGeneration(f.binding), observedVersion: null,
+        installed: true, authenticated: null, compatible: null, qualified: null,
+        launcher: { requested: 'codex', resolvedLauncher: null, fingerprint: null, status: 'installed',
+          interpreter: null, diagnostics: [], checkedAt: new Date().toISOString(),
+          environment: { generation: 'env', provenance: 'worker', cwd: '/workspace', path: '/usr/bin' } } }
+      const task = (mode === 'requested'
+        ? f.service.checkAutomatically(f.override, installation)
+        : f.service.recheckInstallation({ host: f.host, driverId: 'codex',
+          applicationInstallationId: f.binding.workerInstallationId, generation: 'updated-generation',
+          signal: new AbortController().signal, authorize: async () => {}, installation: () => installation }))
+        .then(() => undefined, error => error)
+      try {
+        await refreshStarted
+        expect(await f.service.failure(f.override)).toEqual(failure)
+        release()
+        expect(await task).toBeDefined()
+        expect(await f.service.failure(f.override)).toEqual(failure)
+        expect(f.append).toHaveBeenCalledTimes(1)
+        expect(f.service.pending(f.override)).toBe(false)
+        const readback = new HostHarnessOverrideService(f.settings, f.commands,
+          { authorize: f.authorize }, value => f.proofs.latest(value.instanceId, value.revision), f.service)
+        const result = await readback.list(principal, { hostRef: f.host,
+          applicationInstallationId: f.binding.workerInstallationId }, 'mcp')
+        expect(result.overrides[0]).toMatchObject({ qualification: 'unqualified', qualificationFailure: failure })
+        await expect(readback.ensureReady(f.override)).rejects.toMatchObject({ code: failure.code })
+      } finally {
+        release()
+        await task
+        await f.service.close()
+      }
+    })
+})
 
 describe('automatic installation profile checks', () => {
   function updatedFixture() {
