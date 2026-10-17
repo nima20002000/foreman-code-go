@@ -365,6 +365,10 @@ export class ComputerMaintenance {
               const selected = await this.ports.selectInstalledCodex(signal)
               if (selected) task.outputTail = tail(`${task.outputTail}\nSelected ${selected} for this computer's Codex.`)
             }
+            if (harness === 'claude' && this.ports.selectInstalledClaude) {
+              const selected = await this.ports.selectInstalledClaude(signal)
+              if (selected) task.outputTail = tail(`${task.outputTail}\nSelected ${selected} for this computer's Claude.`)
+            }
             const after = await this.installedVersion(harness, signal)
             if (!after || !latest[harness]) throw new Error(`${LABELS[harness]} update could not be verified.`)
             if (!meetsPublishedVersion(after, latest[harness])) {

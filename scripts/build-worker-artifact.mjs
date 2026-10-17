@@ -18,7 +18,7 @@ const { parse } = require('yaml');
 const { Unpackr } = require('msgpackr');
 const unpacker = new Unpackr({ useRecords: true, moreTypes: true });
 import {
-  copySharpPackagesFromStore, artifactFiles, assertWorkerDependency,
+  copySharpPackagesFromStore, copyClaudeSdkPackagesFromStore, artifactFiles, assertWorkerDependency,
   committedWorkerInputPath, workerReleaseVersion, validateWorkerTarget, assertWorkerUpdateToolchain,
 } from './worker-artifact-files.mjs';
 const [targetFile, outputDirectory, runtimeFile] = process.argv.slice(2);
@@ -43,6 +43,7 @@ async function requirePinnedSource(path) {
 for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
 await requirePinnedSource('scripts/quota-helper-abi.mjs');
 await requirePinnedSource('scripts/worker-snapshot-policy.mjs');
+await requirePinnedSource('apps/worker/artifacts/licenses/cfworker.txt');
 function reviewedInput(input) {
   const path = committedWorkerInputPath(root, input);
   let bytes;
@@ -134,9 +135,13 @@ const nativePackages = await copySharpPackagesFromStore({
   lock: parse(snapshotSource('pnpm-lock.yaml').toString('utf8')),
   decode: blob => unpacker.unpack(blob),
 });
+const runtimePackages = await copyClaudeSdkPackagesFromStore({
+  root, output, store, lock: parse(snapshotSource('pnpm-lock.yaml').toString('utf8')),
+  decode: blob => unpacker.unpack(blob),
+});
 const files = await artifactFiles(output);
 const releaseVersion = workerReleaseVersion(JSON.parse(snapshotSource('package.json').toString('utf8')));
-const manifest = { format: 1, version: releaseVersion, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
+const manifest = { format: 1, version: releaseVersion, commit, lockfileSha256: hash(snapshotSource('pnpm-lock.yaml')), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target, nativePackages, runtimePackages, workerApiModules: Object.keys(built.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), rsyncWriterApiModules: Object.keys(writer.metafile.inputs).filter(path => path.startsWith('apps/api/')).sort(), sourceSnapshot: { commit, files: [...snapshot.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, { gitBlobSha1, sha256 }]) => ({ path, gitBlobSha1, sha256 })) },
   ...(runtime ? { runtime: { metadataPath: 'artifacts/node-runtime.json', version: runtime.version, archiveSha256: runtime.archive.sha256, executableSha256: runtime.nodeExecutable.sha256, qualification: 'future installation requires actual target readback' } } : {}), files };
 await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify({ manifestSha256: hash(await readFile(join(output, 'manifest.json'))), version: releaseVersion, commit: manifest.commit, files: files.length }));

@@ -289,3 +289,20 @@ test('discovers Claude installed after Codex while preserving the selected Codex
     binary: join(f.bin, 'claude'), installedLockPath: lock, sdkEntrypoint: join(sdkDirectory, 'sdk.mjs'),
   } });
 });
+
+test('discovers Claude from a standalone artifact with sibling packages and shipped integrity metadata', async t => {
+  const f = await fixture(t);
+  const sdk = join(f.release, 'node_modules/@anthropic-ai/claude-agent-sdk');
+  await mkdir(sdk, { recursive: true });
+  await writeFile(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk',
+    version: '0.3.284', main: 'sdk.mjs' }));
+  await writeFile(join(sdk, 'sdk.mjs'), 'export {};');
+  const lock = join(f.release, 'artifacts/claude-sdk-lock.yaml');
+  await writeFile(lock, "packages:\n  '@anthropic-ai/claude-agent-sdk@0.3.284':\n    resolution: {integrity: sha512-aGVsbG8=}\n");
+  await copyFile('/usr/bin/true', join(f.bin, 'claude'));
+  await chmod(join(f.bin, 'claude'), 0o700);
+  await refreshWorkflowSelection(f.options);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, {
+    binary: join(f.bin, 'claude'), installedLockPath: lock, sdkEntrypoint: join(sdk, 'sdk.mjs'),
+  });
+});

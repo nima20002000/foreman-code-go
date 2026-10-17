@@ -62,7 +62,7 @@ const RETIRED_APP_SERVERS = ['graphql-app', 'graphql-operator', 'graphql-worker'
 
 /** Server definitions safe to copy: no inline secret values. Servers needing a login are set up per computer later. */
 export function syncableServers(
-  entries: Record<string, unknown>, skipped?: (name: string, reason?: string) => void,
+  entries: Record<string, unknown>, skipped?: (name: string, reason?: string, disposition?: 'exclude') => void,
 ): SyncedMcpServer[] {
   const servers: SyncedMcpServer[] = []
   for (const [name, raw] of Object.entries(entries)) {
@@ -98,7 +98,7 @@ export function syncableServers(
       const hostname = new URL(parsed.data.url).hostname.toLowerCase().replace(/\.$/u, '')
       if (hostname === 'localhost' || hostname.endsWith('.localhost')
         || hostname.startsWith('127.') || ['[::1]', '[::]', '0.0.0.0'].includes(hostname)) {
-        skipped?.(name, 'uses a host-local endpoint; configure it separately on each computer')
+        skipped?.(name, 'uses a host-local endpoint; configure it separately on each computer', 'exclude')
         continue
       }
     }
@@ -426,8 +426,8 @@ export class FleetMaintenanceService {
         if (catalog.status === 'rejected') warnings.push(`${harness} MCP catalog could not be read; skipped.`)
         else {
           const skipped: string[] = []
-          servers[harness] = syncableServers(catalog.value, (name, reason = 'is unsafe or invalid') => {
-            if (name.length > 0 && name.length <= 100) skipped.push(name)
+          servers[harness] = syncableServers(catalog.value, (name, reason = 'is unsafe or invalid', disposition) => {
+            if (disposition !== 'exclude' && name.length > 0 && name.length <= 100) skipped.push(name)
             warnings.push(`${harness} MCP server ${name.slice(0, 100)} ${reason}; skipped.`)
           })
           if (skipped.length) skippedServers[harness] = skipped

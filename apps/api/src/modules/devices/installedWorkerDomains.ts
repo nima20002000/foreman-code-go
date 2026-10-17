@@ -38,6 +38,7 @@ import { createWorkerQualificationExtension } from '../jobs/workerQualificationC
 import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { selectInstalledClaude } from '../computers/installedClaudeSelection.js'
 import { selectInstalledCodex } from '../computers/installedCodexSelection.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
@@ -574,7 +575,7 @@ async function configureWorkerComputers(composition: InstalledWorkerComposition)
       }
       composition.maintenance ??= readInstalledWorkflowConfiguration(composition.configuration)
         .then(selected => {
-        // Maintenance reads the binaries this Worker actually runs; an update moves the Codex selection with it.
+        // Maintenance reads the binaries this Worker actually runs; updates move each harness selection with them.
         const binaries: Record<string, string> = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
           ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
         return new ComputerMaintenance({ ...systemMaintenancePorts(process.env, binaries),
@@ -582,6 +583,11 @@ async function configureWorkerComputers(composition: InstalledWorkerComposition)
           async selectInstalledCodex(signal) {
             const binary = await selectInstalledCodex(composition.configuration, process.env.HOME ?? homedir(), signal)
             if (binary) binaries.codex = binary
+            return binary
+          },
+          async selectInstalledClaude(signal) {
+            const binary = await selectInstalledClaude(composition.configuration, process.env, signal)
+            if (binary) binaries.claude = binary
             return binary
           } })
       })
