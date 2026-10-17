@@ -36,7 +36,8 @@ func ReadProduct(environment Environment, suffix string) (string, bool, error) {
 	canonical, hasCanonical := environment[canonicalName]
 	legacy, hasLegacy := environment[legacyName]
 	if hasCanonical && hasLegacy && !sameEffectiveValue(suffix, canonical, legacy) {
-		return "", false, fmt.Errorf("%s conflicts with %s. Supply one value or matching values.", canonicalName, legacyName)
+		return "", false, &ValidationError{Setting: canonicalName,
+			Message: fmt.Sprintf("%s conflicts with %s. Supply one value or matching values.", canonicalName, legacyName)}
 	}
 	if hasCanonical {
 		return canonical, true, nil

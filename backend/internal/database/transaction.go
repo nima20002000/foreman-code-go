@@ -122,7 +122,7 @@ func beginStatement(options TransactionOptions) (string, error) {
 	parts := []string{"begin"}
 	if options.Isolation != "" {
 		if options.Isolation != pgx.ReadCommitted && options.Isolation != pgx.RepeatableRead {
-			return "", errors.New("Transaction isolation must be read committed or repeatable read.")
+			return "", errors.New("transaction isolation must be read committed or repeatable read")
 		}
 		parts = append(parts, "isolation level", string(options.Isolation))
 	}

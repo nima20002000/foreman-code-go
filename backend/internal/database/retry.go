@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 )
@@ -14,6 +13,14 @@ type RetryOptions struct {
 	Check   func() error
 	Logger  *slog.Logger
 }
+
+// InvalidRetryTimeoutError identifies an invalid retry budget while preserving
+// the public TypeScript diagnostic returned before any work is attempted.
+type InvalidRetryTimeoutError struct {
+	Timeout time.Duration
+}
+
+func (err *InvalidRetryTimeoutError) Error() string { return "Database retry timeout must be positive." }
 
 // RetryTimeout retries replay-safe bookkeeping only. Never pass native submissions here.
 func RetryTimeout[T any](ctx context.Context, work func(context.Context) (T, error), options RetryOptions) (T, error) {
@@ -29,7 +36,7 @@ func RetryOperation[T any](ctx context.Context, work func(context.Context) (T, e
 		timeout = *options.Timeout
 	}
 	if timeout <= 0 {
-		return zero, errors.New("Database retry timeout must be positive.")
+		return zero, &InvalidRetryTimeoutError{Timeout: timeout}
 	}
 	logger := options.Logger
 	if logger == nil {
