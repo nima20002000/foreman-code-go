@@ -17,11 +17,15 @@ key in `public.device_main_identity`: original row count 1, restored row count 0
 The table schema is unchanged, and provenance explicitly records this exclusion.
 Raw private dumps and capture tooling are not embedded assets.
 
-The TypeScript capture and PostgreSQL driver restore are verified. The Go
-`schema.Prepare` path, real database integration, and conformance remain
-unverified. Follow [the capture instructions](../CAPTURE.md) for recapture and
-remaining execution checks. An existing database must still prove the complete
-expected application migration set and working checkpoint tables.
+The TypeScript capture and PostgreSQL driver restore are verified. Foreman CI
+ticket `813cd590-3a58-4a52-b733-1672a750a280` also verified Go `schema.Prepare`,
+startup/restart, migration history and rollback, and real PostgreSQL-backed HTTP
+behavior on the backend tree of `e373f5425fba124b1abb048b76e18434c9e69d57`:
+211 ordinary and 26 named integration checks passed without failures or skips.
+Full-binary startup, SKEL conformance, and the full CI gate remain unverified.
+Follow [the capture instructions](../CAPTURE.md) for recapture and remaining
+execution checks. An existing database must still prove the complete expected
+application migration set and working checkpoint tables.
 
 Numbered Go migrations belong in `migrations/`. Their applied rows live in a
 separate `schema_migrations` table. No baseline row is invented or stamped into

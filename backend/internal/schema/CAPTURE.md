@@ -15,11 +15,20 @@ key in `public.device_main_identity`: the original database had one row and the
 restored database has zero. Its schema remains unchanged. Migration and startup
 seed rows, the application ledger, and checkpoint tables are retained.
 
-This proves the TypeScript capture and driver restore. The Go `schema.Prepare`
-path, real PostgreSQL integration tests, and conformance remain unverified.
-The checks below are still required; source metadata alone is not execution
-proof. Any recapture must run through controller-dispatched Foreman CI MCP with
-the required pinned tools and isolated resources.
+Foreman CI ticket `813cd590-3a58-4a52-b733-1672a750a280` additionally ran the
+unmodified Go tests on the backend tree of
+`e373f5425fba124b1abb048b76e18434c9e69d57`: 211 ordinary checks and 26 named
+PostgreSQL integration checks (16 tests plus 10 subtests) passed, with no failures
+or skips. Fresh PostgreSQL 17.6 setup and owned cleanup both succeeded. The
+integration checks exercised actual `schema.Prepare`, restart/history/seed
+preservation, incompatible-schema rejection, numbered-migration rollback,
+transactions/cancellation, and PostgreSQL-backed HTTP readiness/errors.
+
+This is not full-binary startup, native SKEL conformance, or a full clean CI
+round. The execution checks below remain the requirements for recapture and
+subsequent changes; source metadata alone is not proof. Any recapture or runtime
+verification must run through controller-dispatched Foreman CI MCP with the
+required pinned tools and isolated resources.
 
 Only the separate benchmark repository `nima20002000/foreman-code-go` and fresh,
 isolated test resources may be used. No real application database, installation,
