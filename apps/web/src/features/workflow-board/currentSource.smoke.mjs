@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { URL } from 'node:url'
+import process from 'node:process'
 
 // Keep the CI smoke entry, exercising the registered route and shared editor.
 test('saved workflows reopen and finite repeat removal persists through the Board', async () => {
