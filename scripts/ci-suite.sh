@@ -9,7 +9,10 @@ case "${SUITE:-}" in
     if [ -n "${1:-}" ]; then
       SUITE=lint bash scripts/ci-go-toolchain.sh install
     else
-      node scripts/ci-postgres-integration.mjs
+      source scripts/ci-go-toolchain.sh
+      ci_go_environment
+      ci_go_verify
+      node scripts/ci-capture-format.mjs
     fi
     exit 0 ;;
 esac
