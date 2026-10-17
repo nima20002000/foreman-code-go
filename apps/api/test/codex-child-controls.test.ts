@@ -1,12 +1,13 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as pause } from 'node:timers/promises'
 import { withInteractionResponse } from '@foreman-code/contracts'
-import { describe, expect, it, onTestFailed, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFailed, vi } from 'vitest'
 import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.js'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { SubagentDispatchRejectedError } from '../src/modules/subagents/controlErrors.js'
 import { childControlRecord, childControlReceipt, codexChildControlFixture, seedCodexChild } from './fixtures/codex-child-control-helpers.js'
-import { calls, emit, fixture, fixtureQualification, input, state, until } from './fixtures/codex-test-helpers.js'
+import { calls, emit, fixture, fixtureQualification, input, state } from './fixtures/codex-test-helpers.js'
 
 vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexProtocol.js')>(
@@ -133,6 +134,10 @@ describe('Codex child controls through the pinned protocol', () => {
 })
 
 describe('Codex session manager child control wiring over stdio', () => {
+  // Native fixture IO uses wall time; only deliberate RPC expiry advances this clock.
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }))
+  afterEach(() => vi.useRealTimers())
+
   it.each(['command', 'file', 'questions', 'form'] as const)('routes a continued child %s request through its own callback lifecycle', async kind => {
     let phase = 'creating fixture'
     onTestFailed(() => { console.error(`Codex child ${kind} callback failure during ${phase}`) })
@@ -165,7 +170,8 @@ describe('Codex session manager child control wiring over stdio', () => {
       await emit(f.directory, { id: 6001, method: callback.method,
         params: { threadId: 'native-child', turnId, ...callback.params } })
       phase = 'waiting for callback'
-      const pending = await until(async () => lease.pendingInteraction?.())
+      await expect.poll(() => lease.pendingInteraction?.(), { timeout: 20_000, interval: 10 }).toBeDefined()
+      const pending = lease.pendingInteraction!()!
       expect(pending.session.nativeSessionId).toBe('native-child')
       expect(pending.turn.nativeTurnId).toBe(turnId)
       expect(await manager.pending(root)).toBeUndefined()
@@ -188,10 +194,39 @@ describe('Codex session manager child control wiring over stdio', () => {
       phase = 'rejecting duplicate response'
       await expect(lease.respond!(receipt)).rejects.toThrow()
       phase = 'closing parent'
+      vi.useRealTimers()
       await manager.close(root)
       expect(() => lease.pendingInteraction!()).toThrow()
     } finally {
       phase = `disposing fixture after ${phase}`
+      vi.useRealTimers()
+      await manager.dispose()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a held child start pending until the fixture acknowledges it', async () => {
+    const f = await fixture()
+    const manager = new CodexAppServerSessionManager(f.binary)
+    try {
+      const source = input(f.directory)
+      const root = await manager.createSession(source)
+      const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
+      const lease = manager.subagentControl(child, () => {})!
+      await writeFile(join(f.directory, 'hold-turn-start'), '')
+      const sending = lease.sendInput!(childControlReceipt(child, {
+        nativeTurnId: null, nativeGeneration: lease.generation,
+      }), 'wait').then(() => 'acknowledged', (error: unknown) => error)
+      await expect.poll(async () => (await state(f.directory, 'native-child')).turns,
+        { timeout: 20_000, interval: 10 }).toHaveLength(2)
+      await pause(500)
+      expect(await Promise.race([sending, Promise.resolve('pending')])).toBe('pending')
+      await writeFile(join(f.directory, 'release-turn-start'), '')
+      expect(await sending).toBe('acknowledged')
+      expect((await state(f.directory, 'native-child')).turns).toHaveLength(2)
+      expect((await state(f.directory, root.nativeSessionId)).turns).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
@@ -206,10 +241,10 @@ describe('Codex session manager child control wiring over stdio', () => {
       const child = await seedCodexChild(f.directory, root, source)
       await writeFile(join(f.directory, 'read-delay'), '')
       const attaching = manager.attachSession(root, source)
-      await until(async () => (await calls(f.directory)).some(entry => {
+      await expect.poll(async () => (await calls(f.directory)).some(entry => {
         const wire = entry.wire as { method?: string } | undefined
         return wire?.method === 'thread/read'
-      }))
+      }), { timeout: 20_000, interval: 10 }).toBe(true)
       const lease = manager.subagentControl(child, () => {})!
       const receipt = childControlReceipt(child, { nativeGeneration: lease.generation })
       await lease.sendInput!(receipt, 'Follow up')
@@ -222,6 +257,7 @@ describe('Codex session manager child control wiring over stdio', () => {
         { type: 'userMessage', clientId: receipt.nativeCorrelationId },
       ])
     } finally {
+      vi.useRealTimers()
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
@@ -240,7 +276,15 @@ describe('Codex session manager child control wiring over stdio', () => {
       await lease.sendInput!(receipt, 'Follow up')
       const uncertain = childControlReceipt(child, { id: 'lost-receipt', commandId: 'lost-command',
         nativeCorrelationId: 'lost-application-correlation', nativeGeneration: lease.generation })
-      await expect(lease.sendInput!(uncertain, 'lost-steer')).rejects.toMatchObject({ uncertain: true })
+      const lost = expect(lease.sendInput!(uncertain, 'lost-steer')).rejects.toMatchObject({ uncertain: true })
+      await expect.poll(async () => {
+        const native = await state(f.directory, 'native-child')
+        return native.turns[0]!.items
+      }, { timeout: 20_000, interval: 10 }).toEqual(expect.arrayContaining([
+        expect.objectContaining({ clientId: uncertain.nativeCorrelationId }),
+      ]))
+      await vi.advanceTimersByTimeAsync(500)
+      await lost
       expect(await manager.subagentControl(child, () => {})!.reconcile!(uncertain)).toBe('acknowledged')
       await lease.interrupt!(childControlReceipt(child, { id: 'interrupt-receipt', nativeGeneration: lease.generation,
         operation: 'run_subagent_interrupt_v1' }))
@@ -256,10 +300,12 @@ describe('Codex session manager child control wiring over stdio', () => {
       })
       expect(commands).toHaveLength(3)
       expect(commands.every(command => command.params?.threadId === 'native-child')).toBe(true)
+      vi.useRealTimers()
       await manager.close(root)
       expect(lease.matches(child)).toBe(false)
       expect(manager.subagentControl(child, () => {})).toBeUndefined()
     } finally {
+      vi.useRealTimers()
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
@@ -288,6 +334,7 @@ describe('Codex session manager child control wiring over stdio', () => {
         threadId: 'native-child', clientUserMessageId: 'app-correlation',
       })
     } finally {
+      vi.useRealTimers()
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
