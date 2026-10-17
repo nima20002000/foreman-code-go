@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile, readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { withProductionSourceSnapshot } from './local-production-runtime.mjs'
@@ -10,9 +10,10 @@ import { apiIdentityMatches } from './dev-identity.mjs'
 import { runningApiAcceptsBrowserOrigin } from './dev.mjs'
 import { parity } from './acceptance/parity.mjs'
 import { hasHeavyJobAdmission, isRegularIntegrationFile } from './test-integration.mjs'
+import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
 async function fixture(t) {
-  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  const cache = process.env.TMPDIR ?? tmpdir()
   await mkdir(cache, { recursive: true })
   const root = await mkdtemp(join(cache, 'startup-observation-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -54,30 +55,24 @@ for (const status of [401, 403]) {
   })
 }
 
-test('fails with a named prerequisite error when tracked startup status is missing', async t => {
-  const root = await fixture(t)
-  await writeFile(join(root, 'corepack'), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
-  const result = spawnSync('bash', ['scripts/ci-suite.sh'], { encoding: 'utf8',
-    env: { ...process.env, PATH: `${root}:${process.env.PATH}`, CI_STATE: join(root, 'missing'),
-      SUITE: 'unit', CI_HOST_RUNNER: '1', CI_WATCHDOG_ACTIVE: '1', FOREMAN_CODE_CI_TYPECHECK_CACHE: '' } })
-  assert.notEqual(result.status, 0)
-  assert.match(result.stdout + result.stderr, /db.*(missing|unavailable)|prerequisite.*db/i)
+test('fails with a named Go prerequisite error when tracked startup status is missing', async t => {
+  const fixture = goCiFixture(t)
+  await rm(join(fixture.state, 'go.log'))
+  const result = fixture.run('unit-api')
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stdout + result.stderr, /Prerequisite go startup status is missing/)
+  assert.equal(fixture.calls().some(call => call.tool === 'docker'), false)
 })
 
-test('records synchronous prerequisite readiness for the following suite command', async t => {
-  const root = await fixture(t)
-  for (const command of ['corepack', 'codex', 'claude']) {
-    await writeFile(join(root, command), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
-  }
-  const state = join(root, 'state')
-  const env = { ...process.env, PATH: `${root}:${process.env.PATH}`, CI_STATE: state,
-    SUITE: 'unit', CI_HOST_RUNNER: '1', CI_WATCHDOG_ACTIVE: '1', FOREMAN_CODE_CI_TYPECHECK_CACHE: '' }
-  const prepare = spawnSync('bash', ['scripts/ci-suite.sh', 'prepare'], { encoding: 'utf8', env })
+test('records synchronous Go prerequisite readiness for the following suite command', async t => {
+  const fixture = goCiFixture(t)
+  await rm(join(fixture.state, 'go.exit'))
+  const prepare = fixture.run('unit-api', 'prepare')
   assert.equal(prepare.status, 0, prepare.stderr)
-  assert.equal((await readFile(join(state, 'db.exit'), 'utf8')).trim(), '0')
-  assert.equal((await readFile(join(state, 'clis.exit'), 'utf8')).trim(), '0')
-  const suite = spawnSync('bash', ['scripts/ci-suite.sh'], { encoding: 'utf8', env })
+  assert.equal((await readFile(join(fixture.state, 'go.exit'), 'utf8')).trim(), '0')
+  const suite = fixture.run('unit-api')
   assert.equal(suite.status, 0, suite.stderr)
+  assert.equal(fixture.calls().some(call => ['docker', 'codex', 'claude'].includes(call.tool)), false)
 })
 
 test('rejects a corrupt scheduler slot count instead of silently reducing capacity', async t => {
@@ -99,6 +94,8 @@ test('rejects a corrupt scheduler slot count instead of silently reducing capaci
     'FOREMAN_CODE_HEAVY_JOB_TOKEN', 'GRAPHQL_HEAVY_JOB_TOKEN', 'CI_HOST_RUNNER']) delete env[key]
   const result = spawnSync(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', ''],
     { cwd: root, env, encoding: 'utf8', timeout: 5000 })
+  assert.equal(result.error, undefined, result.error?.message)
+  assert.notEqual(result.status, null)
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /Invalid heavy-job slot count/)
 })

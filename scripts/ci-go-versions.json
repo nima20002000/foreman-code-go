@@ -1,0 +1,17 @@
+{
+  "go": {
+    "version": "1.27.2",
+    "released": "2026-10-08",
+    "source": "https://go.dev/doc/devel/release#go1.27.2",
+    "checksumsSource": "https://go.dev/dl/",
+    "sha256": {
+      "linux-amd64": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+      "linux-arm64": "94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8"
+    }
+  },
+  "staticcheck": {
+    "version": "v0.8.2",
+    "released": "2026-10-12",
+    "source": "https://github.com/dominikh/go-tools/releases/tag/2026.2.2"
+  }
+}

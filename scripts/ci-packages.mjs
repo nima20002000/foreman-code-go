@@ -12,6 +12,9 @@ function workspaceDirectories(root) {
       if (entry.isDirectory() && existsSync(join(root, directory, 'package.json'))) directories.push(directory)
     }
   }
+  for (const directory of ['conformance', 'backend/bridge/claude']) {
+    if (existsSync(join(root, directory, 'package.json'))) directories.push(directory)
+  }
   return directories.sort()
 }
 
@@ -43,7 +46,7 @@ function install(root) {
   const args = ['install', '--frozen-lockfile', '--store-dir', 'node_modules/.pnpm-store',
     '--cache-dir', '.logs/pnpm-metadata', '--package-import-method=hardlink']
   const run = argumentsList => {
-    const result = spawnSync('pnpm', argumentsList, { cwd: root, env: process.env, stdio: 'inherit' })
+    const result = spawnSync('corepack', ['pnpm', ...argumentsList], { cwd: root, env: process.env, stdio: 'inherit' })
     if (result.error) throw result.error
     return result.status ?? 1
   }

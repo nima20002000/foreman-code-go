@@ -1,9 +1,9 @@
 // Turns Vitest JSON reports into the bounded structured test results a CI ticket keeps (CiTestResultsSchema).
 //   node scripts/ci-test-results.mjs <output> <vitest-report.json>...
 // Every expected report must be readable and structurally valid before publishing merged results.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readJsonReport, reportDuration, writeJsonReport } from './ci-report-io.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 // Keep in step with CI_TEST_RESULT_LIMITS in packages/contracts/src/ciHost.ts.
@@ -16,7 +16,7 @@ const testStatus = value => value === 'passed' || value === 'failed' ? value : '
 const duration = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, DAY_MS) : null
 // Terminal colors and control characters say nothing in a table.
 const plain = value => String(value ?? '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
-const stackFrame = /(?:file:\/\/)?(\/[^\s()'"]+):(\d+):(\d+)/g
+const stackFrame = /(?:file:\/\/)?(\/[^\s()'":]+):(\d+)(?::(\d+))?/g
 
 /** Where a failure happened: the stack frame in the test's own file, else the first repository frame outside
  * node_modules, as `path:line:column` relative to the repository. The message is clipped, so the stack is read here. */
@@ -25,7 +25,7 @@ function failureLocation(failure, file, repository) {
   for (const [, path, line, column] of failure.matchAll(stackFrame)) {
     const local = relative(repository, path).replaceAll('\\', '/')
     if (!local || local.startsWith('../') || isAbsolute(local) || local.split('/').includes('node_modules')) continue
-    const location = `${local}:${line}:${column}`
+    const location = column ? `${local}:${line}:${column}` : `${local}:${line}`
     if (local === file) return location
     fallback ??= location
   }
@@ -52,9 +52,9 @@ export function ciTestResults(reports, repository = root) {
       })
       let status = 'passed'
       if (result.status === 'failed' || tests.some(test => test.status === 'failed')) status = 'failed'
-      else if (tests.length && tests.every(test => test.status === 'skipped')) status = 'skipped'
+      else if (result.status === 'skipped' || tests.length && tests.every(test => test.status === 'skipped')) status = 'skipped'
       const file = clip(path || 'unknown file', CI_TEST_RESULT_LIMITS.file)
-      byFile.set(file, { file, status, durationMs: duration(result.endTime - result.startTime), tests })
+      byFile.set(file, { file, status, durationMs: duration(reportDuration(result)), tests })
     }
   }
   const files = [...byFile.values()].sort((left, right) => rank[left.status] - rank[right.status]
@@ -69,13 +69,7 @@ export function ciTestResults(reports, repository = root) {
 }
 
 function readReport(path) {
-  let report
-  try {
-    report = JSON.parse(readFileSync(path, 'utf8'))
-  } catch (error) {
-    const reason = error instanceof SyntaxError ? 'invalid JSON' : 'unreadable or missing'
-    throw new Error(`Expected test report ${path} is ${reason}.`)
-  }
+  const report = readJsonReport(path)
   if (!report || !Array.isArray(report.testResults)
     || report.testResults.some(result => !result || typeof result.name !== 'string'
       || !result.name || !Array.isArray(result.assertionResults))) {
@@ -88,10 +82,7 @@ function readReport(path) {
 export function writeCiTestResults(output, paths, repository = root) {
   if (!paths.length) throw new Error('Expected at least one test report.')
   const reports = paths.map(readReport)
-  mkdirSync(dirname(output), { recursive: true })
-  const temporary = `${output}.${process.pid}.tmp`
-  writeFileSync(temporary, JSON.stringify(ciTestResults(reports, repository)), { mode: 0o600 })
-  renameSync(temporary, output)
+  writeJsonReport(output, ciTestResults(reports, repository))
   return true
 }
 
