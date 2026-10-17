@@ -837,11 +837,12 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   const release = deferred()
   let launches = 0
   let ticketId: string | undefined
+  let preparationSignal: AbortSignal | undefined
   const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(),
     run: async (file, args, options) => {
       if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: 'Commit not fetched' }
-      // Warmup fetches carry an abort signal; this case stalls the real ticket's preparation.
-      if (file === 'git' && args.includes('fetch') && !options?.signal) {
+      if (file === 'git' && args.includes('fetch')) {
+        preparationSignal = options?.signal
         entered.resolve()
         await release.promise
       }
@@ -872,7 +873,9 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
         await entered.promise
         throw new Error('Start acknowledgement lost')
       }
-      return runner.handle(request)
+      const reply = await runner.handle(request)
+      // This scenario controls the assigned ticket's fetch rather than background warmup preparation.
+      return reply.operation === 'status' ? { ...reply, prewarmSupported: false } : reply
     } }
   const f = await fixture(executor)
   let restarted: HostCiService | undefined
@@ -888,11 +891,13 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
     await settle(f.ci)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting',
       computer: { hostRef: computer.hostRef }, dispatchRequest: { runId: ticket.ticketId } })
+    expect(preparationSignal).toBeInstanceOf(AbortSignal)
     const reader = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
     const pending = await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })
     expect(pending.isError).toBe(true)
     expect(decodeMcpToolResult(pending)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    expect(preparationSignal!.aborted).toBe(true)
     expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
       principalId: f.operator.principalId, source: 'mcp' } })
     expect(launches).toBe(0)
