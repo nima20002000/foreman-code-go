@@ -1238,100 +1238,117 @@ export class OperatorChatService {
         const runtime = this.runtimes.get(id)
         return runtime?.session && !runtime.disposal ? { manager: runtime.manager, session: runtime.session, redact: nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {})) } : undefined
       }, publish: (id, settled) => this.events.publish(id, 'activity', settled) })
-    for (const candidate of await this.repository.unfinished()) {
-      if (this.closing) break
-      if (candidate.harness === 'opencode') continue
-      let revoked = false
-      try {
-        if (!await this.repository.terminal(candidate.id, candidate.active_request_id!)) {
-          revoked = await this.recoveryAuthority(candidate)
-        }
-      } catch (error) {
-        await this.repository.uncertain(candidate.id, candidate.active_request_id!,
-          errorMessage(error, 'Owner recovery authority is unavailable.'))
-        continue
+    const candidates = (await this.repository.unfinished())[Symbol.iterator]()
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      for (const candidate of candidates) {
+        if (this.closing) return
+        if (candidate.harness === 'opencode') continue
+        await this.reconcileConversation(candidate)
       }
-      // A response/cancel already owns this conversation's native write lane.
-      // Do not wait behind it and starve recovery for unrelated conversations.
-      if (this.controls.has(candidate.id)) continue
-      await this.control(candidate.id, async () => {
-        const row = await this.repository.active(candidate.id)
-        if (!row?.active_request_id || row.active_request_id !== candidate.active_request_id) return
-        const requestId = row.active_request_id
-        try {
-          if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
-          if (this.tasks.has(row.id)) return
-          if (await this.repository.terminal(row.id, requestId)) {
-            await this.settleTerminal(row.id, requestId)
-            return
-          }
-          const nonSubmission = nativeNonSubmission(row.record, requestId)
-          if (nonSubmission) {
-            await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : nonSubmission.result,
-              undefined, !row.cancel_requested)
-            return
-          }
-          if (row.active_phase === 'accepted' || row.active_phase === 'ready') {
-            await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
-              : failure(new Error('The server stopped before native submission. Retry the same request.')), undefined, !row.cancel_requested)
-            return
-          }
-          if (!row.native_session_id) {
-            // Recover a returned identity whose original bind failed while this process stayed alive.
-            const resident = this.runtimes.get(row.id)
-            if (!resident || resident.disposal || row.active_phase !== 'creating') {
-              throw new Error('Native session creation is uncertain; a replacement will not be created automatically.')
-            }
-            const creationInput = resident.creationInput
-            if (!resident.session && creationInput && resident.manager.reconcileSessionCreation) {
-              try {
-                resident.session = await resident.manager.reconcileSessionCreation(creationInput, this.lifetime.signal)
-              } catch (error) {
-                if (!definiteCreationFailure(error)) throw error
-                if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
-                  throw new Error('Non-creation ownership was lost.', { cause: error })
-                }
-                await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : failure(error),
-                  undefined, !row.cancel_requested)
-                return
-              }
-            }
-            this.lifetime.signal.throwIfAborted()
-            if (this.runtimes.get(row.id) !== resident || resident.disposal
-              || !resident.session || resident.session.harness !== row.harness
-              || !creationInput || creationInput.correlationId !== nativeCorrelation(row.id, requestId)
-              || creationInput.kind !== 'operator'
-              || creationInput.configuration.id !== row.operator_configuration_version_id) {
-              throw new Error('The original native session creation is not established.')
-            }
-            await this.repository.bind(row.id, requestId, resident.session.providerVersion, resident.session.nativeSessionId)
-            await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
-              : failure(new Error('Session binding recovered before prompt submission. Retry the same request.')), undefined, !row.cancel_requested)
-            return
-          }
-          const configuration = await this.repository.configuration(row.operator_configuration_version_id)
-          if (!configuration) throw new Error('Pinned Operator configuration was not found.')
-          const cleanup = revoked || row.cancel_requested
-          // Existing-turn observation is not new-work qualification. Native attach still verifies its protocol.
-          const attachSignal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
-          const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, attachSignal)
-            : await this.observationRuntime(row.id, row, configuration, attachSignal)
-          const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
-          if (cleanup) await this.interrupt(row.id, row, runtime)
-          await this.observe(row.id, requestId, runtime, signal)
-        } catch (error) {
-          await this.repository.uncertain(row.id, requestId, errorMessage(error, 'Native recovery is uncertain.'))
-          // Revoked authority must not leave a resident model running with native tools.
-          if (error instanceof DomainError && /AUTH_|ACCESS_DENIED/.test(error.code)) {
-            const runtime = this.runtimes.get(row.id)
-            await this.repository.requestCancel(row.id, requestId)
-            if (runtime) await this.interrupt(row.id, row, runtime)
-              .catch(ignoreError('harness', 'interrupt native turn after failed delivery', { chatId: row.id, requestId }))
-          }
-          this.events.publish(row.id, 'error', { requestId, turnState: 'uncertain' })
-        }
-      })
+    }))
+  }
+
+  private async reconcileConversation(candidate: ConversationRow) {
+    let revoked = false
+    try {
+      if (!await this.repository.terminal(candidate.id, candidate.active_request_id!)) {
+        revoked = await this.recoveryAuthority(candidate)
+      }
+    } catch (error) {
+      await this.repository.uncertain(candidate.id, candidate.active_request_id!,
+        errorMessage(error, 'Owner recovery authority is unavailable.'))
+      return
     }
+    // A response/cancel already owns this conversation's native write lane.
+    // Do not wait behind it and starve recovery for unrelated conversations.
+    if (this.controls.has(candidate.id)) return
+    await this.control(candidate.id, async () => {
+      const row = await this.repository.active(candidate.id)
+      if (!row?.active_request_id || row.active_request_id !== candidate.active_request_id) return
+      const requestId = row.active_request_id
+      try {
+        if (!row.owner_principal_id) throw new Error('This legacy conversation needs an explicit owner assignment before recovery.')
+        if (this.tasks.has(row.id)) return
+        if (await this.repository.terminal(row.id, requestId)) {
+          await this.settleTerminal(row.id, requestId)
+          return
+        }
+        const nonSubmission = nativeNonSubmission(row.record, requestId)
+        if (nonSubmission) {
+          await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : nonSubmission.result,
+            undefined, !row.cancel_requested)
+          return
+        }
+        if (row.active_phase === 'accepted' || row.active_phase === 'ready') {
+          await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
+            : failure(new Error('The server stopped before native submission. Retry the same request.')), undefined, !row.cancel_requested)
+          return
+        }
+        if (!row.native_session_id) {
+          let resident = this.runtimes.get(row.id)
+          if (!resident && row.active_phase === 'creating') {
+            const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+            if (configuration?.harnessProfileSelection?.target.hostRef.kind === 'device') {
+              const fileInputs = await this.managers.hasFileInputs?.(row.id, requestId) ?? false
+              resident = { manager: this.managers(configuration, row.id, fileInputs), fileInputs,
+                configuration, observationOnly: true,
+                creationInput: { kind: 'operator', configuration, workingDirectory: this.workingDirectory,
+                  correlationId: nativeCorrelation(row.id, requestId) } }
+              this.runtimes.set(row.id, resident)
+            }
+          }
+          if (!resident || resident.disposal || row.active_phase !== 'creating') {
+            throw new Error('Native session creation is uncertain; a replacement will not be created automatically.')
+          }
+          const creationInput = resident.creationInput
+          if (!resident.session && creationInput && resident.manager.reconcileSessionCreation) {
+            try {
+              resident.session = await resident.manager.reconcileSessionCreation(creationInput, this.lifetime.signal)
+            } catch (error) {
+              if (!definiteCreationFailure(error)) throw error
+              if (!await this.repository.recordNonSubmission(row.id, requestId, 'session_creation', failure(error))) {
+                throw new Error('Non-creation ownership was lost.', { cause: error })
+              }
+              await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' } : failure(error),
+                undefined, !row.cancel_requested)
+              return
+            }
+          }
+          this.lifetime.signal.throwIfAborted()
+          if (this.runtimes.get(row.id) !== resident || resident.disposal
+            || !resident.session || resident.session.harness !== row.harness
+            || !creationInput || creationInput.correlationId !== nativeCorrelation(row.id, requestId)
+            || creationInput.kind !== 'operator'
+            || creationInput.configuration.id !== row.operator_configuration_version_id) {
+            throw new Error('The original native session creation is not established.')
+          }
+          await this.repository.bind(row.id, requestId, resident.session.providerVersion, resident.session.nativeSessionId)
+          await this.complete(row.id, requestId, row.cancel_requested ? { outcome: 'canceled' }
+            : failure(new Error('Session binding recovered before prompt submission. Retry the same request.')), undefined, !row.cancel_requested)
+          return
+        }
+        const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+        if (!configuration) throw new Error('Pinned Operator configuration was not found.')
+        const cleanup = revoked || row.cancel_requested
+        // Existing-turn observation is not new-work qualification. Native attach still verifies its protocol.
+        const attachSignal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])
+        const runtime = cleanup ? await this.cleanupRuntime(row.id, row, configuration, attachSignal)
+          : await this.observationRuntime(row.id, row, configuration, attachSignal)
+        const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)])
+        if (cleanup) await this.interrupt(row.id, row, runtime)
+        await this.observe(row.id, requestId, runtime, signal)
+      } catch (error) {
+        await this.repository.uncertain(row.id, requestId, errorMessage(error, 'Native recovery is uncertain.'))
+        // Revoked authority must not leave a resident model running with native tools.
+        if (error instanceof DomainError && /AUTH_|ACCESS_DENIED/.test(error.code)) {
+          const runtime = this.runtimes.get(row.id)
+          await this.repository.requestCancel(row.id, requestId)
+          if (runtime) await this.interrupt(row.id, row, runtime)
+            .catch(ignoreError('harness', 'interrupt native turn after failed delivery', { chatId: row.id, requestId }))
+        }
+        this.events.publish(row.id, 'error', { requestId, turnState: 'uncertain' })
+      }
+    })
   }
 
   shutdown(): Promise<void> {

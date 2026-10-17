@@ -14,6 +14,7 @@ import type { MainWorkerConversationBridge } from './workerBridge.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
 import { DomainError } from '../errors.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 
 function denied(): never {
   throw new DomainError('WORKER_CONVERSATION_MCP_DENIED', 'The scoped Operator credential does not belong to this worker chat.', 403)
@@ -51,9 +52,19 @@ export class MainWorkerConversationMcp {
     [principal.id, owner.conversationId])).rows[0]
     if (!stored || stored.delegated_from !== stored.owner_principal_id) denied()
     const configuration = OperatorConfigurationVersionSchema.parse(stored.record)
-    if (configuration.id !== owner.configurationVersionId || configuration.operatorId !== owner.operatorId
-      || configuration.harness.harness !== binding.harness || commandInputHash(configuration) !== owner.configurationHash
-      || !isDeepStrictEqual(configuration.harnessProfileSelection, binding.profile)) denied()
+    const previous = configuration.id === owner.configurationVersionId ? undefined
+      : await this.input.operators.configuration(owner.configurationVersionId)
+    let executionConfiguration
+    try {
+      executionConfiguration = workerExecutionConfiguration(binding, configuration, previous ?? undefined)
+    } catch (error) {
+      if (error instanceof DomainError && error.code === 'WORKER_CONVERSATION_UNAVAILABLE') denied()
+      throw error
+    }
+    if (!('operatorId' in executionConfiguration) || executionConfiguration.operatorId !== owner.operatorId
+      || executionConfiguration.harness.harness !== binding.harness
+      || commandInputHash(executionConfiguration) !== owner.configurationHash
+      || !isDeepStrictEqual(executionConfiguration.harnessProfileSelection, binding.profile)) denied()
     if (stored.worker_conversation_binding) {
       const previous = WorkerConversationBindingSchema.parse(stored.worker_conversation_binding)
       if (!isDeepStrictEqual(previous, binding)) {

@@ -153,6 +153,7 @@ export async function createInstalledWorkerConversations(input: {
     const manager: NativeHarnessSessionManager = native
     const inspector: NativeMcpInspector = codexMcpInspectorAdapter(native)
     let mcp: Awaited<ReturnType<typeof createWorkerMcpEndpoint>> | undefined
+    let mcpEnvironment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
     let launch: NativeLaunchObservation | undefined
     const nativeOwner = async (session: NativeSessionReference) => {
       const rows = input.registry.snapshot().launches.filter(value => value.owner === scope.owner && value.lifecycle === 'active')
@@ -174,6 +175,7 @@ export async function createInstalledWorkerConversations(input: {
           request: input.request, signal: input.signal })
         mcp = await createWorkerMcpEndpoint({ relay, launcher: selected.appMcpLauncher, signal: input.signal })
         environment = relay.environment
+        mcpEnvironment = relay.environment
       }
       const owner = binding.owner
       if (owner.kind === 'operator' && 'operatorId' in configuration) {
@@ -187,6 +189,15 @@ export async function createInstalledWorkerConversations(input: {
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
     return { manager, inspector, nativeOwner, start,
+      async refreshApplicationAccess(token, signal) {
+        if (!mcp || !mcpEnvironment || appMcpAccess !== 'scoped') unavailable('The retained Codex MCP route is unavailable.')
+        await before(signal)
+        const relay = await prepareWorkerConversationMcp({ source: source(), token,
+          request: input.request, signal: input.signal })
+        // The running process keeps its local launcher token; Main receives the fresh turn credential.
+        await mcp.bindRelay({ ...relay, environment: mcpEnvironment })
+        signal.throwIfAborted()
+      },
       ...(harness === 'codex' && appMcpAccess === 'none' ? {
         recoverFiles: (request, nativeTurnId, signal) => files.recover(request, nativeTurnId, signal),
       } satisfies Pick<WorkerConversationAllocation, 'recoverFiles'> : {}),
