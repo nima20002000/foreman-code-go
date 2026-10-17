@@ -9,6 +9,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { probeComputerAccounts } from './accountProbe.js'
 import { assertComputerTarget } from './target.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 export interface ComputerAccountsEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -88,7 +89,13 @@ export class ComputerAccountsService {
     const cached = this.cache.get(key)
     if (cached && (cached.pending || (!refresh && this.now() - cached.at < CACHE_MS))) return cached.value
     this.refreshRequired.delete(key)
-    const value = (target.hostRef.kind === 'main' ? this.probeMain(refresh) : this.readDevice(target.hostRef.deviceId, refresh))
+    const probe = target.hostRef.kind === 'main'
+      ? this.probeMain(refresh) : this.readDevice(target.hostRef.deviceId, refresh)
+    const value: Promise<ComputerAccounts | null> = probe.catch(error => {
+      if (this.cache.get(key) === entry) this.cache.delete(key)
+      logIgnoredError('lifecycle', 'read computer accounts', error, { host: target.hostRef })
+      return null
+    })
     const entry = { at: this.now(), pending: true, value }
     this.cache.set(key, entry)
     void value.then(() => {

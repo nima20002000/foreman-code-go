@@ -16,6 +16,9 @@ import { ciExecutionRunId } from './executionAttempt.js'
 import { CiTicketChanges } from './ticketChanges.js'
 import { ciGroupSharing } from './requestSharing.js'
 import { missingCiTicket } from './missingTicket.js'
+import { ciLogPage } from './logPage.js'
+import { sanitizeCiText } from './text.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -236,31 +239,46 @@ export class HostCiReads {
     afterOffset?: number | undefined; maxBytes?: number | undefined; group?: boolean | undefined }) {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
-      const row = await this.readTicket(caller, scope, { ticketId: input.ticketId, logTail: false })
+      const row = await this.readTicket(caller, scope, { ticketId: input.ticketId })
       const run = CiRunRecordSchema.parse(row.record)
       const maxBytes = Math.min(input.maxBytes ?? CI_LOG_MAX_BYTES, CI_LOG_MAX_BYTES)
       if (input.group) {
-        const group = (await this.pool.query<{ record: unknown }>(
-          `select record from ci_runs where group_id=$1 and workspace_id=$2
+        const group = (await this.pool.query<{ record: unknown; log_tail: string }>(
+          `select record,log_tail from ci_runs where group_id=$1 and workspace_id=$2
             and record->'initiator'=$3::jsonb order by created_at,id`,
-          [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
+          [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows
         const partMaxBytes = Math.floor(maxBytes / group.length)
         const remainder = maxBytes % group.length
-        const parts = await Promise.all(group.map(async (part, index) => ({ run: part,
-          ...await this.readLog(part, { afterOffset: input.afterOffset,
-            maxBytes: partMaxBytes + Number(index < remainder) }) })))
+        const parts = await Promise.all(group.map(async (part, index) => {
+          const record = CiRunRecordSchema.parse(part.record)
+          return { run: record, ...await this.readLog(record, { afterOffset: input.afterOffset,
+            maxBytes: partMaxBytes + Number(index < remainder) }, part.log_tail) }
+        }))
         const own = parts.find(part => part.run.id === run.id)!
-        return { text: own.text, nextOffset: own.nextOffset, logBytes: own.logBytes, maxBytes, parts }
+        return { text: own.text, nextOffset: own.nextOffset, logBytes: own.logBytes, maxBytes, parts,
+          ...(own.source ? { source: own.source } : {}) }
       }
       if (!run.computer) throw new DomainError('CI_NOT_STARTED', 'This CI run is still queued.', 409)
-      return this.readLog(run, { afterOffset: input.afterOffset, maxBytes })
+      return this.readLog(run, { afterOffset: input.afterOffset, maxBytes }, row.log_tail)
     })
   }
 
-  private async readLog(run: CiRunRecord, input: { afterOffset?: number | undefined; maxBytes?: number | undefined }) {
+  private async readLog(run: CiRunRecord,
+    input: { afterOffset?: number | undefined; maxBytes?: number | undefined }, savedTail: string) {
     const maxBytes = input.maxBytes ?? CI_LOG_MAX_BYTES
-    if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0, maxBytes }
-    const computer = await this.host.computer(run.computer.hostRef)
-    return readHostCiLog(this.host.endpoint, computer, ciExecutionRunId(run), { ...input, maxBytes })
+    if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0, maxBytes, source: undefined }
+    try {
+      const computer = await this.host.computer(run.computer.hostRef)
+      return { ...await readHostCiLog(this.host.endpoint, computer, ciExecutionRunId(run), { ...input, maxBytes }),
+        source: undefined }
+    } catch (error) {
+      if (!savedTail || !['passed', 'failed', 'canceled', 'lost'].includes(run.state)) throw error
+      logIgnoredError('jobs', 'read CI executor log; returning saved tail', error, { ticketId: run.id })
+      const bytes = Buffer.from('Previously collected output saved on Main; executor log unavailable.\n'
+        + sanitizeCiText(savedTail), 'utf8')
+      const afterOffset = input.afterOffset ?? Math.max(0, bytes.length - maxBytes)
+      return { ...ciLogPage(bytes, afterOffset, maxBytes), logBytes: bytes.length, maxBytes,
+        source: 'saved-tail' as const }
+    }
   }
 }

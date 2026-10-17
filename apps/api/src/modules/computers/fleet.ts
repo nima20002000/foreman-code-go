@@ -494,8 +494,16 @@ export class FleetMaintenanceService {
   private async observeComputer(target: DeviceProvisioningTarget, refresh: boolean) {
     const observation = await this.observeStatus(target, refresh)
     const endpoint = this.endpoint()
-    if (!observation.status || target.hostRef.kind !== 'device' || !endpoint?.workerBundleReadiness) return observation
-    return { ...observation, workerReadiness: await endpoint.workerBundleReadiness(target.hostRef.deviceId) }
+    if (!observation.status || observation.observation.status !== 'available'
+      || target.hostRef.kind !== 'device' || !endpoint?.workerBundleReadiness) return observation
+    try {
+      return { ...observation, workerReadiness: await endpoint.workerBundleReadiness(target.hostRef.deviceId) }
+    } catch (error) {
+      const unavailable = failedReadObservation(observation.observation, error,
+        'Worker readiness observation failed', this.now())
+      componentLogger('lifecycle').warn({ host: target.hostRef, ...unavailable }, 'Worker readiness unavailable')
+      return { status: observation.status, observation: unavailable }
+    }
   }
 
   private observeStatus(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceObservation> {
