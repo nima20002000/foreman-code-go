@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0, answeredDiscoveries = Infinity, pendingReportPolls = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, firstAdmissionProbes = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0, answeredDiscoveries = Infinity, pendingReportPolls = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -22,6 +22,9 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
   const admissions = []
   const canceled = []
   let probes = 0
+  let firstAdmissionProbeCount = 0
+  let firstAdmissionComplete = false
+  const admissionProbed = Promise.withResolvers()
   const authenticated = []
   const reportPolls = new Map()
   const reportReads = []
@@ -44,6 +47,10 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
     } else if (request.url === '/health/live') {
       probes++
       if (failure === 'stall' && admissions.length) return
+      if (admissions.length === 1 && !firstAdmissionComplete) {
+        firstAdmissionProbeCount++
+        if (firstAdmissionProbeCount >= firstAdmissionProbes) admissionProbed.resolve()
+      }
       response.end('{}')
     } else if (request.url.endsWith('/tests')) {
       const ticketId = request.url.split('/').at(-2)
@@ -83,7 +90,11 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
       }
       admissions.push(input)
       if (failure === 'lock' && admissions.length === 2) return
-      if (admissions.length === 1) await delay(firstAdmissionDelayMs)
+      if (admissions.length === 1) {
+        if (firstAdmissionProbes > 0) await admissionProbed.promise
+        await delay(firstAdmissionDelayMs)
+        firstAdmissionComplete = true
+      }
       response.end(JSON.stringify({ ticketId: `ticket-${admissions.length}` }))
     } else if (request.method === 'DELETE') {
       let body = ''
@@ -120,7 +131,7 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
   await once(server, 'listening')
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) })
   return { origin: `http://127.0.0.1:${server.address().port}`, admissions, canceled, computers, authenticated,
-    probes: () => probes, reportReads }
+    probes: () => probes, firstAdmissionProbes: () => firstAdmissionProbeCount, reportReads }
 }
 
 const options = { workspaceId: 'workspace', commit: 'a'.repeat(40),
@@ -181,10 +192,12 @@ test('a stuck admission has its own bounded timeout and identifies the slow step
   assert.ok(f.canceled.length > 0)
 })
 
-test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', async t => {
+test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', { timeout: 30_000 }, async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
-  const f = await fixture(t, undefined, undefined, { firstAdmissionDelayMs: 50 })
-  await runInstallCiSmoke({ ...options, origin: f.origin })
+  const f = await fixture(t, undefined, undefined, { firstAdmissionProbes: 3 })
+  // Tiny request budgets belong to the timeout cases; this case observes successful HTTP work.
+  await runInstallCiSmoke({ origin: f.origin, workspaceId: options.workspaceId, commit: options.commit,
+    pollMs: options.pollMs })
   assert.deepEqual(f.admissions.slice(0, 2).map(input => input.files), [[], []])
   assert.notEqual(f.admissions[0].commandId, f.admissions[1].commandId)
   const targets = f.admissions.filter(input => input.smokeComputer)
@@ -192,6 +205,7 @@ test('CI smoke probes repeatedly, makes consecutive admissions and tests each re
     [f.computers[0], f.computers[1], f.computers[2], f.computers[4]].map(computer => computer.hostRef))
   assert.ok(targets.every(input => input.files.length === 1 && input.scope === 'affected'))
   assert.ok(f.probes() >= 3)
+  assert.equal(f.firstAdmissionProbes(), 3)
 })
 
 for (const failure of ['setup', 'lock', 'stall']) {
