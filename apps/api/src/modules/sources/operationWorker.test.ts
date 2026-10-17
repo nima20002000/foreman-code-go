@@ -24,6 +24,7 @@ import { sourceMaterializationParent } from '@foreman-code/contracts/source-mate
 import type { SourceQuotaPool } from './materialization.js'
 import { verificationCapacityFixture } from '../../../test/helpers/verificationCapacityFixture.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 const directories: string[] = []
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 async function fixture() {
@@ -330,8 +331,8 @@ it('confirms preparation cleanup only after native closure and transfer reservat
   expect(f.preparationTransfersClosed).not.toHaveBeenCalled()
   expect(f.preparationReconciled).not.toHaveBeenCalled()
   f.preparationNativeClosed.mockResolvedValue(true)
-  const transferCleanup = Promise.withResolvers<void>()
-  const releaseTransfers = Promise.withResolvers<void>()
+  const transferCleanup = deferred()
+  const releaseTransfers = deferred()
   f.preparationTransfersClosed.mockImplementationOnce(async () => {
     transferCleanup.resolve()
     await releaseTransfers.promise
