@@ -11,7 +11,7 @@ function Probe() {
   return <>{query.options.map((option) => <p key={option.label}>{option.label}: {option.unavailableReason ?? 'Ready'}</p>)}</>
 }
 it('keeps server unavailable reasons and never promotes discovery to a ready choice', async () => {
-  const read = vi.spyOn(client, 'readPlacementChoices').mockResolvedValue({ ...scope, choices: [
+  const read = vi.spyOn(client, 'readPlacementChoices').mockResolvedValue({ ...scope, pending: false, choices: [
     { id: 'choice-a', label: 'Offline laptop', placement, availability: 'offline', reason: 'Worker disconnected' },
     { id: 'choice-b', label: 'Unavailable harness', placement, availability: 'unavailable', reason: 'Harness incompatible' },
     { id: 'choice-c', label: 'Ready PC', placement, availability: 'ready', reason: null },

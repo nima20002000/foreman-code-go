@@ -524,7 +524,6 @@
     "4eeafc413b53b0b1d15578f5215ed123c21ae52ab01450db10a94f65b446d2ed": "apps/api/test/source-storage-capacity.integration.test.ts",
     "60cb21d4a4eeb80d76720a768cf05c580cde0b0bbed38fac2f005cc89a5cd510": "apps/api/test/source-workflow-cleanup.integration.test.ts",
     "ef7bf33a7e87e9d64c57b599a39f3677be41ec742afdba059d997535baa31d15": "apps/api/test/test-resources.test.ts",
-    "d08207b5f089197c7cc666754ffd9524901482c37419002a17f175a819b9ad2a": "apps/api/test/w08-placement-readback.integration.test.ts",
     "d949d6af28695bb9f5d62bab75e2c9bd16dc7856d8c01673876f56dfa53fb779": "apps/api/test/w08-workspace-roots.integration.test.ts",
     "d8728bcfa8aebd71f301e4c74d4d18e0827ab4b5452ac0e0386d2f7f12b1b3c4": "apps/api/test/wave25-agent3-admission.integration.test.ts",
     "e56978fda5ca111921f18ed89430f6fd37b4882ec9ac57a889cf113b99a8090a": "apps/api/test/wave25-agent3-capacity.test.ts",

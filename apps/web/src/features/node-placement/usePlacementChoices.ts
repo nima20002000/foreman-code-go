@@ -41,10 +41,7 @@ export function usePlacementChoices(scope: NodePlacementChoicesInput | undefined
     },
     refetchInterval: query => {
       if (isApiAccessError(query.state.error)) return false
-      // Discovery exposes pending profile checks through the diagnostic reason.
-      const pending = query.state.data?.choices.some(choice => choice.availability === 'unavailable'
-        && /\b(?:being checked|qualifying)\b|\b(?:profile|qualification|check)\b.*\bpending\b/i.test(choice.reason ?? ''))
-      return pending ? 5_000 : false
+      return query.state.data?.pending ? 5_000 : false
     },
     enabled, retry: false, staleTime: 0, gcTime: 0, placeholderData: () => undefined,
   })

@@ -20,14 +20,15 @@ export interface PairedRootServices {
     target: DeviceProvisioningTarget, source: 'http' | 'mcp') => Promise<SourceRootRecord>
 }
 
-/** Pairing supplies storage approval; the caller still needs the existing scoped write actions. */
+/** Pairing supplies storage approval; the caller still needs the existing scoped write actions. Returns whether a
+ * computer was skipped because its matching profile is still being checked, so discovery is not settled yet. */
 export async function provisionPairedAgentRoots(pool: pg.Pool, services: PairedRootServices,
   principal: ManagementPrincipal, workspaceId: string, configuration: AgentConfigurationVersion,
   matches: (profile: HostHarnessOverride, configuration: AgentConfigurationVersion) => boolean,
-  source: 'http' | 'mcp'): Promise<void> {
-  if (!services.provisionRoot) return
+  source: 'http' | 'mcp'): Promise<boolean> {
+  if (!services.provisionRoot) return false
   const writeActions = ['source_roots:bind', 'workspace_locations:validate', 'workspace_locations:update'] as const
-  if (!writeActions.every(action => isAuthorized(principal, action, { workspaceId }))) return
+  if (!writeActions.every(action => isAuthorized(principal, action, { workspaceId }))) return false
   const template = await withTransaction(pool, async sql => {
     const row = (await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
       join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
@@ -38,8 +39,9 @@ export async function provisionPairedAgentRoots(pool: pg.Pool, services: PairedR
         b.record->>'boundAt' desc, c.root_id limit 1`, [workspaceId])).rows[0]
     return row ? SourceRootRecordSchema.parse(row.record) : null
   })
-  if (!template) return
+  if (!template) return false
   const visited = new Set<string>()
+  let pending = false
   for (const installation of services.registry.installations.list()) {
     if (!installation.installed || installation.driverId !== 'codex' || installation.hostRef.kind !== 'device') continue
     const host = installation.hostRef
@@ -66,6 +68,7 @@ export async function provisionPairedAgentRoots(pool: pg.Pool, services: PairedR
         await services.ensureProfileReady?.(profile)
       } catch (error) {
         if (!(error instanceof DomainError) || ![409, 422, 503].includes(error.status)) throw error
+        if (error.code === 'HARNESS_PROFILE_CHECK_PENDING') pending = true
         return null
       }
       if (!await services.registry.profileEvidence(profile, sql)) return null
@@ -81,4 +84,5 @@ export async function provisionPairedAgentRoots(pool: pg.Pool, services: PairedR
       if (!(error instanceof DomainError) || error.code !== 'CI_ENROLLMENT_ROOT_REQUIRED') throw error
     }
   }
+  return pending
 }

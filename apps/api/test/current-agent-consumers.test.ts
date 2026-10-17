@@ -44,7 +44,7 @@ function fixture() {
 
 describe('current Agent-only consumer boundaries', () => {
   it('denies Job nodes before Agent destination discovery, while retaining the saved Agent pin', async () => {
-    const f = fixture(), list = vi.fn(async () => [])
+    const f = fixture(), list = vi.fn(async () => ({ choices: [], pending: false }))
     const service = new NodePlacementChoicesService(f.pool, { list })
     const input = { workspaceId: f.graph.workspaceId, workflowId: f.graph.id, agentConfigurationVersionId: f.configuration.id }
     await expect(service.get(f.principal, { ...input, nodeId: f.graph.nodes[1]!.id }))

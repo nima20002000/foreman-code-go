@@ -17,7 +17,7 @@ it('Board Apply changes the exact node draft while keeping saved placement and o
   const context = fixture(), key = 'placement-apply-test'
   useGraphDraftStore.getState().installNextDraft(key, context)
   const read = vi.spyOn(client, 'readPlacementChoices').mockResolvedValue({ workspaceId: 'workspace', workflowId: 'workflow', nodeId: 'node-0', agentConfigurationVersionId: 'configuration-0',
-    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] })
+    pending: false, choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] })
   function Board() {
     const edit = useGraphDraftStore((state) => state.nextDrafts[key])!
     return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
@@ -47,7 +47,7 @@ it('keeps computer selection on the clicked node when two nodes share one Agent'
   context.draft.graph = { ...context.draft.graph, nodes: [...context.draft.graph.nodes, sibling] }
   useGraphDraftStore.getState().installNextDraft(key, context)
   const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
-    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+    pending: false, choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
   function Board() {
     const edit = useGraphDraftStore(state => state.nextDrafts[key])!
     return <BoardAgentSettings draftKey={key} edit={edit} nodeId={sibling.id} close={() => undefined} />
@@ -73,7 +73,7 @@ it('applies inherited Main by removing only the selected node placement from the
   context.draft.graph.nodes = context.draft.graph.nodes.map(node => ({ ...node, placement }))
   useGraphDraftStore.getState().installNextDraft(key, context)
   const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
-    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+    pending: false, choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
   function Board() {
     const edit = useGraphDraftStore(state => state.nextDrafts[key])!
     return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
@@ -110,7 +110,7 @@ it('inherits a workflow worktree and applies a branch-only override to the selec
       locationRevision: 1, locationValidation: { status: 'ready', checkedAt: project.source.approvedAt } })),
   )
   const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
-    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+    pending: false, choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
   function Board() {
     const edit = useGraphDraftStore(state => state.nextDrafts[key])!
     return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
@@ -145,7 +145,7 @@ it('Use workflow default clears both placement and prefix while retaining other 
     initialPrompt: 'Keep this task', worktree: { branchPrefix: 'foreman/override' } }))
   useGraphDraftStore.getState().installNextDraft(key, context)
   const read = vi.spyOn(client, 'readPlacementChoices').mockImplementation(async scope => ({ ...scope,
-    choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
+    pending: false, choices: [{ id: 'choice-laptop', label: 'Laptop', placement, availability: 'ready', reason: null }] }))
   function Board() {
     const edit = useGraphDraftStore(state => state.nextDrafts[key])!
     return <BoardAgentSettings draftKey={key} edit={edit} nodeId="node-0" close={() => undefined} />
