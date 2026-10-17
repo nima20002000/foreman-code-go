@@ -397,6 +397,12 @@ function moduleInstallerFixture(t, options = {}) {
     install: extra => fixture.run({ FIXTURE_MODULE_ZIP: archive, ...extra }, join(scripts, 'ci-go-toolchain.sh')) }
 }
 
+function cacheDirectoryNames(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => entry.name)
+}
+
 test('without a bootstrap the public installer authenticates and prepares the official module into its private cache', t => {
   const fixture = moduleInstallerFixture(t)
   const result = fixture.install()
@@ -418,7 +424,7 @@ test('without a bootstrap the public installer authenticates and prepares the of
   assert.equal(statSync(join(fixture.published, 'src/go.mod')).mode & 0o777, 0o600)
   assert.equal(readFileSync(join(fixture.published, 'src/go.mod'), 'utf8'), 'module std\n')
   assert.equal(readFileSync(join(fixture.published, 'src/cmd/go.mod'), 'utf8'), 'module cmd\n')
-  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+  assert.equal(cacheDirectoryNames(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
   assert.equal(readFileSync(join(fixture.cache, 'modules/shared-module'), 'utf8'), 'shared module cache stays unchanged')
   assert.equal(readFileSync(join(fixture.home, 'existing-state'), 'utf8'), 'original home stays unchanged')
 })
@@ -437,7 +443,7 @@ for (const [name, options, message] of [
     assert.match(result.stderr, message)
     assert.equal(fixture.calls().some(call => call.tool === 'compiler' || call.tool === 'bootstrap'), false)
     assert.equal(existsSync(fixture.published), false)
-    assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+    assert.equal(cacheDirectoryNames(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
   })
 }
 
@@ -447,7 +453,7 @@ test('a pinned module compiler with the wrong version is rejected and its privat
   assert.equal(result.status, 1, result.stderr)
   assert.match(result.stderr, /Expected Go 1\.27\.2; compiler reports go1\.27\.1/)
   assert.equal(existsSync(fixture.published), false)
-  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+  assert.equal(cacheDirectoryNames(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
 })
 
 test('installer compiler probes isolate and clean home, telemetry and temporary state without changing caller state', t => {
@@ -474,5 +480,5 @@ test('installer compiler probes isolate and clean home, telemetry and temporary 
   assert.deepEqual(readdirSync(callerTelemetry), ['existing-state'])
   assert.equal(existsSync(join(fixture.home, '.cache')), false)
   assert.equal(existsSync(join(fixture.state, 'fixture-probe-state')), false)
-  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download|toolchain-probe)\./.test(name)), false)
+  assert.equal(cacheDirectoryNames(fixture.cache).some(name => /^(install|toolchain-download|toolchain-probe)\./.test(name)), false)
 })
