@@ -1,0 +1,64 @@
+{
+  "source": "9e2e8e5f743f4a8bb17bbfde164db5f198e2bae2",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "cleanup-two-file-lint",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "eslint",
+          "src/runtime/owned-processes.ts",
+          "src/runtime/owned-processes.observation.test.ts",
+          "--max-warnings",
+          "0"
+        ],
+        "cwd": "conformance"
+      },
+      {
+        "name": "cleanup-explicit-types",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--ignoreConfig",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/runtime/owned-processes.ts",
+          "src/runtime/owned-processes.observation.test.ts",
+          "src/runtime/owned-processes.test.ts"
+        ],
+        "cwd": "conformance"
+      },
+      {
+        "name": "cleanup-selected-behavior",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/runtime/owned-processes.observation.test.ts",
+          "src/runtime/owned-processes.test.ts"
+        ],
+        "reportKind": "vitest",
+        "cwd": "conformance"
+      }
+    ]
+  },
+  "requiredExports": []
+}
