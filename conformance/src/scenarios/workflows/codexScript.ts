@@ -4,12 +4,20 @@ import { isAbsolute, join, relative } from 'node:path'
 import type { ScenarioContext } from '../../scenario.js'
 
 /** Fixture protocol only. Domain requests in arguments still use their shared contracts. */
+export interface CodexToolScript {
+  name: string
+  arguments: Record<string, unknown>
+  saveAs?: string
+}
+
 export interface CodexTurnScript {
   answer?: string
   jsonAnswer?: unknown
   answerFromInput?: 'text' | 'images'
-  tools?: { name: string; arguments: Record<string, unknown>; saveAs?: string }[]
+  tools?: CodexToolScript[]
+  mcpTools?: CodexToolScript[]
   failure?: string
+  codexErrorInfo?: 'internalServerError'
   holdUntilFile?: string
   interaction?: {
     method: 'item/tool/requestUserInput' | 'item/commandExecution/requestApproval'
@@ -20,6 +28,7 @@ export interface CodexTurnScript {
 export interface CodexScript {
   id: string
   includes: string
+  excludes?: string[]
   turns: CodexTurnScript[]
 }
 

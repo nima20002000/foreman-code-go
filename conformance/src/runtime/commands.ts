@@ -63,7 +63,7 @@ export interface ManagedProcess {
 function signalProcess(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid === undefined) return
   try {
-    // Each launched server owns a process group; its native children must end too.
+    // This reaches the launched process group. Detached native guardians have separate groups.
     if (process.platform === 'win32') child.kill(signal)
     else process.kill(-child.pid, signal)
   } catch (error) {
@@ -103,7 +103,7 @@ export function startProcess(command: string, arguments_: readonly string[], opt
       const killed = await Promise.race([finished.then(() => true), delay(5000, false, { ref: false })])
       if (!killed) throw new Error(`${basename(command)} did not stop after SIGKILL`)
     }
-    // The parent may exit while a native descendant is still finishing.
+    // The parent may exit while another member of its process group is still finishing.
     signalProcess(child, 'SIGKILL')
   }
   return {

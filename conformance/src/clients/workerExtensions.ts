@@ -2,7 +2,7 @@ import {
   CurrentRemoteExecutionRpcRequestSchema, REMOTE_EXECUTION_EXTENSION,
   type RemoteExecutionRpcRequest,
 } from '@foreman-code/contracts/remote-execution-rpc'
-import { DEVICE_APPLICATION_JSON_BYTES, type DeviceApplicationResult,
+import { DEVICE_APPLICATION_JSON_BYTES, type DeviceApplicationFailure, type DeviceApplicationResult,
   type DeviceExtensionDescriptor } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 
@@ -17,6 +17,15 @@ export interface TestWorkerOperation {
 
 export interface TestWorkerExtension extends DeviceExtensionDescriptor {
   handle?(operation: TestWorkerOperation): Promise<DeviceApplicationResult>
+}
+
+/** Expected native failures travel over the carrier; unexpected fixture errors fail the scenario. */
+export class TestWorkerOperationError extends Error {
+  readonly failure: DeviceApplicationFailure
+  constructor(code: string, options?: ErrorOptions) {
+    super(`The isolated worker operation failed: ${code}.`, options)
+    this.failure = { code, class: 'permanent', retryable: false }
+  }
 }
 
 /** Native operation scripts receive only contract-validated requests for this fresh pairing. */

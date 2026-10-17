@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
+import { IdSchema } from '@foreman-code/contracts'
 import type { PublicResponse } from './clients/http.js'
 
-export type NormalizationKind = 'timestamp' | 'uuid' | 'id' | 'duration'
+export type NormalizationKind = 'timestamp' | 'uuid' | 'id' | 'opaque-id' | 'duration'
 export interface NormalizationRule { pointer: string; kind: NormalizationKind }
 export interface ExpectedResponse { status: number; body: unknown }
 
 function validLeaf(value: unknown, kind: NormalizationKind): boolean {
   if (kind === 'duration') return typeof value === 'number' && Number.isFinite(value) && value >= 0
   if (typeof value !== 'string') return false
+  if (kind === 'opaque-id') {
+    const parsed = IdSchema.safeParse(value)
+    return parsed.success && parsed.data === value
+  }
   if (kind === 'timestamp') {
     return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
       && Number.isFinite(Date.parse(value))

@@ -1,4 +1,7 @@
+import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, WorkflowDefaultsSchema } from '@foreman-code/contracts'
 import {
+  AgentDefaultsUpdateInputSchema,
+  AgentDefaultsUpdateResultSchema,
   DEFAULT_GENERAL_SETTINGS,
   DEFAULT_PROMPT_TEXT,
   GeneralSettingsSchema,
@@ -7,10 +10,35 @@ import {
   PromptSettingUpdateInputSchema,
   PromptSettingUpdateResultSchema,
   PromptTextSchema,
+  WorkflowDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateResultSchema,
 } from '@foreman-code/contracts/management'
 import { versionedSettingScenario } from './versioned-setting.js'
 
 export const settingsScenarios = [
+  versionedSettingScenario({
+    id: 'http.settings.agent-defaults',
+    title: 'Agent display defaults preserve configuration, replay, and restart readback',
+    path: '/api/management/settings/agents',
+    initialValue: DEFAULT_AGENT_DEFAULTS,
+    updatedValue: AgentDefaultsSchema.parse({
+      ...DEFAULT_AGENT_DEFAULTS,
+      operator: { ...DEFAULT_AGENT_DEFAULTS.operator, showThinking: false, uiEnabled: false },
+    }),
+    inputSchema: AgentDefaultsUpdateInputSchema,
+    resultSchema: AgentDefaultsUpdateResultSchema,
+    revisionConflict: { message: 'Agent defaults changed since they were read.' },
+  }),
+  versionedSettingScenario({
+    id: 'http.settings.workflow-defaults',
+    title: 'Workflow defaults preserve the selected approval handler and revision receipts',
+    lane: 'E',
+    path: '/api/management/settings/workflows',
+    initialValue: WorkflowDefaultsSchema.parse({ approvalHandler: 'orchestrator' }),
+    updatedValue: WorkflowDefaultsSchema.parse({ approvalHandler: 'user' }),
+    inputSchema: WorkflowDefaultsUpdateInputSchema,
+    resultSchema: WorkflowDefaultsUpdateResultSchema,
+  }),
   versionedSettingScenario({
     id: 'http.settings.general',
     title: 'General settings preserve revision, replay, and restart readback',

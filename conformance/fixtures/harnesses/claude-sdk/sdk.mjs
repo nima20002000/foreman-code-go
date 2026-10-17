@@ -4,6 +4,7 @@ import { createSession, profileDirectory, readScript, readSession, saveSession }
 import { outputQueue } from './queue.mjs'
 import { initialization, result, textFrames } from './frames.mjs'
 import { executeTool } from './tools.mjs'
+import { nativeDiagnosticScript } from './diagnostics.mjs'
 export { createSdkMcpServer, tool } from './tools.mjs'
 
 export function query({ prompt, options = {} }) {
@@ -39,7 +40,8 @@ export function query({ prompt, options = {} }) {
       active = message
       emit({ ...message, session_id: session.sessionId })
       const text = typeof message.message.content === 'string' ? message.message.content : JSON.stringify(message.message.content)
-      const script = readScript(text)
+      const script = readScript(text) ?? nativeDiagnosticScript(text, session)
+        ?? { answer: 'Conformance assistant answer.' }
       if (text === '/compact') {
         emit({ type: 'system', subtype: 'compact_boundary', uuid: randomUUID(), session_id: session.sessionId,
           compact_metadata: { trigger: 'manual', pre_tokens: 32 } })
@@ -51,14 +53,14 @@ export function query({ prompt, options = {} }) {
         active = undefined
         continue
       }
-      let allowed = true
+      let toolsSucceeded = true
       for (const call of script.tools ?? []) {
-        allowed = await executeTool({ session, model, signal, options: { ...options, mcpServers: servers },
-          transcriptPath: join(directory, `${session.sessionId}.json`), emit }, message, call) && allowed
+        toolsSucceeded = await executeTool({ session, model, signal, options: { ...options, mcpServers: servers },
+          transcriptPath: join(directory, `${session.sessionId}.json`), emit }, message, call) && toolsSucceeded
       }
       if (signal.aborted) break
-      const failed = Boolean(script.failure) || !allowed
-      const answer = String(script.failure ?? (allowed ? script.answer ?? 'Conformance assistant answer.' : 'Tool request denied.'))
+      const failed = Boolean(script.failure) || !toolsSucceeded
+      const answer = String(script.failure ?? (toolsSucceeded ? script.answer ?? 'Conformance assistant answer.' : 'Scripted tool request failed.'))
       for (const frame of textFrames(session, message, answer, model)) emit(frame)
       emit(result(session, message, answer, failed))
       active = undefined
@@ -72,7 +74,9 @@ export function query({ prompt, options = {} }) {
     async interrupt() { if (active) interrupt?.() },
     async setPermissionMode(mode) { permissionMode = mode },
     async initializationResult() { return { commands: [{ name: 'compact', description: 'Compact native context.' }],
-      models: [{ value: model, displayName: model }], permissionMode } },
+      models: [{ value: model, resolvedModel: model, displayName: model,
+        supportedEffortLevels: ['low', 'medium', 'high', 'max'] }], permissionMode,
+      account: { apiProvider: 'firstParty', tokenSource: 'conformance-fixture' } } },
     async getContextUsage() { return { rawMaxTokens: 200_000, maxTokens: 200_000, totalTokens: session.messages.length,
       model, isAutoCompactEnabled: options.env?.DISABLE_AUTO_COMPACT !== '1' } },
     async mcpServerStatus() { return Object.entries(servers).map(([name, config]) => ({ name, status: 'connected', config,

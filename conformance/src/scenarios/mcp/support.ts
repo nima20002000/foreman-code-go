@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { assertResponse, type NormalizationRule } from '../../assertions.js'
+import { assertJson, assertResponse, type NormalizationRule } from '../../assertions.js'
 import { McpClient, McpHttpError, type McpToolResult } from '../../clients/mcp.js'
 import type { CoverageClaim, ScenarioContext } from '../../scenario.js'
 
@@ -33,7 +33,7 @@ export async function callTool<T>(client: McpClient, name: string, input: Record
 }
 
 export function assertValue(actual: unknown, expected: unknown, rules: readonly NormalizationRule[] = []): void {
-  assertResponse({ status: 200, headers: new Headers(), body: actual }, { status: 200, body: expected }, rules)
+  assertJson(actual, expected, rules)
 }
 
 export function assertToolFailure(result: McpToolResult, error: Record<string, unknown>): void {

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import {
   DEVICE_APPLICATION_BUFFER_BYTES, DEVICE_APPLICATION_CHUNK_BYTES, DEVICE_APPLICATION_IN_FLIGHT,
-  type DeviceApplicationFailure, type DeviceApplicationFrame, type DeviceApplicationResult,
+  type DeviceApplicationFrame, type DeviceApplicationResult,
   type DeviceNegotiatedExtension,
 } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { deferred, withWorkerDeadline } from './workerDeferred.js'
-import type { TestWorkerExtension, TestWorkerOperation } from './workerExtensions.js'
+import { TestWorkerOperationError, type TestWorkerExtension, type TestWorkerOperation } from './workerExtensions.js'
 
 type OpenFrame = Extract<DeviceApplicationFrame, { type: 'application-open' }>
 interface Assembly { frame: OpenFrame; chunks: Buffer[]; received: number; lifetime: AbortController }
@@ -165,19 +165,21 @@ export class TestWorkerChannel {
       ...(result.bytes ? { bytes: result.bytes } : {}), binding: this.options.binding, signal }
     this.options.observe(operation)
     const extension = this.extension(frame.namespace, 'incoming')
-    let response: DeviceApplicationResult
-    let kind: 'response' | 'error' = 'response'
     try {
-      const handler = this.options.registrations.find(entry => entry.namespace === frame.namespace)?.handle
-      if (!handler) throw new Error('No scripted handler is installed for this worker operation.')
-      response = await handler(operation)
-    } catch {
-      if (signal.aborted) { this.operations.delete(frame.id); return }
-      const failure: DeviceApplicationFailure = { code: 'fixture-operation-failed', class: 'permanent', retryable: false }
-      response = { payload: failure }
-      kind = 'error'
+      let response: DeviceApplicationResult
+      let kind: 'response' | 'error' = 'response'
+      try {
+        const handler = this.options.registrations.find(entry => entry.namespace === frame.namespace)?.handle
+        if (!handler) throw new Error('No scripted handler is installed for this worker operation.')
+        response = await handler(operation)
+      } catch (error) {
+        if (signal.aborted) return
+        if (!(error instanceof TestWorkerOperationError)) throw error
+        response = { payload: error.failure }
+        kind = 'error'
+      }
+      if (!signal.aborted) await this.sendPacket(frame.id, extension, kind, response, signal)
     }
-    try { if (!signal.aborted) await this.sendPacket(frame.id, extension, kind, response, signal) }
     finally { this.operations.delete(frame.id); assembly.lifetime.abort() }
   }
 
@@ -199,6 +201,8 @@ export class TestWorkerChannel {
     this.acknowledgements.clear()
     this.assemblies.clear()
     this.reservedBytes = 0
-    await Promise.allSettled(this.tasks)
+    const settled = await Promise.allSettled(this.tasks)
+    const failures = settled.flatMap(result => result.status === 'rejected' && result.reason !== error ? [result.reason] : [])
+    if (failures.length) throw new AggregateError(failures, 'Worker operations failed while the owned channel closed.')
   }
 }

@@ -64,7 +64,8 @@ export async function waitForRun(
   }
 }
 
-export async function waitForCompletedRun(ctx: ScenarioContext, run: WorkflowRunV3, result: ExecutionResult) {
+export async function waitForCompletedRun(ctx: ScenarioContext, run: WorkflowRunV3, result: ExecutionResult,
+  options: { stopRequested?: boolean } = {}) {
   for (;;) {
     const { response, record } = await waitForRun(ctx, run,
       current => current.run.executionState === 'completed')
@@ -72,7 +73,7 @@ export async function waitForCompletedRun(ctx: ScenarioContext, run: WorkflowRun
       assertResponse(response, { status: 200, body: {
         run: { ...run, executionState: 'completed', outcome: result.outcome, result,
           startedAt: '<timestamp>', finishedAt: '<timestamp>' },
-        stopRequested: false, cleanupPending: false,
+        stopRequested: options.stopRequested ?? false, cleanupPending: false,
       } }, [
         { pointer: '/body/run/startedAt', kind: 'timestamp' },
         { pointer: '/body/run/finishedAt', kind: 'timestamp' },

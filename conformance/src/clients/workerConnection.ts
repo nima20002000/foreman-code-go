@@ -62,6 +62,7 @@ export class TestWorkerClient {
   }>()
   private channel: TestWorkerChannel | undefined
   private channelClosing: Promise<void> | undefined
+  private closeRequested = false
   private binding: Readonly<DeviceSessionBinding> | undefined
   private heartbeat: ReturnType<typeof setInterval> | undefined
   private failure: Error | undefined
@@ -86,7 +87,7 @@ export class TestWorkerClient {
     this.socket.on('error', error => this.fail(error))
     this.socket.on('close', () => {
       this.closedState.resolve()
-      this.fail(this.failure ?? new Error('The worker socket closed.'))
+      if (!this.closeRequested) this.fail(this.failure ?? new Error('The worker socket closed.'))
     })
     this.socket.on('unexpected-response', (_request, response) => {
       response.resume()
@@ -196,6 +197,10 @@ export class TestWorkerClient {
 
   private fail(error: Error) {
     this.failure ??= error
+    this.stop(error)
+  }
+
+  private stop(error: Error) {
     if (!this.lifetime.signal.aborted) this.lifetime.abort(error)
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.readyState.reject(error)
@@ -203,16 +208,25 @@ export class TestWorkerClient {
     for (const waiter of this.waiters) waiter.result.reject(error)
     if (this.channel && !this.channelClosing) {
       this.channelClosing = this.channel.close(error)
-      void this.channelClosing.catch(failure => { this.failure = new AggregateError([error, failure], 'Worker channel cleanup failed.') })
+      // close() awaits and reports this rejection even if protocol failure
+      // stopped the socket before the scenario reached its cleanup block.
+      void this.channelClosing.catch(() => {})
     }
     if (this.socket.readyState !== WebSocket.CLOSED) this.socket.terminate()
   }
 
   async close() {
-    this.fail(new Error('The test worker closed.'))
-    await this.channelClosing
-    if (this.socket.readyState === WebSocket.CLOSED) return
-    await withWorkerDeadline(this.closedState.promise)
+    this.closeRequested = true
+    this.stop(this.failure ?? new Error('The test worker closed.'))
+    const failures: unknown[] = []
+    try { await this.channelClosing } catch (error) { failures.push(error) }
+    try {
+      if (this.socket.readyState !== WebSocket.CLOSED) await withWorkerDeadline(this.closedState.promise)
+    } catch (error) { failures.push(error) }
+    if (this.failure) failures.unshift(this.failure)
+    const unique = [...new Set(failures)]
+    if (unique.length === 1) throw unique[0]
+    if (unique.length > 1) throw new AggregateError(unique, 'Worker protocol and owned cleanup failed.')
   }
 }
 
@@ -220,7 +234,10 @@ export async function connectTestWorker(options: ConnectTestWorkerOptions) {
   const client = new TestWorkerClient(options)
   try { return await client.start() }
   catch (error) {
-    await client.close()
+    try { await client.close() }
+    catch (cleanup) {
+      if (cleanup !== error) throw new AggregateError([error, cleanup], 'Worker startup and cleanup failed.')
+    }
     throw error
   }
 }

@@ -1,8 +1,11 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, isAbsolute, join, relative } from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { resolveProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { appMcpDirectory } from '@foreman-code/contracts/product-environment-node'
+import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { createDeviceTls } from './tls.js'
 
 export interface FixtureSetupOptions {
@@ -34,9 +37,25 @@ export async function setupFixtures(options: FixtureSetupOptions) {
   const codexSource = new URL('../../../apps/api/test/fixtures/', import.meta.url)
   await copyFile(fileURLToPath(new URL('codex-app-server.cjs', codexSource)), join(codex, 'app-server.cjs'))
   await copyFile(fileURLToPath(new URL('codex-protocol.schemas.json', codexSource)), join(codex, 'schema.json'))
-  await copyFile(fileURLToPath(new URL('scripted-turns.cjs', source)), join(codex, 'scripted-turns.cjs'))
-  await writeFile(join(codex, 'fixture-scope.json'), JSON.stringify({ directory: options.directory }),
-    { mode: 0o600, flag: 'wx' })
+  for (const filename of ['scripted-turns.cjs', 'scripted-plans.cjs', 'scripted-input.cjs',
+    'scripted-mcp.cjs', 'scripted-mcp-configuration.cjs']) {
+    await copyFile(fileURLToPath(new URL(filename, source)), join(codex, filename))
+  }
+  const conformanceRequire = createRequire(new URL('../../package.json', import.meta.url))
+  const imageMetadataModule = conformanceRequire.resolve('sharp')
+  const mcpModules = { client: conformanceRequire.resolve('@modelcontextprotocol/sdk/client/index.js'),
+    streamableHttp: conformanceRequire.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+    stdio: conformanceRequire.resolve('@modelcontextprotocol/sdk/client/stdio.js') }
+  const appMcpLauncher = join(appMcpDirectory(options.environment), 'launcher.mjs')
+  const launcherRelative = relative(options.directory, appMcpLauncher)
+  if (!launcherRelative || launcherRelative === '..' || launcherRelative.startsWith('../') || isAbsolute(launcherRelative)) {
+    throw new Error('The managed App MCP launcher must belong to this isolated target directory.')
+  }
+  const fixtureScope = JSON.stringify({ directory: options.directory, imageMetadataModule,
+    mcpModules, apiOrigin: api.origin, appMcpLauncher,
+    appMcpServerNames: APP_MCP_SERVER_NAMES, appMcpTokenNames: APP_MCP_TOKEN_NAMES })
+  await writeFile(join(codex, 'fixture-scope.json'), fixtureScope, { mode: 0o600, flag: 'wx' })
+  await writeFile(join(claude, 'fixture-scope.json'), fixtureScope, { mode: 0o600, flag: 'wx' })
   const codexBinary = join(bin, 'codex')
   const requirePath = './' + relative(dirname(codexBinary), join(codex, 'app-server.cjs')).split('\\').join('/')
   await writeFile(codexBinary, `#!/usr/bin/env node\nrequire(${JSON.stringify(requirePath)})\n`, { mode: 0o700, flag: 'wx' })

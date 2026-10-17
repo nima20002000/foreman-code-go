@@ -9,6 +9,7 @@ export type CoverageClaim =
   | { surface: 'stream'; name: string; case: 'framing' | 'order' | 'reconnect' }
   | { surface: 'workflow'; name: string; case: 'success' }
   | { surface: 'codec'; name: string; case: 'success' }
+  | { surface: 'harness'; name: string; case: 'success' }
 
 export interface ScenarioContext {
   target: TargetSession
