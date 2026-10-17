@@ -11,7 +11,12 @@ export interface GitProcessOptions {
   lockFd?: number
   transferLockFd?: number
 }
-export interface GitProcessResult { code: number; stdout: string; stderr: string }
+export interface GitProcessResult {
+  code: number
+  stdout: string
+  stderr: string
+  interrupted?: { startedAt: number }
+}
 
 /** All Git children share the transfer's file limit, cache lock and deadline, including after an API process exits;
  * the deadline ends the whole process group, so the kernel then releases the inherited locks. */
@@ -24,6 +29,7 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     const childArgs = limited
       ? [`--fsize=${options.maximumFileBytes}:${options.maximumFileBytes}`, '--', ...command] : command
     const [supervisor, supervised] = underDeadline(options.timeoutMs ?? 15 * 60_000, executable, childArgs)
+    const startedAt = Date.now()
     const child = spawn(supervisor, supervised, {
       ...(options.cwd ? { cwd: options.cwd } : {}),
       detached: true,
@@ -39,7 +45,8 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     const stop = () => {
       failed = true
       if (!child.pid) return
-      try { process.kill(-child.pid, 'SIGKILL') }
+      // The supervisor kills the command's whole group on SIGTERM.
+      try { process.kill(-child.pid, 'SIGTERM') }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
       }
@@ -56,7 +63,10 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     if (options.signal.aborted) stop()
     child.once('close', code => {
       options.signal.removeEventListener('abort', stop)
+      // GNU timeout returns 124 at expiry, or 137 when its kill-after limit is needed.
+      const interrupted = child.pid !== undefined && (failed || options.signal.aborted || code === 124 || code === 137)
       resolve({ code: failed || options.signal.aborted ? 1 : code ?? 1,
+        ...(interrupted ? { interrupted: { startedAt } } : {}),
         stdout: Buffer.concat(output.stdout).toString('utf8'),
         stderr: Buffer.concat(output.stderr).toString('utf8') })
     })
