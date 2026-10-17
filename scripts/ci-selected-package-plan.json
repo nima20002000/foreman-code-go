@@ -1,0 +1,21 @@
+{
+  "source": "3009f4aa1588b1bd20b2ad620c80627008930b5f",
+  "sourceTree": "9e43a2bcd077052ec28815ec81109e783af524d1",
+  "package": "./internal/activity",
+  "goFiles": [
+    "internal/activity/conversation_cursor.go",
+    "internal/activity/conversation_cursor_integration_test.go",
+    "internal/activity/conversation_cursor_test.go"
+  ],
+  "unitTests": [
+    "TestConversationCursorDistinguishesMissingAndForeignAnchors",
+    "TestConversationFirstPageNeedsNoStoredAnchor",
+    "TestConversationCursorPreservesReadFailures"
+  ],
+  "integrationTests": [
+    "TestPostgresConversationCursorUsesItsPersistedSource",
+    "TestPostgresConversationCursorRetainsThePageSnapshotDuringWrites"
+  ],
+  "expectedUnitNamedCount": 12,
+  "mode": "package"
+}
