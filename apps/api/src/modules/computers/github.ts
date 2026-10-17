@@ -12,6 +12,19 @@ import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { GitHubLoginRunner } from './githubLogin.js'
 import { assertComputerTarget } from './target.js'
 
+const remoteGitHubErrors: Record<string, { message: string; status: number }> = {
+  GITHUB_ACCOUNT_CHANGED: { status: 409,
+    message: 'The active GitHub account changed. Read account status before requesting another sign-out.' },
+  GITHUB_LOGIN_NOT_FOUND: { status: 404, message: 'This sign-in is no longer active on the computer.' },
+  GITHUB_CLI_MISSING: { status: 409, message: 'Install the GitHub CLI (gh) on this computer first.' },
+  GITHUB_LOGIN_CANCELLED: { status: 409, message: 'GitHub sign-in was cancelled. Start again.' },
+  GITHUB_LOGIN_FAILED: { status: 502, message: 'The GitHub CLI could not complete sign-in. Start again.' },
+  GITHUB_SETUP_NOT_READY: { status: 409, message: 'Finish GitHub sign-in before setting up Git.' },
+  GITHUB_STATUS_UNKNOWN: { status: 502,
+    message: 'GitHub account state could not be checked. Read account status before trying again.' },
+  GITHUB_LOGOUT_FAILED: { status: 502, message: 'The GitHub CLI could not sign out. Check account status and retry.' },
+}
+
 /** Starts, follows and ends GitHub CLI sign-in on Main or a paired computer. Credentials stay on that computer. */
 export class ComputerGitHubService {
   private readonly local: Pick<GitHubLoginRunner, 'handle'>
@@ -51,13 +64,12 @@ export class ComputerGitHubService {
         state = GitHubLoginStateSchema.parse(result)
       } catch (caught) {
         let error = caught
-        if (error instanceof DeviceApplicationError && error.code === 'GITHUB_ACCOUNT_CHANGED') {
-          error = new DomainError('GITHUB_ACCOUNT_CHANGED',
-            'The active GitHub account changed. Read account status before requesting another sign-out.', 409)
+        if (error instanceof DeviceApplicationError) {
+          const failure = remoteGitHubErrors[error.code]
+          if (failure) error = new DomainError(error.code, failure.message, failure.status)
         }
         if (request.operation !== 'login-status') {
           const confirmedFailure = error instanceof DomainError && error.code !== 'GITHUB_STATUS_UNKNOWN'
-            && (!remote || error.code === 'GITHUB_ACCOUNT_CHANGED')
           await this.commands.recordAudit(principal.id, source, action, targetKey,
             confirmedFailure ? 'failed' : 'uncertain',
             { code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })

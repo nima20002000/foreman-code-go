@@ -10,6 +10,7 @@ import { buildComputerTarget } from './buildComputers.js'
 import { jobComputerCapacityDecision, type VerificationMemoryReader } from '../jobs/computerSelection.js'
 import type { WorkerExecutionPolicy } from './workerExecution.js'
 import { DomainError } from '../errors.js'
+import { hostCiCapacity } from '../ci-host/capacity.js'
 import { readHostCiStatus } from '../ci-host/status.js'
 
 export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; profiles: JobRuntimeProfiles;
@@ -34,9 +35,20 @@ export function buildComputerReadiness(input: { endpoint(): DeviceEndpoint; prof
       const hostCi = input.endpoint().capabilities(target.hostRef.deviceId)
         .some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)
       if (hostCi) {
-        const status = await readHostCiStatus(input.endpoint(), target)
+        const status = await readHostCiStatus(input.endpoint(), target, allowancePercent)
         if (!status) return result('offline', ['Host CI is unavailable on this connection.'])
-        return result(status.ready ? 'ready' : 'setup-required', status.reasons)
+        if (!status.ready) return result('setup-required', status.reasons)
+        if (status.slotsTotal === 0) {
+          const idleCapacity = hostCiCapacity({ ...status, availableMemoryBytes: status.memoryBytes })
+          if (idleCapacity.slotsTotal === 0) {
+            return result('setup-required', ['The build allowance is too small for Host CI. Increase the allowance.'])
+          }
+          return result('busy', ['More available memory is required before another build can start.'])
+        }
+        if (status.slotsTotal !== undefined && (status.slotsUsed ?? 0) >= status.slotsTotal) {
+          return result('busy', ['Build capacity is reserved.'])
+        }
+        return result('ready', [])
       }
       if (!input.endpoint().captureRequest(target.hostRef.deviceId, 'execution-v1')) {
         return result('setup-required', ['Job execution is unavailable on this connection.'])

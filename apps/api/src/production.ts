@@ -2900,7 +2900,7 @@ async function initializeCiServices(
   // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
   composition.hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
     new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
-      clouds, discoverClouds),
+      clouds, discoverClouds, workerExecution),
     agentSnapshots(database.pool, readAgentFiles), { reservedCloudSlots: configuredReservedCloudSlots() })
   composition.hostCi.start()
   app.addHook('onClose', async () => { await composition.hostCi?.close() })

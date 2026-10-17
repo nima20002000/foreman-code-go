@@ -1,7 +1,8 @@
 import type pg from 'pg'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import {
-  BuildComputerPreferenceSchema, BuildComputerReadSchema, BuildComputerUpdateSchema,
+  BuildComputerPreferenceSchema, BuildComputerStatusSchema, BuildComputerBatchResultSchema,
+  BuildComputerReadSchema, BuildComputerUpdateSchema,
   BuildComputerBatchUpdateSchema, type BuildComputerBatchResult, type BuildComputerChange,
   type BuildComputerPreference, type BuildComputerStatus,
 } from '@foreman-code/contracts/build-computers'
@@ -117,9 +118,8 @@ export class BuildComputerSettings {
     requireAuthorization(principal, action)
     requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), action)
   }
-  private async status(sql: JobSql, target: DeviceProvisioningTarget): Promise<BuildComputerStatus> {
-    const preference = await this.preference(sql, target)
-    const readiness = await this.readiness(sql, target, preference.buildAllowancePercent)
+  private async status(preference: BuildComputerPreference): Promise<BuildComputerStatus> {
+    const readiness = await this.readiness(this.pool, preference.target, preference.buildAllowancePercent)
     return { preference, ...readiness,
       state: preference.buildEnabled ? readiness.state : 'disabled',
       reasons: preference.buildEnabled ? readiness.reasons : ['Enable builds to participate.'] }
@@ -130,30 +130,39 @@ export class BuildComputerSettings {
       await this.commands.recordDenied(principal.id, source, 'build.computer.read', buildComputerKey(target))
       throw error
     }
-    return withTransaction(this.pool, async (sql) => {
+    const preference = await withTransaction(this.pool, async sql => {
       await this.authorize(sql, principal, 'settings:read')
       await assertBuildComputerTarget(sql, target)
-      const result = await this.status(sql, target)
-      await this.authorize(sql, principal, 'settings:read')
-      return result
+      return this.preference(sql, target)
     })
+    const result = await this.status(preference)
+    await withTransaction(this.pool, async sql => {
+      await this.authorize(sql, principal, 'settings:read')
+      await assertBuildComputerTarget(sql, target)
+    })
+    return result
   }
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<BuildComputerStatus> {
     const input = BuildComputerUpdateSchema.parse(raw)
     const { commandId, ...change } = input
     const result = await this.save(principal, source, { commandId, updates: [change] },
       'build.computer.update', buildComputerKey(input.target), input,
-      async sql => (await this.savePreferences(sql, principal, [change]))[0]!)
-    return result
+      async sql => (await this.savePreferences(sql, principal, [change]))[0]!,
+      value => BuildComputerPreferenceSchema.or(BuildComputerStatusSchema.transform(status => status.preference)).parse(value))
+    return this.status(result)
   }
   async updateBatch(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<BuildComputerBatchResult> {
     const input = BuildComputerBatchUpdateSchema.parse(raw)
-    return this.save(principal, source, input, 'build.computers.update', input.updates[0]!.target.hostRef.mainId, input,
-      async sql => ({ computers: await this.savePreferences(sql, principal, input.updates) }))
+    const preferences = await this.save(principal, source, input, 'build.computers.update',
+      input.updates[0]!.target.hostRef.mainId, input,
+      sql => this.savePreferences(sql, principal, input.updates),
+      value => BuildComputerPreferenceSchema.array().or(BuildComputerBatchResultSchema.transform(
+        result => result.computers.map(computer => computer.preference))).parse(value))
+    return { computers: await Promise.all(preferences.map(preference => this.status(preference))) }
   }
   private async save<T>(principal: ManagementPrincipal, source: 'http' | 'mcp',
     input: { commandId?: string | undefined; updates: BuildComputerChange[] }, operation: string, targetKey: string,
-    payload: unknown, perform: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
+    payload: unknown, perform: (sql: pg.PoolClient) => Promise<T>, replayResult: (value: unknown) => T): Promise<T> {
     try { requireAuthorization(principal, 'settings:update') } catch (error) {
       await this.commands.recordDenied(principal.id, source, operation, targetKey)
       throw error
@@ -164,7 +173,7 @@ export class BuildComputerSettings {
         await this.authorize(sql, principal, 'settings:update')
         for (const change of input.updates) await assertBuildComputerTarget(sql, change.target)
       },
-      perform })
+      perform, replayResult })
     if (!result.replayed) {
       this.changed?.()
       this.enrollment?.request()
@@ -192,6 +201,6 @@ export class BuildComputerSettings {
           input.buildEnabled, input.buildPriority,
           input.buildAllowancePercent ?? old.buildAllowancePercent, principal.id])
     }
-    return Promise.all(updates.map(input => this.status(sql, input.target)))
+    return Promise.all(updates.map(input => readBuildComputerPreference(sql, input.target)))
   }
 }
