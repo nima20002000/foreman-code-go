@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0, answeredDiscoveries = Infinity } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0, updatingDiscoveries = 0, answeredDiscoveries = Infinity, pendingReportPolls = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -23,6 +23,8 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
   const canceled = []
   let probes = 0
   const authenticated = []
+  const reportPolls = new Map()
+  const reportReads = []
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json')
     if (request.url.startsWith('/api/')) {
@@ -44,8 +46,16 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
       if (failure === 'stall' && admissions.length) return
       response.end('{}')
     } else if (request.url.endsWith('/tests')) {
+      const ticketId = request.url.split('/').at(-2)
+      const pending = (reportPolls.get(ticketId) ?? 0) <= pendingReportPolls
+      reportReads.push({ ticketId, pending })
+      if (pending) {
+        response.end(JSON.stringify({ tests: null }))
+        return
+      }
       response.end(JSON.stringify({ tests: { summary: { passed: 1, failed: 0, skipped: 0 },
-        files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
+        files: failure === 'missing-report-file' ? []
+          : [{ file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
     } else if (request.url.endsWith('/computers')) {
       // Later discoveries never answer, so the smoke deadline lands while one is in flight.
       if (answeredDiscoveries-- <= 0) return
@@ -92,12 +102,16 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
         await delay(200)
       }
       const input = admissions[Number(request.url.split('-').at(-1)) - 1]
+      const ticketId = request.url.split('/').at(-1)
+      const polls = (reportPolls.get(ticketId) ?? 0) + 1
+      reportPolls.set(ticketId, polls)
       const failed = ['setup', 'credential-echo'].includes(failure) && input?.smokeComputer?.deviceId === 'second'
       let state = failed ? 'failed' : 'passed'
       if (failure === 'stall' && input?.smokeComputer) state = 'running'
       let message = failed ? 'ERR_PNPM_NO_OFFLINE_META: package metadata missing' : null
       if (failure === 'credential-echo' && failed) message = `Executor echoed ${token}`
       response.end(JSON.stringify({ run: { state, exitCode: failed ? 1 : 0, message,
+        ...(input?.smokeComputer ? { collection: polls <= pendingReportPolls ? 'pending' : 'complete' } : {}),
         computer: { hostRef: input?.smokeComputer }, files: input?.files },
         logTail: failed ? 'setup failed: ERR_PNPM_NO_OFFLINE_META' : 'one test passed' }))
     }
@@ -106,11 +120,37 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
   await once(server, 'listening')
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) })
   return { origin: `http://127.0.0.1:${server.address().port}`, admissions, canceled, computers, authenticated,
-    probes: () => probes }
+    probes: () => probes, reportReads }
 }
 
 const options = { workspaceId: 'workspace', commit: 'a'.repeat(40),
   timeoutMs: 1000, requestTimeoutMs: 60, admissionTimeoutMs: 60, pollMs: 10 }
+
+test('passed smoke tickets wait for report collection before verifying the executed file', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { pendingReportPolls: 3 })
+  await runInstallCiSmoke({ ...options, origin: f.origin })
+  assert.equal(f.reportReads.length, 4)
+  assert.ok(f.reportReads.every(read => !read.pending))
+  assert.equal(f.canceled.length, 0)
+})
+
+test('completed reports missing the smoke file still fail loudly', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, 'missing-report-file')
+  await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin }),
+    /passed without running apps\/api\/test\/ci-smoke.integration.test.ts/)
+  assert.ok(f.canceled.length > 0)
+})
+
+test('passed tickets whose reports stay pending fail at the existing smoke deadline', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { pendingReportPolls: Infinity })
+  await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin, timeoutMs: 300 }),
+    /CI smoke timed out after 300 ms/)
+  assert.equal(f.reportReads.length, 0)
+  assert.ok(f.canceled.length > 0)
+})
 
 test('production smoke allows the first commit admission to take longer than five seconds', async t => {
   const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
