@@ -65,11 +65,11 @@ async function run(name, program, args, input) {
 
 async function observeConfiguration() {
   let entries
-  try { entries = await readdir(env.FOREMAN_CODE_CI_POSTGRES_CACHE) }
+  try { entries = await readdir(env.FOREMAN_CODE_CI_POSTGRES_CACHE, { withFileTypes: true }) }
   catch (error) { if (error.code === 'ENOENT') return; throw error }
-  for (const entry of entries.filter(name => /^install\.[a-zA-Z0-9]+$/.test(name))) {
+  for (const entry of entries.filter(item => item.isDirectory() && item.name.startsWith('install.'))) {
     let content
-    try { content = await readFile(join(env.FOREMAN_CODE_CI_POSTGRES_CACHE, entry, 'm4-build/config.log'), 'utf8') }
+    try { content = await readFile(join(env.FOREMAN_CODE_CI_POSTGRES_CACHE, entry.name, 'm4-build/config.log'), 'utf8') }
     catch (error) { if (error.code === 'ENOENT') continue; throw error }
     const lines = content.split('\n').filter(line =>
       /checking.*(?:memchr|wmemchr|bsearch|strchr|C23)|^ac_cv_.*(?:memchr|wmemchr|bsearch|strchr)|^(?:CC|CFLAGS|CPPFLAGS)=/.test(line))
@@ -107,7 +107,16 @@ const name=basename(process.argv[1]);
 const args=process.argv.slice(2);
 const entry={program:name,startedAt:new Date().toISOString()};
 if(name==='curl')entry.url=args.at(-1);
-if(name==='patch'){const file=args[args.indexOf('--input')+1];entry.patch=basename(file);entry.sha256=createHash('sha256').update(readFileSync(file)).digest('hex');}
+if (name === 'patch') {
+  const option = args.find(value => value.startsWith('--input='));
+  const inputIndex = args.indexOf('--input');
+  let file;
+  if (option) file = option.slice('--input='.length);
+  else if (inputIndex >= 0) file = args[inputIndex + 1];
+  if (typeof file !== 'string' || !file.startsWith('/')) throw new Error('Expected absolute patch input');
+  entry.patch = basename(file);
+  entry.sha256 = createHash('sha256').update(readFileSync(file)).digest('hex');
+}
 const child=spawn(state.programs[name],args,{stdio:'inherit'});
 child.once('error',error=>{appendFileSync(state.events,JSON.stringify({...entry,errorCode:error.code})+'\\n');process.exitCode=1;});
 child.once('close',code=>{appendFileSync(state.events,JSON.stringify({...entry,exitCode:code,finishedAt:new Date().toISOString()})+'\\n');process.exitCode=code??1;});
