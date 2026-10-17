@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartResultSchema,
   MaintenanceRequestSchema, MaintenanceStatusSchema, type MaintenanceStatus, type MaintenanceTask,
@@ -307,13 +307,12 @@ it('reports concrete updater failures through authenticated MCP and persists the
       name: 'computers_maintenance_start', arguments: input,
     })))
     const taskId = started.computers[0]!.task!.id
-    let task: MaintenanceTask | undefined
-    for (let attempt = 0; attempt < 200; attempt++) {
-      task = (await readStatus(writer)).computers.find(computer => computer.target.hostRef.kind === 'device')
-        ?.status?.tasks.find(value => value.id === taskId)
-      if (task?.state === 'failed') break
-      await new Promise(resolve => setTimeout(resolve, 5))
-    }
+    const task = await vi.waitFor(async () => {
+      const value = (await readStatus(writer)).computers.find(computer => computer.target.hostRef.kind === 'device')
+        ?.status?.tasks.find(candidate => candidate.id === taskId)
+      if (value?.state !== 'failed') throw new Error('maintenance task has not failed yet')
+      return value
+    }, { timeout: 5_000, interval: 5 })
     expect(task).toMatchObject({ state: 'failed', summary: expect.stringContaining('dependency-helper missing') })
     expect(task!.summary).toContain('installing')
     f.recreate()
