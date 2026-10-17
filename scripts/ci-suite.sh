@@ -4,6 +4,15 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+
+# Temporary failure-site observation; executes no selected test suite.
+case "${SUITE:-}" in
+  unit|unit-*)
+    case "${1:-}" in start|prepare|cleanup) exit 0 ;; esac
+    cd "$(dirname "$0")/../conformance"
+    exec node --import tsx ../scripts/ci-process-failure-observation.mjs
+    ;;
+esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 if [ "${1:-}" != cleanup ]; then
