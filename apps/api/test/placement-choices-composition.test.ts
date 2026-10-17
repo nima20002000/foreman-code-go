@@ -57,7 +57,7 @@ beforeEach(async () => {
     return principal
   })
   denied = vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
-  discover = vi.spyOn(ProductionPlacementChoiceDiscovery.prototype, 'list').mockResolvedValue([choice])
+  discover = vi.spyOn(ProductionPlacementChoiceDiscovery.prototype, 'list').mockResolvedValue({ choices: [choice], pending: false })
   production = buildProductionApp(config, database, checkpoints, false)
   address = await production.app.listen({ host: '127.0.0.1', port: 0 })
 })
@@ -87,7 +87,7 @@ it('serves saved-node choices through production HTTP and authenticated Operator
   const read = await production.app.inject({ method: 'GET',
     url: `${path}?agentConfigurationVersionId=${input.agentConfigurationVersionId}`, headers })
   expect(read.statusCode, read.body).toBe(200)
-  expect(read.json()).toEqual({ ...input, choices: [choice] })
+  expect(read.json()).toEqual({ ...input, choices: [choice], pending: false })
   expect(read.headers['cache-control']).toBe('private, no-store')
   expect(read.headers.vary).toBe('Authorization, Cookie')
   const result = await rpc('tools/call', { name: 'workflow_node_placement_choices', arguments: input })

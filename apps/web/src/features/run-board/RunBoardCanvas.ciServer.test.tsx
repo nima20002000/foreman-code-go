@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ActivitySnapshotV1, CiRunJob } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { RunBoardCanvas } from './RunBoardCanvas'
+import { ciResultTests } from '../workflow-board/inspect/ciResults.testSupport'
 import { runA } from './testFixtures'
 import { installFlowLayout } from './testFlowLayout'
 
@@ -69,4 +70,25 @@ it.each(['idle', 'failed read'] as const)('discovers CI after an initial %s whil
   await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
   fireEvent.click(screen.getByRole('button', { name: /^CI server, .*Open CI jobs/ }))
   expect(await screen.findByRole('button', { name: /Show tests of unit/ })).toBeVisible()
+})
+
+it('reads test results collected after a finished Run and its terminal ticket', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  let collected = false
+  server.use(
+    http.get('*/api/management/workspaces/:workspaceId/ci', () => HttpResponse.json({ runId: runA.runId, truncated: false,
+      jobs: [{ ...job, tests: collected ? ciResultTests.summary : null, collection: collected ? 'complete' : 'pending' }] })),
+    http.get('*/api/management/workspaces/:workspaceId/ci/:ticketId/tests', () => HttpResponse.json({
+      ticketId, tests: collected ? ciResultTests : null })),
+  )
+  await mount({ schemaVersion: 1, scope: { kind: 'workflow_run', workspaceId: runA.workspaceId,
+    workflowId: runA.workflowId, runId: runA.runId, workflowVersionId: runA.workflowVersionId },
+    revision: '1', active: [], queued: [], latest: null, pendingInteractions: [], activities: [],
+    page: { before: null, nextCursor: null, hasMore: false } })
+  fireEvent.click(await screen.findByRole('button', { name: /^CI server, .*Open CI jobs/ }))
+  fireEvent.click(await screen.findByRole('button', { name: /Show tests of unit/ }))
+  await screen.findByText('No test results for this job')
+  collected = true
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+  expect(await screen.findByText('failing example')).toBeVisible()
 })

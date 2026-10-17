@@ -47,10 +47,10 @@ describe.skipIf(!postgresEnabled)('W08 exact accepted host readback parity', () 
           draft.run.agentConfigurationVersionIds, [placement], { assertCurrent: async () => {} })
       }))
       const reads = new RunPlacementReadService(f.db.pool, async () => []) // no native work in this fixture
-      const choices = new NodePlacementChoicesService(f.db.pool, { list: async () => [{ id: 'approved-laptop-choice', label: 'Original laptop',
+      const choices = new NodePlacementChoicesService(f.db.pool, { list: async () => ({ pending: false, choices: [{ id: 'approved-laptop-choice', label: 'Original laptop',
         placement: { schemaVersion: 1, hostRef: placement.hostRef, rootPolicyId: 'approved-root', rootPolicyRevision: '1', locationRevision: '1',
           projectRoot: '/approved/project', cwdPolicy: 'project-root', relativeCwd: '', instanceId: 'instance', instanceRevision: 'instance-v1', harnessInstallationId: 'installation' },
-        availability: 'ready', reason: null }] })
+        availability: 'ready', reason: null }] }) })
       registerOperatorHttpSecurity(app, f.access)
       registerRunPlacementRoutes(app, reads)
       registerNodePlacementChoicesRoutes(app, choices)

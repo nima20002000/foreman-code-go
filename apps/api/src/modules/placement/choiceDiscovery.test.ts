@@ -13,7 +13,8 @@ import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.
 import { DomainError } from '../errors.js'
 import { ProductionPlacementChoiceDiscovery } from './choiceDiscovery.js'
 
-function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device' } = {}) {
+function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device'
+  ensureProfileReady?: (profile: unknown) => Promise<void> } = {}) {
   const workflow = makeCurrentWorkflowFixture('computer-choices', 'single')
   const configuration = workflow.configurations[0]!
   const driver = options.driver ?? 'codex'
@@ -75,6 +76,7 @@ function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device
     profiles: { list: profiles } as unknown as HarnessInstanceSettingsRepository,
     registry: { installations: { list: installations }, profileEvidence: evidence } as unknown as
       Pick<ProductionHarnessRegistry, 'installations' | 'profileEvidence'>,
+    ...(options.ensureProfileReady ? { ensureProfileReady: options.ensureProfileReady } : {}),
   }
   const input = { workspaceId: configuration.workspaceId, workflowId: workflow.scope.workflowId,
     nodeId: workflow.version.definition.nodes[0]!.id, agentConfigurationVersionId: configuration.id }
@@ -84,7 +86,7 @@ function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device
 
 it('discovers an authorized matching profile with the persisted root, source and revision pins', async () => {
   const f = fixture()
-  const choices = await f.service.list(f.principal, f.input)
+  const choices = (await f.service.list(f.principal, f.input)).choices
   expect(choices).toHaveLength(1)
   expect(choices[0]).toMatchObject({ availability: 'ready', reason: null, placement: {
     hostRef: f.policy.hostRef, projectRoot: f.policy.canonicalProjectRoot, rootPolicyId: f.policy.rootPolicyId,
@@ -94,7 +96,7 @@ it('discovers an authorized matching profile with the persisted root, source and
     rootBinding: { rootId: f.root.binding.rootId, bindingRevision: 2 },
   } })
   expect(f.resolveSource).toHaveBeenCalledOnce()
-  expect((await f.service.list(f.principal, f.input))[0]!.id).toBe(choices[0]!.id)
+  expect(((await f.service.list(f.principal, f.input)).choices)[0]!.id).toBe(choices[0]!.id)
 })
 
 it.each([
@@ -105,7 +107,7 @@ it.each([
 ] as const)('matches workflow driver support for $driver on $host', async ({ driver, host, availability }) => {
   const f = fixture({ driver, host })
 
-  const choices = await f.service.list(f.principal, f.input)
+  const choices = (await f.service.list(f.principal, f.input)).choices
 
   expect(choices).toHaveLength(1)
   expect(choices[0]).toMatchObject({ availability, placement: { hostRef: f.policy.hostRef } })
@@ -122,18 +124,18 @@ it('omits disabled or incompatible profiles and respects a saved profile selecti
   const f = fixture()
   f.profiles.mockResolvedValue([{ ...f.profile, enabled: false },
     { ...f.profile, configuration: { ...f.configuration.harness, model: 'different-model' } }])
-  expect(await f.service.list(f.principal, f.input)).toEqual([])
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([])
   f.configuration.harnessProfileSelection = { target: f.profile.target,
     instanceId: randomUUID(), instanceRevision: f.profile.instanceRevision }
   f.profiles.mockResolvedValue([f.profile])
-  expect(await f.service.list(f.principal, f.input)).toEqual([])
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([])
 })
 
 it('uses the retained binding policy after the workspace selects a newer location policy', async () => {
   const f = fixture()
   f.readRoots.mockResolvedValue([{ ...f.policy, rootPolicyRevision: '2', locationRevision: '3' }])
 
-  const choices = await f.service.list(f.principal, f.input)
+  const choices = (await f.service.list(f.principal, f.input)).choices
 
   expect(choices).toHaveLength(1)
   expect(choices[0]).toMatchObject({ availability: 'ready', placement: {
@@ -147,11 +149,11 @@ it('uses the retained binding policy after the workspace selects a newer locatio
 it('keeps unqualified installations and revoked root authority unavailable with their reasons', async () => {
   const f = fixture()
   f.installations.mockReturnValue([])
-  expect((await f.service.list(f.principal, f.input))[0]).toMatchObject({ availability: 'unavailable',
+  expect(((await f.service.list(f.principal, f.input)).choices)[0]).toMatchObject({ availability: 'unavailable',
     reason: 'The matching harness profile needs qualification on this computer.' })
   expect(f.evidence).not.toHaveBeenCalled()
   f.resolve.mockRejectedValue(new DomainError('ROOT_DEVICE_CONFLICT', 'Host was revoked.', 403))
-  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([expect.objectContaining({
     availability: 'unavailable', reason: 'Host was revoked.', placement: expect.objectContaining({
       hostRef: f.root.selection.hostRef, projectRoot: f.root.binding.canonicalPath,
       source: f.root.source,
@@ -176,7 +178,7 @@ it.each([403, 404, 409, 410])('keeps valid sibling sources when one binding retu
   f.sourceRoots.mockResolvedValue([unavailable, f.root])
   f.resolveSource.mockRejectedValueOnce(new DomainError('SOURCE_UNAVAILABLE', 'Source is unavailable.', status))
 
-  const choices = await f.service.list(f.principal, f.input)
+  const choices = (await f.service.list(f.principal, f.input)).choices
 
   expect(choices).toHaveLength(2)
   expect(choices[0]).toMatchObject({ availability: 'unavailable',
@@ -196,7 +198,7 @@ it('reports a missing binding without hiding its computer', async () => {
   const f = fixture({ host: 'device' })
   f.resolveSource.mockRejectedValue(new DomainError('SOURCE_ROOT_NOT_FOUND', 'The root binding was not found.', 404))
 
-  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([expect.objectContaining({
     availability: 'unavailable', reason: 'The root binding was not found.',
     placement: expect.objectContaining({ hostRef: f.policy.hostRef }),
   })])
@@ -209,14 +211,27 @@ it('offers the current qualified installation for an unchanged saved profile rev
   f.configuration.harnessProfileSelection = { instanceId: f.profile.instanceId,
     instanceRevision: f.profile.instanceRevision,
     target: { ...f.profile.target, harnessInstallationId: 'previous', installationFingerprint: 'previous' } }
-  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([expect.objectContaining({
     availability: 'ready', placement: expect.objectContaining({
       harnessInstallationId: f.profile.target.harnessInstallationId,
       instanceRevision: f.profile.instanceRevision,
     }),
   })])
   f.installations.mockReturnValue([])
-  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({ availability: 'unavailable' })])
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([expect.objectContaining({ availability: 'unavailable' })])
   f.profile.instanceRevision = 'edited'
-  expect(await f.service.list(f.principal, f.input)).toEqual([])
+  expect((await f.service.list(f.principal, f.input)).choices).toEqual([])
+})
+
+it('reports discovery as pending while a matching profile check is running', async () => {
+  const reason = 'The selected harness profile is being checked. Retry Run start shortly.'
+  const ensureProfileReady = vi.fn(async (): Promise<void> => { throw new DomainError('HARNESS_PROFILE_CHECK_PENDING', reason, 503) })
+  const f = fixture({ ensureProfileReady })
+  const discovered = await f.service.list(f.principal, f.input)
+  expect(discovered.pending).toBe(true)
+  expect(discovered.choices).toEqual([expect.objectContaining({ availability: 'unavailable', reason })])
+  ensureProfileReady.mockResolvedValue(undefined)
+  const settled = await f.service.list(f.principal, f.input)
+  expect(settled.pending).toBe(false)
+  expect(settled.choices).toEqual([expect.objectContaining({ availability: 'ready' })])
 })

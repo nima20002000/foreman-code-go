@@ -30,9 +30,9 @@ it('reads authorized choices for the exact saved configuration and rejects a new
   const input = { workspaceId: scope.workspaceId, workflowId: scope.workflowId, nodeId: scope.nodeId, agentConfigurationVersionId: 'configuration-old' }
   const choicesRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/nodes/:nodeId/placement-choices'
   let observed: Request | undefined
-  server.use(http.get(choicesRoute, ({ request }) => { observed = request; return HttpResponse.json({ ...input, choices: [] }) }))
+  server.use(http.get(choicesRoute, ({ request }) => { observed = request; return HttpResponse.json({ ...input, pending: false, choices: [] }) }))
   expect((await readPlacementChoices(input)).choices).toEqual([])
   expect(new URL(observed!.url).searchParams.get('agentConfigurationVersionId')).toBe('configuration-old')
-  server.use(http.get(choicesRoute, () => HttpResponse.json({ ...input, agentConfigurationVersionId: 'configuration-new', choices: [] })))
+  server.use(http.get(choicesRoute, () => HttpResponse.json({ ...input, agentConfigurationVersionId: 'configuration-new', pending: false, choices: [] })))
   await expect(readPlacementChoices(input)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' })
 })

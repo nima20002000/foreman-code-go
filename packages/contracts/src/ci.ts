@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { BuildComputerAllowanceSchema } from './buildComputers.js'
-import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CiCachedFileSchema, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
+import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CiCachedFileSchema, CiCollectionSchema, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
   CiTestResultsSchema, CiPrioritySchema, CiPriorityReasonSchema,
   CiTestStatusSchema, CiTestSummarySchema, CiUserSystemdSchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
@@ -150,6 +150,8 @@ const CiRunJobSchema = z.object({
   requester: z.object({ executionId: IdSchema, agentId: IdSchema, nodeId: z.string().min(1).max(200),
     nodeName: z.string().min(1).max(200) }).strict(),
   tests: CiTestSummarySchema.nullable(),
+  /** `pending` while a finished ticket's logs and test results are still being collected. */
+  collection: CiCollectionSchema.optional(),
 }).strict()
 export type CiRunJob = z.infer<typeof CiRunJobSchema>
 export const CI_RUN_JOBS_LIMIT = 500

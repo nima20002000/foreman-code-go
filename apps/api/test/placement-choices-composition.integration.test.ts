@@ -47,7 +47,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
           availability: 'unavailable' as const,
           reason: 'This harness does not support workflow execution on this computer.',
         }] : [])]
-      const discovery = vi.spyOn(ProductionPlacementChoiceDiscovery.prototype, 'list').mockResolvedValue(choices)
+      const discovery = vi.spyOn(ProductionPlacementChoiceDiscovery.prototype, 'list').mockResolvedValue({ choices, pending: false })
       const access = new PostgresAccessService(db.pool)
       const owner = await access.issue({ name: 'Placement owner', audience: 'operator',
         expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
@@ -71,7 +71,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
       const headers = { authorization: `Bearer ${owner.token}` }
       const http = await production.app.inject({ method: 'GET', url: path, headers })
       expect(http.statusCode, http.body).toBe(200)
-      expect(http.json()).toEqual({ ...input, choices })
+      expect(http.json()).toEqual({ ...input, choices, pending: false })
       const mcp = await operator.callTool({ name: 'workflow_node_placement_choices', arguments: input })
       expect(mcp.isError).not.toBe(true)
       expect(decodeMcpToolResult(mcp)).toEqual(http.json())

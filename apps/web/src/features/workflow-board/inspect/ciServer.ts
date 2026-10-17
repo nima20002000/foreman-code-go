@@ -23,6 +23,8 @@ export const runCiApi = {
 
 const ACTIVE: readonly CiRunJob['ci']['state'][] = ['queued', 'starting', 'running']
 export const isActiveCiJob = (job: CiRunJob) => ACTIVE.includes(job.ci.state)
+/** A finished ticket still collecting results keeps the Board's CI reads refreshing after its Run completes. */
+export const ciJobRefreshing = (job: CiRunJob) => isActiveCiJob(job) || job.collection === 'pending'
 
 /** Prefer unfinished work, then the newest ticket, so a completed part cannot hide running CI. */
 export function ciNodeActivities(jobs: readonly CiRunJob[]): Map<string, CiActivity> {

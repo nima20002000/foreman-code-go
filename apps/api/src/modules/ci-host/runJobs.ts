@@ -32,7 +32,7 @@ export function runCiJob(row: RunCiJobRow): CiRunJob {
     message: run.message?.slice(0, 2000) ?? null,
     requester: { executionId: row.execution_id, agentId: row.agent_id, nodeId: row.node_id.slice(0, 200),
       nodeName: row.node_name.slice(0, 200) },
-    tests: tests.success ? tests.data : null }
+    tests: tests.success ? tests.data : null, ...(run.collection ? { collection: run.collection } : {}) }
 }
 
 /** Stored results limited to tests with the given statuses. A file is also kept when its own status matches,
