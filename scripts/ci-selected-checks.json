@@ -1,0 +1,64 @@
+{
+  "source": "f535ef9eb1fc3f4d0a52a6484155e8b4786c53b0",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "cleanup-one-source-lint",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "eslint",
+          "src/runtime/owned-processes.ts",
+          "--max-warnings",
+          "0"
+        ],
+        "cwd": "conformance"
+      },
+      {
+        "name": "cleanup-three-root-types",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/runtime/owned-processes.ts",
+          "src/runtime/owned-processes.observation.test.ts",
+          "src/runtime/owned-processes.test.ts"
+        ],
+        "cwd": "conformance"
+      },
+      {
+        "name": "cleanup-two-identity-cases",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/runtime/owned-processes.observation.test.ts",
+          "-t",
+          "start time is"
+        ],
+        "reportKind": "vitest",
+        "cwd": "conformance",
+        "expectedSelectedPassCount": 2
+      }
+    ]
+  },
+  "requiredExports": []
+}
