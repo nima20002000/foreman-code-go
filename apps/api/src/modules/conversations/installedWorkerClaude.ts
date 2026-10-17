@@ -32,6 +32,21 @@ import type { NativeSessionStart } from '../harnesses/port.js'
 import type { WorkerConversationJournal } from './workerJournal.js'
 import { acceptedClaudeAppTools } from '../harnesses/claudeSdk/mcpPolicy.js'
 
+function workerClaudeSessionStart(binding: WorkerConversationBinding, configuration: WorkerConversationConfiguration,
+  environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined,
+  options: Parameters<WorkerConversationAllocation['start']>[0]): NativeSessionStart {
+  const owner = binding.owner
+  if (owner.kind === 'operator' && 'operatorId' in configuration) return { kind: 'operator', configuration,
+    correlationId: options.correlationId, workingDirectory: binding.workingDirectory,
+    ...(environment ? { environment } : {}) }
+  if (owner.kind !== 'agent' || !('agentId' in configuration) || environment) throw new DomainError(
+    'HARNESS_ROLE_AUTHORITY_INVALID', 'Agent chat cannot receive an Operator MCP credential.', 403)
+  return { kind: 'agent-chat', configuration, conversationId: owner.conversationId, workflowId: owner.workflowId,
+    workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
+    ...(binding.systemPrompt ? { systemPrompt: binding.systemPrompt } : {}),
+    workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
+}
+
 export async function allocateInstalledWorkerClaude(input: {
   binding: WorkerConversationBinding
   configuration: WorkerConversationConfiguration
@@ -99,18 +114,8 @@ export async function allocateInstalledWorkerClaude(input: {
   let mcp: Awaited<ReturnType<typeof createUnboundWorkerMcpEndpoint>> | undefined
   let token: string | undefined
   let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
-  const buildStart = (options: Parameters<WorkerConversationAllocation['start']>[0]): NativeSessionStart => {
-    const owner = binding.owner
-    if (owner.kind === 'operator' && 'operatorId' in configuration) return { kind: 'operator', configuration,
-      correlationId: options.correlationId, workingDirectory: binding.workingDirectory,
-      ...(environment ? { environment } : {}) }
-    if (owner.kind !== 'agent' || !('agentId' in configuration) || environment) throw new DomainError(
-      'HARNESS_ROLE_AUTHORITY_INVALID', 'Agent chat cannot receive an Operator MCP credential.', 403)
-    return { kind: 'agent-chat', configuration, conversationId: owner.conversationId, workflowId: owner.workflowId,
-      workflowNodeId: owner.workflowNodeId, correlationId: options.correlationId,
-      ...(binding.systemPrompt ? { systemPrompt: binding.systemPrompt } : {}),
-      workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
-  }
+  const buildStart = (options: Parameters<WorkerConversationAllocation['start']>[0]) =>
+    workerClaudeSessionStart(binding, configuration, environment, options)
   const start: WorkerConversationAllocation['start'] = async options => {
     await before(input.signal)
     reserve()
@@ -133,7 +138,7 @@ export async function allocateInstalledWorkerClaude(input: {
   const authority = createWorkerClaudeAuthority({ configuration: callbackConfiguration,
     version: original.accepted.currentBinding.pin.cliVersion, signal: input.signal, source: input.source,
     beginOwnerChange: nativeOwner.beginOwnerChange, refreshOwner: nativeOwner.refreshOwner,
-    callbackJournal: input.journal.claudeCallbackJournal(binding), request: input.callbacks.claudeAuthority })
+    callbackJournal: input.journal.claudeCallbackJournal(binding, input.source()), request: input.callbacks.claudeAuthority })
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
     reserve()

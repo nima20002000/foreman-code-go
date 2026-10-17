@@ -22,6 +22,7 @@ import { isDefiniteCompactionRejection, NativeDeliveryError } from '../harnesses
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { validRunChatSkillsTransition } from './workerRunChatBinding.js'
 
 export interface WorkerConversationAllocation {
   manager: NativeHarnessSessionManager
@@ -274,6 +275,7 @@ export class WorkerConversationHost {
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
     validateConfiguration(request.binding, request.configuration)
     if (request.mode !== 'create' && !request.source) unavailable('Native attachment or fork requires its source session.')
+    if (request.previousConfiguration) return this.changeNodeSkills(request, connection, signal)
     if (request.previousBinding) return this.changeApplicationAccess(request, connection, signal)
     const record = await this.ports.journal.receive(request.binding, connection)
     const resident = await this.allocate(request, connection, signal)
@@ -311,6 +313,54 @@ export class WorkerConversationHost {
     } else session = await manager.createSession(start, signal)
     await this.bind(resident, session, request, signal)
     return { receipt: await this.ports.journal.read(request.binding) }
+  }
+
+  private async changeNodeSkills(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
+    connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    const previous = request.previousBinding
+    if (request.mode !== 'attach' || !request.source || !previous || !request.previousConfiguration
+      || !validRunChatSkillsTransition(previous, request.binding, request.previousConfiguration, request.configuration)) {
+      unavailable('A Run chat skills change keeps the original configuration, profile and session.')
+    }
+    const id = request.binding.owner.conversationId
+    if (this.allocating.has(id) || this.running.has(id)) unavailable('The native conversation is busy.')
+    const task = (async () => {
+      const record = await this.ports.journal.inspectSkillsTransition(previous, request.binding,
+        request.previousConfiguration!, request.configuration)
+      if (!record?.session || !isDeepStrictEqual(record.session, request.source)
+        || record.closed || record.closing) unavailable('The original Run chat session is unavailable.')
+      if (isDeepStrictEqual(record.binding, request.binding)) {
+        const resident = this.residents.get(id)
+        if (resident && isDeepStrictEqual(resident.binding, request.binding)) return resident
+        const allocation = await this.recover(record, request.configuration, connection, signal, request)
+        const recovered = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
+        this.residents.set(id, recovered)
+        return recovered
+      }
+      if (!isDeepStrictEqual(record.binding, previous)) unavailable('The original Run chat binding changed.')
+      const old = this.residents.get(id)
+      if (old) {
+        if (!isDeepStrictEqual(old.binding, previous)) unavailable('The native chat owner changed.')
+        await old.allocation.close()
+        this.residents.delete(id)
+      }
+      const preparation = this.preparations.get(id)
+      if (preparation) {
+        await preparation.allocation.close()
+        this.preparations.delete(id)
+      }
+      await this.authorize(request, connection, signal)
+      const allocation = await this.recover(record, request.configuration, connection, signal, request)
+      const resident = { binding: structuredClone(request.binding), configuration: structuredClone(request.configuration), allocation }
+      this.residents.set(id, resident)
+      return resident
+    })()
+    this.allocating.set(id, task)
+    try {
+      await task
+      await this.authorize(request, connection, signal)
+      return { receipt: await this.ports.journal.read(request.binding) }
+    } finally { if (this.allocating.get(id) === task) this.allocating.delete(id) }
   }
 
   private async changeApplicationAccess(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,

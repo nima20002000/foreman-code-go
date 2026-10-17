@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
+import type { NodeSkillOverride } from '@foreman-code/contracts/wave25'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationBindingSchema, WorkerConversationRpcRequestSchema,
@@ -17,14 +18,18 @@ import { workerConversationCallbacks } from './workerCallbacks.js'
 import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
 
-async function fixture(harness: 'codex' | 'claude') {
+async function fixture(harness: 'codex' | 'claude', change: 'add' | 'remove' = 'add') {
   const f = workerConversationFixture('agent', harness)
-  const base = AgentConfigurationVersionSchema.parse(f.configuration)
+  let base = AgentConfigurationVersionSchema.parse(f.configuration)
   const skill = { skillId: 'node-skill', version: '1', instructions: 'Use the saved node instructions.',
     contentHash: `sha256:${createHash('sha256').update('Use the saved node instructions.').digest('hex')}` }
-  const skills = { add: [{ skillId: skill.skillId, version: skill.version }] }
-  const configuration = configurationWithNodeSkills(base, skills, [skill])
+  const reference = { skillId: skill.skillId, version: skill.version }
+  if (change === 'remove') base = { ...base, assignedSkills: [reference], resolvedSkills: [skill] }
+  const skills: NodeSkillOverride = change === 'remove' ? { remove: [skill.skillId] } : { add: [reference] }
+  const snapshots = change === 'remove' ? [] : [skill]
+  const configuration = configurationWithNodeSkills(base, skills, snapshots)
   const binding = WorkerConversationBindingSchema.parse({ ...f.binding,
+    owner: { ...f.binding.owner, configurationHash: commandInputHash(base) },
     accountBinding: legacyProviderAccountBinding(base.harness, base.harnessProfileSelection)! })
   const records: WorkerConversationReceipt[] = []
   const journal = new WorkerConversationJournal({ read: async () => structuredClone(records),
@@ -59,24 +64,25 @@ async function fixture(harness: 'codex' | 'claude') {
     worker_conversation_binding: binding }
   const version = { id: 'version', workspaceId: base.workspaceId, workflowId: 'workflow', version: 1,
     executionSemanticsVersion: 3, entryNodeId: 'node', approval: { handler: 'user' },
-    agentConfigurationVersionIds: { [base.agentId]: base.id }, nodeSkillSnapshots: { node: [skill] },
+    agentConfigurationVersionIds: { [base.agentId]: base.id }, nodeSkillSnapshots: { node: snapshots },
     definition: { id: 'workflow', workspaceId: base.workspaceId, name: 'Fixture', version: 1,
       executionSemanticsVersion: 3, entryNodeId: 'node', approval: { handler: 'user' },
       executionCondition: { kind: 'manual' }, executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
       nodes: [{ id: 'node', agentId: base.agentId, name: 'Agent', skills }], edges: [] },
     contentHash: `sha256:${'a'.repeat(64)}`, createdAt: base.createdAt }
+  let failPersistence = false
   const pool = { query: vi.fn(async (sql: string, args: unknown[]) => {
     if (sql.includes('from management_principals')) return { rows: [principal] }
     if (sql.includes('from provider_account_accepted_bindings')) return { rows: [{ binding: binding.accountBinding }] }
     if (sql.includes('from agent_configuration_versions')) return { rows: [{ record: base, version }] }
     if (sql.startsWith('update operator_conversations')) {
+      if (failPersistence) throw new Error('Fixture persistence interrupted.')
       conversation.worker_conversation_binding = JSON.parse(args[1] as string)
       return { rows: [], rowCount: 1 }
     }
     return { rows: [conversation], rowCount: 1 }
   }) } as unknown as pg.Pool
   const frames: WorkerConversationRpcRequest[] = []
-  let host: WorkerConversationHost
   const profiles = { admit: async () => ({ override: { configuration: base.harness, target: binding.profile.target } }),
     revalidate: async () => {} }
   const production = createProductionWorkerConversations({ pool,
@@ -103,7 +109,7 @@ async function fixture(harness: 'codex' | 'claude') {
   const allocation: WorkerConversationAllocation = { manager: native, start: async () => start,
     nativeOwner: async () => ({ ...nativeOwner, processIdentityDigest: 'd'.repeat(64) }), close: async () => {} }
   const allocate = vi.fn(async () => allocation)
-  host = new WorkerConversationHost({ journal, currentBinding: () => f.connection, ...callbacks,
+  const host = new WorkerConversationHost({ journal, currentBinding: () => f.connection, ...callbacks,
     allocate: forbidden,
     recover: async (record, effective, connection, signal, request) => recoverWorkerConversation({
       record, configuration: effective, connection, signal, request, journal, allocate,
@@ -113,12 +119,14 @@ async function fixture(harness: 'codex' | 'claude') {
   const manager = production.create({ conversationId: conversation.id, configuration,
     workingDirectory: binding.workingDirectory, appMcpAccess: 'none' })
   return { ...f, base, binding, configuration, records, before, principal, conversation, version, journal,
-    production, host, manager, start, frames, attach, allocate,
+    production, host, manager, start, frames, attach, allocate, launch,
+    failPersistence: () => { failPersistence = true }, restorePersistence: () => { failPersistence = false },
     cleanup: async () => { await manager.dispose?.(); await host.shutdown(); await production.close() } }
 }
 
-it.each(['codex', 'claude'] as const)('%s reconnects a base-hashed Run chat using saved node skills and the same session', async harness => {
-  const f = await fixture(harness)
+it.each([['codex', 'add'], ['claude', 'add'], ['codex', 'remove'], ['claude', 'remove']] as const)(
+  '%s reconnects a base-hashed Run chat with a saved skill %s and the same session', async (harness, change) => {
+  const f = await fixture(harness, change)
   try {
     await expect(f.manager.attachSession(f.session, f.start)).resolves.toEqual(f.session)
     const saved = f.records[0]!
@@ -149,3 +157,75 @@ it.each(['denied', 'foreign-hash', 'wrong-node', 'unsaved-skills', 'harness-chan
       expect(f.records[0]).toEqual(f.before)
     } finally { await f.cleanup() }
   })
+
+it('retries a Worker-applied binding transition after Main persistence was interrupted', async () => {
+  const f = await fixture('claude')
+  try {
+    f.failPersistence()
+    await expect(f.manager.attachSession(f.session, f.start)).rejects.toThrow('Fixture persistence interrupted.')
+    expect(f.records[0]!.binding.owner.configurationHash).toBe(commandInputHash(f.configuration))
+    expect(f.conversation.worker_conversation_binding).toEqual(f.binding)
+    f.restorePersistence()
+    await expect(f.manager.attachSession(f.session, f.start)).resolves.toEqual(f.session)
+    expect(f.conversation.worker_conversation_binding).toEqual(f.records[0]!.binding)
+    expect(f.attach).toHaveBeenCalledTimes(1)
+    expect(f.allocate).toHaveBeenCalledTimes(1)
+    expect(f.records[0]!.turns).toEqual(f.before.turns)
+  } finally { await f.cleanup() }
+})
+
+it('refuses a binding transition until the original native process is positively closed', async () => {
+  const f = await fixture('codex')
+  f.launch.lifecycle = 'active'
+  delete f.launch.closureEvidence
+  try {
+    await expect(f.manager.attachSession(f.session, f.start)).rejects.toMatchObject({
+      code: 'WORKER_CONVERSATION_RECOVERY_REQUIRED' })
+    expect(f.allocate).not.toHaveBeenCalled()
+    expect(f.records[0]).toEqual(f.before)
+  } finally { await f.cleanup() }
+})
+
+it('requires a validated skills transition to read Claude callbacks through a different binding hash', async () => {
+  const f = await fixture('claude')
+  const next = WorkerConversationBindingSchema.parse({ ...f.binding, owner: { ...f.binding.owner,
+    configurationHash: commandInputHash(f.configuration) } })
+  const request = WorkerConversationRpcRequestSchema.parse({ method: 'conversation.open', mode: 'attach',
+    binding: next, previousBinding: f.binding, configuration: f.configuration, previousConfiguration: f.base,
+    source: f.session, operationId: 'resume' })
+  try {
+    await expect(f.journal.inspectBinding(next)).rejects.toThrow()
+    await expect(f.journal.claudeCallbackJournal(next, request).acknowledged(f.session.nativeSessionId)).resolves.toEqual([])
+    await expect(f.journal.inspectSkillsTransition(f.binding, next,
+      { ...f.base, harness: { ...f.base.harness, model: 'another-model' } }, f.configuration)).rejects.toThrow()
+    expect(f.records[0]).toEqual(f.before)
+  } finally { await f.cleanup() }
+})
+
+it('retains and retires Claude callback records while recovering a skills binding transition', async () => {
+  const f = await fixture('claude')
+  const next = WorkerConversationBindingSchema.parse({ ...f.binding, owner: { ...f.binding.owner,
+    configurationHash: commandInputHash(f.configuration) } })
+  const request = WorkerConversationRpcRequestSchema.parse({ method: 'conversation.open', mode: 'attach',
+    binding: next, previousBinding: f.binding, configuration: f.configuration, previousConfiguration: f.base,
+    source: f.session, operationId: 'resume' })
+  const identity = { ownerPrincipalId: f.principal.id, attemptId: 'original-input', nativeSessionId: f.session.nativeSessionId,
+    nativeMessageId: 'original-message', clientCorrelationId: 'original-input', generation: 'original-generation',
+    toolUseId: 'original-tool' }
+  const key = commandInputHash(identity)
+  const callback = { identity, inputHash: commandInputHash({ input: 'original' }), toolName: 'Read',
+    state: 'submitted' as const, acknowledged: true }
+  try {
+    await f.journal.claudeCallbackJournal(f.binding).write(key, callback)
+    const callbacks = f.journal.claudeCallbackJournal(next, request)
+    await expect(callbacks.acknowledged(f.session.nativeSessionId)).resolves.toEqual([callback])
+    await callbacks.write(key, { ...callback, retired: true })
+    await expect(callbacks.read(key)).resolves.toEqual({ ...callback, retired: true })
+    expect(f.records[0]!.binding).toEqual(f.binding)
+    expect(f.records[0]!.session).toEqual(f.session)
+    expect(f.records[0]!.turns).toEqual(f.before.turns)
+    await expect(f.manager.attachSession(f.session, f.start)).resolves.toEqual(f.session)
+    await expect(callbacks.read(key)).resolves.toEqual({ ...callback, retired: true })
+    expect(f.records[0]!.binding).toEqual(next)
+  } finally { await f.cleanup() }
+})
