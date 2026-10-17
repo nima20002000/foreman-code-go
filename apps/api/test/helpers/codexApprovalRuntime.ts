@@ -10,7 +10,7 @@ import { createWorkflowRepositoryServices } from '../../src/modules/runs/workflo
 import { randomUUID } from 'node:crypto'
 import { vi } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
-  DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
+  DEFAULT_HARNESS_DEFAULTS, type ResolvedSkill } from '@foreman-code/contracts'
 import { ExecutableWorkflowV3Schema, makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpointSaver.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
@@ -36,6 +36,7 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
   options: ApprovalProviderOptions & {
     fixture?: ReturnType<typeof makeCurrentWorkflowFixture>
     approvalPolicy?: 'never'
+    skills?: ResolvedSkill[]
     database?: Awaited<ReturnType<typeof agent3Database>>
   } = {}) {
   const db = options.database ?? await agent3Database()
@@ -67,7 +68,7 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
     }
     f.version = agentWorkflowVersion(ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations }).version)
     f.run = WorkflowRunV3Schema.parse({ ...f.run, approval, agentConfigurationVersionIds: f.version.agentConfigurationVersionIds })
-    await seedAgent3(db.pool, db.directory, f, { run: false })
+    await seedAgent3(db.pool, db.directory, f, { run: false, ...(options.skills ? { skills: options.skills } : {}) })
     const access = new PostgresAccessService(db.pool)
     const authority = await access.issue({ name: 'Approval Run authority', audience: 'operator',
       expiresAt: new Date(Date.now() + 600000), grants: [

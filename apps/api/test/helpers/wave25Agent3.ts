@@ -3,7 +3,7 @@ import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from '
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
-import { AgentSchema, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { AgentSchema, HarnessExecutionSchema, type HarnessExecution, type ResolvedSkill } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture, AcceptedRepeatStartV1Schema, WorkflowRunV3Schema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -70,12 +70,20 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
   }
 }
 
-export async function seedAgent3(pool: pg.Pool, directory: string, fixture = makeCurrentWorkflowFixture(randomUUID()), options: { run?: boolean } = {}) {
+export async function seedAgent3(pool: pg.Pool, directory: string, fixture = makeCurrentWorkflowFixture(randomUUID()), options: { run?: boolean; skills?: ResolvedSkill[] } = {}) {
   const location = { runnerId: LOCAL_RUNNER_ID, rootPath: directory, locationRevision: 1, identityHash: 'sha256:' + '1'.repeat(64) }
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, executionLocation: location })
   await pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
     values($1,$2::jsonb,$3::jsonb,$4::jsonb,1)`, [fixture.scope.workspaceId, JSON.stringify({ id: fixture.scope.workspaceId, name: 'Synthetic Agent 3 test' }),
   JSON.stringify({ runnerId: location.runnerId, rootPath: location.rootPath }), JSON.stringify({ synthetic: true })])
+  for (const skill of options.skills ?? []) {
+    const record = { ...skill, workspaceId: fixture.scope.workspaceId, name: skill.name ?? skill.skillId,
+      createdAt: fixture.createdAt }
+    await pool.query(`insert into workspace_skill_versions(workspace_id,skill_id,version,sequence,record)
+      values($1,$2,$3,1,$4::jsonb)`, [fixture.scope.workspaceId, skill.skillId, skill.version, JSON.stringify(record)])
+    await pool.query(`insert into workspace_skills(workspace_id,skill_id,head_version,revision,version_count)
+      values($1,$2,$3,1,1)`, [fixture.scope.workspaceId, skill.skillId, skill.version])
+  }
   for (const config of fixture.configurations) {
     const agent = AgentSchema.parse({ id: config.agentId, name: 'Synthetic Worker', productRole: config.productRole,
       harness: config.harness.harness, model: config.harness.model, effort: 'low', fastMode: false,

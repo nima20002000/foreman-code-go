@@ -4,6 +4,7 @@ import { object, type JsonObject } from '../../src/modules/harnesses/codexStdioT
 import { ActivityProductionReplay } from './activityProductionReplay.js'
 
 export interface ApprovalProviderOptions {
+  onRequest?: (executionId: string, method: string, params: JsonObject | undefined) => void
   command?: string
   workflowOutput?: (executionId: string) => Promise<string>
 }
@@ -27,6 +28,7 @@ export class CodexApprovalProvider extends ActivityProductionReplay {
       const connection = transport(...args)
       return { ...connection,
         request: async (method, params, signal, late) => {
+          this.options.onRequest?.(this.executionId, method, params)
           const result = await connection.request(method, params, signal, late)
           if (method === 'turn/start') {
             const sessionId = String(params?.threadId)

@@ -53,6 +53,11 @@ describe('Agent instruction composition', () => {
   it('fails visibly on missing, reordered, or corrupt snapshots instead of dropping them', () => {
     const good = skill('skill-a', '1', 'Body')
     const reference = [{ skillId: 'skill-a', version: '1' }]
+    const other = skill('skill-b', '1', 'Different instructions')
+    expect(() => agentInstructionBundle(configuration({
+      assignedSkills: [...reference, { skillId: 'skill-b', version: '1' }],
+      resolvedSkills: [other, good],
+    }))).toThrow(/integrity/)
     expect(() => agentInstructionBundle(configuration({ assignedSkills: reference }))).toThrow(/Republish/)
     expect(() => agentInstructionBundle(configuration({ assignedSkills: reference, resolvedSkills: [{ ...good, instructions: 'Tampered' }] }))).toThrow(/integrity/)
     expect(() => agentInstructionBundle(configuration({ assignedSkills: [{ skillId: 'skill-a', version: '2' }], resolvedSkills: [good] }))).toThrow(/integrity/)

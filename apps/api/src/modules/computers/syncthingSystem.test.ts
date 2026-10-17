@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { access, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -108,6 +108,11 @@ it('lists nested conflict copies without exposing deleted versions or following 
   await writeFile(join(folder, 'nested', 'file.sync-conflict-20261008.txt'), 'copy')
   await writeFile(join(folder, '.stversions', 'old.sync-conflict-20261007.txt'), 'old copy')
   await writeFile(join(folder, 'ordinary.txt'), 'ordinary')
+  const outside = join(f.home, 'outside')
+  await mkdir(outside)
+  await writeFile(join(outside, 'outside.sync-conflict-20261008.txt'), 'outside copy')
+  await symlink(outside, join(folder, 'external'), 'dir')
+  await symlink(folder, join(folder, 'self'), 'dir')
   expect(await f.ports.conflicts(folder)).toEqual(['nested/file.sync-conflict-20261008.txt'])
 })
 
