@@ -1,3 +1,5 @@
+import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { errorMessage } from '../../shared/errorMessage.js'
 import { AgentDefaultsSchema, withAdvancedDefaults, CodexSessionCompatibilitySchema, validateHarnessWorkflowCompatibility, type AgentDefaults, type WorkflowDefaults } from '@foreman-code/contracts'
 import { WorkspaceDefaultsUpdateInputSchema, type WorkspaceDefaultsUpdateInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -123,6 +125,11 @@ export class FoundationSettingsManagementService {
   }) {
     requireAuthorization(principal, 'settings:update')
     let livePrincipal = principal
+    let previous: Awaited<ReturnType<PostgresFoundationSettingsRepository['getAgentDefaults']>>
+    let value: AgentDefaults
+    const unchangedProfile = (role: keyof AgentDefaults) =>
+      isDeepStrictEqual(value[role].harnessProfileSelection, previous.value[role].harnessProfileSelection)
+      && isDeepStrictEqual(withAdvancedDefaults(value[role].harness), withAdvancedDefaults(previous.value[role].harness))
     return this.commands.execute({
       principal, source, operation: 'agent.defaults.update', commandId: input.commandId,
       targetKey: 'agent-defaults-v1', payload: input,
@@ -130,21 +137,21 @@ export class FoundationSettingsManagementService {
         livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(livePrincipal, 'settings:update')
       },
-      perform: async (client) => {
-        const value = AgentDefaultsSchema.parse(input.value)
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
-        const previous = await this.settings.getAgentDefaults(client)
-        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
-        const unchangedProfile = (role: keyof AgentDefaults) =>
-          isDeepStrictEqual(value[role].harnessProfileSelection, previous.value[role].harnessProfileSelection)
-          && isDeepStrictEqual(withAdvancedDefaults(value[role].harness), withAdvancedDefaults(previous.value[role].harness))
-        if (this.accountConfigurations) {
-          for (const role of ['orchestrator', 'coder', 'operator'] as const) {
-            if (unchangedProfile(role)) continue
-            value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
-              value[role].harnessProfileSelection, { sql: client })
-          }
+      prepare: async pool => {
+        value = AgentDefaultsSchema.parse(input.value)
+        previous = await this.settings.getAgentDefaults()
+        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) {
+          throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         }
+        await withTransaction(pool, async client => {
+          if (this.accountConfigurations) {
+            for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+              if (unchangedProfile(role)) continue
+              value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
+                value[role].harnessProfileSelection, { sql: client })
+            }
+          }
+        })
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
@@ -157,7 +164,8 @@ export class FoundationSettingsManagementService {
             delete value[role].harnessProfileSelection
           }
           if (role === 'operator' && configuration.harness === 'claude' && !value[role].harnessProfileSelection) {
-            const resolved = await this.profiles?.selectionForConfiguration?.(livePrincipal, configuration, client)
+            const resolved = await withTransaction(pool, client =>
+              this.profiles?.selectionForConfiguration?.(livePrincipal, configuration, client) ?? Promise.resolve(undefined))
               ?? await this.profiles?.prepareOperatorConfiguration?.(livePrincipal, source, configuration, input.commandId)
             if (resolved) value[role].harnessProfileSelection = resolved
           }
@@ -170,7 +178,6 @@ export class FoundationSettingsManagementService {
           if (unchangedProfile(role)) continue
           if (selection) {
             if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
-            await this.profiles.validateSelection(livePrincipal, selection, configuration, client)
             continue
           }
           if (isDeepStrictEqual(withAdvancedDefaults(previous.value[role].harness), withAdvancedDefaults(configuration))) continue
@@ -183,6 +190,18 @@ export class FoundationSettingsManagementService {
             throw new DomainError('AGENT_DEFAULTS_UNQUALIFIED', `The ${role} template was not saved: ${errorMessage(error, 'Native qualification failed.')}`, 409, undefined, { cause: error })
           }
         }
+      },
+      preparedMutation: {
+        releaseDuringPreparation: true,
+        resourceLock: 'setting:agent-defaults-v1',
+        validate: async client => {
+          await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
+          const current = await this.settings.getAgentDefaults(client)
+          return isDeepStrictEqual(previous, current)
+        },
+      },
+      perform: async client => {
+        await this.validatePreparedDefaults(client, livePrincipal, value, previous.value)
         const operators = this.operators
         const skills = value.operator.assignedSkills ?? []
         const skillsChanged = !isDeepStrictEqual(previous.value.operator.assignedSkills ?? [], skills)
@@ -211,6 +230,29 @@ export class FoundationSettingsManagementService {
         return result
       },
     })
+  }
+
+  private async validatePreparedDefaults(client: pg.PoolClient, principal: ManagementPrincipal,
+    value: AgentDefaults, previous: AgentDefaults): Promise<void> {
+    for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+      const configuration = value[role].harness
+      const selection = value[role].harnessProfileSelection
+      const unchanged = isDeepStrictEqual(selection, previous[role].harnessProfileSelection)
+        && isDeepStrictEqual(withAdvancedDefaults(configuration), withAdvancedDefaults(previous[role].harness))
+      if (unchanged) continue
+      if (this.accountConfigurations) {
+        const resolved = await this.accountConfigurations.resolve(configuration, selection, { sql: client })
+        if (!isDeepStrictEqual(configuration, resolved)) {
+          throw new DomainError('PROVIDER_ACCOUNT_CONFIGURATION_CHANGED',
+            'The selected account changed during qualification. Read the account and retry.', 409)
+        }
+      }
+      if (selection) {
+        if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE',
+          'Selected host profile validation is not composed.', 503)
+        await this.profiles.validateSelection(principal, selection, configuration, client)
+      }
+    }
   }
 
   updateWorkflowDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {

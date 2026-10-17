@@ -86,41 +86,69 @@ function lifecyclePool(pool: pg.Pool): pg.Pool {
 }
 
 interface PreparedMutation {
+  /** Idempotent preparation may invoke commands that need the same bounded pools. */
+  releaseDuringPreparation?: true
   /** Serialize only the prepared database mutation, leaving preparation concurrent. */
   resourceLock: string
   /** Retry preparation when concurrent mutations changed its database inputs. */
   validate(client: pg.PoolClient): Promise<boolean>
 }
 
+/** Preparation is retried only after its database snapshot changes. */
+class PreparationRequired extends Error {}
+
+interface CommandInput<T> {
+  principal: ManagementPrincipal
+  source: 'http' | 'mcp' | 'device'
+  operation: string
+  commandId?: string | undefined
+  targetKey: string
+  payload: unknown
+  /** Serialize local external effects through transaction rollback and compensation. */
+  resourceLock?: string
+  perform(client: pg.PoolClient): Promise<T>
+  /** Revalidate live authority under the command lock, including receipt reads.
+   * Transactional callers may retain their authority row locks through COMMIT. */
+  authorize?(client: pg.PoolClient): Promise<void>
+  /** Compensate external effects only after a confirmed rollback, using the idle connection. */
+  afterRollback?(client: pg.PoolClient): Promise<void>
+  /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
+  dedicatedConnection?: true
+  /** Prepare immutable bytes or installed metadata outside SQL.
+   * Mutations with releaseDuringPreparation recheck their snapshot after releasing ownership.
+   * Admission and its receipt share one transaction. */
+  prepare?(pool: pg.Pool): Promise<void>
+  preparedMutation?: PreparedMutation
+  /** Explicit compatibility boundary for historical receipts, never new commands. */
+  replayResult?(result: unknown): T
+  /** Resume an unfinished external operation under its original command lock. */
+  shouldResumeReceipt?(client: pg.PoolClient): Promise<boolean>
+}
+
 export class PostgresCommandCoordinator {
   constructor(private readonly pool: pg.Pool) {}
 
-  async execute<T>(input: {
-    principal: ManagementPrincipal
-    source: 'http' | 'mcp' | 'device'
-    operation: string
-    commandId?: string | undefined
-    targetKey: string
-    payload: unknown
-    /** Serialize local external effects through transaction rollback and compensation. */
-    resourceLock?: string
-    perform(client: pg.PoolClient): Promise<T>
-    /** Revalidate live authority under the command lock, including receipt reads.
-     * Transactional callers may retain their authority row locks through COMMIT. */
-    authorize?(client: pg.PoolClient): Promise<void>
-    /** Compensate external effects only after a confirmed rollback, using the idle connection. */
-    afterRollback?(client: pg.PoolClient): Promise<void>
-    /** Lifecycle callbacks may await runtime cleanup that needs the application pool. */
-    dedicatedConnection?: true
-    /** Prepare immutable bytes or installed metadata outside SQL under retained
-     * command ownership. Admission and its receipt then share one transaction. */
-    prepare?(): Promise<void>
-    preparedMutation?: PreparedMutation
-    /** Explicit compatibility boundary for historical receipts, never new commands. */
-    replayResult?(result: unknown): T
-    /** Resume an unfinished external operation under its original command lock. */
-    shouldResumeReceipt?(client: pg.PoolClient): Promise<boolean>
-  }): Promise<{ value: T; replayed: boolean }> {
+  async execute<T>(input: CommandInput<T>): Promise<{ value: T; replayed: boolean }> {
+    input = { ...input, commandId: input.commandId ?? randomUUID() }
+    let prepared = false
+    for (;;) {
+      try {
+        return await this.executeAttempt(input, { prepared })
+      } catch (error) {
+        if (!(error instanceof PreparationRequired)) throw error
+      }
+      try {
+        await input.prepare!(this.pool)
+        prepared = true
+      } catch (error) {
+        await this.recordAudit(input.principal.id, input.source, input.operation, input.targetKey, 'failed',
+          { commandId: input.commandId, code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })
+        throw error
+      }
+    }
+  }
+
+  private async executeAttempt<T>(input: CommandInput<T>, options: { prepared: boolean }): Promise<{ value: T; replayed: boolean }> {
     const commandId = input.commandId ?? randomUUID()
     const inputHash = commandInputHash(input.payload)
     const dedicatedConnection = input.dedicatedConnection || input.prepare !== undefined
@@ -195,9 +223,17 @@ export class PostgresCommandCoordinator {
         committing = false
         inTransaction = false
       }
-      if (input.prepare) {
+      if (input.preparedMutation?.releaseDuringPreparation) {
+        if (!options.prepared) throw new PreparationRequired()
+        resourceLockRequested = true
+        await acquireSessionLock(client, input.preparedMutation.resourceLock)
+        await beginTransaction(client)
+        inTransaction = true
+        await input.authorize?.(client)
+        if (!await input.preparedMutation.validate(client)) throw new PreparationRequired()
+      } else if (input.prepare) {
         for (;;) {
-          await input.prepare()
+          await input.prepare(this.pool)
           if (input.preparedMutation) {
             resourceLockRequested = true
             await acquireSessionLock(client, input.preparedMutation.resourceLock)
@@ -255,6 +291,10 @@ export class PostgresCommandCoordinator {
           // preserve the command error rather than replacing it with cleanup.
           releaseError = rollbackError instanceof Error ? rollbackError : new Error('Command rollback failed.')
         }
+      }
+      if (error instanceof PreparationRequired) {
+        if (releaseError) throw releaseError
+        throw error
       }
       if (performing && rolledBack && (!committing || commitWasRejected(error))) {
         try {
