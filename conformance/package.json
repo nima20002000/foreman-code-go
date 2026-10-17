@@ -1,0 +1,28 @@
+{
+  "name": "@foreman-code/conformance",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "conformance": "node --import tsx src/main.ts",
+    "smoke": "node --import tsx src/main.ts --smoke",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@foreman-code/contracts": "workspace:*",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.5.1",
+    "@types/ws": "8.18.1",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.0"
+  }
+}
