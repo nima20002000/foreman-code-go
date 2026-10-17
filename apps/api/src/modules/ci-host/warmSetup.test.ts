@@ -9,7 +9,7 @@ import { pnpmInstall } from './warmSetup.js'
 async function runWarmInstall(root: string, bin: string, environment: NodeJS.ProcessEnv) {
   const script = ['finish() { exit "$1"; }', ...pnpmInstall(join(root, 'cache'), join(root, 'message'))].join('\n')
   await promisify(execFile)('/bin/bash', ['-c', script], {
-    cwd: root, env: { ...environment, PATH: `${bin}:${environment.PATH}` },
+    cwd: root, env: { ...environment, BASH_ENV: '', PATH: `${bin}:/usr/bin:/bin` },
   })
 }
 

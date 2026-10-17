@@ -123,7 +123,9 @@ if (process.argv[2] === 'rev-parse') console.log('false')
   const result = spawnSync('bash', [script, action], {
     encoding: 'utf8',
     ...(selection ? { cwd: directory } : {}),
-    env: { ...sourceEnvironment, SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
+    env: { ...sourceEnvironment, BASH_ENV: '',
+      FOREMAN_CODE_CI_TYPECHECK_CACHE: '', FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE: '',
+      SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
       SELECTED_FILES: selection ? '' : 's:1', DEFAULT_BRANCH: 'release/stable', CI_STATE: join(directory, 'state'),
       RUNNER_SELECTION: JSON.stringify(selection),
       BASE_COMMIT: selection?.baseCommit ?? '',
@@ -131,7 +133,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
       FOREMAN_CODE_CI_CONTRACTS_CACHE: selection?.contractsCache ? '.logs/contracts-cache' : '',
       CONTRACTS_READY: String(selection?.contractsReady ?? false),
       CI_USER_SYSTEMD: '0', CI_EXPECTED_DURATION_MS: '', CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
-      PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
+      PATH: installedClis ? `${directory}${delimiter}${sourceEnvironment.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
   })
   const calls = readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
@@ -395,7 +397,7 @@ for (const provider of ['github', 'circleci', 'circleci-ssh']) {
     const checkout = join(directory, 'checkout')
     mkdirSync(origin)
     mkdirSync(checkout)
-    const environment = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
+    const environment = { ...process.env, BASH_ENV: '', GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
       GIT_AUTHOR_EMAIL: 'fixture@example.org', GIT_COMMITTER_EMAIL: 'fixture@example.org' }
     const git = (cwd, ...args) => {
       const result = spawnSync('git', args, { cwd, env: environment, encoding: 'utf8' })
@@ -446,7 +448,7 @@ const result = spawnSync(process.env.FIXTURE_GIT, mapped, { stdio: 'inherit' })
 process.exit(result.status ?? 1)
 `, { mode: 0o755 })
         }
-        const gitExecutable = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
+        const gitExecutable = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8', env: environment }).stdout.trim()
         const result = spawnSync('bash', ['-ec', step.run.command], { cwd: checkout, encoding: 'utf8',
           env: { ...environment, PATH: `${bin}${delimiter}${process.env.PATH}`, FIXTURE_GIT: gitExecutable,
             FIXTURE_ORIGIN: `file://${origin}`, CIRCLE_REPOSITORY_URL: repositoryUrl,
@@ -518,7 +520,7 @@ for (const name of ['codex', 'claude']) writeFileSync(join(bin, name), '#!/bin/b
   const start = async index => {
     const state = join(directory, `state-${index}`)
     const result = spawnSync('bash', [script, 'start'], { encoding: 'utf8', cwd: directory, env: {
-      ...process.env, SUITE: 'integration', CI_STATE: state, CALLS_FILE: callsFile, CI_HOST_RUNNER: '0',
+      ...process.env, BASH_ENV: '', SUITE: 'integration', CI_STATE: state, CALLS_FILE: callsFile, CI_HOST_RUNNER: '0',
       FOREMAN_CODE_CI_CLIS_PREFIX: prefix, PATH: `${join(directory, 'bin')}${delimiter}${process.env.PATH}` } })
     assert.equal(result.status, 0, result.stderr)
     for (let attempt = 0; attempt < 100; attempt++) {

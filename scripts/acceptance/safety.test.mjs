@@ -83,7 +83,9 @@ function checkAcceptanceResources(sourceEnvironment = process.env) {
     assert.equal(safe.CODEX_HOME, join(resource.directory, 'home/.codex'))
     assert.equal(safe.TEST_DATABASE_URL, url.href)
   } finally { removeTestRoot(resource) }
-  `], { encoding: 'utf8', env: { ...sourceEnvironment } })
+  `], { encoding: 'utf8', env: { ...sourceEnvironment,
+    FOREMAN_CODE_CI_TEST_ADMIN_URL: undefined, FOREMAN_CODE_CI_HOST_RUN_ID: undefined,
+  } })
 }
 
 test('acceptance resources reject app URLs and socket overrides and own their native homes', () => {
