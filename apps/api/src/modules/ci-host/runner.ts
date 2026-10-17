@@ -124,10 +124,23 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
 }
 
 async function removeStaleGitLocks(directory: string): Promise<void> {
+  const lockNames = new Set(['shallow.lock', 'index.lock', 'HEAD.lock', 'config.lock',
+    'packed-refs.lock', 'FETCH_HEAD.lock', 'ORIG_HEAD.lock'])
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory() && entry.name === 'refs') {
+      await removeStaleRefLocks(path)
+    } else if (entry.isFile() && lockNames.has(entry.name)) {
+      await rm(path)
+    }
+  }
+}
+
+async function removeStaleRefLocks(directory: string): Promise<void> {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) {
-      await removeStaleGitLocks(path)
+      await removeStaleRefLocks(path)
     } else if (entry.isFile() && entry.name.endsWith('.lock')) {
       await rm(path)
     }
@@ -692,7 +705,7 @@ export class HostCiRunner {
       const clone = join(this.root, 'git', ...repository.split('/'))
       await mkdir(clone, { recursive: true, mode: 0o700 })
       return await withHostCiRunLock(clone, async () => {
-        // Preparation commands have exited before releasing this lock, so leftover Git locks are stale.
+        // Shared clone preparation has stopped; running suites may still own worktree Git locks.
         const gitDirectory = join(clone, '.git')
         if (existsSync(gitDirectory)) await removeStaleGitLocks(gitDirectory)
         return work()
