@@ -65,7 +65,14 @@ export async function regularFiles(directory, { excludeNodeModules = false } = {
   return files;
 }
 
-export function verifyPackage(name, version, index, files) {
+// The published tarball omits its monorepo license; retain the license from its npm gitHead.
+// https://github.com/cfworker/cfworker/blob/5409fdc2bd144f68e8b28c61c71fcb16600000a6/LICENSE.md
+const cfworkerLicense = {
+  package: '@cfworker/json-schema@4.1.1', path: 'apps/worker/artifacts/licenses/cfworker.txt',
+  sha256: '376944252ab78ca6b41aee44ddea8894927ee67891e77e61eb9d59af63e35094',
+};
+
+export function verifyPackage(name, version, index, files, supplementalLicense) {
   if (!index || index.requiresBuild !== false || index.manifest?.name !== name || index.manifest?.version !== version
     || index.algo !== 'sha512' || !(index.files instanceof Map)) throw new Error(`Invalid package index: ${name}@${version}`);
   const expected = new Map([...index.files].filter(([path]) => !path.split('/').includes('node_modules')));
@@ -80,10 +87,12 @@ export function verifyPackage(name, version, index, files) {
   // The locked libvips tarball publishes its dependency license table in README.md.
   const licenseTable = name === '@img/sharp-libvips-linux-x64' && manifest.license === 'LGPL-3.0-or-later'
     && files.get('README.md')?.toString('utf8').includes('LGPLv3');
-  if (!licenseTable && ![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
+  const upstreamLicense = `${name}@${version}` === cfworkerLicense.package && manifest.license === 'MIT'
+    && supplementalLicense && digest('sha256', supplementalLicense) === cfworkerLicense.sha256;
+  if (!licenseTable && !upstreamLicense && ![...files.keys()].some(path => /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path))) throw new Error(`Package license missing: ${name}`);
 }
 
-export async function copySharpPackagesFromStore({ root, output, store, lock, decode }) {
+async function withPackageIndex(store, copy) {
   const indexPath = join(store, 'index.db');
   let database;
   try {
@@ -94,10 +103,101 @@ export async function copySharpPackagesFromStore({ root, output, store, lock, de
   }
   try {
     const query = database.prepare('SELECT data FROM package_index WHERE key = ?');
-    return await copySharpPackages({ root, output, lock, record: key => query.get(key)?.data, decode });
+    return await copy(key => query.get(key)?.data);
   } finally {
     database.close();
   }
+}
+
+export async function copySharpPackagesFromStore(options) {
+  return withPackageIndex(options.store, record => copySharpPackages({ ...options, record }));
+}
+
+export async function copyClaudeSdkPackagesFromStore(options) {
+  return withPackageIndex(options.store, record => copyClaudeSdkPackages({ ...options, record }));
+}
+
+async function installedPackage(name, from) {
+  let directory = from;
+  for (;;) {
+    try { return await realpath(join(directory, 'node_modules', name)); }
+    catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+    }
+    const parent = dirname(directory);
+    if (parent === directory) throw new Error(`Installed dependency is unavailable: ${name}`);
+    directory = parent;
+  }
+}
+
+function matchesWorkerPlatform(metadata) {
+  const matches = (values, expected) => !values || values.includes(expected);
+  return matches(metadata.os, 'linux') && matches(metadata.cpu, 'x64') && matches(metadata.libc, 'glibc');
+}
+
+async function writePackageFiles(destination, files) {
+  for (const [path, bytes] of files) {
+    const target = join(destination, path);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(target, bytes, { flag: 'wx', mode: 0o600 });
+  }
+}
+
+async function copyClaudeSdkPackages({ root, output, lock, record, decode }) {
+  const sdk = '@anthropic-ai/claude-agent-sdk';
+  const reference = lock.importers?.['apps/api']?.dependencies?.[sdk]?.version;
+  if (typeof reference !== 'string') throw new Error('Locked Claude SDK dependency is unavailable.');
+  const hoisted = new Map();
+  const copied = new Map();
+  const packages = [];
+  async function copy(name, reference, from, parent) {
+    const version = reference.split('(')[0];
+    const key = `${name}@${reference}`;
+    const metadata = lock.packages?.[`${name}@${version}`];
+    const integrity = metadata?.resolution?.integrity;
+    if (!/^sha512-[A-Za-z0-9+/]{86}==$/.test(integrity ?? '')) throw new Error(`Missing locked integrity: ${name}`);
+    const destination = hoisted.has(name) && hoisted.get(name) !== reference
+      ? join(parent, 'node_modules', name) : join(output, 'node_modules', name);
+    if (copied.has(destination)) {
+      if (copied.get(destination) !== key) throw new Error(`Conflicting artifact dependency: ${name}`);
+      return;
+    }
+    const source = await installedPackage(name, from);
+    const files = await regularFiles(source, { excludeNodeModules: true });
+    const blob = record(`${integrity}\t${name}@${version}`);
+    if (!(blob instanceof Uint8Array)) throw new Error(`Invalid package index blob: ${name}@${version}`);
+    let supplementalLicense;
+    if (`${name}@${version}` === cfworkerLicense.package) {
+      supplementalLicense = await readFile(join(root, cfworkerLicense.path));
+    }
+    verifyPackage(name, version, decode(blob), files, supplementalLicense);
+    if (supplementalLicense) {
+      await writePackageFiles(join(output, 'artifacts/licenses'), new Map([['cfworker.txt', supplementalLicense]]));
+    }
+    await writePackageFiles(destination, files);
+    copied.set(destination, key);
+    if (!hoisted.has(name)) hoisted.set(name, reference);
+    packages.push({ name, version, integrity, indexBlobSha256: digest('sha256', blob),
+      path: relative(output, destination), files: files.size,
+      bytes: [...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) });
+    const snapshot = lock.snapshots?.[key];
+    if (!snapshot) throw new Error(`Missing locked dependency graph: ${key}`);
+    for (const [dependency, selected] of Object.entries(snapshot.dependencies ?? {})) {
+      await copy(dependency, selected, source, destination);
+    }
+    for (const [dependency, selected] of Object.entries(snapshot.optionalDependencies ?? {})) {
+      const metadata = lock.packages?.[`${dependency}@${selected.split('(')[0]}`];
+      if (!metadata) throw new Error(`Missing locked optional dependency: ${dependency}`);
+      if (matchesWorkerPlatform(metadata)) await copy(dependency, selected, source, destination);
+    }
+  }
+  await copy(sdk, reference, join(root, 'apps/api'), output);
+  const selected = packages.find(entry => entry.name === sdk);
+  await mkdir(join(output, 'artifacts'), { recursive: true, mode: 0o700 });
+  await writeFile(join(output, 'artifacts/claude-sdk-lock.yaml'),
+    `packages:\n  '${sdk}@${selected.version}':\n    resolution: {integrity: ${selected.integrity}}\n`,
+    { flag: 'wx', mode: 0o600 });
+  return packages;
 }
 
 export async function copySharpPackages({ root, output, lock, record, decode }) {

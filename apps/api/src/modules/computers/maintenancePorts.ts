@@ -15,6 +15,7 @@ export interface MaintenancePorts {
   now(): Date
   /** Moves this computer's runtime selection to the installed update. Qualification still checks the selected binary. */
   selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
+  selectInstalledClaude?(signal: AbortSignal): Promise<string | null>
   workerUpdate?: {
     status(): Promise<WorkerUpdateStatus>
     start(options: { retry: boolean }): Promise<string>

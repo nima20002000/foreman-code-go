@@ -103,8 +103,9 @@ async function claudeSelection(environment, release, signal) {
       throw error;
     }
     const offset = sdkEntrypoint.indexOf('/node_modules/.pnpm/');
-    if (offset < 0) continue;
-    const installedLockPath = join(sdkEntrypoint.slice(0, offset), 'node_modules/.pnpm/lock.yaml');
+    const installedLockPath = offset < 0
+      ? join(release, 'artifacts/claude-sdk-lock.yaml')
+      : join(sdkEntrypoint.slice(0, offset), 'node_modules/.pnpm/lock.yaml');
     await discoverInstalledClaudeSdk({ entrypoint: sdkEntrypoint, installedLockPath, selectedExecutable: binary }, {
       harnessInstallationId: 'worker-installed-claude',
       environment: { path: environment.PATH ?? '', cwd: release, provenance: 'worker', generation: 'selection' },
