@@ -373,3 +373,25 @@ test('an invalid replacement SDK is reported without replacing a selected Claude
   assert.match(errors[0].message, /integrity is unavailable/);
   assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, { binary: join(f.bin, 'claude'), ...sdk });
 });
+
+
+test('Worker upgrades migrate bundled Claude SDKs with URL-derived release directories', async t => {
+  const f = await fixture(t);
+  const first = join(f.root, 'versions', `1.0.0-${'a'.repeat(64)}`);
+  const second = join(f.root, 'versions', `1.1.0-${'b'.repeat(64)}`);
+  await standaloneSdk(first, '0.3.284');
+  const binary = join(f.bin, 'claude');
+  await copyFile('/usr/bin/true', binary);
+  await refreshWorkflowSelection({ ...f.options, release: `${first}/` });
+  await rm(first, { recursive: true });
+  const sdk = await standaloneSdk(second, '0.3.285');
+  const errors = [];
+  const options = { ...f.options, release: `${second}/`, reportError: error => errors.push(error) };
+  await refreshWorkflowSelection(options);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, { binary, ...sdk });
+  assert.deepEqual(errors, []);
+  await rm(sdk.installedLockPath);
+  await refreshWorkflowSelection(options);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, { binary, ...sdk });
+});
