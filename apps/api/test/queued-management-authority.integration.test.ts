@@ -3,6 +3,8 @@ import { expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { ManagementActionSchema, ManagedAgentDefaultsSchema, ManagedWorkflowDefaultsSchema,
   ManagedWorkspaceDefaultsSchema } from '@foreman-code/contracts/management'
+import { deferred } from './helpers/deferred.js'
+import { withClientTransaction } from '../src/infrastructure/transaction.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
 type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
@@ -45,6 +47,8 @@ it.each(['workspace-defaults', 'agent-defaults', 'workflow-defaults', 'create', 
     const f = await currentOperatorIntegration({ agentManagement: true, insertRun: false })
     const blocker = await f.db.pool.connect()
     let lock: string | undefined
+    const releaseAuthority = deferred()
+    let authorityBlocker: Promise<void> | undefined
     try {
       const parent = await f.access.issue({ name: 'Delegating owner', audience: 'operator',
         expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
@@ -54,28 +58,58 @@ it.each(['workspace-defaults', 'agent-defaults', 'workflow-defaults', 'create', 
       const client = await f.connect(caller.token)
       const c = await command(f, kind)
       const before = await c.read()
-      lock = kind.endsWith('defaults') ? `command:${caller.principal.id}:${c.operation}:${c.input.commandId}`
-        : `admission:workspace:${f.f.scope.workspaceId}`
-      await blocker.query('select pg_advisory_lock(hashtext($1))', [lock])
+      let blockerPid: number | undefined
+      if (kind === 'agent-defaults') {
+        const entered = deferred()
+        blockerPid = (await blocker.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
+        authorityBlocker = withClientTransaction(blocker, async () => {
+          // Authentication reads normally; the command's live authority read takes a row lock.
+          await blocker.query('select id from management_principals where id=$1 for update', [caller.principal.id])
+          entered.resolve()
+          await releaseAuthority.promise
+        })
+        await Promise.race([entered.promise, authorityBlocker])
+      } else {
+        lock = kind.endsWith('defaults') ? `command:${caller.principal.id}:${c.operation}:${c.input.commandId}`
+          : `admission:workspace:${f.f.scope.workspaceId}`
+        await blocker.query('select pg_advisory_lock(hashtext($1))', [lock])
+      }
       const request = client.callTool({ name: c.name, arguments: c.input })
       await vi.waitFor(async () => {
         // Session resource locks retry outside SQL; the command lock proves the caller reached the queue.
         const commandLock = `command:${caller.principal.id}:${c.operation}:${c.input.commandId}`
-        const waiting = kind.endsWith('defaults')
-          ? await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
+        let waiting: { rowCount: number | null }
+        if (kind === 'agent-defaults') {
+          waiting = await f.db.pool.query(`select 1 from pg_stat_activity activity
+            where $1::int=any(pg_blocking_pids(activity.pid)) and exists (
+              select 1 from pg_locks owned where owned.pid=activity.pid and owned.locktype='advisory'
+                and owned.objid=(hashtext($2)::bigint & 4294967295)::oid and owned.granted)`,
+          [blockerPid, commandLock])
+        } else if (kind.endsWith('defaults')) {
+          waiting = await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
             and objid=(hashtext($1)::bigint & 4294967295)::oid and not granted`, [lock])
-          : await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
+        } else {
+          waiting = await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
             and objid=(hashtext($1)::bigint & 4294967295)::oid and granted`, [commandLock])
+        }
         expect(waiting.rowCount).toBeGreaterThan(0)
       }, { timeout: 3_000, interval: 10 })
       await f.access.revoke(parent.principal.id)
-      await blocker.query('select pg_advisory_unlock(hashtext($1))', [lock])
+      releaseAuthority.resolve()
+      await authorityBlocker
+      if (lock) await blocker.query('select pg_advisory_unlock(hashtext($1))', [lock])
       lock = undefined
-      expect((await request).isError).toBe(true)
+      const result = await request
+      expect(result.isError).toBe(true)
+      if (kind === 'agent-defaults') {
+        expect(decodeMcpToolResult(result)).toMatchObject({ error: { code: 'AUTH_REVOKED' } })
+      }
       expect(await c.read()).toEqual(before)
       expect((await f.db.pool.query('select 1 from management_command_receipts where principal_id=$1 and command_id=$2',
         [caller.principal.id, c.input.commandId])).rows).toHaveLength(0)
     } finally {
+      releaseAuthority.resolve()
+      await authorityBlocker
       if (lock) await blocker.query('select pg_advisory_unlock(hashtext($1))', [lock])
       blocker.release()
       await f.close()
