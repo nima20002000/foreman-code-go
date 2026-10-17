@@ -7,6 +7,7 @@ import {
 } from '@foreman-code/contracts/wave25'
 import type { CodexHarnessConfiguration } from '@foreman-code/contracts'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { ScenarioContext } from '../../scenario.js'
 import { createWorkspace } from '../smoke/support.js'
 import { createCodexAgent } from './agents.js'
@@ -55,7 +56,9 @@ export async function createExecutableWorkflow(ctx: ScenarioContext, options: Ex
   })
   const workflowsPath = `/api/management/workspaces/${workspaceId}/workflows`
   const response = await ctx.http.request('POST', workflowsPath, { body: input })
-  const { value: workflow } = CurrentManagedWorkflowCommandResultSchema.parse(response.body)
+  const { value: workflow } = parseSuccessResponse(response, CurrentManagedWorkflowCommandResultSchema, {
+    method: 'POST', path: workflowsPath, status: 201, contract: 'CurrentManagedWorkflowCommandResult',
+  })
   assertResponse(response, { status: 201, body: {
     value: {
       workflow: { ...initialGraph, id: '<id>', workspaceId, name: options.name, version: 1,
@@ -71,7 +74,9 @@ export async function createExecutableWorkflow(ctx: ScenarioContext, options: Ex
   const workflowId = workflow.workflow.id
   const definitionPath = `${workflowsPath}/${workflowId}/definition`
   const read = await ctx.http.request('GET', definitionPath)
-  const saved = CurrentWorkflowReadResultSchema.parse(read.body)
+  const saved = parseSuccessResponse(read, CurrentWorkflowReadResultSchema, {
+    method: 'GET', path: definitionPath, status: 200, contract: 'CurrentWorkflowReadResult',
+  })
   const contentHash = workflowDigest({ definition: workflow.workflow,
     configurations: agentPins, entryNodeId: initialGraph.entryNodeId })
   assertResponse(read, { status: 200, body: {

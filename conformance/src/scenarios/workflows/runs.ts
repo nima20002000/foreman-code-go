@@ -7,6 +7,7 @@ import {
 } from '@foreman-code/contracts/wave25'
 import type { ExecutionResult } from '@foreman-code/contracts'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { ScenarioContext } from '../../scenario.js'
 import type { ExecutableWorkflow } from './authoring.js'
 
@@ -20,7 +21,9 @@ export async function startWorkflow(ctx: ScenarioContext, fixture: ExecutableWor
   })
   const path = `/api/management/workspaces/${saved.workspaceId}/workflows/${saved.workflowId}/runs`
   const response = await ctx.http.request('POST', path, { body: input })
-  const { run } = ManualRunStartResultSchema.parse(response.body)
+  const { run } = parseSuccessResponse(response, ManualRunStartResultSchema, {
+    method: 'POST', path, status: 202, contract: 'ManualRunStartResult',
+  })
   assert.ok(run.executionLocation)
   GraphDigestSchema.parse(run.executionLocation.identityHash)
   assertResponse(response, { status: 202, body: { run: {
