@@ -1,0 +1,40 @@
+{
+  "source": "52f7942e313a10e6dc2a9b4f4f038beaae6d60cb",
+  "sourceTree": "dcacd4cc60f2bbca16c792be626209286225aeb0",
+  "package": "./internal/harnesses/claude",
+  "goFiles": [
+    "internal/harnesses/claude/bridge_integration_test.go",
+    "internal/harnesses/claude/client.go",
+    "internal/harnesses/claude/client_test.go",
+    "internal/harnesses/claude/protocol.go",
+    "internal/harnesses/claude/query.go",
+    "internal/harnesses/claude/sdk.go"
+  ],
+  "unitTests": [
+    "TestClientCorrelatesRepliesAndPreservesSDKFailures",
+    "TestQueryStreamsAndControlsWhilePolicyCallbackWaits",
+    "TestClientRejectsTruncatedFramesAndUnblocksRequests",
+    "TestCanceledOpenClosesTheSameLateQuery",
+    "TestClientCloseUnblocksARequestWhoseBridgeStoppedReading"
+  ],
+  "integrationTests": [
+    "TestBridgeFakeSDKStreamsControlsHistoryAndFork",
+    "TestBridgeFakeSDKRunsGoCallbacksAndPreservesWriteDenial",
+    "TestBridgeFakeSDKInterruptsAnActiveTurn"
+  ],
+  "nodeTests": [
+    "tool input signal fields survive while native callback cancellation stays out of JSON",
+    "shutdown closes other queries and cancels callbacks after an SDK close throws",
+    "dynamic MCP changes reject in-process SDK servers like initial query options"
+  ],
+  "nodeTestFile": "backend/bridge/claude/bridge.test.mjs",
+  "nodeSyntaxFiles": [
+    "backend/bridge/claude/bridge.test.mjs",
+    "backend/bridge/claude/claude-bridge.mjs",
+    "backend/bridge/claude/test-fixture/sdk.mjs"
+  ],
+  "testTimeout": "30s",
+  "integrationTimeout": "60s",
+  "integrationRequiresDatabase": false,
+  "mode": "package"
+}
