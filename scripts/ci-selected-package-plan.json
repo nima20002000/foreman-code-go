@@ -1,0 +1,26 @@
+{
+  "source": "5f02bb46c5283006f828235da985471f3b1bc2e3",
+  "sourceTree": "e6e8053084d4b0be91ebd5c5e61311011d707c1a",
+  "package": "./internal/devices",
+  "goFiles": [
+    "internal/devices/identity_key.go",
+    "internal/devices/identity_key_test.go",
+    "internal/devices/main_identity.go",
+    "internal/devices/main_identity_integration_test.go"
+  ],
+  "unitTests": [
+    "TestPublicKeyFingerprintMatchesPublishedSPKIVector",
+    "TestPublicKeyFingerprintRejectsPrivateAndNoncanonicalEncodings",
+    "TestIdentityRejectsOtherKeyAlgorithms",
+    "TestIdentityKeySignsPublishedEd25519Vector",
+    "TestIdentitySignatureRejectsChangedMessageKeyAndSignature",
+    "TestGeneratedIdentitySurvivesPrivateKeyRoundTrip",
+    "TestIdentityKeyRefusesMissingAndCorruptPrivateMaterial"
+  ],
+  "integrationTests": [
+    "TestMainIdentityConvergesConcurrentStartsAndSurvivesRestart",
+    "TestMainIdentityRejectsWrongInstallationWithoutWriting",
+    "TestMainIdentityRefusesCorruptionWithoutReplacingPersistedRecord",
+    "TestMainIdentityPropagatesCallerCancellationWithoutCreatingIdentity"
+  ]
+}
