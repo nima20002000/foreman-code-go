@@ -164,7 +164,8 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     })
     return task
   }
-  private async readHistoryResponse(payload: Record<string, unknown>, signal?: AbortSignal) {
+  private async readHistoryResponse(payload: Record<string, unknown>, signal?: AbortSignal)
+    : Promise<{ value: z.infer<typeof HistoryResponseSchema>, receipt: RemoteOperationReceipt }> {
     for (let attempt = 0; ; attempt++) {
       signal?.throwIfAborted()
       try {
@@ -319,10 +320,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       const canReuse: boolean = cached !== undefined && cached.afterSequence === sequence
         && Date.now() - cached.observedAt < 30_000 && isDeepStrictEqual(cached.receipt, this.receipt)
       const observedAt: number = canReuse && cached ? cached.observedAt : Date.now()
-      const { value, receipt } = canReuse && cached
+      const read: { value: z.infer<typeof HistoryResponseSchema>, receipt: RemoteOperationReceipt } = canReuse && cached
         ? { value: { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
           page: cached.page, context: this.context }, receipt: cached.receipt }
         : await this.readHistoryResponse({ afterSequence: sequence, correlationId: input.clientCorrelationId }, signal)
+      const { value, receipt } = read
       this.assertHistoryIdentity(value.history, session, input.clientCorrelationId, receipt)
       const retainedFloor = value.history.firstRetainedSequence ?? 0
       if (sequence + 1 < retainedFloor) {
