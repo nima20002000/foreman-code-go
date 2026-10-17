@@ -19,9 +19,10 @@ var ErrAdmissionFull = errors.New("RUNNER_ADMISSION_FULL")
 // admitted, and its cleanup finishes before work can start.
 type QueueWait func() func()
 
-// ExecutionLimiter is one Run's FIFO native-work capacity. The same instance is
-// shared by graph, interval and Job work. Scheduler barriers and SQL-only terminal
-// settlement do not acquire another slot around work that already uses it.
+// ExecutionLimiter is one Run's FIFO capacity shared by graph Agent and Job
+// work. Interval observations use the native driver without graph-parallelism
+// slots. Scheduler barriers and SQL-only terminal settlement do not acquire
+// another slot around work that already uses this limiter.
 type ExecutionLimiter struct {
 	mu             sync.Mutex
 	maximum        int

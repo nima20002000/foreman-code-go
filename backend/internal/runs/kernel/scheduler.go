@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 var (
@@ -19,6 +20,7 @@ type Invocation struct {
 	ctx      context.Context
 	finished chan struct{}
 	drained  chan struct{}
+	settled  sync.Once
 	err      error
 }
 
@@ -29,19 +31,25 @@ type Invocation struct {
 // and cleanup request. An arbitrary wrapper error is not new Stop authority.
 func (p *Program) Start(ctx context.Context) *Invocation {
 	invocation := &Invocation{ctx: ctx, finished: make(chan struct{}), drained: make(chan struct{})}
+	go invocation.observeCancellation()
 	go invocation.execute(p)
 	return invocation
 }
 
-// Wait observes graph completion or the original context's cancellation. Like
-// repeatRuntime's invocation race, cancellation need not wait for an unresponsive
-// native iterator. The caller can still Drain every callback that actually began.
+// Wait joins the invocation's one settled outcome. Cancellation participates in
+// that race until settlement, independently of an unresponsive native iterator.
+// Later cancellation cannot replace a completed result or change repeated waits.
+// The caller can still Drain every callback that actually began.
 func (i *Invocation) Wait() error {
+	<-i.finished
+	return i.err
+}
+
+func (i *Invocation) observeCancellation() {
 	select {
 	case <-i.finished:
-		return i.err
 	case <-i.ctx.Done():
-		return context.Cause(i.ctx)
+		i.finish(context.Cause(i.ctx))
 	}
 }
 
@@ -190,6 +198,8 @@ func (p *Program) advance(results []stepResult, progress []barrierProgress) []in
 }
 
 func (i *Invocation) finish(err error) {
-	i.err = err
-	close(i.finished)
+	i.settled.Do(func() {
+		i.err = err
+		close(i.finished)
+	})
 }

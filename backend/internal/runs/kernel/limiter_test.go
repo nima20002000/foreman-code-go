@@ -43,7 +43,7 @@ func TestExecutionLimiterRejectsInvalidCapacity(t *testing.T) {
 func TestExecutionLimiterSharesCapacityAcrossWorkKinds(t *testing.T) {
 	limiter := newLimiter(t, 2, 1)
 	agentGate, jobGate := newGate(t), newGate(t)
-	agentStarted, jobStarted, intervalStarted := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	agentStarted, jobStarted, waitingAgentStarted := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	agent := launch(limiter, context.Background(), func() error {
 		close(agentStarted)
 		<-agentGate.channel
@@ -56,16 +56,16 @@ func TestExecutionLimiterSharesCapacityAcrossWorkKinds(t *testing.T) {
 	}, nil)
 	await(t, agentStarted)
 	await(t, jobStarted)
-	intervalWait := newObservation()
-	interval := launch(limiter, context.Background(), func() error {
-		close(intervalStarted)
+	waitingAgentWait := newObservation()
+	waitingAgent := launch(limiter, context.Background(), func() error {
+		close(waitingAgentStarted)
 		return nil
-	}, intervalWait.scope())
-	awaitQueued(t, intervalWait, interval)
-	notSignaled(t, intervalStarted, "interval work exceeded the shared capacity")
+	}, waitingAgentWait.scope())
+	awaitQueued(t, waitingAgentWait, waitingAgent)
+	notSignaled(t, waitingAgentStarted, "waiting graph Agent work exceeded the shared capacity")
 	agentGate.release()
-	await(t, intervalStarted)
-	noError(t, interval)
+	await(t, waitingAgentStarted)
+	noError(t, waitingAgent)
 	noError(t, agent)
 	jobGate.release()
 	noError(t, job)

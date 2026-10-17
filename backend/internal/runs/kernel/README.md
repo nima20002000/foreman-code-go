@@ -2,8 +2,10 @@
 
 `ExecutionLimiter` ports the FIFO, Run-local gate from the frozen
 `apps/api/src/modules/runs/limiter.ts`. Construct one instance for a Run and
-pass it to graph, interval and Job work. Pass the existing configured limits
-explicitly; this package introduces no new default or capacity policy.
+pass it to graph Agent and Job work. Interval checks observe their native driver
+without graph-parallelism slots, as `startIntervalChecks` does. Pass the existing
+configured limits explicitly; this package introduces no new default or capacity
+policy and implements no interval scheduling.
 
 `Run(ctx, work, queued)` preserves the callback's result or error, rejects
 overflow with `RUNNER_ADMISSION_FULL`, withdraws canceled waits, checks
@@ -62,8 +64,10 @@ frozen `admit`/`observe`/`acceptTerminal` distinction and must not relaunch an
 already-completed attempt. These callbacks are execution ports, not new launch
 authority or fake evidence of acceptance.
 
-`Invocation.Wait` can return the original cancellation cause or a wrapper error
-before all native iterators return. The owner retains the invocation and calls
+`Invocation.Wait` joins one settled success, wrapper error or original cancellation
+cause. Cancellation participates until settlement, independently of callback
+drain. Later cancellation cannot replace a stored outcome, and repeated waits
+return that same outcome. The owner retains the invocation and calls
 `Drain` with its existing cleanup context before releasing ownership. Running
 callbacks retain their context and limiter slot until they return. The kernel
 does not classify arbitrary errors as Stop, cancel healthy siblings, choose a
