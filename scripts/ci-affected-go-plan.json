@@ -1,0 +1,36 @@
+{
+  "source": "605ee51feaad7455ba9893f7939e33ed7eb883c2",
+  "package": "./internal/schema",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/schema/session_integration_test.go",
+    "internal/schema/session_settings.go",
+    "internal/schema/startup.go",
+    "internal/schema/startup_test.go"
+  ],
+  "unitRoots": [
+    "TestEmptyDatabaseRequiresCapturedBaseline",
+    "TestNonemptyDatabaseWithoutLedgerIsRejected",
+    "TestCurrentDatabaseIsAcceptedWithoutDump",
+    "TestCurrentDatabaseStillRequiresCheckpointTables",
+    "TestStartupErrorsPreserveRetryCauses",
+    "TestPartiallyMigratedDatabaseIsRejected",
+    "TestUnknownGoMigrationIsRejected"
+  ],
+  "unitPattern": "^(TestEmptyDatabaseRequiresCapturedBaseline|TestNonemptyDatabaseWithoutLedgerIsRejected|TestCurrentDatabaseIsAcceptedWithoutDump|TestCurrentDatabaseStillRequiresCheckpointTables|TestStartupErrorsPreserveRetryCauses|TestPartiallyMigratedDatabaseIsRejected|TestUnknownGoMigrationIsRejected)$",
+  "integration": true,
+  "integrationRoots": [
+    "TestCapturedBaselinePreservesStateAcrossStartupAndRestart",
+    "TestStartupRejectsUnknownNonemptyDatabaseWithoutChangingIt",
+    "TestStartupRejectsIncompleteOrAlteredApplicationHistory",
+    "TestStartupRejectsMissingApplicationLedgerWithoutReplacingIt",
+    "TestStartupAndReadinessRejectMissingCapturedCheckpointTable",
+    "TestNumberedMigrationsApplyOnceAcrossStartupAndRestart",
+    "TestNumberedMigrationsRejectChangedMissingOrUnknownHistory",
+    "TestFailedNumberedMigrationRollsBackHistoryAndPersistedChanges",
+    "TestCapturedBaselinePreservesCallerSearchPath",
+    "TestCapturedBaselinePreservesCallerSessionSettings",
+    "TestCapturedBaselineFailurePreservesCallerSearchPath"
+  ],
+  "integrationPattern": "^(TestCapturedBaselinePreservesStateAcrossStartupAndRestart|TestStartupRejectsUnknownNonemptyDatabaseWithoutChangingIt|TestStartupRejectsIncompleteOrAlteredApplicationHistory|TestStartupRejectsMissingApplicationLedgerWithoutReplacingIt|TestStartupAndReadinessRejectMissingCapturedCheckpointTable|TestNumberedMigrationsApplyOnceAcrossStartupAndRestart|TestNumberedMigrationsRejectChangedMissingOrUnknownHistory|TestFailedNumberedMigrationRollsBackHistoryAndPersistedChanges|TestCapturedBaselinePreservesCallerSearchPath|TestCapturedBaselinePreservesCallerSessionSettings|TestCapturedBaselineFailurePreservesCallerSearchPath)$"
+}
