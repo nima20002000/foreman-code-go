@@ -52,6 +52,7 @@ export interface RemoteNativeManagerOptions {
   readResponseControl?(): Promise<RemoteOwnerControl | undefined>
   authorizeResponseRetry?(command: RemoteOwnerControl): Promise<void>
   observeReceipt(receipt: RemoteOperationReceipt): Promise<void>
+  discardReceipt?(receipt: RemoteOperationReceipt): void
   observeOriginalSource?(receipt: RemoteOperationReceipt, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<void>
 }
 /** Main-side native port, bound once to the accepted host/attempt. No provider credential crosses it. */
@@ -155,8 +156,14 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     minimumSequence = this.receipt?.sequence ?? 0): Promise<RemoteOperationReceipt> {
     const task = this.receiptUpdates.then(async () => {
       const receipt = this.readReceipt(raw, intent, this.receipt)
-      if (receipt.sequence < minimumSequence) throw new Error('Original remote receipt changed')
-      if (this.receipt && receipt.sequence < this.receipt.sequence) return this.receipt
+      if (receipt.sequence < minimumSequence) {
+        this.options.discardReceipt?.(receipt)
+        throw new Error('Original remote receipt changed')
+      }
+      if (this.receipt && receipt.sequence < this.receipt.sequence) {
+        this.options.discardReceipt?.(receipt)
+        return this.receipt
+      }
       await this.options.observeReceipt(receipt)
       this.receipt = receipt
       return receipt

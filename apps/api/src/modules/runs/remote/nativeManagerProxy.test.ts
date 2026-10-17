@@ -54,6 +54,7 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   const cursors: Array<number | undefined> = []
   const observeOriginalSource = vi.fn<NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>>(async () => {})
   const observedReceipts: Array<ReturnType<typeof RemoteOperationReceiptSchema.parse>> = []
+  const discardedReceipts: Array<ReturnType<typeof RemoteOperationReceiptSchema.parse>> = []
   const controlFor = vi.fn<RemoteNativeManagerOptions['controlFor']>(async () => {
     throw new Error('No native control requested')
   })
@@ -69,13 +70,14 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
     return reply
   })
   const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
-    transport: { request }, observeReceipt: async value => { observedReceipts.push(value) }, observeOriginalSource,
+    transport: { request }, observeReceipt: async value => { observedReceipts.push(value) },
+    discardReceipt: value => { discardedReceipts.push(value) }, observeOriginalSource,
     controlFor,
   })
   const start = { correlationId: 'execution:execution', request: { executionId: 'execution', runId: 'run',
     workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', runtimeDirectory: '/runtime',
     configuration, input: {} } }
-  return { proxy, start, request, cursors, controlFor, observeOriginalSource, receipt, observedReceipts }
+  return { proxy, start, request, cursors, controlFor, observeOriginalSource, receipt, observedReceipts, discardedReceipts }
 }
 
 function terminal(events: NativeHarnessEvent[]): NativeHistory {
@@ -174,6 +176,7 @@ describe('remote native history streaming', () => {
       expect(f.request.mock.calls.filter(([method]) => method === 'history')).toHaveLength(2)
       expect(f.observedReceipts.map(receipt => receipt.sequence)).toEqual([1, 1, 2, 2].slice(
         operation === 'history' ? 1 : 0))
+      expect(f.discardedReceipts.map(receipt => receipt.sequence)).toEqual([1])
       expect(f.controlFor).not.toHaveBeenCalled()
     })
 

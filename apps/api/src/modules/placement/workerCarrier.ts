@@ -69,13 +69,20 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
     throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native manager allocation requires the accepted Agent configuration.', 409)
   }
-  const sources = new Map<string, Array<{
-    connection: DeviceConnectionIdentity; response: unknown; observing: boolean
-  }>>()
+  const sources = new Map<string, Array<{ connection: DeviceConnectionIdentity; response: unknown }>>()
+  let pendingSources = 0
   const workerExecution = options.workerExecution ?? new WorkerExecutionPolicy()
   // The Worker boot this manager last reached; only a reconnect of that boot may receive a replay.
   let reached: DeviceConnectionIdentity | undefined
   const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
+  const takeSource = (receipt: RemoteOperationReceipt) => {
+    const key = receiptKey(receipt)
+    const pending = sources.get(key)
+    const original = pending?.shift()
+    if (pending?.length === 0) sources.delete(key)
+    if (!original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
+    return original
+  }
   return new RemoteNativeSessionManager({ intent: binding.intent, placement: binding.placement, harness: context.harness,
     configuration: context.configuration, controlFor: options.controlFor,
     ...(options.readResponseControl ? { readResponseControl: options.readResponseControl } : {}),
@@ -116,13 +123,14 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         return next.payload
       }, signal)
       const receipt = receiptFromResponse(response)
-      // Metadata continuations use the first page's receipt and are not observed separately.
+      // History continuations supply bytes for the first page's observation, not another receipt observation.
       if (receipt && !(request.method === 'history' && request.metadata)) {
+        if (pendingSources >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
         const key = receiptKey(receipt)
-        if (!sources.has(key) && sources.size >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
         const pending = sources.get(key) ?? []
-        pending.push({ connection: connection.identity, response, observing: false })
+        pending.push({ connection: connection.identity, response })
         sources.set(key, pending)
+        pendingSources++
       }
       return response
     },
@@ -132,19 +140,16 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       await options.carrier.reconnect(hostRef.deviceId, reached, error, signal)
       return true
     } },
+    discardReceipt: receipt => {
+      takeSource(receipt)
+      pendingSources--
+    },
     observeReceipt: async receipt => {
-      const key = receiptKey(receipt)
-      const pending = sources.get(key)
-      const original = pending?.find(source => !source.observing)
-      if (!pending || !original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
-      original.observing = true
+      const original = takeSource(receipt)
       try {
         const result = await VerifiedRemoteEvidence.commit(receipt, original.connection, await options.commit(receipt, original.connection, original.response))
         if (result === 'rejected') throw new DomainError('REMOTE_OBSERVATION_REJECTED', 'Main ownership rejected the original worker receipt.', 409)
-      } finally {
-        pending.splice(pending.indexOf(original), 1)
-        if (!pending.length) sources.delete(key)
-      }
+      } finally { pendingSources-- }
     },
   })
 }
