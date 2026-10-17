@@ -111,9 +111,10 @@ it('answers heartbeats and keeps serving a recently authorized link while its au
   const read = deferred()
   f.setValidation(() => read.promise)
   try {
+    // Synchronous draining answers the queued ping before reconciliation announces Main readiness.
     expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong')).toEqual([
-      expect.objectContaining({ type: 'pong', mainReady: true }),
       expect.objectContaining({ type: 'pong' }),
+      expect.objectContaining({ type: 'pong', mainReady: true }),
     ])
     const requests = Array.from({ length: 8 }, (_, index) =>
       f.worker.request('test-echo', { index }).catch((error: unknown) => error))
@@ -121,7 +122,7 @@ it('answers heartbeats and keeps serving a recently authorized link while its au
     expect(f.worker.status()).toMatchObject({ phase: 'ready', generation: 1 })
     expect(f.endpoint.currentBinding(f.identity.deviceId)).toEqual(f.binding)
     expect(f.connections[0]!.main.frames.filter(frame => frame.type === 'pong').map(frame => frame.mainReady))
-      .toEqual([true, undefined, undefined, undefined])
+      .toEqual([undefined, true, undefined, undefined])
     expect(f.revalidate).toHaveBeenCalledTimes(1)
     expect(await Promise.all(requests)).toEqual(Array.from({ length: 8 }, (_, index) => ({ payload: { index } })))
     await vi.advanceTimersByTimeAsync(120_000)
