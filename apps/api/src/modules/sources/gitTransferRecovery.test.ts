@@ -229,3 +229,38 @@ it('recovers clone staging when the API exits as the clone command returns', asy
     await rm(f.root, { recursive: true, force: true })
   }
 })
+
+it('preserves live completed staging across competing publication and removes its recovery record afterward', async () => {
+  const f = await recoveryFixture()
+  const entered = deferred()
+  const resume = deferred()
+  let preparing: Promise<string> | undefined
+  let staging: string | undefined
+  try {
+    const signal = AbortSignal.timeout(30_000)
+    const held: GitWorktreePorts = { cloneDirectory: f.ports.cloneDirectory, git: async (args, options) => {
+      const result = await f.ports.git(args, options)
+      if (args[0] === 'clone' && result.code === 0) {
+        staging = args.at(-1)!
+        entered.resolve()
+        await resume.promise
+      }
+      return result
+    } }
+    preparing = ensureClone(held, 'fixture/project', signal)
+    await entered.promise
+    const clone = await ensureClone(f.ports, 'fixture/project', signal)
+    expect(await readFile(join(staging!, '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n')
+    expect(JSON.parse(await readFile(join(f.cache, 'storage.json'), 'utf8'))).toMatchObject({ reservedBytes: 0 })
+    resume.resolve()
+    await expect(preparing).resolves.toBe(clone)
+    const successor = await f.commit('after competing publication')
+    await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+    expect((await readdir(f.cache)).filter(name => /\.(?:reservation|staging)$/u.test(name))).toEqual([])
+    expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+  } finally {
+    resume.resolve()
+    await preparing
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
