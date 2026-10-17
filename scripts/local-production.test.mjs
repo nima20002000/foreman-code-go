@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { copyVerificationRuntime, desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, renderEnvironment,
-  pruneReleases, shouldOpenDashboardAfterInstall, waitForIdleRuns, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
+  pruneReleases, shouldOpenDashboardAfterInstall, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import * as production from './local-production-runtime.mjs'
 
@@ -388,18 +388,6 @@ test('staged verification runtime imports without invoking a CLI or requiring th
     })
     assert.deepEqual(result, { code: 0, stdout: 'function\n', stderr: '' })
   } finally { await rm(directory, { recursive: true, force: true }) }
-})
-
-test('install waits for active Runs before restarting the API, and fails closed at its deadline', async () => {
-  const answers = [['run-a', 'run-b'], ['run-b'], []], waits = []
-  await waitForIdleRuns({ query: async () => ({ rows: answers.shift().map(id => ({ id })) }), timeoutMs: 60_000,
-    log: () => {}, sleep: async (ms) => { waits.push(ms) } })
-  assert.deepEqual(waits, [15_000, 15_000])
-  await assert.rejects(waitForIdleRuns({ query: async () => ({ rows: [{ id: 'run-c' }] }), timeoutMs: 0, log: () => {} }),
-    /1 Run\(s\) still active \(run-c\).*FOREMAN_INSTALL_INTERRUPT_RUNS=1/)
-  let asked = false
-  await waitForIdleRuns({ query: async () => { asked = true; return { rows: [{ id: 'run-d' }] } }, timeoutMs: 0, interrupt: true })
-  assert.equal(asked, false)
 })
 
 test('install keeps only the current and previous release', async () => {

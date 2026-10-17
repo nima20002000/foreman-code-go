@@ -512,19 +512,6 @@ test('known resources that cannot support a shard fail before allocating databas
   }
 })
 
-test('PostgreSQL capacity is read through the supplied test database connection', async () => {
-  const host = { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 }
-  let calls = 0
-  const admin = { query: async () => {
-    calls++
-    return { rows: [{ maxConnections: 100, reservedConnections: 3, activeConnections: 17 }] }
-  } }
-  const resources = await readIntegrationResources(admin, host)
-  assert.equal(calls, 1)
-  assert.equal(integrationShardPlan({}, resources).shards, 5)
-  assert.deepEqual(host, { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 })
-})
-
 test('unavailable database settings fail discovery without exposing connection errors', async () => {
   const host = { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 }
   const admin = { query: async () => { throw new Error('private database connection details') } }

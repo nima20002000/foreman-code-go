@@ -78,6 +78,7 @@ if (args.includes('down')) {
       ...(database.memory ? { FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES: String(database.memory) } : {}) }
     return {
       runId,
+      templateCache: () => readFileSync(join(temporary, 'test-database-template-cache'), 'utf8'),
       up() {
         const result = spawnSync(process.execPath, [script, 'up'], { env, encoding: 'utf8' })
         assert.equal(result.status, 0, result.stderr)
@@ -144,5 +145,11 @@ test('a job whose TMPDIR is replaced still finds the persistent template cache',
   const host = computer(t)
   const job = host.job()
   job.up()
-  assert.notEqual(job.wrappedTemplateCache(), 'none')
+  const expected = job.templateCache()
+  assert.ok(expected.length > 0)
+  assert.equal(job.wrappedTemplateCache(), expected)
+  const nextJob = host.job()
+  nextJob.up()
+  assert.equal(nextJob.templateCache(), expected)
+  assert.equal(nextJob.wrappedTemplateCache(), expected)
 })

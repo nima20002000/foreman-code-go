@@ -6,6 +6,11 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
+const require = createRequire(new URL('../../api/package.json', import.meta.url));
+const { tsImport } = await import(require.resolve('tsx/esm/api'));
+const { loadOrCreateWorkerIdentity, persistWorkerPairing, loadWorkerPairing } =
+  await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
 import { installVersion, rollbackVersion, requireReleaseState } from '../src/installation.mjs';
 import { doctorReport, persistentFilesystems } from '../src/diagnostics.mjs';
 import { startWorker, readWorkerStatus, acquireWorkerLock } from '../src/runtime.mjs';
@@ -99,17 +104,32 @@ test('rollback requires the retained target runtime and leaves the current link 
 });
 
 test('verified update and rollback preserve identity outside versions; repeated install is idempotent', async (t) => {
-  const f = await fixture(t); await mkdir(f.root, { mode: 0o700 });
-  await writeFile(join(f.root, 'identity.json'), 'unchanged');
+  const f = await fixture(t);
+  const identity = await loadOrCreateWorkerIdentity(f.stateDirectory);
+  const pairing = { formatVersion: 1, mainId: '11111111-1111-4111-8111-111111111111',
+    deviceId: '22222222-2222-4222-8222-222222222222', workerInstallationId: identity.workerInstallationId,
+    keyRevision: identity.keyRevision, authorizationRevision: 1, endpoint: 'ws://127.0.0.1/carrier',
+    mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: '2126-01-01T00:00:00Z' };
+  await persistWorkerPairing(f.stateDirectory, pairing);
+  const records = await Promise.all(['identity.json', 'pairing.json']
+    .map(name => readFile(join(f.stateDirectory, name))));
+  const assertIdentity = async () => {
+    assert.deepEqual(await Promise.all(['identity.json', 'pairing.json']
+      .map(name => readFile(join(f.stateDirectory, name)))), records);
+    assert.deepEqual(await loadOrCreateWorkerIdentity(f.stateDirectory), identity);
+    assert.deepEqual(await loadWorkerPairing(f.stateDirectory), pairing);
+  };
   await installVersion(f); await installVersion(f);
+  await assertIdentity();
   const first = await readlink(join(f.root, 'current'));
   f.manifest.version = '1.1.0'; f.approvedManifestSha256 = await f.save();
   await assert.rejects(installVersion(f), /update_not_approved/);
   await installVersion({ ...f, updatePolicy: async () => true });
+  await assertIdentity();
   assert.notEqual(await readlink(join(f.root, 'current')), first);
   await rollbackVersion({ root: f.root, stateDirectory: f.stateDirectory, approveStop: async () => true, facts, expected });
   assert.equal(await readlink(join(f.root, 'current')), first);
-  assert.equal(await readFile(join(f.root, 'identity.json'), 'utf8'), 'unchanged');
+  await assertIdentity();
 });
 
 test('bad manifest checksum and modified file leave current untouched', async (t) => {

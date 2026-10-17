@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
-  readCommittedWorkerTargets, workerPublicationServiceTemplate } from './worker-release-artifacts.mjs'
+  readCommittedWorkerTargets, runWorkerPublicationCommand, workerPublicationServiceTemplate } from './worker-release-artifacts.mjs'
 import { WorkerArtifactIndexSchema } from '../packages/contracts/src/workerUpdate.ts'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -68,6 +68,35 @@ setInterval(() => {}, 100)
     repositoryName: 'example/worker', commit: f.commit, run: f.run, publish: async () => github })
   assert.deepEqual(recovered.github, github)
   assert.equal(JSON.parse(await readFile(join(f.directory, 'index.json'))).publication.state, 'published')
+})
+
+test('publication timeout kills TERM-ignoring parent and descendant before completing', async t => {
+  const root = await mkdtemp(join(homedir(), '.cache', 'foreman-tmp', 'publication-processes-'))
+  const pids = join(root, 'pids.json')
+  t.after(async () => {
+    try {
+      for (const pid of JSON.parse(await readFile(pids, 'utf8'))) {
+        try { process.kill(pid, 'SIGKILL') }
+        catch (error) { if (error.code !== 'ESRCH') throw error }
+      }
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+  const descendant = `process.on('SIGTERM', () => {});
+    require('node:fs').writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.ppid, process.pid]));
+    setInterval(() => {}, 100);`
+  const parent = `process.on('SIGTERM', () => {});
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio: 'ignore'});
+    setInterval(() => {}, 100);`
+  await assert.rejects(runWorkerPublicationCommand(process.execPath, ['-e', parent],
+    { timeoutMs: 1000, killGraceMs: 100 }), /WORKER_PUBLICATION_COMMAND_DEADLINE_EXCEEDED/)
+  const processes = JSON.parse(await readFile(pids, 'utf8'))
+  assert.equal(processes.length, 2)
+  for (const pid of processes) {
+    try {
+      const status = await readFile(`/proc/${pid}/stat`, 'utf8')
+      assert.equal(status.slice(status.lastIndexOf(') ') + 2).split(' ')[0], 'Z')
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+  }
 })
 
 test('publication unit timeouts retain a failure and restart after a bounded delay', async t => {

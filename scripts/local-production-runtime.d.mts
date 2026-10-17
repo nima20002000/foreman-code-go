@@ -19,3 +19,12 @@ export function buildProductionSource<T = undefined>(
   run: (command: string, args: string[]) => Promise<unknown>,
   options?: { stage: () => Promise<T> },
 ): Promise<T>
+
+export function waitForIdleRuns(options: {
+  query: (text: string) => Promise<{ rows: { id: string }[] }>
+  timeoutMs: number
+  pollMs?: number
+  interrupt?: boolean
+  log?: (message: string) => void
+  sleep?: (milliseconds: number) => Promise<void>
+}): Promise<void>
