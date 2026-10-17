@@ -1,0 +1,12 @@
+{
+  "source": "dda649a1cdf53dd175c202ba9d7d4e3a50cba85e",
+  "sourceTree": "6570a7995e5fb44c9eb98b9886985ae18d3ac643",
+  "package": "./internal/commands",
+  "goFiles": [
+    "internal/commands/retention_test.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "mode": "format-only",
+  "nodeTests": []
+}
