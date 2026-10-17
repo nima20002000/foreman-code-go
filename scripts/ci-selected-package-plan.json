@@ -1,0 +1,39 @@
+{
+  "source": "0c9a63ab13686cd287c42686a67e320f42d40597",
+  "sourceTree": "17f250da9c815699ecc719154ad96355a57f1c68",
+  "package": "./internal/harnesses/discovery",
+  "goFiles": [
+    "internal/harnesses/discovery/access_other.go",
+    "internal/harnesses/discovery/access_unix.go",
+    "internal/harnesses/discovery/fingerprint.go",
+    "internal/harnesses/discovery/fingerprint_darwin.go",
+    "internal/harnesses/discovery/fingerprint_linux.go",
+    "internal/harnesses/discovery/fingerprint_other.go",
+    "internal/harnesses/discovery/fingerprint_test.go",
+    "internal/harnesses/discovery/launcher.go",
+    "internal/harnesses/discovery/launcher_test.go",
+    "internal/harnesses/discovery/types.go"
+  ],
+  "unitTests": [
+    "TestFingerprintFollowsAliasesAndRetargetedSymlinks",
+    "TestFingerprintDetectsSameSizeWritesWithRestoredMtime",
+    "TestFingerprintDetectsReplacementInodeWithEqualSizeAndMtime",
+    "TestFingerprintRejectsSupersededObservation",
+    "TestFingerprintRejectsRemovedCachedFileAndDirectories",
+    "TestFingerprintRejectsCanceledCacheRead",
+    "TestDiscoveryUsesCapturedTargetEnvironmentWithoutExecuting",
+    "TestDiscoveryDoesNotSearchRelativePATHEntries",
+    "TestDiscoveryDoesNotReplaceExplicitMissingLauncher",
+    "TestDiscoveryResolvesExplicitRelativeLauncherAgainstTargetCwd",
+    "TestDiscoveryDistinguishesUnavailableLauncherEvidence",
+    "TestDiscoveryResolvesEnvInterpreterOnlyFromTargetPATH",
+    "TestDiscoveryRejectsEnvShebangOptions",
+    "TestDiscoveryFingerprintsReadablePayloadsInSuppliedOrder",
+    "TestDiscoveryUsesNativeJSONStringifyFingerprint",
+    "TestDiscoveryPropagatesCancellationWithoutInstalledEvidence",
+    "TestDiscoveryDoesNotClaimInstalledWhenExplicitPayloadIsMissing"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "mode": "package"
+}
