@@ -28,7 +28,7 @@ it.each(['github', 'circleci'] as const)('retains %s ownership and refs until ev
   await reopened.waitForMirrorCleanup('octo/site', 'octo/site-ci')
   expect(f.mirrorGit('for-each-ref', '--format=%(refname)', `refs/heads/ci/${f.commit}`)).toBe('')
   expect(provider === 'github' ? f.github.canceled : f.circle.canceled)
-    .toEqual(provider === 'github' ? ['91'] : ['run-1', 'run-1'])
+    .toEqual(provider === 'github' ? ['91'] : ['run-1'])
 })
 
 it('retains ownership when terminal status cannot be read after cancellation', async () => {
