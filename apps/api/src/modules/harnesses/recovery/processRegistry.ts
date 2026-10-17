@@ -20,7 +20,7 @@ import { nativeAgentEnvironment } from '../secrets.js'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 import { archivedClosure, archivedRetirement } from './registryArchive.js'
-import { prepareRegistryRetirement, pruneClosedObservation } from './registryRetirement.js'
+import { prepareRegistryRetirement, pruneClosedObservation, retireRegistrations } from './registryRetirement.js'
 import { NativeRegistryRetention } from './nativeRetention.js'
 
 export interface NativeProcessRecovery {
@@ -199,7 +199,8 @@ function closedObservation(directory: string, owner: string, id: string): Native
   return Object.freeze(raw as NativeLaunchObservation)
 }
 
-function retireRegistration(directory: string, launch: LaunchRecord): void {
+function retireRegistration(directory: string, launch: LaunchRecord,
+  batch?: Map<string, NativeLaunchObservation>): void {
   if (!closedRecord(directory, launch)) throw new Error('Unconfirmed native registrations cannot be retired.')
   const ownerDirectory = dirname(directory)
   const observation = nativeRegistryProjection(dirname(ownerDirectory)).retirementObservation(directory)
@@ -229,24 +230,15 @@ function retireRegistration(directory: string, launch: LaunchRecord): void {
     if (boundary) retireCgroup(boundary)
   }
   publishRetirement(directory)
-  // One compact receipt preserves "known closed" versus "no evidence" after GC.
-  writeRecord(join(ownerDirectory, `closed-${launch.id}.json`), observation)
-  writeRecord(join(ownerDirectory, 'retired.json'), {
-    format: 2, owner: launch.owner, id: launch.id, observation,
-  })
-  const retired = join(ownerDirectory, `.retired-${launch.id}`)
-  renameSync(directory, retired)
-  syncDirectory(ownerDirectory)
-  // The durable rename is the GC commit point. A crash during deletion leaves
-  // only a tombstone; it can never reappear as an unresolved launch.
-  rmSync(retired, { recursive: true })
-  syncDirectory(ownerDirectory)
+  if (batch) batch.set(launch.id, observation)
+  else retireRegistrations(ownerDirectory, new Map([[launch.id, observation]]))
 }
 
-function confirmClosed(directory: string, launch: LaunchRecord, evidence: ClosureEvidence): void {
+function confirmClosed(directory: string, launch: LaunchRecord, evidence: ClosureEvidence,
+  batch?: Map<string, NativeLaunchObservation>): void {
   writeRecord(join(directory, 'closed.json'), { format: 2, id: launch.id, owner: launch.owner, boot: launch.boot,
     observedAt: new Date().toISOString(), evidence })
-  retireRegistration(directory, launch)
+  retireRegistration(directory, launch, batch)
 }
 
 function unstartedGuardianAlive(directory: string, launch: LaunchRecord): boolean {
@@ -272,47 +264,50 @@ async function waitForUnstartedGuardian(directory: string, launch: LaunchRecord,
 function inventory(directory: string, owner: string): string[] {
   return nativeRegistryProjection(dirname(directory)).retirementBatch(() => {
     const ids: string[] = []
-    for (const id of readdirSync(directory)) {
-      if (id === 'retired.json') { retiredOwner(directory, owner); continue }
-      const closed = /^closed-([0-9a-f-]{36})\.json$/.exec(id)
-      if (closed) { pruneClosedObservation(directory, closed[1]!); continue }
-      if (id === 'closed') { privateDirectory(join(directory, id)); continue }
-      if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
-        privateDirectory(join(directory, id))
-        rmSync(join(directory, id), { recursive: true })
-        syncDirectory(directory)
-        continue
-      }
-      // storage.writeRecord may leave a private temporary receipt after a crash.
-      // It is not a registration or closure proof; a live writer may still own it.
-      if (/^\.pending-[0-9a-f-]{36}$/.test(id)) continue
-      if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Unexpected native process inventory entry.')
-      const path = privateDirectory(join(directory, id))
-      const launch = launchRecord(readRecord(join(path, 'intent.json')))
-      if (launch.owner !== owner || launch.id !== id) throw new Error('Native owner inventory mismatch.')
-      const alreadyClosed = closedRecord(path, launch)
-      const notStarted = readRecord(join(path, 'not-started.json'))
-      if (alreadyClosed && (notStarted === undefined || readRecord(join(path, 'birth.json')) !== undefined
-        || !unstartedGuardianAlive(path, launch))) {
-        retireRegistration(path, launch)
-        continue
-      }
-      if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed'); continue }
-      if (notStarted !== undefined) {
-        const row = recordObject(notStarted)
-        if (row.id !== id || row.owner !== owner || readRecord(join(path, 'birth.json')) !== undefined) {
-          throw new Error('Conflicting native startup evidence.')
-        }
-        if (!unstartedGuardianAlive(path, launch)) {
-          if (alreadyClosed) retireRegistration(path, launch)
-          else confirmClosed(path, launch, 'native_not_started')
+    const closures = new Map<string, NativeLaunchObservation>()
+    try {
+      for (const id of readdirSync(directory)) {
+        if (id === 'retired.json') { retiredOwner(directory, owner); continue }
+        const closed = /^closed-([0-9a-f-]{36})\.json$/.exec(id)
+        if (closed) { pruneClosedObservation(directory, closed[1]!); continue }
+        if (id === 'closed') { privateDirectory(join(directory, id)); continue }
+        if (/^\.retired-[0-9a-f-]{36}$/.test(id)) {
+          privateDirectory(join(directory, id))
+          rmSync(join(directory, id), { recursive: true })
+          syncDirectory(directory)
           continue
         }
+        // storage.writeRecord may leave a private temporary receipt after a crash.
+        // It is not a registration or closure proof; a live writer may still own it.
+        if (/^\.pending-[0-9a-f-]{36}$/.test(id)) continue
+        if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Unexpected native process inventory entry.')
+        const path = privateDirectory(join(directory, id))
+        const launch = launchRecord(readRecord(join(path, 'intent.json')))
+        if (launch.owner !== owner || launch.id !== id) throw new Error('Native owner inventory mismatch.')
+        const alreadyClosed = closedRecord(path, launch)
+        const notStarted = readRecord(join(path, 'not-started.json'))
+        if (alreadyClosed && (notStarted === undefined || readRecord(join(path, 'birth.json')) !== undefined
+          || !unstartedGuardianAlive(path, launch))) {
+          retireRegistration(path, launch, closures)
+          continue
+        }
+        if (launch.boot !== bootIdentity()) { confirmClosed(path, launch, 'linux_boot_changed', closures); continue }
+        if (notStarted !== undefined) {
+          const row = recordObject(notStarted)
+          if (row.id !== id || row.owner !== owner || readRecord(join(path, 'birth.json')) !== undefined) {
+            throw new Error('Conflicting native startup evidence.')
+          }
+          if (!unstartedGuardianAlive(path, launch)) {
+            if (alreadyClosed) retireRegistration(path, launch, closures)
+            else confirmClosed(path, launch, 'native_not_started', closures)
+            continue
+          }
+        }
+        ids.push(id)
+        if (ids.length > 10_000) throw new Error('Native recovery inventory exceeds its unresolved-work scan limit.')
       }
-      ids.push(id)
-      if (ids.length > 10_000) throw new Error('Native recovery inventory exceeds its unresolved-work scan limit.')
-    }
-    return ids
+      return ids
+    } finally { retireRegistrations(directory, closures) }
   })
 }
 

@@ -1,4 +1,5 @@
 import { isRecord } from '../../../shared/records.js'
+import { spawnSync } from 'node:child_process'
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync,
   openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, type Stats } from 'node:fs'
 import { basename, dirname, join, parse, resolve, sep } from 'node:path'
@@ -128,6 +129,31 @@ export function writeRecord(path: string, value: unknown, immutable = false): vo
   if (failure !== undefined) throw failure
   syncDirectory(directory)
   recordWritten(path)
+}
+
+/** Linux batches use the host sync utility's syncfs operation for one data barrier.
+ * Publish names durably before notifying readers or allowing source records to be removed. */
+export function writeRecordBatch(directory: string, records: ReadonlyMap<string, unknown>): void {
+  if (!records.size) return
+  const parent = privateDirectory(directory)
+  const pending: { temporary: string; path: string }[] = []
+  for (const [name, value] of records) {
+    if (basename(name) !== name) throw new Error('Recovery batch records must share one directory.')
+    const data = JSON.stringify(value)
+    if (Buffer.byteLength(data) > 64 * 1024) throw new Error('Recovery record exceeds its size limit.')
+    const temporary = join(parent, `.pending-${randomUUID()}`)
+    const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+    try { writeFileSync(fd, data) } finally { closeSync(fd) }
+    pending.push({ temporary, path: join(parent, name) })
+  }
+  // Directory fsync alone does not guarantee new file contents. Node has no syncfs API;
+  // sync -f flushes this filesystem's data and metadata without per-file journal waits.
+  const synced = spawnSync('sync', ['-f', parent], { encoding: 'utf8' })
+  if (synced.error) throw synced.error
+  if (synced.status !== 0) throw new Error(`Recovery batch filesystem sync failed: ${synced.stderr}`)
+  for (const { temporary, path } of pending) renameSync(temporary, path)
+  syncDirectory(parent)
+  for (const { path } of pending) recordWritten(path)
 }
 
 export function recordObject(value: unknown): Record<string, unknown> {

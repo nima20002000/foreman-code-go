@@ -1,11 +1,38 @@
 import { createHash } from 'node:crypto'
-import { lstatSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { lstatSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
-import { nativeRegistryProjection } from './registryObservation.js'
-import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
+import { nativeRegistryProjection, type NativeLaunchObservation } from './registryObservation.js'
+import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory,
+  writeRecord, writeRecordBatch } from './storage.js'
+
+/** Preserve every closure before committing a batch of registration removals. */
+export function retireRegistrations(directory: string, observations: ReadonlyMap<string, NativeLaunchObservation>): void {
+  const records = new Map<string, unknown>()
+  let last: NativeLaunchObservation | undefined
+  for (const [id, observation] of observations) {
+    records.set(`closed-${id}.json`, observation)
+    last = observation
+  }
+  if (!last) return
+  // The owner summary needs only the final closure; exact retries use the individual receipts.
+  records.set('retired.json', { format: 2, owner: last.owner, id: last.launchId, observation: last })
+  if (observations.size === 1) {
+    for (const [name, value] of records) writeRecord(join(directory, name), value)
+  } else {
+    writeRecordBatch(directory, records)
+  }
+  for (const id of observations.keys()) {
+    renameSync(join(directory, id), join(directory, `.retired-${id}`))
+  }
+  syncDirectory(directory)
+  // The durable renames are the GC commit point. A crash during deletion leaves
+  // only tombstones; registrations cannot reappear as unresolved launches.
+  for (const id of observations.keys()) rmSync(join(directory, `.retired-${id}`), { recursive: true })
+  syncDirectory(directory)
+}
 
 // Keep fresh closure certificates in place for in-flight recovery and retries.
 const closureRetentionMs = 24 * 60 * 60 * 1000
