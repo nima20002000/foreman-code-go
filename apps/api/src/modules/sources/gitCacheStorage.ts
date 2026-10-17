@@ -13,6 +13,10 @@ import type { GitProcessOptions, GitProcessResult } from './gitProcess.js'
 
 type GitRunner = (args: string[], options: GitProcessOptions) => Promise<GitProcessResult>
 
+// Config writes already hold the common-directory lock in ensureWorktreeGitIdentity.
+const commandsWithoutRefWrites = new Set(['init', 'config', 'rev-parse', 'cat-file', 'rev-list', 'ls-remote',
+  'hash-object', 'diff', 'show', 'status', 'ls-files', 'ls-tree', 'merge-base', 'log', 'check-ref-format', 'version'])
+
 function commandIndex(args: string[]): number {
   let index = 0
   while (args[index]?.startsWith('-')) {
@@ -70,7 +74,7 @@ async function removeIncompletePacks(common: string, before: string[]): Promise<
   }
 }
 
-/** The common-directory lock outlives every fetch writer, so these locks have no remaining owner. */
+/** All ref writers inherit the common-directory lock, so recovery waits for their processes to exit. */
 async function removeFetchLocks(common: string): Promise<void> {
   for (const name of ['shallow.lock', 'FETCH_HEAD.lock', 'packed-refs.lock']) {
     await rm(resolve(common, name), { force: true })
@@ -96,6 +100,21 @@ function boundedArgs(args: string[], index: number): string[] {
   return ['-c', 'fetch.unpackLimit=1', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
     '-c', 'fetch.writeCommitGraph=false', '-c', 'pack.writeReverseIndex=false', '-c', 'fetch.uriprotocols=',
     ...args.slice(0, index + 1), ...flags, ...args.slice(index + 1)]
+}
+
+async function runRefWriter(args: string[], index: number, options: GitProcessOptions,
+  run: GitRunner): Promise<GitProcessResult> {
+  const located = await run([...args.slice(0, index), 'rev-parse', '--path-format=absolute', '--git-common-dir'], options)
+  if (located.code !== 0) return located
+  const common = located.stdout.trim()
+  if (!isAbsolute(common)) throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git cache identity is unavailable.', 409)
+  const repository = await openPrivateRoot(common, false)
+  try {
+    return await withPrivateDirectoryLock(repository, guard => run(args, { ...options, lockFd: guard.fd }),
+      { signal: options.signal })
+  } finally {
+    await repository.close()
+  }
 }
 
 /** Start time of a process, so a reused process id is not mistaken for the reservation's owner. */
@@ -232,7 +251,10 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
   run: GitRunner): Promise<GitProcessResult> {
   const index = commandIndex(args)
   const command = args[index]
-  if (command !== 'clone' && command !== 'fetch') return run(args, options)
+  if (command !== 'clone' && command !== 'fetch') {
+    if (!command || commandsWithoutRefWrites.has(command)) return run(args, options)
+    return runRefWriter(args, index, options, run)
+  }
   options.signal.throwIfAborted()
   let target: string
   let common: string

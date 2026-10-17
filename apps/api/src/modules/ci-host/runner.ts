@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -31,6 +32,7 @@ type Command = { code: number; stdout: string; stderr: string; /** The command w
 export interface HostCiPorts {
   run(file: string, args: readonly string[], options?: {
     cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal | undefined
+    lockFd?: number | undefined
   }): Promise<Command>
   now(): Date
   cpus: number
@@ -47,7 +49,7 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
   return {
     run: (file, args, options = {}) => {
       const env = withoutCliTelemetry(file, options.env ?? environment)
-      if (options.signal) return runPreparationCommand(file, args, { ...options, env, signal: options.signal })
+      if (options.signal || options.lockFd !== undefined) return runPreparationCommand(file, args, { ...options, env })
       return new Promise<Command>(resolve => {
         execFile(file, [...args], { cwd: options.cwd, env, timeout: options.timeoutMs ?? 600_000,
           maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
@@ -69,12 +71,14 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
 
 /** Cancellation kills the process group and resolves only after the child and its pipes close. */
 function runPreparationCommand(file: string, args: readonly string[], options: {
-  cwd?: string; env: NodeJS.ProcessEnv; timeoutMs?: number; signal: AbortSignal
+  cwd?: string; env: NodeJS.ProcessEnv; timeoutMs?: number; signal?: AbortSignal | undefined
+  lockFd?: number | undefined
 }): Promise<Command> {
   return new Promise(resolve => {
-    if (options.signal.aborted) return resolve({ code: 1, stdout: '', stderr: 'CI preparation canceled.' })
+    if (options.signal?.aborted) return resolve({ code: 1, stdout: '', stderr: 'CI preparation canceled.' })
     const child = spawn(file, [...args], { cwd: options.cwd, env: options.env,
-      detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      detached: true, stdio: ['ignore', 'pipe', 'pipe',
+        ...(options.lockFd !== undefined ? [options.lockFd] : [])] })
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -98,8 +102,8 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
       timedOut = true
       stop()
     }, options.timeoutMs ?? 600_000)
-    options.signal.addEventListener('abort', stop, { once: true })
-    if (options.signal.aborted) stop()
+    options.signal?.addEventListener('abort', stop, { once: true })
+    if (options.signal?.aborted) stop()
     const collect = (text: string, chunk: string) => {
       const output = text + chunk
       if (output.length <= 16 * 1024 * 1024) return output
@@ -107,8 +111,8 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
       stop()
       return text
     }
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = collect(stdout, chunk) })
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr = collect(stderr, chunk) })
+    child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout = collect(stdout, chunk) })
+    child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr = collect(stderr, chunk) })
     child.once('error', error => { failure = error })
     child.once('close', code => {
       clearTimeout(timer)
@@ -116,7 +120,7 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
         signalGroup('SIGKILL')
         clearTimeout(killTimer)
       }
-      options.signal.removeEventListener('abort', stop)
+      options.signal?.removeEventListener('abort', stop)
       resolve({ code: failure ? 1 : code ?? 1, stdout, stderr: failure?.message ?? stderr,
         ...(timedOut ? { timedOut: true } : {}) })
     })
@@ -208,6 +212,7 @@ export class HostCiRunner {
   private startQueue = Promise.resolve()
   private pendingRealStarts = 0
   private startingRun: CiHostRun | null = null
+  private readonly repositoryLock = new AsyncLocalStorage<number>()
   private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
   private readonly toolsChecked = new Map<string, number>()
@@ -697,9 +702,13 @@ export class HostCiRunner {
     return this.refresh(request.runId)
   }
 
+  private runGit(args: readonly string[], options?: Parameters<HostCiPorts['run']>[2]) {
+    return this.ports.run('git', args, { ...options, lockFd: this.repositoryLock.getStore() })
+  }
+
   private async git(args: readonly string[], cwd?: string, signal?: AbortSignal) {
     signal?.throwIfAborted()
-    const result = await this.ports.run('git', [...gitAuth, ...args], { ...(cwd ? { cwd } : {}),
+    const result = await this.runGit([...gitAuth, ...args], { ...(cwd ? { cwd } : {}),
       env: { ...this.environment, GIT_TERMINAL_PROMPT: '0' }, signal })
     signal?.throwIfAborted()
     if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim().split('\n').at(-1) ?? ''}`)
@@ -726,11 +735,11 @@ export class HostCiRunner {
       await waitForRepositoryTurn(previous, options.signal)
       const clone = join(this.root, 'git', ...repository.split('/'))
       await mkdir(clone, { recursive: true, mode: 0o700 })
-      return await withHostCiRunLock(clone, async () => {
-        // Shared clone preparation has stopped; running suites may still own worktree Git locks.
+      return await withHostCiRunLock(clone, async guard => {
+        // Git inherits this guard, so recovery waits for writers that survive a Main restart.
         const gitDirectory = join(clone, '.git')
         if (existsSync(gitDirectory)) await removeStaleGitLocks(gitDirectory)
-        return work()
+        return this.repositoryLock.run(guard.fd, work)
       }, options)
     } finally {
       release()
@@ -794,7 +803,7 @@ export class HostCiRunner {
     }
     const history = (request.scope ?? 'affected') === 'affected' && request.files === undefined
     // A canceled fetch can leave the commit object without its tree or files; only a readable snapshot is present.
-    const missing = (await this.ports.run('git', ['rev-list', '--quiet', '--objects', '--no-walk', request.commit],
+    const missing = (await this.runGit(['rev-list', '--quiet', '--objects', '--no-walk', request.commit],
       { cwd: clone, env: this.environment, signal })).code !== 0
     // A complete clone that already holds the commit has its history: parts of one commit fetch it once.
     const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone, signal)).trim() === 'true'
@@ -807,7 +816,7 @@ export class HostCiRunner {
 
   private async supportsDatabaseIsolation(request: Pick<StartRequest, 'repository' | 'commit'>) {
     const clone = join(this.root, 'git', ...request.repository.split('/'))
-    const manifest = await this.ports.run('git', ['show', `${request.commit}:package.json`],
+    const manifest = await this.runGit(['show', `${request.commit}:package.json`],
       { cwd: clone, env: this.environment })
     if (manifest.code !== 0) return false
     const parsed = JSON.parse(manifest.stdout) as { foremanCi?: { hostSlots?: number } }
@@ -884,16 +893,16 @@ export class HostCiRunner {
     if (!existsSync(selector)) return full('The repository has no affected selector.')
     let baseCommit = meta.baseCommit
     if (baseCommit) {
-      const available = await this.ports.run('git', ['cat-file', '-e', `${baseCommit}^{commit}`],
+      const available = await this.runGit(['cat-file', '-e', `${baseCommit}^{commit}`],
         { cwd: source, env: this.environment, signal })
       signal?.throwIfAborted()
       if (available.code !== 0) {
-        const fetched = await this.ports.run('git', ['fetch', '--quiet', '--no-tags', '--depth=1', 'origin', baseCommit],
+        const fetched = await this.runGit(['fetch', '--quiet', '--no-tags', '--depth=1', 'origin', baseCommit],
           { cwd: source, env: this.environment, signal })
         signal?.throwIfAborted()
         if (fetched.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
       }
-      const ancestor = await this.ports.run('git', ['merge-base', '--is-ancestor', baseCommit, meta.commit],
+      const ancestor = await this.runGit(['merge-base', '--is-ancestor', baseCommit, meta.commit],
         { cwd: source, env: this.environment, signal })
       signal?.throwIfAborted()
       if (ancestor.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
@@ -904,7 +913,7 @@ export class HostCiRunner {
       if ((await this.git(['rev-parse', ref], source, signal)).trim() === meta.commit) {
         return full('The commit is the workspace default branch head.')
       }
-      const base = await this.ports.run('git', ['merge-base', meta.commit, ref], { cwd: source, env: this.environment, signal })
+      const base = await this.runGit(['merge-base', meta.commit, ref], { cwd: source, env: this.environment, signal })
       signal?.throwIfAborted()
       if (base.code !== 0) return full('No merge-base with the workspace default branch is available.')
       baseCommit = base.stdout.trim()
@@ -1270,11 +1279,11 @@ export class HostCiRunner {
         const standalone = (await stat(join(directory, 'src/.git')).catch(fallbackOnMissing(null)))?.isDirectory()
         const removed = await this.withRepository(meta.repository, async () => {
           if (!standalone) {
-            await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
+            await this.runGit(['worktree', 'remove', '--force', join(directory, 'src')],
               { cwd: clone, env: this.environment })
           }
           await rm(join(directory, 'src'), { recursive: true, force: true })
-          await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
+          await this.runGit(['worktree', 'prune'], { cwd: clone, env: this.environment })
           return true
         }, { nonBlocking: true })
         if (!removed) return meta
