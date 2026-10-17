@@ -73,6 +73,8 @@ export interface WorkflowNativeSessionStart {
 }
 
 export interface OperatorNativeSessionStart {
+  /** Observe or stop existing work without refreshing application credentials. */
+  observationOnly?: true
   sessionPreferences?: SessionPreferences
   kind: 'operator'
   correlationId: string

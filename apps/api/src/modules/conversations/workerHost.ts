@@ -8,7 +8,7 @@ import {
   WorkerConversationResponsePageSchema, WORKER_CONVERSATION_RESPONSE_BYTES,
 } from '@foreman-code/contracts/remote-execution-rpc'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
-import { pageJsonContinuationBytes } from '../runs/remote/jsonContinuation.js'
+import { createJsonContinuationPager } from '../runs/remote/jsonContinuation.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
@@ -90,14 +90,15 @@ function validateConfiguration(binding: WorkerConversationBinding, configuration
 export class WorkerConversationHost {
   private readonly residents = new Map<string, Resident>()
   private readonly responseTransfers = new Map<string, {
-    binding: WorkerConversationBinding; connection: Readonly<DeviceSessionBinding>; bytes: Buffer; expiresAt: number
+    binding: WorkerConversationBinding; connection: Readonly<DeviceSessionBinding>; byteSize: number;
+    page: ReturnType<typeof createJsonContinuationPager>; expiresAt: number
   }>()
   private responseBytes = 0
   private readonly preparations = new Map<string, Resident>()
   private readonly inspections = new Set<WorkerConversationAllocation>()
   private readonly allocating = new Map<string, Promise<Resident>>()
   private readonly tasks = new Set<Promise<void>>()
-  private readonly running = new Map<string, Promise<void>>()
+  private readonly running = new Map<string, Readonly<DeviceSessionBinding>>()
   private readonly lifetime = new AbortController()
   private readonly log = componentLogger('harness')
   private closing = false
@@ -413,7 +414,7 @@ export class WorkerConversationHost {
       }
     })()
     const key = `${resident.binding.owner.conversationId}:${request.correlationId}`
-    this.running.set(key, task)
+    this.running.set(key, connection)
     void task.then(() => this.running.delete(key), () => this.running.delete(key))
     void this.track(task)
   }
@@ -508,8 +509,7 @@ export class WorkerConversationHost {
       if (!isDeepStrictEqual(retained.binding, request.binding) || !isDeepStrictEqual(retained.connection, connection)) {
         unavailable('The conversation response owner changed.')
       }
-      const metadata = pageJsonContinuationBytes(retained.bytes, request.metadata,
-        { maxBytes: WORKER_CONVERSATION_RESPONSE_BYTES })
+      const metadata = retained.page(request.metadata)
       retained.expiresAt = Date.now() + 120_000
       this.responseTransfers.delete(request.transferId)
       this.responseTransfers.set(request.transferId, retained)
@@ -520,12 +520,13 @@ export class WorkerConversationHost {
     if (response === undefined) return response
     const bytes = Buffer.from(JSON.stringify(response))
     if (bytes.byteLength <= DEVICE_APPLICATION_JSON_BYTES) return response
-    const metadata = pageJsonContinuationBytes(bytes, undefined, { maxBytes: WORKER_CONVERSATION_RESPONSE_BYTES })
+    const page = createJsonContinuationPager(bytes, { maxBytes: WORKER_CONVERSATION_RESPONSE_BYTES })
+    const metadata = page()
     while (this.responseBytes + bytes.byteLength > WORKER_CONVERSATION_RESPONSE_BYTES
       || this.responseTransfers.size >= 128) this.removeResponse(this.responseTransfers.keys().next().value!)
     const transferId = randomUUID()
     this.responseTransfers.set(transferId, { binding: structuredClone(request.binding),
-      connection: structuredClone(connection), bytes, expiresAt: Date.now() + 120_000 })
+      connection: structuredClone(connection), byteSize: bytes.byteLength, page, expiresAt: Date.now() + 120_000 })
     this.responseBytes += bytes.byteLength
     return WorkerConversationResponsePageSchema.parse({ kind: 'conversation-response-page', transferId, metadata })
   }
@@ -533,7 +534,7 @@ export class WorkerConversationHost {
   private removeResponse(id: string) {
     const transfer = this.responseTransfers.get(id)
     if (!transfer) return
-    this.responseBytes -= transfer.bytes.byteLength
+    this.responseBytes -= transfer.byteSize
     this.responseTransfers.delete(id)
   }
 
@@ -641,15 +642,16 @@ export class WorkerConversationHost {
       case 'conversation.history':
       case 'conversation.reconcile': {
         const turn = record.turns.find(turn => turn.correlationId === request.correlationId)
-        const running = request.correlationId !== undefined
-          && this.running.has(`${request.binding.owner.conversationId}:${request.correlationId}`)
+        const running = request.correlationId === undefined ? undefined
+          : this.running.get(`${request.binding.owner.conversationId}:${request.correlationId}`)
         const submitted = Boolean(turn?.nativeTurnId || turn?.nativeSubmission)
         if (request.method === 'conversation.reconcile' && turn?.nativeSubmission
           && !['completed', 'rejected'].includes(turn.status)) {
           await resident.allocation.recoverClaudeAuthority?.(request, turn.nativeSubmission, signal)
           await this.authorize(request, connection, signal)
         }
-        if (!running && request.method === 'conversation.reconcile' && turn?.nativeTurnId
+        if ((!running || !isDeepStrictEqual(running, connection))
+          && request.method === 'conversation.reconcile' && turn?.nativeTurnId
           && !['completed', 'rejected'].includes(turn.status)) {
           if ((request.sessionMode ?? 'regular') !== (turn.sessionMode ?? 'regular')) unavailable('The recovered turn mode changed.')
           await resident.allocation.recoverFiles?.(request, turn.nativeTurnId, signal)
