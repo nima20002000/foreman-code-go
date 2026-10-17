@@ -63,7 +63,7 @@ async function connect(configuration, signal) {
     return { client, tools: await listTools(client, options) }
   } catch (error) {
     try { await client.close() }
-    catch (cleanup) { throw new AggregateError([error, cleanup], 'Native MCP setup and transport cleanup failed.') }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'Native MCP setup and transport cleanup failed.', { cause: cleanup }) }
     throw error
   }
 }

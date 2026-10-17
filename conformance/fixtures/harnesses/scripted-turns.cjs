@@ -62,7 +62,7 @@ async function runWithMcp(options, run) {
   catch (error) { failure = error }
   try { await mcp.close() }
   catch (cleanup) {
-    if (failure) throw new AggregateError([failure, cleanup], 'Native scripted turn and MCP transport cleanup failed.')
+    if (failure) throw new AggregateError([failure, cleanup], 'Native scripted turn and MCP transport cleanup failed.', { cause: cleanup })
     throw cleanup
   }
   if (failure) throw failure
@@ -215,4 +215,4 @@ function createScriptedTurns({ root, send, complete, loadThread, store }) {
   return { registerThread, startTurn, handleResponse, interrupt }
 }
 
-module.exports = { createScriptedTurns }
+module.exports = { createScriptedTurns, runWithMcp }

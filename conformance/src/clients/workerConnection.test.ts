@@ -1,11 +1,12 @@
+import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:https'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import WebSocket, { WebSocketServer } from 'ws'
-import { afterEach, describe, expect, it } from 'vitest'
+import WebSocket, { WebSocketServer, type VerifyClientCallbackSync } from 'ws'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEVICE_PROTOCOL_VERSION, DeviceSessionBindingSchema,
   type DeviceHello, type DeviceWelcome } from '@foreman-code/contracts/device-connection'
 import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema,
@@ -13,13 +14,14 @@ import { MainIdentityProofRequestSchema, MainSignedIdentityProofSchema,
 import { mainIdentityProofMessage, publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 import { createDeviceTls } from '../harnesses/tls.js'
 import { connectTestWorker } from './workerConnection.js'
+import { TestWorkerChannel } from './workerChannel.js'
 import { withWorkerDeadline } from './workerDeferred.js'
 
 const cleanups: Array<() => Promise<void>> = []
 
 /** Fresh protocol peer for this client regression; no product instance, database,
  * installed worker, provider or application qualification is used. */
-async function signedPeer() {
+async function signedPeer(options: { beforeReady?(socket: WebSocket): void } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'conformance-worker-close-'))
   cleanups.push(() => rm(directory, { recursive: true, force: true }))
   const tls = await createDeviceTls(join(directory, 'tls'), {
@@ -30,8 +32,8 @@ async function signedPeer() {
   const fingerprint = publicKeyFingerprint(publicKey)
   const credential = randomBytes(32).toString('hex')
   const server = createServer({ cert: await readFile(tls.certificate), key: await readFile(tls.privateKey) })
-  const sockets = new WebSocketServer({ server, path: '/device/connect', perMessageDeflate: false,
-    verifyClient: info => info.req.headers.authorization === `Bearer ${credential}` })
+  const verifyClient: VerifyClientCallbackSync = info => info.req.headers.authorization === `Bearer ${credential}`
+  const sockets = new WebSocketServer({ server, path: '/device/connect', perMessageDeflate: false, verifyClient })
   cleanups.push(async () => {
     for (const socket of sockets.clients) socket.terminate()
     await new Promise<void>((resolve, reject) => sockets.close(error => error ? reject(error) : resolve()))
@@ -58,6 +60,8 @@ async function signedPeer() {
             appVersion: mainApplicationVersion, mainIdentityProof: proof,
             capabilities: { heartbeat: true, dispatch: false, transfer: false, extensions: [] } }
           socket.send(JSON.stringify(welcome))
+        } else if (frame.type === 'ready' && options.beforeReady) {
+          options.beforeReady(socket)
         } else if (frame.type === 'ready' || frame.type === 'ping') {
           socket.send(JSON.stringify({ type: 'pong', connectionEpoch: frame.connectionEpoch, mainReady: true }))
         }
@@ -84,12 +88,21 @@ async function signedPeer() {
   return { peer, client, close, faults }
 }
 
+function failChannelCleanup(cleanup: Error) {
+  const originalClose = TestWorkerChannel.prototype.close
+  return vi.spyOn(TestWorkerChannel.prototype, 'close').mockImplementation(async function (this: TestWorkerChannel, error?: Error) {
+    await originalClose.call(this, error)
+    throw cleanup
+  })
+}
+
 describe('worker cleanup retains transport errors', () => {
   afterEach(async () => {
     const failures: unknown[] = []
     for (const cleanup of cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { failures.push(error) }
     }
+    vi.restoreAllMocks()
     if (failures.length) throw new AggregateError(failures, 'Owned peer cleanup failed.')
   })
 
@@ -109,5 +122,40 @@ describe('worker cleanup retains transport errors', () => {
     await expect(fixture.close()).resolves.toBeUndefined()
     await withWorkerDeadline(disconnected)
     expect(fixture.faults).toEqual([])
+  }, 30_000)
+
+  it('retains a late protocol error and the channel cleanup rejection after disconnect', async () => {
+    const cleanup = new Error('Owned channel cleanup failed.')
+    const channelClose = failChannelCleanup(cleanup)
+    const fixture = await signedPeer()
+    const disconnected = once(fixture.peer, 'close')
+    fixture.peer.send('{not-json')
+    await withWorkerDeadline(disconnected)
+    const failure: unknown = await fixture.close().catch(error => error)
+    assert.ok(failure instanceof AggregateError)
+    expect(failure.message).toBe('Worker protocol and owned cleanup failed.')
+    expect(failure.errors).toHaveLength(2)
+    expect(failure.errors[0]).toBeInstanceOf(SyntaxError)
+    expect(failure.errors[1]).toBe(cleanup)
+    expect(channelClose).toHaveBeenCalledTimes(1)
+    expect(fixture.faults).toEqual([])
+  }, 30_000)
+
+  it('retains the startup error and cleanup aggregate with the caught cleanup as cause', async () => {
+    const cleanup = new Error('Owned startup channel cleanup failed.')
+    const channelClose = failChannelCleanup(cleanup)
+    const failure: unknown = await signedPeer({ beforeReady: socket => socket.send('{not-json') }).catch(error => error)
+    assert.ok(failure instanceof AggregateError)
+    expect(failure.message).toBe('Worker startup and cleanup failed.')
+    expect(failure.errors).toHaveLength(2)
+    const primary: unknown = failure.errors[0]
+    const closing: unknown = failure.errors[1]
+    assert.ok(closing instanceof AggregateError)
+    expect(primary).toBeInstanceOf(SyntaxError)
+    expect(failure.cause).toBe(closing)
+    expect(closing.errors).toHaveLength(2)
+    expect(closing.errors[0]).toBe(primary)
+    expect(closing.errors[1]).toBe(cleanup)
+    expect(channelClose).toHaveBeenCalledTimes(1)
   }, 30_000)
 })
