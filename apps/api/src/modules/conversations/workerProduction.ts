@@ -17,6 +17,8 @@ import type { HarnessQualificationRepository } from '../harnesses/qualification/
 import { readInstalledCodexQualification } from '../harnesses/installedCodexInspection.js'
 import type { AcceptedHarnessProfileAdmission, AcceptedProfileSelector } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
+import type { ClaudeDomainBinding } from '../harnesses/claudeSdk/domainAuthority.js'
+
 import { PostgresClaudeInteractionAuthority } from '../harnesses/claudeSdk/domainAuthority.js'
 import type { ClaudeCallbackIdentity } from '../harnesses/claudeSdk/interactions.js'
 import type { PostgresOperatorConversationRepository } from './operatorChatRepository.js'
@@ -42,6 +44,8 @@ import { definedProperties } from '../definedProperties.js'
 import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
 import type { WorkerConversationBinding } from '@foreman-code/contracts/remote-execution-rpc'
 import { legacyProviderAccountBinding, readProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
+
+type ConversationClaudeOwner = Extract<ClaudeDomainBinding, { kind: 'operator' | 'agent' }>
 
 const reads = new Set(['conversation.status', 'conversation.history', 'conversation.reconcile', 'conversation.pending',
   'conversation.controls-read', 'conversation.compact-reconcile', 'conversation.reconcile-steers',
@@ -167,7 +171,7 @@ async function admitWorkerConversation(input: ProductionWorkerConversationsInput
   options: WorkerConversationOptions, context: {
     configuration: WorkerConversationConfiguration
     selector: AcceptedProfileSelector
-    owner: ClaudeProfileOwner
+    owner: ConversationClaudeOwner
     profiles: AcceptedHarnessProfileAdmission<ClaudeProfileOwner>
     kind: 'operator' | 'agent'
     bridge: MainWorkerConversationBridge
@@ -381,7 +385,7 @@ export function createProductionWorkerConversations(input: ProductionWorkerConve
     if (!selector || selector.target.hostRef.kind !== 'device') unavailable('A selected device profile is required.')
     let caller = options.observationPrincipalId
     const kind = 'operatorId' in configuration ? 'operator' : 'agent'
-    const owner: ClaudeProfileOwner = 'operatorId' in configuration
+    const owner: ConversationClaudeOwner = 'operatorId' in configuration
       ? { kind: 'operator', conversationId: options.conversationId, repository: input.operators }
       : { kind: 'agent', conversationId: options.conversationId,
         workspaceId: configuration.workspaceId, repository: input.agents }
