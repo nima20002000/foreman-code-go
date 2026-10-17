@@ -1,4 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { join, matchesGlob, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { affectedSnapshot } from './ci-affected.mjs'
@@ -38,8 +40,24 @@ export function executionSelection({ commit, baseCommit, executionSuite, default
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  if (process.argv[2] === '--dispatch-inputs') {
+    const data = readFileSync('ci-dispatch-inputs.json')
+    const hash = createHash('sha256').update(data).digest('hex')
+    if (process.env.CI_PARTITION !== `sha256:${hash}`) throw new Error('CI dispatch inputs hash mismatch')
+    const inputs = JSON.parse(data.toString())
+    if (Object.keys(inputs).sort().join(',') !== 'commit,files,partition,slice'
+      || Object.values(inputs).some(value => typeof value !== 'string')
+      || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(inputs.commit)
+      || inputs.partition.startsWith('sha256:')) throw new Error('Invalid CI dispatch inputs')
+    const result = spawnSync('bash', process.argv.slice(3), { stdio: 'inherit', env: { ...process.env,
+      SLICE: inputs.slice, SELECTED_FILES: inputs.files, CI_PARTITION: inputs.partition,
+      CI_SELECTION_COMMIT: inputs.commit } })
+    if (result.error) throw result.error
+    if (result.signal) process.kill(process.pid, result.signal)
+    process.exit(result.status ?? 1)
+  }
   const [executionSuite, defaultRef, partition, output] = process.argv.slice(2)
-  const selection = executionSelection({ commit: 'HEAD', executionSuite, defaultRef,
+  const selection = executionSelection({ commit: process.env.CI_SELECTION_COMMIT || 'HEAD', executionSuite, defaultRef,
     baseCommit: process.env.BASE_COMMIT || undefined,
     partition: partition ? JSON.parse(partition) : undefined, learned: JSON.parse(process.env.CI_DURATIONS || '{}') })
   writeFileSync(output, JSON.stringify(selection.files))

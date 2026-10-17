@@ -25,6 +25,7 @@ parameters:
     type: string
     default: ''
   partition:
+    # JSON, or sha256:<hash> for ci-dispatch-inputs.json on this execution's checked-out ref.
     type: string
     default: ''
   expected_duration_ms:

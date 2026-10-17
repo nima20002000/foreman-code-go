@@ -11,6 +11,10 @@
 # TEST_RESULTS_OUTPUT: where structured test results go for unit and integration (scripts/ci-test-results.mjs).
 # Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
+# Oversized CircleCI inputs live in the execution snapshot; verify them before starting any suite work.
+case "${CI_PARTITION:-}" in
+  sha256:*) exec node "$(dirname "$0")/ci-selection.mjs" --dispatch-inputs "$0" "$@" ;;
+esac
 # Only test suites report per-test progress; typecheck, lint and build can stay silent for minutes.
 if [ "${CI_WATCHDOG_ACTIVE:-}" != 1 ] && [ -n "${CI_EXPECTED_DURATION_MS:-}" ] && [ -z "${1:-}" ]; then
   case "${SUITE:-}" in unit|unit-*|integration) exec node "$(dirname "$0")/ci-watchdog.mjs" -- bash "$0" ;; esac
@@ -172,7 +176,7 @@ if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != in
     default_ref="refs/remotes/origin/$branch"
     if [ -n "${BASE_COMMIT:-}" ]; then
       if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-        git fetch --quiet --no-tags --depth=2 origin "$(git rev-parse HEAD)"
+        git fetch --quiet --no-tags --depth=2 origin "${CI_SELECTION_COMMIT:-$(git rev-parse HEAD)}"
         git fetch --quiet --no-tags --depth=1 origin "$BASE_COMMIT"
       fi
     else
@@ -205,6 +209,8 @@ if [ "$scope" = full ] && [ "$SUITE" = integration ] && [ -z "${SLICE:-}" ] && [
     writeFileSync(process.argv[1], JSON.stringify(integrationPartition(integrationFileList(process.cwd()), durations, partition)))
   ' "$selected_list"
 fi
+
+unset CI_SELECTION_COMMIT
 
 if [ "$scope" = affected ] && [ "$SUITE" != integration ]; then
   case "$SUITE" in
