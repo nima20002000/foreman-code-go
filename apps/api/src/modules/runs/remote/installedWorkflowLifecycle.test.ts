@@ -67,7 +67,7 @@ it('refuses to invent artifact output when a recovered terminal has no saved out
 
 it('cancels the installed Worker preflight request when Stop arrives', async () => {
   const f = await constructionFixture()
-  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({
+  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => ({
     ...f.registry.scope(owner), launchId: f.launch.launchId,
   }))
   const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }

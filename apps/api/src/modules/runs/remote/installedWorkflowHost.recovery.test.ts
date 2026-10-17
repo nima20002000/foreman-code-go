@@ -373,7 +373,7 @@ describe('installed workflow construction concurrency', () => {
       })
       const dispose = vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
       const closed = { ...f.launch, lifecycle: 'closed' as const, closureEvidence: 'cgroup_v2_empty' as const }
-      vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
+      vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => ({ ...f.registry.scope(owner), launchId: f.launch.launchId }))
       vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)
       const closeOwner = vi.spyOn(f.registry, 'closeOwner').mockImplementation(async () => {
         f.snapshot.mockReturnValue({ revision: 'closed', launches: [closed] })
@@ -504,7 +504,7 @@ describe('installed workflow construction concurrency', () => {
       // ignore: channel shutdown is asserted by awaiting all readers below.
     })
     const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
-    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => f.registry.scope(owner))
     vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
       residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
       assertCurrent: () => {},
@@ -578,7 +578,7 @@ describe('installed workflow construction concurrency', () => {
   it('delivers original history, ACK and Stop while another execution waits for Main facts', async () => {
     const f = await constructionFixture()
     const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
-    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => f.registry.scope(owner))
     vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
       residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
       assertCurrent: () => {},

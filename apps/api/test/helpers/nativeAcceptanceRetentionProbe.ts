@@ -23,7 +23,7 @@ try {
       // Stop may reject the active Start; the persisted canceled Run is its outcome.
       await Promise.allSettled([current.startTask])
       assert.equal((await current.runs.get(current.runId))?.outcome, 'canceled')
-      current.registry.reserveLaunch('acceptance-cleanup-recovery')
+      await current.registry.reserveLaunch('acceptance-cleanup-recovery')
       state.reserved = true
     },
   })

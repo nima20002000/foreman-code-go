@@ -342,13 +342,13 @@ export class RsyncWriterOwnership {
   }
   /** Single-use causal handoff. Current binding, pinned binary, exact owner and write-ahead
    * native registration are all checked before sending any executable configuration. */
-  spawnProcess(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal): ChildProcessWithoutNullStreams {
+  spawnProcess(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal): Promise<ChildProcessWithoutNullStreams> {
     return this.launch(reference, executable, args, signal, () => {
       const { row } = this.read(reference)
       this.binding(row.intent, row.binding)
     })
   }
-  private launch(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal, admit: () => void): ChildProcessWithoutNullStreams {
+  private async launch(reference: RsyncOwnerReference, executable: string, args: string[], signal: AbortSignal, admit: () => void): Promise<ChildProcessWithoutNullStreams> {
     const { row, path, ref } = this.read(reference)
     signal.throwIfAborted(); this.admissible(row.intent); admit()
     if (row.hostBootId !== bootIdentity() || this.revoked(ref) || readRecord(`${path}.closed`) !== undefined) throw new Error('Original rsync process owner is no longer dispatchable')
@@ -358,7 +358,7 @@ export class RsyncWriterOwnership {
     writeRecord(`${path}.claim`, { version: 1, ...ref, mode: 'process', hostBootId: bootIdentity(), parent: self() }, true)
     this.admissible(row.intent)
     if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
-    const scope = this.processes.reserveLaunch(this.scope(ref).owner)
+    const scope = await this.processes.reserveLaunch(this.scope(ref).owner)
     writeRecord(`${path}.launch`, { version: 1, ...ref, launchId: scope.launchId }, true)
     signal.throwIfAborted(); this.admissible(row.intent); admit()
     if (this.revoked(ref)) throw new Error('Original rsync process owner is revoked')
@@ -372,10 +372,10 @@ export class RsyncWriterOwnership {
       || args.some(value => value.includes('\0') || value.length > 4096)) throw new Error('Invalid admitted rsync server command')
     return row.binary.executable
   }
-  spawnServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
+  async spawnServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
     return this.spawnProcess(reference, this.serverCommand(reference, args), args, signal)
   }
-  spawnGrantedServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
+  async spawnGrantedServer(reference: RsyncOwnerReference, args: string[], signal: AbortSignal) {
     return this.launch(reference, this.serverCommand(reference, args), args, signal, () => {
       const { path } = this.read(reference), grant = this.grant(reference, readRecord(`${path}.grant`))
       if (!isDeepStrictEqual(grant.process, self())) throw new Error('Only original rsync wrapper can consume its grant')
@@ -707,7 +707,7 @@ export async function runRsyncRemoteServer(input: { ownership: RsyncWriterOwners
   signal.addEventListener('abort', stop, { once: true })
   try {
     await input.ownership.waitForServerGrant(input.reference, signal)
-    child = input.ownership.spawnGrantedServer(input.reference, input.args, signal)
+    child = await input.ownership.spawnGrantedServer(input.reference, input.args, signal)
     const server = child
     const outcome = new Promise<{ exitCode: number | null; exitSignal: NodeJS.Signals | null }>((resolve, reject) => {
       server.once('error', reject); server.stdin.on('error', reject); server.once('close', (exitCode, exitSignal) => {

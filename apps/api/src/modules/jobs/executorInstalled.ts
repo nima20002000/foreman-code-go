@@ -215,7 +215,7 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     const env = nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment)
     if (!same(nativeAgentEnvironment(binary, candidate.runtimeRoot, env), env)) throw new Error('Protected Job runtime environment changed')
     const processOwner = purpose === 'attachment' ? owner : `${owner}:${purpose}`
-    const scope = input.registry.reserveLaunch(processOwner)
+    const scope = await input.registry.reserveLaunch(processOwner)
     if (!scope.launchId) throw new Error('Original Job native scope missing')
     const launch: { scope: NativeProcessRecovery; child?: ChildProcess; closed: boolean } = { scope, closed: false }
     launches.set(scope.launchId, launch)
@@ -244,48 +244,7 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
       return { child, id: scope.launchId }
     } catch (error) { await closeLaunch(scope.launchId); throw error }
   }
-  let controlTail = Promise.resolve()
-  const commands: PodmanCommandRunner = {
-    async attach(argv) {
-      const { child, id } = await spawn(argv, 'attachment')
-      // Physical closure is also joined by ownership.launchHelpers below.
-      child.once('close', () => { void closeLaunch(id).catch(ignoreError('jobs', 'close job helper launch', { launchId: id })) })
-      return child
-    },
-    async run(argv, timeoutMs = 30000) {
-      const purpose = argv[0] === 'wait' ? 'wait' : 'control'
-      let releaseControl: (() => void) | undefined
-      if (purpose === 'control') {
-        const previous = controlTail
-        controlTail = new Promise<void>(resolve => { releaseControl = resolve })
-        await previous
-      }
-      try {
-        const { child, id } = await spawn(argv, purpose)
-        return await new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
-        let text = '', bytes = 0, interrupted = false
-        const interrupt = (error: Error) => {
-          if (interrupted) return
-          interrupted = true
-          void closeLaunch(id).then(() => reject(error), reject)
-        }
-        const deadline = setTimeout(() => interrupt(new Error('Job runtime control deadline exceeded')), timeoutMs)
-        child.stdout.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')); else text += chunk.toString('utf8') })
-        child.stderr.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')) })
-        child.once('error', error => { clearTimeout(deadline); interrupt(error) })
-        child.once('close', () => {
-          clearTimeout(deadline)
-          if (interrupted) return
-          const exit = nativeProcessExit(child, { exitCode: null, exitSignal: null })
-          void closeLaunch(id).then(() => {
-            if (exit.exitCode === null) reject(new Error('Original Job runtime exit unconfirmed'))
-            else resolve({ exitCode: exit.exitCode, stdout: text })
-          }, reject)
-        })
-        })
-      } finally { releaseControl?.() }
-    },
-  }
+  const commands = jobCommandRunner(spawn, closeLaunch)
   const ownership: OCIContainerOwnership = {
     scope: { subject: { kind: 'job', executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, bindingHash: execution.acceptedSpec.bindingHash },
       // W08's admitted operation is the lease, not the diagnostic's human admission.
@@ -413,4 +372,54 @@ export async function authorizeJobContainerEntry(input: {
     }
   }
   await assertEntry()
+}
+
+function jobCommandRunner(
+  spawn: (argv: string[], purpose: 'attachment' | 'control' | 'wait') => Promise<{
+    child: ReturnType<typeof spawnNativeProcess>; id: string
+  }>,
+  closeLaunch: (id: string) => Promise<void>,
+): PodmanCommandRunner {
+  let controlTail = Promise.resolve()
+  return {
+    async attach(argv) {
+      const { child, id } = await spawn(argv, 'attachment')
+      // Physical closure is also joined by ownership.launchHelpers below.
+      child.once('close', () => { void closeLaunch(id).catch(ignoreError('jobs', 'close job helper launch', { launchId: id })) })
+      return child
+    },
+    async run(argv, timeoutMs = 30000) {
+      const purpose = argv[0] === 'wait' ? 'wait' : 'control'
+      let releaseControl: (() => void) | undefined
+      if (purpose === 'control') {
+        const previous = controlTail
+        controlTail = new Promise<void>(resolve => { releaseControl = resolve })
+        await previous
+      }
+      try {
+        const { child, id } = await spawn(argv, purpose)
+        return await new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
+        let text = '', bytes = 0, interrupted = false
+        const interrupt = (error: Error) => {
+          if (interrupted) return
+          interrupted = true
+          void closeLaunch(id).then(() => reject(error), reject)
+        }
+        const deadline = setTimeout(() => interrupt(new Error('Job runtime control deadline exceeded')), timeoutMs)
+        child.stdout.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')); else text += chunk.toString('utf8') })
+        child.stderr.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 65536) interrupt(new Error('Job control reply exceeded budget')) })
+        child.once('error', error => { clearTimeout(deadline); interrupt(error) })
+        child.once('close', () => {
+          clearTimeout(deadline)
+          if (interrupted) return
+          const exit = nativeProcessExit(child, { exitCode: null, exitSignal: null })
+          void closeLaunch(id).then(() => {
+            if (exit.exitCode === null) reject(new Error('Original Job runtime exit unconfirmed'))
+            else resolve({ exitCode: exit.exitCode, stdout: text })
+          }, reject)
+        })
+        })
+      } finally { releaseControl?.() }
+    },
+  }
 }

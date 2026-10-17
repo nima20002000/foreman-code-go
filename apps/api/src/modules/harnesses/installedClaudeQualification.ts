@@ -55,7 +55,7 @@ export function createInstalledClaudeQualifier(input: {
     const assertCurrent = async () => { await inspect(original) }
     const resolver = createClaudeCurrentPinResolver({ sdk: original.sdk, ownedVersionProbe: async observation => {
       await assertCurrent()
-      const recovery = input.registry.reserveLaunch(`claude-profile-version:${request.checkId}`)
+      const recovery = await input.registry.reserveLaunch(`claude-profile-version:${request.checkId}`)
       return runOwnedClaudeOperation(async () => {
         const environment: NodeJS.ProcessEnv = { PATH: original.installation.launcher.environment.path }
         const result = await runCommand(observation.launcher, ['--version'], input.stateDirectory,
@@ -85,7 +85,7 @@ export function createInstalledClaudeQualifier(input: {
       harnessInstallationId: value.target.harnessInstallationId,
       connectionGeneration: original.installation.connectionGeneration,
       environmentGeneration: original.installation.environmentGeneration })
-    const recovery = input.registry.reserveLaunch(`claude-profile-check:${request.checkId}`)
+    const recovery = await input.registry.reserveLaunch(`claude-profile-check:${request.checkId}`)
     return runOwnedClaudeOperation(async () => {
       return await qualifyClaudeNativeProfile({ value, checkId: request.checkId, binding, pin: current.pin,
         directory: join(input.stateDirectory, 'claude-native-qualification'), recovery, signal, assertCurrent,

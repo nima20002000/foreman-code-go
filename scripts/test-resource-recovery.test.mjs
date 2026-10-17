@@ -228,7 +228,7 @@ test('recovery closes a dead callers native reservation before removing its nest
     const root = resources.createTestRoot(${JSON.stringify(parent)});
     const slot = resources.createTestRoot(root.directory, 'slot-');
     const registryDirectory = join(slot.directory, 'native-registry');
-    new NativeProcessRegistry(registryDirectory).reserveLaunch('abandoned-provider');
+    await new NativeProcessRegistry(registryDirectory).reserveLaunch('abandoned-provider');
     resources.registerTestResourceCleanup(slot, { kind: 'native-qualification', registryDirectory });
     resources.registerTestResourceCleanup(slot, { kind: 'suite-process-group', wrapperPid: process.pid });
     console.log(JSON.stringify(root));

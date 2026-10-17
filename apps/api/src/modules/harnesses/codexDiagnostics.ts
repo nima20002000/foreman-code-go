@@ -25,7 +25,7 @@ export class CodexDiagnostics {
   constructor(private readonly config: {
     native?: CodexSessionDependencies | undefined
     createRecovery?: (() => NativeProcessRecovery) | undefined
-    admitRecovery?: ((recovery: NativeProcessRecovery) => void) | undefined
+    admitRecovery?: ((recovery: NativeProcessRecovery) => void | Promise<void>) | undefined
     abandonRecovery?: ((recovery: NativeProcessRecovery) => Promise<void>) | undefined
     closeRecovery?: ((recovery: NativeProcessRecovery) => Promise<void>) | undefined
   }) {}
@@ -104,7 +104,8 @@ export class CodexDiagnostics {
     let failure: unknown
     const task = Promise.resolve().then(async () => {
       guard()
-      this.config.admitRecovery!(recovery)
+      await this.config.admitRecovery!(recovery)
+      guard()
       owned.admitted = true
       timer = schedule(() => owned.controller.abort(new Error('Native diagnostic deadline exceeded.')), 60_000)
       timer.unref()

@@ -51,7 +51,7 @@ it('reports failed Main reservation through authenticated MCP, then checks and p
   const root = await mkdtemp(join(tmpdir(), 'mcp-qualification-cleanup-'))
   const registry = new NativeProcessRegistry(root)
   const recovery = registry.scope('qualification:recorded')
-  const admit = vi.fn(() => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) })
+  const admit = vi.fn(async () => { Object.assign(recovery, await registry.reserveLaunch(recovery.owner)) })
   const abandon = vi.fn(async () => { await registry.abandonReservedLaunch(recovery) })
   const close = vi.fn(async () => {
     if (!await registry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')

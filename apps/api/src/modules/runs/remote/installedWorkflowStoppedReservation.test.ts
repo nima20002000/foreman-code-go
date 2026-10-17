@@ -10,7 +10,7 @@ it('closes the reserved native launch of a Run stopped before entry so source cl
   const f = await constructionFixture()
   // A real registry on disk; the host's registry delegates to it.
   const registry = new NativeProcessRegistry(join(f.root, 'native-registry'))
-  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => registry.reserveLaunch(owner))
+  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => registry.reserveLaunch(owner))
   vi.spyOn(f.registry, 'abandonReservedLaunch').mockImplementation(scope => registry.abandonReservedLaunch(scope))
   vi.spyOn(f.registry, 'closeOwner').mockImplementation((owner, signal) => registry.closeOwner(owner, signal))
   vi.spyOn(f.registry, 'closeRegistration').mockImplementation((scope, id, signal) =>

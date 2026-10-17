@@ -117,7 +117,7 @@ describe.skipIf(process.platform !== 'linux')('passive native registry producer'
     const controller = new AbortController()
     try {
       const baseline = f.registry.snapshot()
-      const scope = f.registry.reserveLaunch(f.owner)
+      const scope = await f.registry.reserveLaunch(f.owner)
       const reserved = f.registry.snapshot()
       const rowDirectory = join(f.ownerDirectory, scope.launchId!)
       writeRecord(join(rowDirectory, 'not-started.json'), { id: scope.launchId, owner: f.owner })
@@ -165,7 +165,7 @@ describe.skipIf(process.platform !== 'linux')('passive native registry producer'
       const baseline = f.registry.snapshot()
       const iterator = f.registry.changes(baseline.revision, controller.signal)[Symbol.asyncIterator]()
       const pending = iterator.next()
-      const scope = f.registry.reserveLaunch(f.owner)
+      const scope = await f.registry.reserveLaunch(f.owner)
       const event = await pending
       expect(event.value?.gap).toBe(false)
       expect(event.value?.launches[0]?.launchId).toBe(scope.launchId)

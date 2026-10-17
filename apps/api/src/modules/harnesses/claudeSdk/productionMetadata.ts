@@ -78,7 +78,7 @@ export function productionClaudeMetadata(input: {
       const value = Promise.resolve().then(async () => {
         const version = await input.factories.observeClaudeVersion(binding, workingDirectory, controller.signal)
         controller.signal.throwIfAborted()
-        const recovery = input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
+        const recovery = await input.processes.reserveLaunch(`claude-metadata:${randomUUID()}`)
         const close = async () => {
           await input.processes.abandonReservedLaunch(recovery)
           if (!await input.processes.closeOwner(recovery.owner)) throw new Error('Claude metadata process closure is unconfirmed.')

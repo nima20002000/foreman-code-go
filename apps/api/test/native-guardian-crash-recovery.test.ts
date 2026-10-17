@@ -9,7 +9,7 @@ import { expect, it } from 'vitest'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { identityAlive, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { detachRecoveredChild, hasDetachedStdioProcess, hasNativeRestartDetachment,
-  NativeProcessRegistry, readDetachedNativeProcess, registeredNativeProcess, spawnNativeProcess }
+  NativeProcessRegistry, prepareNativeProcessRecovery, readDetachedNativeProcess, registeredNativeProcess, spawnNativeProcess }
   from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readUntil } from './helpers/observableCondition.js'
 
@@ -58,6 +58,7 @@ const scope = registry.scope(${JSON.stringify(owner)})
 let stream
 let settings
 if (mode === 'original') {
+  Object.assign(scope, await registry.reserveLaunch(scope.owner))
   const child = spawnNativeProcess(process.execPath, [join(directory, 'native.cjs')], {
     cwd: directory, env: {}, recovery: scope, restartDetachable: true, reconnectableStdio: true,
   })
@@ -175,7 +176,7 @@ it('survives original and repeated observer SIGKILL without replaying native wor
 it('validates restart detachment after natural provider completion without retaining a later launch', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'native-guardian-completed-'))
   const registry = new NativeProcessRegistry(join(directory, 'registry'))
-  const scope = registry.reserveLaunch(owner)
+  const scope = await registry.reserveLaunch(owner)
   const child = spawnNativeProcess(process.execPath, ['-e', `
     const fs = require('node:fs')
     fs.watch('.', () => { if (fs.existsSync('finish')) process.exit(0) })
@@ -218,7 +219,7 @@ it('validates restart detachment after natural provider completion without retai
     chmodSync(markerPath, 0o600)
     expect(hasNativeRestartDetachment(scope)).toBe(true)
     expect(await registry.closeOwner(owner)).toBe(true)
-    const later = registry.reserveLaunch(owner)
+    const later = await registry.reserveLaunch(owner)
     expect(later.launchId).not.toBe(scope.launchId)
     expect(hasNativeRestartDetachment(scope)).toBe(false)
     expect(hasNativeRestartDetachment(later)).toBe(false)
@@ -233,7 +234,7 @@ it('validates restart detachment after natural provider completion without retai
 it('confirms the captured daemon launch after a preceding inspection consumes its shared reservation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'native-guardian-shared-scope-'))
   const registry = new NativeProcessRegistry(join(directory, 'registry'))
-  const scope = registry.reserveLaunch(owner)
+  const scope = await registry.reserveLaunch(owner)
   try {
     const inspection = await runCommand(process.execPath, ['-e', 'process.exit(0)'], directory,
       undefined, {}, { recovery: scope })
@@ -241,7 +242,7 @@ it('confirms the captured daemon launch after a preceding inspection consumes it
     const child = spawnNativeProcess(process.execPath, ['-e', `
       console.log(JSON.stringify({ method: 'fixture/ready' }))
       setInterval(()=>{},1000)
-    `], { cwd: directory, env: {}, recovery: scope, restartDetachable: true, reconnectableStdio: true })
+    `], { cwd: directory, env: {}, recovery: await prepareNativeProcessRecovery(scope), restartDetachable: true, reconnectableStdio: true })
     child.stderr.resume()
     await once(child.stdout, 'data')
     const captured = registeredNativeProcess(child)!

@@ -116,7 +116,7 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
       this.update(checked, 'failed', true)
       return structuredClone(checked.observation)
     }
-    const recovery = this.processes.reserveLaunch(record.owner)
+    const recovery = await this.processes.reserveLaunch(record.owner)
     if (!recovery.launchId) throw new DomainError('PROVIDER_OPERATION_UNSUPPORTED',
       'This host cannot retain native account process ownership.', 409)
     record.launchId = recovery.launchId

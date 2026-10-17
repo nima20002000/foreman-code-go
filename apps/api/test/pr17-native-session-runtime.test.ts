@@ -79,7 +79,9 @@ describe('native session runtime regressions', () => {
       if (terminal) assert.equal((await iterator.next()).done, true)
     } finally {
       controller.abort()
-      await next?.catch(() => undefined)
+      await next?.catch((error: unknown) => {
+        if (error !== controller.signal.reason) throw error
+      })
       await iterator.return?.()
     }
   })
@@ -90,8 +92,8 @@ describe('native session runtime regressions', () => {
     let calls = 0
     let reject!: (error: Error) => void
     const spawn = nativeProcesses.spawnOwnedStdioProcess
-    const cleanup = vi.spyOn(nativeProcesses, 'spawnOwnedStdioProcess').mockImplementation((options) => {
-      const owned = spawn(options)
+    const cleanup = vi.spyOn(nativeProcesses, 'spawnOwnedStdioProcess').mockImplementation(async (options) => {
+      const owned = await spawn(options)
       return { ...owned, close: () => {
         calls += 1
         if (calls === 1) return new Promise<void>((_resolve, fail) => { reject = fail })

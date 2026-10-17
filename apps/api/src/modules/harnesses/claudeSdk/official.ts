@@ -63,7 +63,7 @@ export function ownedClaudeSdkQueries(input: {
     requiresRuntimeClosure: () => unclosed.size > 0,
     async query({ prompt, options, scope }) {
       const recovery = input.recovery.launchId && !usedReservation
-        ? input.recovery : registry.reserveLaunch(input.recovery.owner)
+        ? input.recovery : await registry.reserveLaunch(input.recovery.owner)
       usedReservation = true
       unclosed.add(recovery)
       const children = new Set<ChildProcess>()

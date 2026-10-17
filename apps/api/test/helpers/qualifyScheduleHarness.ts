@@ -61,7 +61,7 @@ export async function qualifyScheduleHarness(f: Sch11Fixture, principal: Managem
     instances: registry.instances, installations: registry.installations,
     selectDefault: harness => registry.pinDefault(harness),
     auxiliaryRecovery: role => processes.scope(`${role}:${randomUUID()}`),
-    admitRecovery: recovery => { Object.assign(recovery, processes.reserveLaunch(recovery.owner)) },
+    admitRecovery: async recovery => { Object.assign(recovery, await processes.reserveLaunch(recovery.owner)) },
     abandonRecovery: async recovery => { await processes.abandonReservedLaunch(recovery) },
     closeRecovery: async recovery => {
       if (!await processes.closeOwner(recovery.owner)) throw new Error('Native qualification process closure is unconfirmed.')

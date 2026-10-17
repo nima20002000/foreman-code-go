@@ -111,7 +111,7 @@ export function createInstalledWorkerAccounts(input: {
         const configuration = HarnessConfigurationSchema.parse(selected.instance.configuration)
         if (!binary || configuration?.harness !== 'claude') throw new DomainError('PROVIDER_MODELS_UNAVAILABLE',
           'The qualified Claude model profile is unavailable.', 409)
-        const recovery = input.registry.reserveLaunch(`account-models:${randomUUID()}`)
+        const recovery = await input.registry.reserveLaunch(`account-models:${randomUUID()}`)
         const close = async () => {
           await input.registry.abandonReservedLaunch(recovery)
           if (!await input.registry.closeOwner(recovery.owner)) throw new DomainError('PROVIDER_COMMAND_CLOSURE_UNKNOWN',
@@ -162,7 +162,7 @@ export function createInstalledWorkerAccounts(input: {
     ...(input.prepareAccount ? { prepareAccount: input.prepareAccount } : {}) })
   const factories = new NativeHarnessFactories({ codexBinary: '', accounts, instances, installations, selectAccount: selection.selectAccount,
     auxiliaryRecovery: role => input.registry.scope(`${role}:${randomUUID()}`),
-    admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
+    admitRecovery: async recovery => { Object.assign(recovery, await input.registry.reserveLaunch(recovery.owner)) },
     abandonRecovery: recovery => input.registry.abandonReservedLaunch(recovery).then(() => {}),
     closeRecovery: async recovery => {
       if (!await input.registry.closeOwner(recovery.owner)) throw new DomainError('PROVIDER_COMMAND_CLOSURE_UNKNOWN',

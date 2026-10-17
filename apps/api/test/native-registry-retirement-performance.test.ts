@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { describe,expect,it,vi } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { runCommand } from '../src/modules/harnesses/process.js'
 import { nativeRegistryProjection,type NativeLaunchObservation } from '../src/modules/harnesses/recovery/registryObservation.js'
 import { bootIdentity,processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { privateDirectory,readRecord,writeRecord } from '../src/modules/harnesses/recovery/storage.js'
@@ -26,6 +27,68 @@ function fixture() {
   return {root,owner,ownerDirectory,registry,seedClosed}
 }
 describe.skipIf(process.platform!=='linux')('bounded original native retirement projection',()=>{
+  it.each(['cleanup', 'admission'] as const)('keeps timers running while %s makes a large retirement batch durable', async operation => {
+    const f = fixture()
+    const ids = Array.from({ length: 1_000 }, () => f.seedClosed().id)
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 1)
+    try {
+      if (operation === 'cleanup') expect(await f.registry.closeOwner(f.owner)).toBe(true)
+      else {
+        const scope = await f.registry.reserveLaunch(f.owner)
+        expect(scope.launchId).toBeDefined()
+        expect(await f.registry.abandonReservedLaunch(scope)).toBe(true)
+      }
+      expect(ticks).toBeGreaterThan(1)
+      for (const id of ids) {
+        expect(f.registry.closedRegistration(f.owner, id)).toMatchObject({
+          owner: f.owner, launchId: id, lifecycle: 'closed', closureEvidence: 'native_not_started',
+        })
+        expect(existsSync(join(f.ownerDirectory, id))).toBe(false)
+      }
+    } finally {
+      clearInterval(timer)
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  })
+  it('serializes competing admissions through retirement before publishing one launch', async () => {
+    const f = fixture()
+    const ids = Array.from({ length: 100 }, () => f.seedClosed().id)
+    try {
+      const other = new NativeProcessRegistry(f.root)
+      const results = await Promise.allSettled([
+        f.registry.reserveLaunch(f.owner), other.reserveLaunch(f.owner),
+      ])
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find(result => result.status === 'rejected')
+      expect(rejected?.reason).toEqual(expect.objectContaining({
+        message: expect.stringContaining('active or unconfirmed'),
+      }))
+      for (const id of ids) expect(other.closedRegistration(f.owner, id)?.lifecycle).toBe('closed')
+      const winner = results.find(result => result.status === 'fulfilled')!
+      expect(await other.abandonReservedLaunch(winner.value)).toBe(true)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
+  it('abandons the new reservation when cancellation arrives during retirement before command dispatch', async () => {
+    const f = fixture()
+    const ids = Array.from({ length: 100 }, () => f.seedClosed().id)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('command canceled during retirement')), 1)
+    try {
+      await expect(runCommand(process.execPath,
+        ['-e', "require('node:fs').writeFileSync('unexpected-native-start', '')"], f.root,
+        controller.signal, undefined, { recovery: f.registry.scope(f.owner) }))
+        .rejects.toThrow('command canceled during retirement')
+      expect(existsSync(join(f.root, 'unexpected-native-start'))).toBe(false)
+      expect(await f.registry.closeOwner(f.owner)).toBe(true)
+      const snapshot = f.registry.snapshot()
+      expect(snapshot.launches).toHaveLength(ids.length + 1)
+      expect(snapshot.launches.every(row => row.lifecycle === 'closed')).toBe(true)
+    } finally {
+      clearTimeout(timer)
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  })
   it('compacts all 10,005 original F11 registrations with a bounded number of full inventory scans',async()=>{
     const f=fixture(),projection=nativeRegistryProjection(f.root)
     const baseline=f.registry.snapshot(),controller=new AbortController()
@@ -65,7 +128,7 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       expect(current.launches).toHaveLength(10_000)
       expect(current.launches.every(row=>row.lifecycle==='closed')).toBe(true)
       expect(await f.registry.closeOwner(f.owner)).toBe(true)
-      const next=f.registry.reserveLaunch(f.owner)
+      const next=await f.registry.reserveLaunch(f.owner)
       writeRecord(join(f.ownerDirectory,next.launchId!,'not-started.json'),{id:next.launchId,owner:f.owner})
       await f.registry.closeRegistration(next,next.launchId!)
       await f.registry.closeRegistration(next,next.launchId!)
@@ -76,7 +139,7 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
   it('publishes a positive exact closure to subscribers before an immediate read after retirement',async()=>{
     const f=fixture(),controller=new AbortController()
     try {
-      const scope=f.registry.reserveLaunch(f.owner),before=f.registry.snapshot()
+      const scope=await f.registry.reserveLaunch(f.owner),before=f.registry.snapshot()
       const iterator=f.registry.changes(before.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
       writeRecord(join(f.ownerDirectory,scope.launchId!,'not-started.json'),{id:scope.launchId,owner:f.owner})
       await f.registry.closeRegistration(scope,scope.launchId!)
@@ -111,28 +174,29 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
   it('retains unresolved original registrations while flushing successful closures and blocks reuse',async()=>{
     const f=fixture()
     try {
-      const closed=f.seedClosed(),active=f.registry.reserveLaunch('other-owner')
+      const closed=f.seedClosed(),active=await f.registry.reserveLaunch('other-owner')
       // Add a genuine write-ahead reservation for this same owner as well.
-      const original=f.registry.reserveLaunch(f.owner)
+      const original=await f.registry.reserveLaunch(f.owner)
       await expect(f.registry.closeOwner(f.owner,AbortSignal.timeout(25))).rejects.toThrow('closure remains unconfirmed')
       const snapshot=f.registry.snapshot()
       expect(snapshot.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
       expect(snapshot.launches.find(row=>row.launchId===original.launchId)?.lifecycle).toBe('closure-unconfirmed')
       expect(snapshot.launches.find(row=>row.launchId===active.launchId)?.owner).toBe('other-owner')
       expect(existsSync(join(f.ownerDirectory,original.launchId!,'intent.json'))).toBe(true)
-      expect(()=>f.registry.reserveLaunch(f.owner)).toThrow('active or unconfirmed')
+      await expect(f.registry.reserveLaunch(f.owner)).rejects.toThrow('active or unconfirmed')
     }finally{rmSync(f.root,{recursive:true,force:true})}
   })
-  it('merges immediate reads and interleaved real reservations into the final synchronous batch',async()=>{
+  it('merges immediate reads and interleaved real reservations into the final asynchronous batch',async()=>{
     const f=fixture(),projection=nativeRegistryProjection(f.root),controller=new AbortController()
     try {
       const closed=f.seedClosed(),baseline=f.registry.snapshot()
       const iterator=f.registry.changes(baseline.revision,controller.signal)[Symbol.asyncIterator](),pending=iterator.next()
-      let retirement:Promise<void>|undefined,scope:ReturnType<NativeProcessRegistry['reserveLaunch']>|undefined
-      projection.retirementBatch(()=>{
+      let retirement:Promise<void>|undefined,scope:Awaited<ReturnType<NativeProcessRegistry['reserveLaunch']>>|undefined
+      await projection.retirementBatch(async ()=>{
         retirement=f.registry.closeRegistration(f.registry.scope(f.owner),closed.id)
+        scope=await f.registry.reserveLaunch('interleaved-owner')
+        await retirement
         expect(existsSync(closed.path)).toBe(false)
-        scope=f.registry.reserveLaunch('interleaved-owner')
         const immediate=f.registry.snapshot()
         expect(immediate.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
         expect(immediate.launches.find(row=>row.launchId===scope!.launchId)?.owner).toBe('interleaved-owner')
@@ -142,7 +206,7 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       expect(current.launches.find(row=>row.launchId===closed.id)?.lifecycle).toBe('closed')
       expect(current.launches.find(row=>row.launchId===scope!.launchId)).toMatchObject({owner:'interleaved-owner',lifecycle:'closure-unconfirmed'})
       expect(event.value?.launches).toEqual(current.launches)
-      expect(()=>f.registry.reserveLaunch('interleaved-owner')).toThrow('active or unconfirmed')
+      await expect(f.registry.reserveLaunch('interleaved-owner')).rejects.toThrow('active or unconfirmed')
       controller.abort();await iterator.return?.()
     }finally{controller.abort();rmSync(f.root,{recursive:true,force:true})}
   })

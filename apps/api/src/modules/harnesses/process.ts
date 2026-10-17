@@ -2,7 +2,7 @@ import { timeRuntimeOperation } from '../diagnostics/runtimeTiming.js'
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { Readable } from 'node:stream'
 import { nativeOutputCollector } from './nativeCommandOutput.js'
-import { nativeProcessExit, spawnNativeProcess, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
+import { NativeProcessRegistry, nativeProcessExit, spawnNativeProcess, prepareNativeProcessRecovery, stopRecoveredChild, type NativeProcessRecovery } from './recovery/processRegistry.js'
 
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
@@ -94,35 +94,47 @@ export async function stopProcess(child: ChildProcess): Promise<boolean> {
   return true
 }
 
+async function abandonFailedStart(recovery: NativeProcessRecovery | undefined, error: unknown): Promise<void> {
+  if (!recovery) return
+  try { await new NativeProcessRegistry(recovery.root).abandonReservedLaunch(recovery) }
+  catch (cleanupError) {
+    throw new AggregateError([error, cleanupError], 'Native startup and reservation cleanup failed.', { cause: cleanupError })
+  }
+}
+
 async function runOwnedProcess<T>(
   options: ProcessOptions,
   read: (child: ChildProcessWithoutNullStreams, secrets: readonly string[]) => Promise<T>,
 ): Promise<T & ProcessExit> {
   options.signal?.throwIfAborted()
-  const childEnvironment = inheritedAgentEnvironment(options.environment)
-  // No asynchronous work may separate the launch check from process creation.
-  // This detects qualification-time replacement; it is not an atomic cwd pin.
-  const scopedEnvironment = options.beforeSpawn ? await options.beforeSpawn() : undefined
+  const recovery = options.recovery ? await prepareNativeProcessRecovery(options.recovery) : undefined
   const secrets: string[] = []
-  if (scopedEnvironment) {
-    if (!options.expectedAgentId || scopedEnvironment.agentId !== options.expectedAgentId) {
-      throw new Error('Child process environment belongs to another Agent.')
+  let child: ChildProcessWithoutNullStreams
+  try {
+    const childEnvironment = inheritedAgentEnvironment(options.environment)
+    // Finish retirement before the final launch check; dispatch and listener installation stay synchronous.
+    const scopedEnvironment = options.beforeSpawn ? await options.beforeSpawn() : undefined
+    if (scopedEnvironment) {
+      if (!options.expectedAgentId || scopedEnvironment.agentId !== options.expectedAgentId) {
+        throw new Error('Child process environment belongs to another Agent.')
+      }
+      const entries = Object.entries(scopedEnvironment.variables)
+      const entry = entries[0]
+      if (entries.length !== 1 || !entry || !(APP_MCP_TOKEN_NAMES as readonly string[]).includes(entry[0]) || !entry[1]) {
+        throw new Error('Only the scoped Foreman Code MCP credential may be injected into an Agent process.')
+      }
+      childEnvironment[entry[0]] = entry[1]
+      secrets.push(entry[1])
     }
-    const entries = Object.entries(scopedEnvironment.variables)
-    const entry = entries[0]
-    // Operator and Worker credentials share one variable; the server resolves the role from the token.
-    if (entries.length !== 1 || !entry || !(APP_MCP_TOKEN_NAMES as readonly string[]).includes(entry[0]) || !entry[1]) {
-      throw new Error('Only the scoped Foreman Code MCP credential may be injected into an Agent process.')
-    }
-    childEnvironment[entry[0]] = entry[1]
-    secrets.push(entry[1])
+    options.signal?.throwIfAborted()
+    child = spawnNativeProcess(options.binary, options.args, {
+      cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment), purpose: 'command',
+      ...(recovery ? { recovery } : {}),
+    })
+  } catch (error) {
+    await abandonFailedStart(recovery, error)
+    throw error
   }
-  options.signal?.throwIfAborted()
-  const child = spawnNativeProcess(options.binary, options.args, {
-    cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment),
-    purpose: 'command',
-    ...(options.recovery ? { recovery: options.recovery } : {}),
-  })
   const closed = new Promise<ProcessExit>((resolve) => {
     child.once('close', (exitCode, exitSignal) => resolve({ exitCode, exitSignal }))
   })
@@ -325,7 +337,7 @@ export async function runCommands(binary: string, commands: string[][], cwd: str
 }
 
 /** Bidirectional providers use the same tree ownership as one-shot harnesses. */
-export function spawnOwnedStdioProcess(options: {
+export async function spawnOwnedStdioProcess(options: {
   binary: string
   args: string[]
   cwd: string
@@ -333,19 +345,30 @@ export function spawnOwnedStdioProcess(options: {
   recovery?: NativeProcessRecovery
   reconnectableStdio?: true
   onError(error: Error): void
+  signal?: AbortSignal
+  beforeSpawn?(): void
   /** Metadata inspectors need actual readable EOF, not pipe destruction, to classify late diagnostics. */
   preserveReadableDrain?: boolean
-}): {
+}): Promise<{
   child: ChildProcessWithoutNullStreams
   closed: Promise<ProcessExit>
   close(): Promise<void>
-} {
-  const child = spawnNativeProcess(options.binary, options.args, {
-    cwd: options.cwd, env: options.environment,
-    purpose: options.preserveReadableDrain ? 'inspection' : 'session',
-    ...(options.reconnectableStdio ? { restartDetachable: true, reconnectableStdio: true } : {}),
-    ...(options.recovery ? { recovery: options.recovery } : {}),
-  })
+}> {
+  const recovery = options.recovery ? await prepareNativeProcessRecovery(options.recovery) : undefined
+  let child: ChildProcessWithoutNullStreams
+  try {
+    options.signal?.throwIfAborted()
+    options.beforeSpawn?.()
+    child = spawnNativeProcess(options.binary, options.args, {
+      cwd: options.cwd, env: options.environment,
+      purpose: options.preserveReadableDrain ? 'inspection' : 'session',
+      ...(options.reconnectableStdio ? { restartDetachable: true, reconnectableStdio: true } : {}),
+      ...(recovery ? { recovery } : {}),
+    })
+  } catch (error) {
+    await abandonFailedStart(recovery, error)
+    throw error
+  }
   let didClose = false
   const closed = new Promise<ProcessExit>((resolve, reject) => {
     child.once('close', (exitCode, exitSignal) => {

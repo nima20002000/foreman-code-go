@@ -30,7 +30,7 @@ it('recovers abandoned nested invocations, native reservations and databases aft
       const fixture = await resources.createTestDatabase(admin, slot);
       resources.registerTestResourceCleanup(slot, { kind: 'fixture-database', name: fixture.name });
       const registryDirectory = join(slot.directory, 'native-registry');
-      new NativeProcessRegistry(registryDirectory).reserveLaunch('abandoned-qualification');
+      await new NativeProcessRegistry(registryDirectory).reserveLaunch('abandoned-qualification');
       resources.registerTestResourceCleanup(slot, { kind: 'native-qualification', registryDirectory });
       resources.registerTestResourceCleanup(slot, { kind: 'suite-process-group', wrapperPid: process.pid });
       const readonly = join(slot.directory, 'readonly');

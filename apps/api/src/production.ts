@@ -1046,7 +1046,7 @@ function configureHarnessQualifications(composition: ProductionComposition) {
     }),
     ...(infrastructure?.inventoryDiscovery ? { installationDiscovery: infrastructure.inventoryDiscovery.launcher } : {}),
     auxiliaryRecovery: (role) => processRegistry.scope(`${role}:${infrastructure?.mode === 'replay' ? infrastructure.codex.id() : randomUUID()}`),
-    admitRecovery: (recovery) => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+    admitRecovery: async (recovery) => { Object.assign(recovery, await processRegistry.reserveLaunch(recovery.owner)) },
     abandonRecovery: async (recovery) => { await processRegistry.abandonReservedLaunch(recovery) },
     claudeVersionCommand: infrastructure?.auxiliary?.command ?? runCommand,
     closeRecovery: async (recovery) => {
@@ -1152,7 +1152,7 @@ function configureHarnessProfiles(composition: ProductionComposition) {
         const apiKey = await requireClaudeProductionCredentialDelivery(value.configuration, providerAccounts, value.target.hostRef)
         const current = await claudeDiscovery.currentForConfiguration(value, input.signal)
         const binding = harnessRegistry.pinOverride(value)
-        const recovery = processRegistry.reserveLaunch(`claude-profile-check:${input.checkId}`)
+        const recovery = await processRegistry.reserveLaunch(`claude-profile-check:${input.checkId}`)
         const close = async () => {
           await processRegistry.abandonReservedLaunch(recovery)
           if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude native profile qualification closure is unconfirmed.')
@@ -1555,13 +1555,13 @@ function configureExecutionCoordinator(composition: ProductionComposition) {
       signal.throwIfAborted()
       return closed
     },
-    (executionId, manager) => {
+    async (executionId, manager) => {
       if (remoteWorkflow!.isRemote(executionId)) return
       const scope = launchScopes.get(manager)
       if (!scope || scope.owner !== `execution:${executionId}` || scope.launchId) throw new DomainError(
         'NATIVE_LAUNCH_RESERVATION_CONFLICT', 'The exact manager launch scope is unavailable or already reserved.', 409)
       if (hasDetachedStdioProcess(scope)) return
-      Object.assign(scope, processRegistry.reserveLaunch(scope.owner))
+      Object.assign(scope, await processRegistry.reserveLaunch(scope.owner))
     },
     prepareWorkflowManagerContext,
     executionId => remoteWorkflow.afterReviewCommit(executionId),
@@ -1702,7 +1702,7 @@ function configureConversationManagers(composition: ProductionComposition) {
           { ...binding, admissionSignal: effectSignal ?? signal }, accepted) } : {}) }
       const { manager } = nativeFactories.allocate({ ...common, harness: session.harness })
       try {
-        nativeFactories.admitAuxiliary(manager)
+        await nativeFactories.admitAuxiliary(manager)
         return await manager.readCompaction!(session, start, state, signal)
       } finally { await nativeFactories.disposeAuxiliary(manager) }
     }
@@ -1820,7 +1820,7 @@ function configureOperatorChat(composition: ProductionComposition) {
         accepted.override.target.hostRef)
       const binding = harnessRegistry.pinOverride(accepted.override), binary = binding.installation.launcher.resolvedLauncher
       if (!binary) throw new DomainError('HARNESS_HOST_MISMATCH', 'Claude setup must inspect its actual local installed profile.', 409)
-      const recovery = processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
+      const recovery = await processRegistry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
       const close = async () => {
         await processRegistry.abandonReservedLaunch(recovery)
         if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Claude read-only configuration inspection closure is unconfirmed.')

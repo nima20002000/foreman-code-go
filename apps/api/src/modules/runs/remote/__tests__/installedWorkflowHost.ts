@@ -228,7 +228,7 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
   vi.spyOn(registry, 'closedRegistration').mockImplementation((owner, launchId) =>
     observed.owner === owner && observed.launchId === launchId && observed.lifecycle === 'closed'
       ? observed : undefined)
-  vi.spyOn(registry, 'reserveLaunch').mockImplementation(owner => ({ ...registry.scope(owner), launchId: launch.launchId }))
+  vi.spyOn(registry, 'reserveLaunch').mockImplementation(async owner => ({ ...registry.scope(owner), launchId: launch.launchId }))
   vi.spyOn(registry, 'abandonReservedLaunch').mockResolvedValue(false)
   vi.spyOn(registry, 'closeRegistration').mockResolvedValue(undefined)
   const closeOwner = vi.spyOn(registry, 'closeOwner').mockImplementation(async () => {

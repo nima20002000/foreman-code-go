@@ -62,11 +62,11 @@ function closeChild(child: ReturnType<typeof childProcess>) {
   child.exitCode = 0; child.stdout.end(); child.stderr.end(); child.emit('close', 0)
 }
 function installCodexWire() {
-  vi.mocked(spawnOwnedStdioProcess).mockImplementation((options) => {
+  vi.mocked(spawnOwnedStdioProcess).mockImplementation(async (options) => {
     const servers: Obj = { docs: { enabled: true }, disabled: { enabled: false } }
     for (const name of codexServers) servers[name] = { enabled: ignoreOverride || !options.args.includes(`mcp_servers.${name}.enabled=false`) }
-    let resolveClosed!: (exit: Awaited<ReturnType<typeof spawnOwnedStdioProcess>['closed']>) => void
-    const closed = new Promise<Awaited<ReturnType<typeof spawnOwnedStdioProcess>['closed']>>((resolve) => { resolveClosed = resolve })
+    let resolveClosed!: (exit: Awaited<Awaited<ReturnType<typeof spawnOwnedStdioProcess>>['closed']>) => void
+    const closed = new Promise<Awaited<Awaited<ReturnType<typeof spawnOwnedStdioProcess>>['closed']>>((resolve) => { resolveClosed = resolve })
     const child = childProcess((text) => {
       const request = object(JSON.parse(text)), method = String(request.method), params = object(request.params ?? {})
       calls.push({ method, params })

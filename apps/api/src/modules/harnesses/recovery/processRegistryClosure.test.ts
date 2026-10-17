@@ -20,8 +20,9 @@ async function fixture() {
   const directory = await privateFixtureDirectory('native-closure-')
   const root = join(directory, 'registry')
   const registry = new NativeProcessRegistry(root)
+  await registry.ready()
   const owner = 'execution:stopped-execution'
-  const scope = registry.reserveLaunch(owner)
+  const scope = await registry.reserveLaunch(owner)
   const ownerDirectory = join(root, createHash('sha256').update(owner).digest('hex'))
   const registration = join(ownerDirectory, scope.launchId!)
   const current = processIdentity(process.pid)!
@@ -95,8 +96,10 @@ it('prunes aged closed owner directories while preserving original closure readb
     }
     // Maintenance is budgeted per construction, so a backlog is archived over several constructions.
     let registry = new NativeProcessRegistry(root)
+    await registry.ready()
     for (let attempt = 0; attempt < 20 && readdirSync(root).some(name => /^[0-9a-f]{64}$/.test(name)); attempt++) {
       registry = new NativeProcessRegistry(root)
+      await registry.ready()
     }
     expect(readdirSync(root).filter(name => /^[0-9a-f]{64}$/.test(name))).toHaveLength(0)
     for (const observation of observations) {
@@ -142,11 +145,11 @@ it('archives a large retirement backlog a little per registry construction', asy
     // Each owner appears to take 60 ms, so one construction archives only part of the backlog.
     let now = 0
     vi.spyOn(performance, 'now').mockImplementation(() => (now += 30))
-    new NativeProcessRegistry(root)
+    await new NativeProcessRegistry(root).ready()
     const remaining = owners()
     expect(remaining).toBeGreaterThan(0)
     expect(remaining).toBeLessThan(6)
-    for (let attempt = 0; attempt < 6 && owners(); attempt++) new NativeProcessRegistry(root)
+    for (let attempt = 0; attempt < 6 && owners(); attempt++) await new NativeProcessRegistry(root).ready()
     expect(owners()).toBe(0)
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
@@ -160,7 +163,7 @@ it('archives owners that age after an earlier maintenance sweep finished', async
   const retired = join(ownerDirectory, 'retired.json')
   try {
     writeRecord(retired, { format: 2, owner: observation.owner, id: observation.launchId, observation })
-    new NativeProcessRegistry(root)
+    await new NativeProcessRegistry(root).ready()
     expect(existsSync(ownerDirectory)).toBe(true)
     // The receipt passes its retention window while this process keeps running.
     const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
@@ -168,6 +171,7 @@ it('archives owners that age after an earlier maintenance sweep finished', async
     const later = Date.now() + 2 * 60 * 60 * 1000
     vi.spyOn(Date, 'now').mockImplementation(() => later)
     const registry = new NativeProcessRegistry(root)
+    await registry.ready()
     expect(existsSync(ownerDirectory)).toBe(false)
     expect(await registry.closeOwner(observation.owner)).toBe(true)
     expect(registry.closedRegistration(observation.owner, observation.launchId)).toEqual(observation)

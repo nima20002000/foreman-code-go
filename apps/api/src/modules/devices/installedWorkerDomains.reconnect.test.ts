@@ -87,7 +87,7 @@ describe('installed source operations across Worker link reconnection', () => {
     vi.spyOn(CodexAppServerSessionManager.prototype, 'reconcile').mockResolvedValue(history)
     vi.spyOn(CodexAppServerSessionManager.prototype, 'close').mockResolvedValue(undefined)
     vi.spyOn(CodexAppServerSessionManager.prototype, 'dispose').mockResolvedValue(undefined)
-    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => ({
+    vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => ({
       ...f.registry.scope(owner), launchId: f.launch.launchId,
     }))
     vi.spyOn(f.registry, 'abandonReservedLaunch').mockResolvedValue(false)

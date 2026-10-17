@@ -215,7 +215,7 @@ export class NativeProviderAccountCommands implements ProviderAccountNativePort 
     let result: AccountCommandResult | undefined
     try {
       selected = await this.selected(input)
-      const recovery = this.processes?.reserveLaunch(`provider-account-status:${randomUUID()}`)
+      const recovery = await this.processes?.reserveLaunch(`provider-account-status:${randomUUID()}`)
       let inspection: AccountCommandProcess | undefined
       let inspectionFailure: unknown
       try {

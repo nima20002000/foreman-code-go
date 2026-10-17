@@ -23,7 +23,7 @@ export async function configureNativeAcceptanceMcp(pool: pg.Pool, directory: str
   const selected = [...new Set(harnesses)]
   const owners = { codex: `acceptance-mcp:codex:${randomUUID()}` }
   const scopes = {
-    codex: selected.includes('codex') ? registry.reserveLaunch(owners.codex) : registry.scope(owners.codex),
+    codex: selected.includes('codex') ? await registry.reserveLaunch(owners.codex) : registry.scope(owners.codex),
   }
   const service = new HarnessMcpSettingsService(pool, new PostgresCommandCoordinator(pool), {
     codex: new CodexMcpConnections(binaries.codex, directory, scopes.codex),

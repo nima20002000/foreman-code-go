@@ -64,7 +64,7 @@ describe('PR17 F7 PostgreSQL runtime ownership', () => {
       await once(guardian, 'message')
       const first = owner()
       await first.acquire()
-      const recovery = registry.reserveLaunch(`diagnostic:${randomUUID()}`)
+      const recovery = await registry.reserveLaunch(`diagnostic:${randomUUID()}`)
       const directory = join(root, createHash('sha256').update(recovery.owner).digest('hex'), recovery.launchId!)
       const identity = guardian.pid && processIdentity(guardian.pid)
       if (!identity) throw new Error('The fixture guardian identity is unavailable.')
@@ -97,7 +97,7 @@ describe('PR17 F7 PostgreSQL runtime ownership', () => {
       await entered.promise
       await expect(owner().acquire()).rejects.toMatchObject({ code: 'OPERATOR_API_ALREADY_OWNED' })
       expect(registry.closedRegistration(recovery.owner, recovery.launchId!)).toBeUndefined()
-      expect(() => registry.reserveLaunch(recovery.owner)).toThrow()
+      await expect(registry.reserveLaunch(recovery.owner)).rejects.toThrow()
       guardian.send('stop')
       expect((await exited)[0]).toBe(0)
       expect(await finishing).toBeUndefined()

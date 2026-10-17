@@ -66,7 +66,7 @@ export function scopedCompatibilityProbe(options: {
             await options.assertInstallation(binding, commandSignal)
             assertOpen(); combined.throwIfAborted(); commandSignal.throwIfAborted()
             if (!record.admitted) {
-              Object.assign(recovery, options.registry.reserveLaunch(recovery.owner))
+              Object.assign(recovery, await options.registry.reserveLaunch(recovery.owner))
               record.admitted = true
             }
           },

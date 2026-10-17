@@ -81,7 +81,7 @@ export function createInstalledNativeQualifier(input: {
     const startedAt = new Date().toISOString(), checks: HarnessQualification['checks'] = []
     let version: string | undefined, profileResult: ConfigurationQualification | undefined
     let failureReason: string | null = null
-    const diagnostic = input.registry.reserveLaunch(`qualification:${harness}:${checkId}:static`)
+    const diagnostic = await input.registry.reserveLaunch(`qualification:${harness}:${checkId}:static`)
     let probe: CompatibilityProbe | undefined
     const closeProbe = async () => {
       await probe?.close?.()

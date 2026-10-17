@@ -75,7 +75,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     let modelCatalogSource: HostHarnessProfileEvidence['modelCatalogSource']
     let failure: { code: string; message: string } | undefined
     try {
-      this.factories.admitAuxiliary(allocation.manager)
+      await this.factories.admitAuxiliary(allocation.manager)
       await this.factories.assertInstallationUnchanged(binding, input.signal)
       if (allocation.harness === 'codex' && configuration.harness === 'codex') {
         const checked = await allocation.manager.qualifyConfiguration(configuration, this.workingDirectory, input.signal)

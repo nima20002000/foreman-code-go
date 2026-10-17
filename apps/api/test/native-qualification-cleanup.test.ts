@@ -27,8 +27,8 @@ function factoriesFor(registry: NativeProcessRegistry, binary: string, environme
   const closeRecovery = vi.fn(async (recovery: ReturnType<NativeProcessRegistry['scope']>) => {
     if (!await registry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')
   })
-  const admitRecovery = vi.fn((recovery: ReturnType<NativeProcessRegistry['scope']>) => {
-    Object.assign(recovery, registry.reserveLaunch(recovery.owner))
+  const admitRecovery = vi.fn(async (recovery: ReturnType<NativeProcessRegistry['scope']>) => {
+    Object.assign(recovery, await registry.reserveLaunch(recovery.owner))
   })
   const factories = new NativeHarnessFactories({ codexBinary: binary,
     auxiliaryRecovery: role => {
@@ -78,8 +78,8 @@ it('closes the retained reservation when admission fails after assigning its lau
   const registry = new NativeProcessRegistry(join(f.directory, 'recovery'))
   const owned = factoriesFor(registry, f.binary)
   const failure = new Error('Admission failed after reservation.')
-  owned.admitRecovery.mockImplementationOnce(recovery => {
-    Object.assign(recovery, registry.reserveLaunch(recovery.owner))
+  owned.admitRecovery.mockImplementationOnce(async recovery => {
+    Object.assign(recovery, await registry.reserveLaunch(recovery.owner))
     throw failure
   })
   try {
@@ -117,13 +117,12 @@ it.each(['rename', 'directory-sync'] as const)('removes an undispatched reservat
     })
   }
   try {
-    assert.throws(() => registry.reserveLaunch('qualification-owner'),
-      (error: unknown) => (error as { code?: string }).code === 'HARNESS_RECOVERY_STORAGE_FULL')
+    await assert.rejects(async () => registry.reserveLaunch('qualification-owner'), (error: unknown) => (error as { code?: string }).code === 'HARNESS_RECOVERY_STORAGE_FULL')
     assert.equal(registry.snapshot().launches.length, 0)
     assert.equal(await registry.closeOwner('qualification-owner'), false)
     vi.mocked(fs.renameSync).mockImplementation(realFs.renameSync)
     vi.mocked(fs.fsyncSync).mockImplementation(realFs.fsyncSync)
-    const retry = registry.reserveLaunch('qualification-owner')
+    const retry = await registry.reserveLaunch('qualification-owner')
     assert.equal(await registry.abandonReservedLaunch(retry), true)
     assert.equal(await registry.closeOwner(retry.owner), true)
   } finally { await rm(root, { recursive: true, force: true }) }

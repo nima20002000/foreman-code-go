@@ -73,7 +73,7 @@ export class NativeHarnessFactories {
   readonly instances: HarnessInstanceRegistry
   private readonly configurations = new Map<string, ConfiguredHarnessInstance>()
   private auxiliaryClosing = false
-  private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; disposal?: Promise<void> }>()
+  private readonly auxiliaries = new Map<NativeHarnessSessionManager, { recovery: NativeProcessRecovery | undefined; admitted: boolean; admissionError?: unknown; admission?: Promise<void>; disposal?: Promise<void> }>()
   private readonly closedAuxiliaries = new WeakSet<NativeHarnessSessionManager>()
   private readonly codexDiagnostics: CodexDiagnostics
   private readonly versionDiagnostics = new Set<CodexDiagnosticLifetime>()
@@ -91,7 +91,7 @@ export class NativeHarnessFactories {
     selectConfiguration?: (configuration: HarnessConfiguration) => RegistryHarnessSelection
     selectAccount?: (binding: ProviderAccountBinding) => RegistryHarnessSelection
     auxiliaryRecovery?: (role: 'diagnostics' | 'qualification') => NativeProcessRecovery
-    admitRecovery?: (recovery: NativeProcessRecovery) => void
+    admitRecovery?: (recovery: NativeProcessRecovery) => void | Promise<void>
     abandonRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
     closeRecovery?: (recovery: NativeProcessRecovery) => Promise<void>
     claudeVersionCommand?: typeof runCommand
@@ -182,8 +182,8 @@ export class NativeHarnessFactories {
       if (auxiliary) {
         this.auxiliaries.set(result.manager, { recovery, admitted: false })
         const inspector = result.inspector
-        if (inspector) result.inspector = { inspect: (request) => {
-          this.admitAuxiliary(result.manager)
+        if (inspector) result.inspector = { inspect: async (request) => {
+          await this.admitAuxiliary(result.manager)
           return inspector.inspect(request)
         } }
       }
@@ -312,7 +312,7 @@ export class NativeHarnessFactories {
     if (auxiliary) {
       this.auxiliaries.set(result.manager, { recovery, admitted: false })
       const inspector = result.inspector
-      result.inspector = { inspect: (request) => { this.admitAuxiliary(result.manager); return inspector.inspect(request) } }
+      result.inspector = { inspect: async (request) => { await this.admitAuxiliary(result.manager); return inspector.inspect(request) } }
     } else if (this.infrastructure.mode === 'native') {
       const inspector = result.inspector
       result.inspector = { inspect: async request => {
@@ -392,7 +392,7 @@ export class NativeHarnessFactories {
       } }), workingDirectory, ownerAgentId: 'configuration-qualification', appMcpAccess: 'none',
     })
     try {
-      this.admitAuxiliary(allocation.manager)
+      await this.admitAuxiliary(allocation.manager)
       if (allocation.harness === 'codex' && configuration.harness === 'codex') {
         return await allocation.manager.qualifyConfiguration(configuration, workingDirectory, signal)
       }
@@ -416,7 +416,8 @@ export class NativeHarnessFactories {
     const task = Promise.resolve().then(async () => {
       combined.throwIfAborted()
       await this.assertInstallationUnchanged(binding, combined)
-      this.config.admitRecovery!(recovery)
+      await this.config.admitRecovery!(recovery)
+      combined.throwIfAborted()
       owned.admitted = true
       const environment: NodeJS.ProcessEnv = { PATH: binding.installation.launcher.environment.path }
       for (const name of ['LANG', 'LC_ALL', 'TMPDIR']) if (process.env[name] !== undefined) environment[name] = process.env[name]
@@ -464,18 +465,22 @@ export class NativeHarnessFactories {
     for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(ignoreError('harness', 'dispose auxiliary manager', { harness: manager.harness }))
   }
 
-  admitAuxiliary(manager: NativeHarnessSessionManager): void {
+  async admitAuxiliary(manager: NativeHarnessSessionManager): Promise<void> {
     if (this.auxiliaryClosing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
     const owned = this.auxiliaries.get(manager)
     if (!owned) throw new DomainError('HARNESS_ROLE_AUTHORITY_INVALID', 'Only diagnostic and qualification owners use this admission boundary.', 403)
     if (owned.admissionError) throw owned.admissionError
+    if (owned.disposal) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
     if (!owned.admitted) {
-      try {
-        if (owned.recovery && this.config.admitRecovery) this.config.admitRecovery(owned.recovery)
-        owned.admitted = true
-      }
-      catch (error) { owned.admissionError = error; throw error }
+      owned.admission ??= Promise.resolve().then(async () => {
+        try {
+          if (owned.recovery && this.config.admitRecovery) await this.config.admitRecovery(owned.recovery)
+          owned.admitted = true
+        } catch (error) { owned.admissionError = error; throw error }
+      })
+      await owned.admission
     }
+    if (this.auxiliaryClosing || owned.disposal) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'Native diagnostics and qualification are shutting down.', 503)
   }
 
   disposeAuxiliary(manager: NativeHarnessSessionManager): Promise<void> {
@@ -485,6 +490,12 @@ export class NativeHarnessFactories {
       'HARNESS_ROLE_AUTHORITY_INVALID', 'Only diagnostic and qualification owners use this cleanup boundary.', 403))
     if (owned.disposal) return owned.disposal
     const attempt = Promise.resolve().then(async () => {
+      if (owned.admission) {
+        try { await owned.admission } catch (error) {
+          if (error !== owned.admissionError) throw error
+          // A failed admission is retained below; disposal still closes any published reservation.
+        }
+      }
       await manager.dispose!()
       const reservedDuringFailure = owned.admissionError !== undefined && owned.recovery?.launchId !== undefined
       if ((owned.admitted || reservedDuringFailure) && owned.recovery && this.config.closeRecovery) {

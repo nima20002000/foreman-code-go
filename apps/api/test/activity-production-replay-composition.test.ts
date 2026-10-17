@@ -57,7 +57,7 @@ for (const sandbox of ['read-only', 'workspace-write'] as const) it(`qualifies r
     instances: registry.instances, installations: registry.installations,
     selectConfiguration: harness => registry.pinAccepted({ id: `recorded-configuration:${harness.model}`, agentId: 'recorded-operator', harness }),
     auxiliaryRecovery: role => recovery.scope(`recorded-${role}`),
-    admitRecovery: scope => { Object.assign(scope, recovery.reserveLaunch(scope.owner)) },
+    admitRecovery: async scope => { Object.assign(scope, await recovery.reserveLaunch(scope.owner)) },
     abandonRecovery: async scope => { await recovery.abandonReservedLaunch(scope) },
     closeRecovery: async scope => { if (!await recovery.closeOwner(scope.owner)) throw new Error('Recorded closure failed.') },
     installationDiscovery: infrastructure.inventoryDiscovery!.launcher,

@@ -54,7 +54,7 @@ export function createInstalledClaudeOperatorInspection(input: {
     const original = await inspect()
     const binary = original.target.installation.launcher.resolvedLauncher
     if (!binary) throw new DomainError('HARNESS_INSTALLATION_CHANGED', 'The installed Worker Claude CLI is unavailable.', 409)
-    const recovery = input.registry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
+    const recovery = await input.registry.reserveLaunch(`operator-configuration-inspection:${randomUUID()}`)
     return runOwnedClaudeOperation(() => inspectClaudeOperatorConfiguration({
       accepted: original.accepted, binary, workingDirectory: input.stateDirectory,
       endpoint: request.endpoint, recovery, signal,

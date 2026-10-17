@@ -109,7 +109,7 @@ it.runIf(process.env.RUN_CLAUDE_PROFILE_NATIVE_TESTS === '1')(
       presetId: 'native-haiku-qualification', enabled: true, driverId: 'claude', configuration,
       configurationFingerprint: commandInputHash(configuration), qualification: 'unqualified' })
     const processes = new NativeProcessRegistry(join(directory, 'processes'))
-    const recovery = processes.reserveLaunch(`claude-profile-check:${randomUUID()}`)
+    const recovery = await processes.reserveLaunch(`claude-profile-check:${randomUUID()}`)
     try {
       const proof = await qualifyClaudeNativeProfile({ value, checkId: randomUUID(), binding, pin: current.pin,
         directory, recovery, signal, assertCurrent: async () => {

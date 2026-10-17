@@ -224,38 +224,9 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
   const recovering = !entry.reserved
   if (recovering) await assertClosure()
   const owner = `qualification:${operationId}:${admission.leaseId}`
-  const launches = new Map<string, { scope: NativeProcessRecovery; binary: string; argv: string[]; child?: ChildProcess; closed: boolean }>()
+  const launches = new Map<string, QualificationLaunch>()
   let closed = false
-  const ownership: OCIContainerOwnership = {
-    scope: { subject: { kind: 'qualification', qualificationId: admission.qualificationId, profileId: admission.profileId,
-      profileRevision: admission.profileRevision, operationId, fingerprint: admission.fingerprintDigest }, admission, bootId: admission.bootId },
-    assertCurrent, assertClosure,
-    async reserveContainerIntent(identity, fingerprint) { await assertCurrent(); await journal.qualificationContainerIntent(operationId, identity, fingerprint) },
-    async bindContainer(identity, containerId) { await assertClosure(); await journal.qualificationBindContainer(operationId, identity, containerId) },
-    async launchHelpers() {
-      const rows = registry.snapshot().launches.filter(row => row.owner === owner && row.lifecycle === 'active')
-      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== admission.bootId)) throw new Error('Original launcher boundary unavailable.')
-      return rows.map(row => ({ kind: 'launcher' as const, process: { ...row.guardian!, bootId: row.bootId }, boundary: row.boundary! }))
-    },
-    async readCertificate(containerId) {
-      const receipt = await journal.qualificationStatus(operationId)
-      if (!receipt || !same(receipt.admission, admission) || receipt.container?.containerId !== containerId) throw new Error('Original qualification container receipt unavailable.')
-      return receipt.container.certificate
-    },
-    async publish(certificate) { await journal.qualificationCertificate(operationId, certificate) },
-    async confirmFailedCreation(identity) {
-      await assertClosure()
-      const receipt = await journal.qualificationStatus(operationId)
-      if (!receipt || receipt.container?.identity !== identity || !qualificationCreationStopped(receipt)) return false
-      let closed = false
-      await journal.qualificationCreationAbsent(operationId, identity, async () => {
-        closed = await registry.closeOwner(owner)
-        return closed
-      })
-      if (!closed) return false
-      return true
-    },
-  }
+  const ownership = qualificationContainerOwnership({ admission, registry, journal, owner, assertCurrent, assertClosure })
   async function closeLaunch(id: string) {
     const launch = launches.get(id)
     if (!launch) throw new Error('Original native launch reservation missing.')
@@ -289,8 +260,8 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       }
       let launchId = ''
       let reservedScope: NativeProcessRecovery | undefined
-      const reserve = () => {
-        const scope = registry.reserveLaunch(owner)
+      const reserve = async () => {
+        const scope = await registry.reserveLaunch(owner)
         if (!scope.launchId) throw new Error('Original cleanup process reservation unavailable.')
         launchId = scope.launchId
         reservedScope = scope
@@ -306,7 +277,7 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
             if (!await registry.closeOwner(owner)) throw new Error('Original creation owner closure unconfirmed.')
             return reserve()
           })
-        } else await journal.qualificationReserveCleanupProcess(operationId, reserve())
+        } else await journal.qualificationReserveCleanupProcess(operationId, await reserve())
       } catch (error) {
         if (reservedScope && await registry.abandonReservedLaunch(reservedScope)) {
           launches.delete(launchId)
@@ -318,7 +289,7 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     },
     spawnCleanupProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
       if (!cleanupLaunches.has(id)) throw new Error('Original cleanup reservation required.')
-      return spawnReserved(id, binary, argv, options)
+      return spawnQualificationProcess({ launch: launches.get(id), closed, binary, argv, options, admission, candidate })
     },
     async recordResult(result: JobRuntimeQualificationResult) {
       await releaseQualificationQuotaClaims(journal, operationId)
@@ -345,7 +316,7 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
           throw new Error('Original read-only quota observer changed.')
         }
       }
-      const scope = registry.reserveLaunch(owner)
+      const scope = await registry.reserveLaunch(owner)
       if (!scope.launchId) throw new Error('Original guarded native reservation unavailable.')
       const launch = { scope, binary, argv: [...argv], closed: false }
       launches.set(scope.launchId, launch)
@@ -361,7 +332,7 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
     spawnProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
       signal.throwIfAborted()
       if (recovering || Date.parse(admission.expiresAt) <= now()) throw new Error('Original qualification cannot launch work.')
-      return spawnReserved(id, binary, argv, options)
+      return spawnQualificationProcess({ launch: launches.get(id), closed, binary, argv, options, admission, candidate })
     },
     async readNativeExit(id: string, child: ChildProcess) {
       const launch = launches.get(id)
@@ -385,23 +356,41 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       closed = true; return true
     },
   }
-  function spawnReserved(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {
-    const launch = launches.get(id)
-    if (closed || !launch || launch.child || launch.closed || launch.binary !== binary || !same(launch.argv, argv)
-      || bootIdentity() !== admission.bootId || options.shell !== false
-      || !same(options.stdio, ['ignore', 'pipe', 'pipe'])
-      || !same(options.env, candidate.controllerEnvironment)) {
-      throw new Error('Original noninteractive guarded native entry changed.')
-    }
-    const environment = nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment)
-    const child = spawnNativeProcess(binary, argv, {
-      cwd: candidate.runtimeRoot, env: environment, recovery: launch.scope,
-    })
-    launch.child = child
-    child.stdin.end()
-    return child
-  }
+
   return { authority, ownership, native }
+}
+
+interface QualificationLaunch {
+  scope: NativeProcessRecovery
+  binary: string
+  argv: string[]
+  child?: ChildProcess
+  closed: boolean
+}
+
+function spawnQualificationProcess(input: {
+  launch: QualificationLaunch | undefined
+  closed: boolean
+  binary: string
+  argv: string[]
+  options: import('node:child_process').SpawnOptions
+  admission: JobRuntimeNativeAdmissionRecord
+  candidate: JobQualificationCandidateRecord
+}) {
+  const { launch, closed, binary, argv, options, admission, candidate } = input
+  if (closed || !launch || launch.child || launch.closed || launch.binary !== binary || !same(launch.argv, argv)
+    || bootIdentity() !== admission.bootId || options.shell !== false
+    || !same(options.stdio, ['ignore', 'pipe', 'pipe'])
+    || !same(options.env, candidate.controllerEnvironment)) {
+    throw new Error('Original noninteractive guarded native entry changed.')
+  }
+  const environment = nativeAgentEnvironment(binary, candidate.runtimeRoot, candidate.controllerEnvironment)
+  const child = spawnNativeProcess(binary, argv, {
+    cwd: candidate.runtimeRoot, env: environment, recovery: launch.scope,
+  })
+  launch.child = child
+  child.stdin.end()
+  return child
 }
 
 export async function releaseQualificationQuotaClaims(journal: RemoteOperationJournal, operationId: string): Promise<void> {
@@ -496,5 +485,47 @@ export async function recoverInstalledJobRuntimeQualifications(input: {
         connection: admission.connection }, signal: new AbortController().signal,
       assertAdmission: unavailable, authority: { assertCurrent: unavailable, readApproval: unavailable, reserve: unavailable } })
     if (result.outcome === 'denied' && result.closure !== 'confirmed') throw new Error('Original qualification cleanup remains unconfirmed.')
+  }
+}
+
+function qualificationContainerOwnership(input: {
+  admission: JobRuntimeNativeAdmissionRecord
+  registry: NativeProcessRegistry
+  journal: RemoteOperationJournal
+  owner: string
+  assertCurrent(): Promise<void>
+  assertClosure(): Promise<void>
+}): OCIContainerOwnership {
+  const { admission, registry, journal, owner, assertCurrent, assertClosure } = input
+  const operationId = admission.operationId
+  return {
+    scope: { subject: { kind: 'qualification', qualificationId: admission.qualificationId, profileId: admission.profileId,
+      profileRevision: admission.profileRevision, operationId, fingerprint: admission.fingerprintDigest }, admission, bootId: admission.bootId },
+    assertCurrent, assertClosure,
+    async reserveContainerIntent(identity, fingerprint) { await assertCurrent(); await journal.qualificationContainerIntent(operationId, identity, fingerprint) },
+    async bindContainer(identity, containerId) { await assertClosure(); await journal.qualificationBindContainer(operationId, identity, containerId) },
+    async launchHelpers() {
+      const rows = registry.snapshot().launches.filter(row => row.owner === owner && row.lifecycle === 'active')
+      if (rows.some(row => !row.guardian || !row.boundary || row.bootId !== admission.bootId)) throw new Error('Original launcher boundary unavailable.')
+      return rows.map(row => ({ kind: 'launcher' as const, process: { ...row.guardian!, bootId: row.bootId }, boundary: row.boundary! }))
+    },
+    async readCertificate(containerId) {
+      const receipt = await journal.qualificationStatus(operationId)
+      if (!receipt || !same(receipt.admission, admission) || receipt.container?.containerId !== containerId) throw new Error('Original qualification container receipt unavailable.')
+      return receipt.container.certificate
+    },
+    async publish(certificate) { await journal.qualificationCertificate(operationId, certificate) },
+    async confirmFailedCreation(identity) {
+      await assertClosure()
+      const receipt = await journal.qualificationStatus(operationId)
+      if (!receipt || receipt.container?.identity !== identity || !qualificationCreationStopped(receipt)) return false
+      let closed = false
+      await journal.qualificationCreationAbsent(operationId, identity, async () => {
+        closed = await registry.closeOwner(owner)
+        return closed
+      })
+      if (!closed) return false
+      return true
+    },
   }
 }

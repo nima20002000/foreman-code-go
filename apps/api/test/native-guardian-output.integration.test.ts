@@ -22,7 +22,7 @@ for (const { provider, paddingBytes, name } of outputCases) it(
     const root = await privateFixtureDirectory('guardian-output-')
     const registry = new NativeProcessRegistry(root)
     const owner = 'output-fixture'
-    const recovery = registry.reserveLaunch(owner)
+    const recovery = await registry.reserveLaunch(owner)
     const sessionId = randomUUID()
     const promptUuid = randomUUID()
     const scope = { deviceId: 'fixture-device', profilePath: root, configRevision: 'fixture-revision', cwd: root }
@@ -93,7 +93,7 @@ it('bounds relay draining when a descendant retains the provider pipe', async ()
     console.log(JSON.stringify({pid:descendant.pid}))
     descendant.unref()
     process.exit(0)
-  `], { cwd: root, env: {}, recovery: registry.reserveLaunch(owner), restartDetachable: true, reconnectableStdio: true })
+  `], { cwd: root, env: {}, recovery: await registry.reserveLaunch(owner), restartDetachable: true, reconnectableStdio: true })
   const closed = once(child, 'close')
   const stdout: Buffer[] = []
   child.stdout.on('data', chunk => stdout.push(chunk))

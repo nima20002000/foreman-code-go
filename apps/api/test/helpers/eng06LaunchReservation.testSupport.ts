@@ -8,7 +8,7 @@ import type { NativeProcessRecovery } from '../../src/modules/harnesses/recovery
 export function reserveFromExitedParent(root: string, owner: string): NativeProcessRecovery {
   const source = new URL('../../src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
   const script = `import { NativeProcessRegistry } from ${JSON.stringify(source)};
-    console.log(JSON.stringify(new NativeProcessRegistry(${JSON.stringify(root)}).reserveLaunch(${JSON.stringify(owner)})));`
+    console.log(JSON.stringify(await new NativeProcessRegistry(${JSON.stringify(root)}).reserveLaunch(${JSON.stringify(owner)})));`
   const output = execFileSync(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e', script],
     { encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024 })
   const scope = JSON.parse(output.trim()) as NativeProcessRecovery

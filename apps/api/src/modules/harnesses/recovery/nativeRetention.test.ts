@@ -85,7 +85,7 @@ it('expires closed managed MCP owners without workflow retirement while retainin
   const unknown = archive(root, `managed-mcp:other:${randomUUID()}`, 2 * 86_400_000)
   const unfinished = archive(root, 'execution:unfinished', 2 * 86_400_000)
   const registry = new NativeProcessRegistry(root)
-  const active = registry.reserveLaunch(`managed-mcp:codex:${randomUUID()}`)
+  const active = await registry.reserveLaunch(`managed-mcp:codex:${randomUUID()}`)
   const journal = await RemoteOperationJournal.open(join(directory, 'operations.json'), { initializeNewInstallation: true })
   try {
     expect(await registry.pruneSettled(owner => journal.isNativeOwnerSettled(owner))).toBe(1)

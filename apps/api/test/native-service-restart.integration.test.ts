@@ -79,6 +79,7 @@ let child
 let native = readDetachedNativeProcess(scope)
 if (!native) {
   if (existsSync(directory + '/started')) throw new Error('Original native lifetime did not survive.')
+  Object.assign(scope, await registry.reserveLaunch(scope.owner))
   child = spawnNativeProcess(process.execPath, [directory + '/native.cjs'], {
     cwd: directory, env: {}, recovery: scope, restartDetachable: true,
   })

@@ -32,11 +32,11 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 /** Actual runCommand and registry; only process/kernel/qualification IO is replaced.
  * The mock guardian publishes a birth certificate and native IPC, then its wrapper
  * exits via cleanup SIGKILL. Empty containment remains separate positive evidence. */
-function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
+async function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
   const root = mkdtempSync(join(tmpdir(), 'native-command-guardian-memory-'))
   roots.push(root)
   const registry = new NativeProcessRegistry(root)
-  const recovery = registry.reserveLaunch('version-owner')
+  const recovery = await registry.reserveLaunch('version-owner')
   const wrapper = Object.assign(new EventEmitter(), {
     pid: 501, exitCode: null, signalCode: null as NodeJS.Signals | null,
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
@@ -69,7 +69,7 @@ function fixture(outcome: 0 | 7 | 'missing' | 'stale') {
 
 describe('combined native command outcome and cleanup', () => {
   for (const code of [0, 7] as const) it(`returns native ${code} through the actual reader after positive cleanup`, async () => {
-    const f = fixture(code)
+    const f = await fixture(code)
     const result = await runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery })
     expect(result).toMatchObject({ exitCode: code, stdout: 'codex-cli 0.154.0\n', stderr: '' })
     expect(f.wrapper.signalCode).toBe('SIGKILL')
@@ -80,7 +80,7 @@ describe('combined native command outcome and cleanup', () => {
   })
 
   it('does not return a valid native success when containment closure fails', async () => {
-    const f = fixture(0)
+    const f = await fixture(0)
     seams.populated.mockImplementation(() => { throw new Error('containment closure unavailable') })
     await expect(runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
       .rejects.toThrow('containment closure unavailable')
@@ -90,7 +90,7 @@ describe('combined native command outcome and cleanup', () => {
   })
 
   it('keeps retirement unconfirmed when containment becomes populated after closure observation', async () => {
-    const f = fixture(0)
+    const f = await fixture(0)
     seams.populated.mockReturnValueOnce(false).mockReturnValue(true)
     await expect(runCommand('mock-codex', ['--version'], f.root, undefined, undefined, { recovery: f.recovery }))
       .rejects.toThrow('live process')
@@ -108,7 +108,7 @@ describe('combined native command outcome and cleanup', () => {
   })
 
   it('retains recovery records and withholds retirement publication when containment retirement fails', async () => {
-    const f = fixture(0)
+    const f = await fixture(0)
     const controller = new AbortController()
     try {
       seams.retire.mockImplementation(() => { throw new Error('containment retirement unavailable') })

@@ -152,7 +152,7 @@ function resultText(execution: HarnessExecution | undefined): string {
 }
 
 async function version(binary: string, directory: string, registry: NativeProcessRegistry): Promise<string> {
-  const scope = registry.reserveLaunch(`acceptance-version:${randomUUID()}`)
+  const scope = await registry.reserveLaunch(`acceptance-version:${randomUUID()}`)
   const errors: unknown[] = []
   let observed = ''
   try {
@@ -398,7 +398,7 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
       const factories = new NativeHarnessFactories({
         codexBinary,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
-        admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+        admitRecovery: async recovery => { Object.assign(recovery, await registry.reserveLaunch(recovery.owner)) },
         abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
         closeRecovery: async recovery => {
           if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')

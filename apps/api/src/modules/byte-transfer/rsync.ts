@@ -97,14 +97,14 @@ export function rsyncCommand(endpoint: RsyncEndpoint, intent: TransferIntent, re
 }
 /** No shell, provider env or new scheduler. Only this process group is stopped. */
 export class NodeRsyncExecutor implements RsyncExecutor {
-  run(command: RsyncCommand, signal: AbortSignal): Promise<string> {
+  async run(command: RsyncCommand, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted()
     if (!command.owner && (command.args.includes('--partial') || command.args[0] === '--server')) throw new Error('Rsync byte subprocess owner unavailable')
+    const child = command.owner
+      ? await command.owner.ownership.spawnProcess(command.owner, command.executable, command.args, signal)
+      : spawn(command.executable, command.args, { shell: false, detached: true,
+        stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', LANG: 'C' } })
     return new Promise((resolve, reject) => {
-      const child = command.owner
-        ? command.owner.ownership.spawnProcess(command.owner, command.executable, command.args, signal)
-        : spawn(command.executable, command.args, { shell: false, detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', LANG: 'C' } })
       let output = '', overflow = false, killTimer: ReturnType<typeof setTimeout> | undefined
       let ownershipError: unknown
       const stop = () => {

@@ -30,7 +30,7 @@ export interface CompatibilityProbeOwnership {
   recovery: NativeProcessRecovery
   beforeCommand(binary: string, signal: AbortSignal): Promise<void>
 }
-type DiagnosticProcess = ReturnType<typeof spawnOwnedStdioProcess>
+type DiagnosticProcess = Awaited<ReturnType<typeof spawnOwnedStdioProcess>>
 const EXPORT_LIMIT = 16 * 1024 * 1024
 const unavailable = () => new CompatibilityCheckError('CLI_UNAVAILABLE', 'The configured CLI could not be found or executed. Repair that installation; no other harness was substituted.')
 
@@ -111,7 +111,7 @@ async function command(binary: string, args: string[], directory: string, enviro
   let rejectFailure: (error: unknown) => void = () => undefined
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
   void failure.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
-  const owned = spawnOwnedStdioProcess({ binary, args, cwd: directory, environment,
+  const owned = await spawnOwnedStdioProcess({ binary, args, cwd: directory, environment, signal,
     preserveReadableDrain: true,
     ...(ownership ? { recovery: ownership.recovery } : {}),
     onError: () => rejectFailure(unavailable()),

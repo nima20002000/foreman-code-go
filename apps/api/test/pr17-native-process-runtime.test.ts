@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { describe, it } from 'vitest'
 
 import { runJsonlProcess, spawnOwnedStdioProcess, stopProcess } from '../src/modules/harnesses/process.js'
-import { NativeProcessRegistry, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
+import { NativeProcessRegistry, prepareNativeProcessRecovery, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { bootIdentity, identityAlive, processIdentity, sessionAlive } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { privateDirectory, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
@@ -71,8 +71,8 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
       await assert.rejects(f.registry.closeRegistration(f.scope, id, AbortSignal.timeout(150)))
       assert.ok(identityAlive(descendant))
       assert.ok(existsSync(join(path, 'intent.json')))
-      assert.throws(() => spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], {
-        cwd: f.root, env: {}, recovery: f.scope,
+      await assert.rejects(async () => spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], {
+        cwd: f.root, env: {}, recovery: await prepareNativeProcessRecovery(f.scope),
       }), /active or unconfirmed/)
     } finally {
       if (descendant && identityAlive(descendant)) process.kill(-descendant.pid, 'SIGKILL')
@@ -94,7 +94,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
         assert.equal(reopened.closedRegistration(owner, id)?.lifecycle, 'closed')
       }
       assert.equal(await f.registry.closeOwner(owner), true)
-      child = spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: f.root, env: {}, recovery: f.scope })
+      child = spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: f.root, env: {}, recovery: await prepareNativeProcessRecovery(f.scope) })
       child.stdout.resume(); child.stderr.resume()
       assert.ok(child.pid)
       assert.equal(await stopRecoveredChild(child), true)
@@ -123,7 +123,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
       writeRecord(join(active, 'intent.json'), launch(id))
       await assert.rejects(f.registry.closeOwner(owner, AbortSignal.timeout(100)))
       assert.ok(existsSync(join(active, 'intent.json')))
-      assert.throws(() => spawnNativeProcess(process.execPath, [], { cwd: f.root, env: {}, recovery: f.scope }), /active or unconfirmed/)
+      await assert.rejects(async () => spawnNativeProcess(process.execPath, [], { cwd: f.root, env: {}, recovery: await prepareNativeProcessRecovery(f.scope) }), /active or unconfirmed/)
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
@@ -171,7 +171,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
       const { spawn } = require('node:child_process');
       const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore' });
       console.log(child.pid); child.unref(); setInterval(()=>{},1000);
-    `], { cwd: f.root, env: {}, recovery: f.scope })
+    `], { cwd: f.root, env: {}, recovery: await prepareNativeProcessRecovery(f.scope) })
     let output = ''; let stderr = ''
     child.stdout.on('data', (chunk) => { output += String(chunk) })
     child.stderr.on('data', (chunk) => { stderr += String(chunk) })
@@ -200,7 +200,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
   }, 15_000)
 
   it('F14: retries a failed owned-process kill and retains Stop ownership until closure succeeds', async () => {
-    const owned = spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'],
+    const owned = await spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'],
       cwd: tmpdir(), environment: {}, onError: () => undefined })
     const pid = owned.child.pid!
     const original = process.kill

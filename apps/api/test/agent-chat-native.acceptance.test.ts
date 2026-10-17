@@ -51,7 +51,7 @@ describe.skipIf(!enabled)('real native Agent chat fork', () => {
       const registry = new NativeProcessRegistry(join(directory, 'native-processes'))
       const factories = new NativeHarnessFactories({ ...binaries,
         auxiliaryRecovery: role => registry.scope(`${role}:${randomUUID()}`),
-        admitRecovery: recovery => { Object.assign(recovery, registry.reserveLaunch(recovery.owner)) },
+        admitRecovery: async recovery => { Object.assign(recovery, await registry.reserveLaunch(recovery.owner)) },
         abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
         closeRecovery: async recovery => {
           if (!await registry.closeOwner(recovery.owner)) throw new Error('Native diagnostic closure is unconfirmed.')
