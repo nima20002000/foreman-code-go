@@ -10,7 +10,7 @@ import { addGitWorktree, ensureClone, ensureCommit, systemGitWorktreePorts,
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
-import { fetchingApi, interruptedFetchWriter } from '../../../test/helpers/interruptedGitFetch.js'
+import { fetchingApi, interruptedFetchWriter, makeStale } from '../../../test/helpers/interruptedGitFetch.js'
 
 const disk = vi.hoisted(() => ({ full: false }))
 const filesystemRace = vi.hoisted(() => ({ beforeLstat: undefined as
@@ -155,13 +155,15 @@ it('bounds a later fetch, cleans its partial transfer, and preserves active work
   const clone = f.ports.cloneDirectory('fixture/project')
   expect(git(clone, 'rev-parse', first.branch)).toBe(resultCommit)
   expect(await readFile(join(path, 'uncommitted.txt'), 'utf8')).toBe('active work')
-  expect((await readdir(join(clone, '.git', 'objects', 'pack')))
-    .filter(name => name.startsWith('tmp_'))).toEqual([])
+  const packs = join(clone, '.git', 'objects', 'pack')
+  const partial = (await readdir(packs)).filter(name => name.startsWith('tmp_'))
+  await makeStale(packs, partial)
   await rm(join(f.origin, 'expansion.bin'))
   git(f.origin, 'add', '-A')
   git(f.origin, 'commit', '-qm', 'Small successor')
   const successor = git(f.origin, 'rev-parse', 'HEAD')
   await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+  expect((await readdir(packs)).filter(name => name.startsWith('tmp_'))).toEqual([])
   expect(git(clone, 'rev-parse', first.branch)).toBe(resultCommit)
   expect((await f.storage()).retainedBytes).toBeGreaterThan(0)
 })
@@ -352,6 +354,7 @@ it('reclaims a closed fetch’s abandoned packs before checking transfer capacit
   const path = 'objects/pack/tmp_pack_abandoned'
   await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(7 * 2 ** 20))
   await writeFile(join(common, path), randomBytes(2 * 2 ** 20))
+  await makeStale(common, [path])
   const gone = spawnSync(process.execPath, ['-e', ''])
   expect(gone.status).toBe(0)
   const name = 'transfer-interrupted.reservation'
@@ -399,6 +402,7 @@ it('reclaims another repository’s abandoned fetch packs before refusing a tran
     await exited
     await transfer.write()
     await transfer.die()
+    await makeStale(common, [pack, 'shallow.lock'])
   } finally {
     if (api.exitCode === null && api.signalCode === null) api.kill('SIGKILL')
     writer.close()
@@ -412,7 +416,7 @@ it('reclaims another repository’s abandoned fetch packs before refusing a tran
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
 
-it('reclaims a repository’s abandoned fetch packs while a snapshot reader keeps it open, admitting another transfer',
+it('reclaims a repository’s stale fetch locks and packs while a snapshot reader keeps it open, admitting transfers',
   async () => {
     const f = await fixture()
     const signal = AbortSignal.timeout(30_000)
@@ -434,7 +438,7 @@ it('reclaims a repository’s abandoned fetch packs while a snapshot reader keep
     const otherClone = await ensureCommit(ports, 'fixture/other', await commitIn(other, 'first'), signal)
     const common = join(clone, '.git')
     const pack = 'objects/pack/tmp_pack_abandoned'
-    const writer = await interruptedFetchWriter(f.root, common, { [pack]: 2 * 2 ** 20 })
+    const writer = await interruptedFetchWriter(f.root, common, { [pack]: 2 * 2 ** 20, 'shallow.lock': 41 })
     const api = await fetchingApi(f.root, f.cache, clone, writer.args, environment)
     try {
       const transfer = await writer.started()
@@ -443,6 +447,7 @@ it('reclaims a repository’s abandoned fetch packs while a snapshot reader keep
       await exited
       await transfer.write()
       await transfer.die()
+      await makeStale(common, [pack, 'shallow.lock'])
     } finally {
       if (api.exitCode === null && api.signalCode === null) api.kill('SIGKILL')
       writer.close()
@@ -459,8 +464,18 @@ it('reclaims a repository’s abandoned fetch packs while a snapshot reader keep
 
       await expect(ensureCommit(ports, 'fixture/other', otherCommit, signal)).resolves.toBe(otherClone)
       expect(git(otherClone, 'cat-file', '-t', otherCommit)).toBe('commit')
-      await expect(readFile(join(common, pack))).rejects.toMatchObject({ code: 'ENOENT' })
+      for (const name of [pack, 'shallow.lock']) {
+        await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
+      }
       expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+      // The shallow cache's own fetch needs shallow.lock, still beside the open reader.
+      await rm(join(f.cache, 'retained-result.bin'))
+      await writeFile(join(f.origin, 'source.txt'), 'project successor beside a reader')
+      git(f.origin, 'add', '.')
+      git(f.origin, 'commit', '-qm', 'Project successor')
+      const successor = git(f.origin, 'rev-parse', 'HEAD')
+      await expect(ensureCommit(ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+      expect(git(clone, 'cat-file', '-t', successor)).toBe('commit')
     } finally {
       const closed = once(reader, 'exit')
       reader.stdin!.end()

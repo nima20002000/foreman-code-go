@@ -1,7 +1,7 @@
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -13,7 +13,7 @@ import { ensureClone, ensureCommit, systemGitWorktreePorts, type GitWorktreePort
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { deferred } from '../../../test/helpers/deferred.js'
-import { fetchingApi, interruptedFetchWriter } from '../../../test/helpers/interruptedGitFetch.js'
+import { fetchingApi, interruptedFetchWriter, makeStale } from '../../../test/helpers/interruptedGitFetch.js'
 
 async function stop(child: ChildProcess) {
   if (child.exitCode !== null || child.signalCode !== null) return
@@ -72,6 +72,8 @@ it('charges detached Git writers after their API exits, then reclaims abandoned 
     const connection = await Promise.race([connected, exitedEarly]) as [Socket]
     writer = connection[0]
     const [pid] = await once(writer, 'data')
+    const stat = await readFile(`/proc/${String(pid).trim()}/stat`, 'utf8')
+    const group = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2])
     waiter = spawn('python3', ['-c',
       'import os,select,sys; fd=os.pidfd_open(int(sys.argv[1])); print("ready",flush=True); select.select([fd],[],[])',
       String(pid).trim()], { stdio: ['ignore', 'pipe', 'inherit'] })
@@ -98,6 +100,8 @@ it('charges detached Git writers after their API exits, then reclaims abandoned 
     const writerExited = once(waiter, 'exit')
     writer.write('exit\n')
     await writerExited
+    // The abandoned clone ends once its remote closes.
+    await vi.waitFor(() => expect(() => process.kill(-group, 0)).toThrow(), { timeout: 10_000 })
     await runGitWithCacheStorage(cache, ['clone', origin, join(cache, 'after-closure')],
       { signal: new AbortController().signal }, (args, options) => runGitProcess(args, options, gitFixtureEnvironment()))
     await expect(readFile(join(staging, 'writer.bin'))).rejects.toMatchObject({ code: 'ENOENT' })
@@ -153,7 +157,8 @@ async function expectRemoved(common: string, names: string[]) {
   for (const name of names) await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
 }
 
-it('recovers a cancelled fetch’s unobserved locks on the next acquisition and preserves published data', async () => {
+it('recovers a cancelled fetch’s locks and packs once stale on the next acquisition and preserves published data',
+  async () => {
   const f = await recoveryFixture()
   let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
   try {
@@ -173,6 +178,7 @@ it('recovers a cancelled fetch’s unobserved locks on the next acquisition and 
     expect(await readFile(join(common, 'shallow'))).toEqual(before)
     expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
 
+    await makeStale(common, Object.keys(fetchArtifacts))
     await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
     expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
     await expectRemoved(common, Object.keys(fetchArtifacts))
@@ -182,7 +188,7 @@ it('recovers a cancelled fetch’s unobserved locks on the next acquisition and 
   }
 })
 
-it('recovers a fetch whose API died before its surviving writer created locks', async () => {
+it('recovers the stale locks and packs of a fetch whose API died, from a fresh API instance', async () => {
   const f = await recoveryFixture()
   let api: ChildProcess | undefined
   let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
@@ -197,6 +203,7 @@ it('recovers a fetch whose API died before its surviving writer created locks', 
     await stop(api)
     await transfer.write()
     await transfer.die()
+    await makeStale(common, Object.keys(fetchArtifacts))
 
     // A fresh process keeps nothing from the lost API: only the cache and the repository remain.
     const system = systemGitWorktreePorts(f.environment)
@@ -254,9 +261,8 @@ async function liveAgentWriter(root: string, cwd: string, environment: NodeJS.Pr
   }
 }
 
-it.each(['before', 'during'] as const)(
-  'keeps the locks of an Agent Git writer started %s a cancelled fetch until it finishes, then recovers the fetch',
-  async phase => {
+it('keeps the fresh locks of an Agent Git writer during a cancelled fetch, recovers stale ones, then fetches after it',
+  async () => {
     const f = await recoveryFixture()
     let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
     let agent: Awaited<ReturnType<typeof liveAgentWriter>> | undefined
@@ -274,25 +280,29 @@ it.each(['before', 'during'] as const)(
       const interrupted = { 'shallow.lock': 41, 'refs/foreman/ci/fetch/interrupted.lock': 41,
         'objects/pack/tmp_pack_interrupted': 4096 }
       writer = await interruptedFetchWriter(f.root, common, interrupted)
-      if (phase === 'before') await agent.start()
       const controller = new AbortController()
       const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor],
         { cwd: clone, signal: controller.signal },
         (args, options) => runGitProcess(args.includes('fetch') ? writer!.args : args, options, f.environment))
       await (await writer.started()).write()
-      if (phase === 'during') await agent.start()
+      await makeStale(common, Object.keys(interrupted))
+      // Started before the fetch, the Agent would make its admission wait instead (asserted below).
+      await agent.start()
       controller.abort()
       await expect(running).resolves.toMatchObject({ code: 1 })
-      // Recovery waits for the live writer instead of guessing which same-named locks are abandoned.
-      await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).rejects.toThrow()
+      // A live reader or writer elsewhere in the repository does not keep abandoned artifacts.
+      await expectRemoved(common, Object.keys(interrupted))
+      for (const name of agentLocks) await expect(stat(join(common, name))).resolves.toBeTruthy()
+      // Admission waits for the fresh locks within its deadline.
+      await expect(ensureCommit(f.ports, 'fixture/project', successor, AbortSignal.timeout(2_000))).rejects.toThrow()
       for (const name of agentLocks) await expect(stat(join(common, name))).resolves.toBeTruthy()
 
+      const waiting = ensureCommit(f.ports, 'fixture/project', successor, signal)
       expect(await agent.finish()).toBe(0)
+      await expect(waiting).resolves.toBe(clone)
       expect(f.git(worktree, 'rev-parse', 'refs/remotes/origin/agent-push')).toBe(f.first)
       expect(f.git(clone, 'branch', '--list', 'foreman/obsolete')).toBe('')
-      await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
       expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
-      await expectRemoved(common, Object.keys(interrupted))
     } finally {
       await agent?.close()
       writer?.close()
@@ -301,22 +311,30 @@ it.each(['before', 'during'] as const)(
   },
 )
 
-it.each(['an unrelated directory through --git-dir', 'the primary worktree of a separate Git directory'] as const)(
-  'keeps the prepared locks of an Agent Git writer running from %s while a cancelled fetch recovers', async place => {
+const agentPlaces = ['an unrelated directory through --git-dir', 'an unrelated directory through a worktree .git file',
+  'a subdirectory through a relative -C', 'the primary worktree of a separate Git directory'] as const
+
+it.each(agentPlaces)(
+  'keeps the fresh locks and packs of an Agent Git writer running from %s while a cancelled fetch recovers',
+  async place => {
     const f = await recoveryFixture()
     let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
     let agent: Awaited<ReturnType<typeof liveAgentWriter>> | undefined
     try {
-      let repository: string
-      let common: string
-      let agentDirectory: string
+      let repository = await ensureCommit(f.ports, 'fixture/project', f.first, AbortSignal.timeout(30_000))
+      let common = join(repository, '.git')
+      let agentDirectory = join(f.root, 'elsewhere')
+      await mkdir(agentDirectory, { mode: 0o700 })
       let agentArgs: string[] = []
-      if (place === 'an unrelated directory through --git-dir') {
-        repository = await ensureCommit(f.ports, 'fixture/project', f.first, AbortSignal.timeout(30_000))
-        common = join(repository, '.git')
-        agentDirectory = join(f.root, 'elsewhere')
-        await mkdir(agentDirectory, { mode: 0o700 })
-        agentArgs = ['--git-dir', common]
+      if (place === 'an unrelated directory through --git-dir') agentArgs = ['--git-dir', common]
+      else if (place === 'an unrelated directory through a worktree .git file') {
+        const worktree = join(f.root, 'agent')
+        f.git(repository, 'worktree', 'add', '-q', '-b', 'foreman/agent', worktree, f.first)
+        agentArgs = ['--git-dir', join(worktree, '.git')]
+      } else if (place === 'a subdirectory through a relative -C') {
+        agentDirectory = join(repository, 'sub', 'deep')
+        await mkdir(agentDirectory, { recursive: true, mode: 0o700 })
+        agentArgs = ['-C', '../..']
       } else {
         repository = join(f.root, 'primary')
         common = join(f.root, 'separate.git')
@@ -327,17 +345,22 @@ it.each(['an unrelated directory through --git-dir', 'the primary worktree of a 
       f.git(repository, 'branch', 'foreman/obsolete', f.first)
       agent = await liveAgentWriter(f.root, agentDirectory, f.environment,
         `create refs/remotes/origin/agent-push ${f.first}\ndelete refs/heads/foreman/obsolete\n`, agentArgs)
-      const agentLocks = ['refs/remotes/origin/agent-push.lock', 'refs/heads/foreman/obsolete.lock', 'packed-refs.lock']
+      // The Agent's pack between index-pack closing and renaming it: written, closed and fresh.
+      const agentFiles = ['refs/remotes/origin/agent-push.lock', 'refs/heads/foreman/obsolete.lock', 'packed-refs.lock',
+        'objects/pack/tmp_pack_agent', 'objects/pack/tmp_idx_agent']
       const interrupted = { 'refs/foreman/ci/fetch/interrupted.lock': 41, 'objects/pack/tmp_pack_interrupted': 4096 }
       writer = await interruptedFetchWriter(f.root, common, interrupted)
-      await agent.start()
+      for (const name of agentFiles.filter(name => name.includes('tmp_'))) await writeFile(join(common, name), 'agent')
       const controller = new AbortController()
       const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin'], { cwd: repository, signal: controller.signal },
         (args, options) => runGitProcess(args.includes('fetch') ? writer!.args : args, options, f.environment))
       await (await writer.started()).write()
+      await makeStale(common, Object.keys(interrupted))
+      await agent.start()
       controller.abort()
       await expect(running).resolves.toMatchObject({ code: 1 })
-      for (const name of agentLocks) await expect(stat(join(common, name))).resolves.toBeTruthy()
+      await expectRemoved(common, Object.keys(interrupted))
+      for (const name of agentFiles) await expect(stat(join(common, name))).resolves.toBeTruthy()
 
       expect(await agent.finish()).toBe(0)
       expect(f.git(repository, 'rev-parse', 'refs/remotes/origin/agent-push')).toBe(f.first)
@@ -345,7 +368,9 @@ it.each(['an unrelated directory through --git-dir', 'the primary worktree of a 
       await expect(runGitWithCacheStorage(f.cache, ['fetch', 'origin'], { cwd: repository,
         signal: AbortSignal.timeout(30_000) }, (args, options) => runGitProcess(args, options, f.environment)))
         .resolves.toMatchObject({ code: 0 })
-      await expectRemoved(common, Object.keys(interrupted))
+      for (const name of agentFiles.filter(name => name.includes('tmp_'))) {
+        await expect(stat(join(common, name))).resolves.toBeTruthy()
+      }
     } finally {
       await agent?.close()
       writer?.close()
@@ -395,6 +420,32 @@ it('stops an orphaned fetch at its deadline after its API dies, freeing the repo
     await rm(f.root, { recursive: true, force: true })
   }
 }, 30_000)
+
+it('kills a descendant left in the Git process group once Git exits, freeing the inherited repository lock', async () => {
+  const root = await mkdtemp(join(persistentFixtureRoot, 'git-process-group-'))
+  const held = await open(root, 'r')
+  const probe = await open(root, 'r')
+  let leftover: number | undefined
+  try {
+    expect(await lockOpenFile(held)).toBe(true)
+    const result = await runGitProcess(['-c', 'alias.linger=!sleep 60 >/dev/null 2>&1 & echo $!', 'linger'],
+      { cwd: root, signal: AbortSignal.timeout(30_000), lockFd: held.fd }, gitFixtureEnvironment())
+    expect(result.code).toBe(0)
+    leftover = Number(result.stdout.trim())
+    await held.close()
+    await vi.waitFor(async () => expect(await lockOpenFile(probe, { nonBlocking: true })).toBe(true),
+      { timeout: 5_000, interval: 100 })
+  } finally {
+    try { if (leftover) process.kill(leftover, 'SIGKILL') }
+    catch (error) {
+      // ignore: the descendant is already gone, as expected.
+      expect((error as NodeJS.ErrnoException).code).toBe('ESRCH')
+    }
+    await held.close()
+    await probe.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 it('recovers clone staging when the API exits as the clone command returns', async () => {
   const f = await recoveryFixture()

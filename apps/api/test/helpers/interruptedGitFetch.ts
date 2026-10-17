@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { writeFile } from 'node:fs/promises'
+import { utimes, writeFile } from 'node:fs/promises'
 import { createServer, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { expect, vi } from 'vitest'
@@ -59,6 +59,13 @@ export async function interruptedFetchWriter(root: string, common: string, files
       server.close()
     },
   }
+}
+
+/** Back-date `names` (relative to the common directory) far past fetch recovery's staleness bound, as if their writer
+ * had died long ago. */
+export async function makeStale(common: string, names: string[]) {
+  const past = new Date(Date.now() - 60 * 60_000)
+  for (const name of names) await utimes(join(common, name), past, past)
 }
 
 /** A separate API process that starts a cache fetch through `writerArgs`; the caller kills it to lose its memory. */
