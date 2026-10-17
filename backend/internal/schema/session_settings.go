@@ -27,7 +27,7 @@ var baselineSettingNames = []string{
 func readBaselineSessionSettings(ctx context.Context, sql database.Querier) ([]string, error) {
 	var values []string
 	err := sql.QueryRow(ctx, `
-		select array_agg(pg_catalog.current_setting(name) order by ordinal)
+		select pg_catalog.array_agg(pg_catalog.current_setting(name) order by ordinal)
 		from pg_catalog.unnest($1::text[]) with ordinality as settings(name, ordinal)
 	`, baselineSettingNames).Scan(&values)
 	if err != nil {
