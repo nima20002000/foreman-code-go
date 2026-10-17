@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { once } from 'node:events'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
@@ -9,6 +10,7 @@ import { addGitWorktree, ensureClone, ensureCommit, systemGitWorktreePorts,
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
+import { fetchingApi, interruptedFetchWriter } from '../../../test/helpers/interruptedGitFetch.js'
 
 const disk = vi.hoisted(() => ({ full: false }))
 const filesystemRace = vi.hoisted(() => ({ beforeLstat: undefined as
@@ -342,7 +344,7 @@ it.each(['exited', 'reused-pid'] as const)('reclaims a legacy reservation after 
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
 
-it('reclaims a closed fetch’s recorded packs before checking transfer capacity', async () => {
+it('reclaims a closed fetch’s abandoned packs before checking transfer capacity', async () => {
   const f = await fixture()
   const signal = AbortSignal.timeout(30_000)
   const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
@@ -350,14 +352,11 @@ it('reclaims a closed fetch’s recorded packs before checking transfer capacity
   const path = 'objects/pack/tmp_pack_abandoned'
   await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(7 * 2 ** 20))
   await writeFile(join(common, path), randomBytes(2 * 2 ** 20))
-  const metadata = await stat(join(common, path), { bigint: true })
   const gone = spawnSync(process.execPath, ['-e', ''])
   expect(gone.status).toBe(0)
   const name = 'transfer-interrupted.reservation'
   await writeFile(join(f.cache, name), JSON.stringify({ pid: gone.pid, started: 'closed',
     lifetimeLock: true, fetch: common }))
-  await writeFile(join(f.cache, name + '.artifacts'), JSON.stringify({ path,
-    device: String(metadata.dev), inode: String(metadata.ino), born: String(metadata.birthtimeNs) }) + '\n')
   await writeFile(join(f.origin, 'source.txt'), 'successor after capacity recovery')
   git(f.origin, 'add', '.')
   git(f.origin, 'commit', '-qm', 'Successor')
@@ -369,3 +368,46 @@ it('reclaims a closed fetch’s recorded packs before checking transfer capacity
   await expect(readFile(join(f.cache, name))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 })
+
+it('reclaims another repository’s abandoned fetch packs before refusing a transfer', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const other = join(f.root, 'other-origin')
+  await mkdir(other, { mode: 0o700 })
+  git(other, 'init', '--template=', '-q', '-b', 'main')
+  const commitIn = async (origin: string, text: string) => {
+    await writeFile(join(origin, 'source.txt'), text)
+    git(origin, 'add', '-A')
+    git(origin, 'commit', '-qm', text)
+    return git(origin, 'rev-parse', 'HEAD')
+  }
+  const environment = { ...gitFixtureEnvironment(), HOME: join(f.root, 'home') }
+  const system = systemGitWorktreePorts(environment)
+  const ports: GitWorktreePorts = { cloneDirectory: system.cloneDirectory, git: (args, options) => system.git(
+    args.map(arg => arg === 'https://github.com/fixture/project.git' ? `file://${f.origin}`
+      : arg === 'https://github.com/fixture/other.git' ? `file://${other}` : arg), options) }
+  const clone = await ensureCommit(ports, 'fixture/project', f.commit, signal)
+  const otherClone = await ensureCommit(ports, 'fixture/other', await commitIn(other, 'first'), signal)
+  const common = join(clone, '.git')
+  const pack = 'objects/pack/tmp_pack_abandoned'
+  const writer = await interruptedFetchWriter(f.root, common, { [pack]: 2 * 2 ** 20, 'shallow.lock': 41 })
+  const api = await fetchingApi(f.root, f.cache, clone, writer.args, environment)
+  try {
+    const transfer = await writer.started()
+    const exited = once(api, 'exit')
+    api.kill('SIGKILL')
+    await exited
+    await transfer.write()
+    await transfer.die()
+  } finally {
+    if (api.exitCode === null && api.signalCode === null) api.kill('SIGKILL')
+    writer.close()
+  }
+  await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(7 * 2 ** 20))
+  const otherCommit = await commitIn(other, 'other successor')
+
+  await expect(ensureCommit(ports, 'fixture/other', otherCommit, signal)).resolves.toBe(otherClone)
+  expect(git(otherClone, 'cat-file', '-t', otherCommit)).toBe('commit')
+  await expect(readFile(join(common, pack))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)
