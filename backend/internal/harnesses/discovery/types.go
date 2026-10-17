@@ -12,28 +12,28 @@ import (
 type TargetEnvironment struct {
 	Generation string `json:"generation"`
 	Provenance string `json:"provenance"`
-	Cwd string `json:"cwd"`
-	Path string `json:"path"`
+	Cwd        string `json:"cwd"`
+	Path       string `json:"path"`
 }
 
 // PayloadFingerprint identifies bytes observed at one resolved native path.
 type PayloadFingerprint struct {
-	Path string `json:"path"`
+	Path        string `json:"path"`
 	Fingerprint string `json:"fingerprint"`
 }
 
 // LauncherEvidence is passive evidence, never a qualification or admission.
 // Nil fields have the same meaning as the frozen native discovery port's nulls.
 type LauncherEvidence struct {
-	Requested string `json:"requested"`
-	ResolvedLauncher *string `json:"resolvedLauncher"`
-	Fingerprint *string `json:"fingerprint"`
+	Requested           string               `json:"requested"`
+	ResolvedLauncher    *string              `json:"resolvedLauncher"`
+	Fingerprint         *string              `json:"fingerprint"`
 	PayloadFingerprints []PayloadFingerprint `json:"payloadFingerprints,omitempty"`
-	Status string `json:"status"`
-	Interpreter *string `json:"interpreter"`
-	Diagnostics []string `json:"diagnostics"`
-	Environment TargetEnvironment `json:"environment"`
-	CheckedAt string `json:"checkedAt"`
+	Status              string               `json:"status"`
+	Interpreter         *string              `json:"interpreter"`
+	Diagnostics         []string             `json:"diagnostics"`
+	Environment         TargetEnvironment    `json:"environment"`
+	CheckedAt           string               `json:"checkedAt"`
 }
 
 // Fingerprinter is the native byte-observation port. The optional observation

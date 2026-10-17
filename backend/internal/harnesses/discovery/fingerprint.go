@@ -15,26 +15,26 @@ import (
 var ErrPayloadChanged = errors.New("Payload changed during fingerprinting")
 
 type fingerprintIdentity struct {
-	Device uint64
-	Inode uint64
-	Size int64
-	ModifiedSeconds int64
+	Device              uint64
+	Inode               uint64
+	Size                int64
+	ModifiedSeconds     int64
 	ModifiedNanoseconds int64
-	ChangedSeconds int64
-	ChangedNanoseconds int64
+	ChangedSeconds      int64
+	ChangedNanoseconds  int64
 }
 
 type cachedFingerprint struct {
-	identity fingerprintIdentity
+	identity    fingerprintIdentity
 	fingerprint string
 }
 
 // PayloadFingerprintCache reuses digests only while the complete nanosecond
 // native file identity is unchanged. Its zero value is ready for use.
 type PayloadFingerprintCache struct {
-	mu sync.Mutex
+	mu      sync.Mutex
 	entries map[string]cachedFingerprint
-	order []string
+	order   []string
 }
 
 var inventoryPayloadFingerprints PayloadFingerprintCache
