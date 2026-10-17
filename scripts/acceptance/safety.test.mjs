@@ -142,6 +142,7 @@ test('authentication copies reject symlinks, public destinations and paths outsi
     assert.throws(() => copyTestAuthenticationFile(resource, source, linked), /symlink/)
     const publicCopy = join(resource.directory, 'public.json')
     await writeFile(publicCopy, 'other-fixture', { mode: 0o644 })
+    await chmod(publicCopy, 0o644)
     assert.throws(() => copyTestAuthenticationFile(resource, source, publicCopy), /ownership changed/)
     assert.throws(() => copyTestAuthenticationFile(resource, source, join(sourceDirectory, 'outside.json')))
     assert.equal(await readFile(source, 'utf8'), 'subscription-fixture')
