@@ -548,6 +548,7 @@ export class RemoteOperationJournal {
       if (!receipt.retainedReviewer || receipt.retainedReviewer.agentId !== policy.agentId
         || receipt.stopFence || receipt.terminal || this.reviewerExpired(policy.expiresAt))
         throw new Error('Retained reviewer renewal mismatch')
+      if (Date.parse(policy.expiresAt) <= Date.parse(receipt.retainedReviewer.expiresAt)) return receipt
       receipt.retainedReviewer.expiresAt = policy.expiresAt
       receipt.sequence++
       return receipt

@@ -130,7 +130,7 @@ export class Wave25InteractionDeliveryRepository extends PostgresInteractionDeli
        where c.run_id=$1 and c.execution_id=$2 and c.work_kind='workflow' and c.work_id=$2
          and c.correlation_key=$3 and c.provider='codex' and c.native_session_id=$4
          and c.native_turn_id=$5 and c.native_request_id=$6 and c.interaction_id=$7
-         and ((e.record->>'type' in ('interaction.pending','interaction.submitted','interaction.resolved')
+         and ((e.record->>'type' in ('interaction.pending','interaction.submitting','interaction.submitted','interaction.resolved')
                and e.record->'payload'->>'nativeRequestId'=$6)
            or (e.record->>'type'='item.completed' and e.record->'payload'->'item'->>'id'=$8))
        order by e.source_sequence limit 32`,

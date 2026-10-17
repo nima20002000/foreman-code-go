@@ -40,6 +40,10 @@ function expiredPhysicalReply(error: unknown): boolean {
   return error instanceof DeviceApplicationError && error.code === 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED'
 }
 class RemoteHistorySnapshotChangedError extends Error {}
+interface RemoteReply {
+  value: unknown
+  minimumSequence: number
+}
 
 export interface RemoteNativeManagerOptions {
   intent: DispatchIntent
@@ -51,8 +55,8 @@ export interface RemoteNativeManagerOptions {
   controlFor(input: { kind: 'stop' | 'respond'; native: RemoteNativeIdentity; nativeRequestId?: string; option?: unknown }): Promise<RemoteOwnerControl>
   readResponseControl?(): Promise<RemoteOwnerControl | undefined>
   authorizeResponseRetry?(command: RemoteOwnerControl): Promise<void>
-  observeReceipt(receipt: RemoteOperationReceipt): Promise<void>
-  discardReceipt?(receipt: RemoteOperationReceipt): void
+  observeReceipt(receipt: RemoteOperationReceipt, response: unknown): Promise<void>
+  discardReceipt?(receipt: RemoteOperationReceipt, response: unknown): void
   observeOriginalSource?(receipt: RemoteOperationReceipt, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<void>
 }
 /** Main-side native port, bound once to the accepted host/attempt. No provider credential crosses it. */
@@ -91,6 +95,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
     payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
+    const minimumSequence = this.receipt?.sequence ?? 0
     const retry = method === 'session-compact' || method === 'session-preferences-apply' ? 'admission' : 'idempotent'
     const attempt = async () => {
       const response = await retryDeviceRequest(() => this.options.transport.request(method, payload, signal), { retry, signal })
@@ -100,7 +105,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     }
     try {
       for (let reconnects = 0; ; reconnects++) {
-        try { return await attempt() } catch (error) {
+        try { return { value: await attempt(), minimumSequence } } catch (error) {
           // A replayable request whose link dropped is sent again on the reconnected session of the same Worker boot.
           if (retry !== 'idempotent' || reconnects >= 3 || signal?.aborted
             || !await this.options.transport.reconnect?.(error, signal)) throw error
@@ -114,14 +119,15 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       throw error
     }
   }
-  private async historyResponse(raw: unknown, signal?: AbortSignal) {
-    const value = HistoryResponseSchema.parse(raw)
-    if (!value.page.metadata) return value
+  private async historyResponse(reply: RemoteReply, signal?: AbortSignal) {
+    const value = HistoryResponseSchema.parse(reply.value)
+    if (!value.page.metadata) return { ...value, reply }
     const fields = await readJsonContinuation(value.page.metadata, async metadata => {
-      const continuation = HistoryResponseSchema.parse(await this.request('history', {
+      const response = await this.request('history', {
         metadata, afterSequence: value.page.nextAfterSequence,
         ...(value.history.correlationId === undefined ? {} : { correlationId: value.history.correlationId }),
-      }, signal))
+      }, signal)
+      const continuation = HistoryResponseSchema.parse(response.value)
       const original = this.readReceipt(value.status, this.intent)
       this.readReceipt(continuation.status, this.intent, original)
       if (!continuation.page.metadata) throw new Error('Remote history metadata owner changed')
@@ -129,7 +135,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       return continuation.page.metadata
     }, signal)
     value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...decodeResultCopies(fields) as object })
-    return value
+    return { ...value, reply }
   }
   private observeSource(receipt: RemoteOperationReceipt, source: WorkflowOriginalNativeSource, signal?: AbortSignal) {
     if (signal) return this.options.observeOriginalSource?.(receipt, source, signal)
@@ -152,19 +158,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     }
     return receipt
   }
-  private status(raw: unknown, intent = this.intent,
-    minimumSequence = this.receipt?.sequence ?? 0): Promise<RemoteOperationReceipt> {
+  private status(reply: RemoteReply, raw = reply.value, intent = this.intent): Promise<RemoteOperationReceipt> {
     const task = this.receiptUpdates.then(async () => {
       const receipt = this.readReceipt(raw, intent, this.receipt)
-      if (receipt.sequence < minimumSequence) {
-        this.options.discardReceipt?.(receipt)
+      if (receipt.sequence < reply.minimumSequence) {
+        this.options.discardReceipt?.(receipt, reply.value)
         throw new Error('Original remote receipt changed')
       }
       if (this.receipt && receipt.sequence < this.receipt.sequence) {
-        this.options.discardReceipt?.(receipt)
+        this.options.discardReceipt?.(receipt, reply.value)
         return this.receipt
       }
-      await this.options.observeReceipt(receipt)
+      await this.options.observeReceipt(receipt, reply.value)
       this.receipt = receipt
       return receipt
     })
@@ -173,14 +178,14 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     })
     return task
   }
-  private async readHistoryResponse(payload: Record<string, unknown>, signal?: AbortSignal)
+  private async readHistoryResponse(payload: Record<string, unknown>, signal?: AbortSignal,
+    method: 'history' | 'reconcile-response' = 'history')
     : Promise<{ value: z.infer<typeof HistoryResponseSchema>, receipt: RemoteOperationReceipt }> {
     for (let attempt = 0; ; attempt++) {
       signal?.throwIfAborted()
       try {
-        const minimumSequence = this.receipt?.sequence ?? 0
-        const value = await this.historyResponse(await this.request('history', payload, signal), signal)
-        const receipt = await this.status(value.status, this.intent, minimumSequence)
+        const value = await this.historyResponse(await this.request(method, payload, signal), signal)
+        const receipt = await this.status(value.reply, value.status)
         if (!isDeepStrictEqual(value.status, { status: 'known', receipt })) {
           throw new RemoteHistorySnapshotChangedError('Remote history response was overtaken')
         }
@@ -208,9 +213,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   async originalApplicationAccess(session: NativeSessionReference, signal?: AbortSignal) {
     this.assertSession(session)
+    const reply = await this.request('get-application-access', { session }, signal)
     const value = z.object({ status: StatusSchema, applicationAccess: RemoteApplicationAccessSchema }).strict()
-      .parse(await this.request('get-application-access', { session }, signal))
-    await this.status(value.status)
+      .parse(reply.value)
+    await this.status(reply, value.status)
     return value.applicationAccess
   }
   async renewOwner(transition: RemoteOwnerReconciliation, signal?: AbortSignal) {
@@ -218,17 +224,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const raw = await this.requestWithIntent('renew-owner', {
       method: 'renew-owner', intent: next, placement: this.options.placement, transition,
     }, next, signal)
-    const receipt = await this.status(raw, next)
+    const receipt = await this.status(raw, raw.value, next)
     this.intent = next
     return receipt
   }
   async applySessionPreferences(session: NativeSessionReference, preferences: SessionPreferences, signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
-    const result = z.object({ status: StatusSchema }).strict().parse(await this.request('session-preferences-apply', {
+    const reply = await this.request('session-preferences-apply', {
       native: this.receipt.native, preferences: SessionPreferencesSchema.parse(preferences),
-    }, signal))
-    await this.status(result.status)
+    }, signal)
+    const result = z.object({ status: StatusSchema }).strict().parse(reply.value)
+    await this.status(reply, result.status)
   }
   async configureSessionPreferences(preferences: SessionPreferences) {
     if (this.prepareAttempted) throw new Error('Worker startup preferences require a safe new admission')
@@ -237,10 +244,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async sessionControlCapabilities(session: NativeSessionReference) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
+    const reply = await this.request('session-controls-read', { native: this.receipt.native })
     const value = z.object({ capabilities: SessionControlCapabilitiesSchema, context: ContextSnapshotSchema.nullable(),
-      preferences: SessionPreferencesSchema.nullable(), status: StatusSchema }).strict().parse(
-      await this.request('session-controls-read', { native: this.receipt.native }))
-    await this.status(value.status)
+      preferences: SessionPreferencesSchema.nullable(), status: StatusSchema }).strict().parse(reply.value)
+    await this.status(reply, value.status)
     if (value.context && value.context.nativeSessionId !== session.nativeSessionId) throw new Error('Wrong worker context session')
     this.context = value.context
     this.appliedPreferences = value.preferences
@@ -252,10 +259,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
     await input.onDispatch?.()
-    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(
-      await this.request('session-compact', { native: this.receipt.native,
-        requestId: input.requestId, clientCorrelationId: input.clientCorrelationId }, signal))
-    await this.status(value.status)
+    const reply = await this.request('session-compact', { native: this.receipt.native,
+      requestId: input.requestId, clientCorrelationId: input.clientCorrelationId }, signal)
+    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(reply.value)
+    await this.status(reply, value.status)
     if (value.compaction.requestId !== input.requestId || value.compaction.nativeSessionId !== session.nativeSessionId) throw new Error('Wrong worker compaction')
     await input.onProgress(value.compaction)
     return value.compaction
@@ -263,13 +270,21 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   async reconcileCompaction(session: NativeSessionReference, state: import('@foreman-code/contracts').CompactionState, signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original native ownership is unavailable')
-    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(
-      await this.request('session-compact-reconcile', { native: this.receipt.native, state }, signal))
-    await this.status(value.status)
+    const reply = await this.request('session-compact-reconcile', { native: this.receipt.native, state }, signal)
+    const value = z.object({ compaction: CompactionStateSchema, status: StatusSchema }).strict().parse(reply.value)
+    await this.status(reply, value.status)
     return value.compaction
   }
-  async capabilities(signal?: AbortSignal) { return NativeHarnessCapabilitiesSchema.parse(await this.request('capabilities', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
-  async inspectMcp(signal?: AbortSignal) { return McpDetectionSchema.parse(await this.request('inspect-mcp', { intent: this.intent, placement: this.options.placement, configuration: this.options.configuration }, signal)) }
+  async capabilities(signal?: AbortSignal) {
+    const reply = await this.request('capabilities', { intent: this.intent,
+      placement: this.options.placement, configuration: this.options.configuration }, signal)
+    return NativeHarnessCapabilitiesSchema.parse(reply.value)
+  }
+  async inspectMcp(signal?: AbortSignal) {
+    const reply = await this.request('inspect-mcp', { intent: this.intent,
+      placement: this.options.placement, configuration: this.options.configuration }, signal)
+    return McpDetectionSchema.parse(reply.value)
+  }
   async createSession(input: NativeSessionStart, signal?: AbortSignal) {
     if (!isWorkflowStart(input)) throw new Error('Remote proxy owns workflow execution only')
     if (input.environment && (input.environment.agentId !== this.options.configuration.agentId || Object.keys(input.environment.variables).some(key => key !== 'GRAPHQL_MCP_TOKEN'))) throw new Error('Only the exact scoped main application lease may cross the worker carrier')
@@ -277,12 +292,13 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     const applicationAccess = token ? { kind: 'scoped-worker-mcp', token, executionId: this.intent.executionId, agentId: this.options.configuration.agentId, operationId: this.intent.operationId, attemptId: this.intent.attemptId, bindingHash: this.intent.bindingHash } : undefined
     if (input.request.executionId !== this.intent.executionId || input.correlationId !== `execution:${this.intent.executionId}`) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
+    const reply = await this.request('prepare', { intent: this.intent, placement: this.options.placement,
+      request: input.request, ...(this.preferences ? { sessionPreferences: this.preferences } : {}),
+      ...(input.sessionContinuation ? { sessionContinuation: input.sessionContinuation } : {}),
+      ...(applicationAccess ? { applicationAccess } : {}) }, signal)
     const value = z.object({ session: NativeSessionReferenceSchema.optional(), status: StatusSchema }).strict()
-      .parse(await this.request('prepare', { intent: this.intent, placement: this.options.placement,
-        request: input.request, ...(this.preferences ? { sessionPreferences: this.preferences } : {}),
-        ...(input.sessionContinuation ? { sessionContinuation: input.sessionContinuation } : {}),
-        ...(applicationAccess ? { applicationAccess } : {}) }, signal))
-    const receipt = await this.status(value.status)
+      .parse(reply.value)
+    const receipt = await this.status(reply, value.status)
     if (!value.session) {
       if (hasPositiveRemoteEntryClosure(receipt) || hasPositiveRemoteNonEntryClosure(receipt)) {
         throw new HarnessExecutionError('REMOTE_PREPARATION_CLOSED', 'Execution setup stopped on the connected computer.')
@@ -299,8 +315,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       || session.harness !== this.harness) throw new Error('Remote session execution mismatch')
     this.prepareAttempted = true
     // Attachment is observation of this exact original session; worker recovery must already have proven/rebound it.
-    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(await this.request('reattach', { request: input.request, session }, signal))
-    const receipt = await this.status(value.status)
+    const reply = await this.request('reattach', { request: input.request, session }, signal)
+    const value = z.object({ session: NativeSessionReferenceSchema, status: StatusSchema }).strict().parse(reply.value)
+    const receipt = await this.status(reply, value.status)
     const review = receipt.reviewTurns?.find(turn => turn.assignment.correlationId === input.correlationId
       && (input.nativeTurnId === undefined || turn.providerId === input.nativeTurnId))
     if (input.correlationId !== `execution:${this.intent.executionId}` && !review)
@@ -449,7 +466,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native history bounds are inconsistent.')
     }
   }
-  async pending(session: NativeSessionReference, signal?: AbortSignal) { this.assertSession(session); const raw = await this.request('pending', { operationId: this.intent.operationId }, signal); return raw == null ? undefined : PendingNativeInteractionSchema.parse(raw) }
+  async pending(session: NativeSessionReference, signal?: AbortSignal) {
+    this.assertSession(session)
+    const reply = await this.request('pending', { operationId: this.intent.operationId }, signal)
+    return reply.value == null ? undefined : PendingNativeInteractionSchema.parse(reply.value)
+  }
   async respond(session: NativeSessionReference, nativeRequestId: string, option: Parameters<NativeHarnessSessionManager['respond']>[2], signal?: AbortSignal) {
     this.assertSession(session)
     if (!this.receipt?.native) throw new Error('Original remote native ownership missing')
@@ -536,20 +557,20 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       if (command.action.kind !== 'respond' || command.native?.sessionId !== session.nativeSessionId
         || command.action.nativeInteractionId !== response.nativeRequestId
         || !isDeepStrictEqual(command.action.response, response.option)) throw new Error('Response recovery command mismatch')
+      const reply = await this.request('control-delivery', { command }, signal)
       const delivery = z.object({
         phase: z.enum(['unknown', 'reserved', 'entered', 'acknowledged']), status: StatusSchema,
-      }).strict().parse(await this.request('control-delivery', { command }, signal))
-      const receipt = await this.status(delivery.status)
+      }).strict().parse(reply.value)
+      const receipt = await this.status(reply, delivery.status)
       if (delivery.phase === 'reserved' && !receipt.terminal && !receipt.stopFence) {
         if (!this.options.authorizeResponseRetry) throw new Error('Reserved response retry authorization is unavailable')
         await this.options.authorizeResponseRetry(command)
         await this.status(await this.request('control', { command }, signal))
       }
     }
-    const value = await this.historyResponse(await this.request('reconcile-response', { response }, signal), signal)
-    await this.status(value.status)
+    const { value, receipt } = await this.readHistoryResponse({ response }, signal, 'reconcile-response')
     const history = this.projectHistory(value.history)
-    await this.observeSource(this.receipt!, { type: 'history', history }, signal)
+    await this.observeSource(receipt, { type: 'history', history }, signal)
     return history
   }
   async close(session: NativeSessionReference, signal?: AbortSignal) {
