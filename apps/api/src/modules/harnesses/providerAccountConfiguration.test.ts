@@ -187,7 +187,7 @@ describe('provider account execution selection', () => {
     const firstAccount = resolver({ accountId: first, homePath: '/accounts/first/home', authMode: 'subscription' })
     await resolveRuntimeProviderAccount(firstAccount, 'codex', first, execution)
     const registry = new NativeProcessRegistry(root)
-    const launch = registry.reserveLaunch(execution.owner)
+    const launch = await registry.reserveLaunch(execution.owner)
     await registry.abandonReservedLaunch(launch)
     expect(await registry.closeOwner(execution.owner)).toBe(true)
     const accounts: ProviderAccountResolver = { async resolve(_provider, id) {

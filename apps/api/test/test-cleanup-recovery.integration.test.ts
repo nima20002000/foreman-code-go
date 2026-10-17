@@ -47,7 +47,7 @@ it('retains fixture rows and native state until pending qualification closure is
       await fixture.pool.query('create table retained_fixture(value text)')
       await fixture.pool.query('insert into retained_fixture values($1)', ['preserved'])
       await writeFile(saved, 'pending closure')
-      const recovery = registry.reserveLaunch(owner)
+      const recovery = await registry.reserveLaunch(owner)
       await expect(registry.closeOwner(owner)).rejects.toThrow('closure remains unconfirmed')
       await expect(fixture.close()).rejects.toThrow('cleanup remains unconfirmed')
       expect((await inspection.query(`select value from ${fixture.schema}.retained_fixture`)).rows)
@@ -101,7 +101,7 @@ it.each(['same invocation', 'nested invocation'])(
     const owner = 'unfinished-native-qualification';
     const registry = new NativeProcessRegistry(registryDirectory);
     const cleanupId = registerTestResourceCleanup(resource, { kind: 'native-qualification', registryDirectory, owner });
-    registry.reserveLaunch(owner);
+    await registry.reserveLaunch(owner);
     console.log('RECOVERY_RESOURCE ' + JSON.stringify({ parent, resource, registryDirectory, owner, cleanupId }));
     await registry.closeOwner(owner);
   `

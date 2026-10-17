@@ -57,6 +57,7 @@ const controller = new AbortController()
 const timeout = setTimeout(() => controller.abort(new Error('Harness qualification exceeded four minutes.')), 240_000)
 const stop = () => controller.abort(new Error('Harness qualification was stopped.'))
 process.once('SIGINT', stop); process.once('SIGTERM', stop)
+let qualificationFailure
 try {
   const payload = await passiveDriverPayloads(values.harness, binary)
   if (!payload.complete) throw new Error('The selected launcher payload cannot be qualified without exact installation evidence.')
@@ -67,7 +68,7 @@ try {
     throw new Error('Selected native launcher changed before qualification admission.')
   }
   await guard(controller.signal)
-  const versionScope = registry.reserveLaunch(`qualification-version:${values.harness}:${randomUUID()}`)
+  const versionScope = await registry.reserveLaunch(`qualification-version:${values.harness}:${randomUUID()}`)
   const closeVersion = async () => {
     await registry.abandonReservedLaunch(versionScope)
     if (!await registry.closeOwner(versionScope.owner)) throw new Error('Native version probe closure is unconfirmed.')
@@ -89,13 +90,20 @@ try {
     profile: QUALIFICATION_TARGET_PROFILE[values.harness], suiteRevision: suite.revision,
     checks, evidence: result.evidence }) + '\n')
   if (checks.some((check) => !check.passed)) process.exitCode = 1
-} finally {
-  clearTimeout(timeout)
-  controller.abort(new Error('Qualification cleanup'))
-  const results = await Promise.allSettled([...cleanups].map(async (close) => { await close(); cleanups.delete(close) }))
-  process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop)
-  const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
-  if (errors.length) throw new AggregateError(errors, 'Qualification cleanup remains uncertain; recovery records were retained.')
-  completeTestResourceCleanup(invocation, cleanupId)
-  removeTestRoot(resource)
+} catch (error) { qualificationFailure = { error } }
+clearTimeout(timeout)
+controller.abort(new Error('Qualification cleanup'))
+const results = await Promise.allSettled([...cleanups].map(async (close) => { await close(); cleanups.delete(close) }))
+process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop)
+const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+if (!errors.length) {
+  try {
+    completeTestResourceCleanup(invocation, cleanupId)
+    removeTestRoot(resource)
+  } catch (error) { errors.push(error) }
 }
+if (errors.length) {
+  if (qualificationFailure) errors.unshift(qualificationFailure.error)
+  throw new AggregateError(errors, 'Qualification cleanup remains uncertain; recovery records were retained.')
+}
+if (qualificationFailure) throw qualificationFailure.error

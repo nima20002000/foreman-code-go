@@ -39,7 +39,7 @@ it('keeps live preparation when a concurrent status read started before the resi
     await nativeFinished.promise
     return f.session
   })
-  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
+  vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(async owner => f.registry.scope(owner))
   vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
     residency: { session: f.session, connectionId: 'unit-native-connection', runtimeGeneration: 1, nativeTurnId: undefined },
     assertCurrent: () => {},

@@ -21,7 +21,7 @@ const binding: RegistryHarnessSelection = {
 
 function fixture() {
   const registry = { scope: vi.fn((owner: string) => ({ root: '/recorded/registry', owner })),
-    reserveLaunch: vi.fn((owner: string) => ({ root: '/recorded/registry', owner, launchId: 'recorded-launch' })),
+    reserveLaunch: vi.fn(async (owner: string) => ({ root: '/recorded/registry', owner, launchId: 'recorded-launch' })),
     abandonReservedLaunch: vi.fn(async () => false), closeOwner: vi.fn(async (owner: string) => { expect(owner).toMatch(/^diagnostics:compatibility:/); return true }) }
   const assertInstallation = vi.fn(async () => undefined)
   let commandOwnership: CompatibilityProbeOwnership | undefined

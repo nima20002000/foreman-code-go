@@ -26,7 +26,7 @@ export async function nativeHttpIsolation(launch: (input: NativeHttpIsolationInp
   const directory = await privateFixtureDirectory('native-http-client-')
   const registry = new NativeProcessRegistry(join(directory, 'processes'))
   const owner = `http-client:${randomUUID()}`
-  const recovery = registry.reserveLaunch(owner)
+  const recovery = await registry.reserveLaunch(owner)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access: fixture.access, services: fixture.services },
     localHuman: new PostgresLocalHumanAccess(fixture.db.pool, fixture.access) })

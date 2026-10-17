@@ -17,7 +17,7 @@ import { loadInstalledClaudeSdk, loadOfficialClaudeSdk } from '../harnesses/clau
 import { allocateClaudeNativeHarness } from '../harnesses/claudeSdk/composition.js'
 import { claudeProductionMcpInspector } from '../harnesses/claudeSdk/productionMcpInspector.js'
 import { appMcpServerName, isSupportedAppMcpServerName } from '../harnesses/appMcpLauncher.js'
-import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
+import type { NativeProcessRegistry, NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import type { InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
 import { createUnboundWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import { installedConversationDirectory } from './installedConversationDirectory.js'
@@ -76,7 +76,7 @@ export async function allocateInstalledWorkerClaude(input: {
   if (reader) owner = `conversation-read:${binding.owner.conversationId}:${randomUUID()}`
   if (input.purpose === 'preparation') owner = `conversation-prepare:${binding.owner.conversationId}:${randomUUID()}`
   const recovery = input.registry.scope(owner)
-  let reserved = false
+  const reservation = workerClaudeReservation(input.registry, recovery)
   const before = async (signal?: AbortSignal) => {
     signal?.throwIfAborted()
     await directory.assertCurrent(signal)
@@ -90,11 +90,7 @@ export async function allocateInstalledWorkerClaude(input: {
       'HARNESS_PROFILE_UNAVAILABLE', 'The accepted Claude native policy changed.', 409,
       { changedFields, nativePinChanged })
   }
-  const reserve = () => {
-    if (reserved) return
-    Object.assign(recovery, input.registry.reserveLaunch(owner))
-    reserved = true
-  }
+
   const appAccess = reader ? 'none' : binding.appMcpAccess
   let mcp: Awaited<ReturnType<typeof createUnboundWorkerMcpEndpoint>> | undefined
   let token: string | undefined
@@ -113,7 +109,7 @@ export async function allocateInstalledWorkerClaude(input: {
   }
   const start: WorkerConversationAllocation['start'] = async options => {
     await before(input.signal)
-    reserve()
+    await reservation.reserve()
     if (options.applicationAccess && options.applicationAccess.token !== token) {
       await deliverScopedCredential(options.applicationAccess.token, input.signal, options)
     }
@@ -136,7 +132,7 @@ export async function allocateInstalledWorkerClaude(input: {
     callbackJournal: input.journal.claudeCallbackJournal(binding), request: input.callbacks.claudeAuthority })
   const runner = createClaudeSdkRunner({ loadClient: async () => {
     await before(input.signal)
-    reserve()
+    await reservation.reserve()
     return loadOfficialClaudeSdk(compiled.configuration.configDirectory, recovery, binary, original.sdk.entrypoint)
   } })
   const callbacks = createClaudeSdkCallbacks({ manager: () => manager, bridge: authority.bridge })
@@ -223,13 +219,26 @@ export async function allocateInstalledWorkerClaude(input: {
     async close() {
       await manager.dispose?.()
       authority.bridge.close()
-      if (reserved) {
-        await input.registry.abandonReservedLaunch(recovery)
-        if (!await input.registry.closeOwner(owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
-          'The native Claude chat has not stopped.', 409)
-      }
+      await reservation.close()
       await mcp?.close()
       await fileServer?.close()
+    },
+  }
+}
+
+function workerClaudeReservation(registry: NativeProcessRegistry, recovery: NativeProcessRecovery) {
+  let pending: Promise<void> | undefined
+  return {
+    reserve() {
+      pending ??= registry.reserveLaunch(recovery.owner).then(scope => { Object.assign(recovery, scope) })
+      return pending
+    },
+    async close() {
+      if (!pending) return
+      await pending
+      await registry.abandonReservedLaunch(recovery)
+      if (!await registry.closeOwner(recovery.owner)) throw new DomainError('CLAUDE_PROCESS_CLOSURE_PENDING',
+        'The native Claude chat has not stopped.', 409)
     },
   }
 }

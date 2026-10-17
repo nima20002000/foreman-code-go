@@ -45,7 +45,7 @@ it.each([true, false])('uses native behavior qualification for newer Claude vers
     await input.assertCurrent()
     return result
   })
-  const registry = { reserveLaunch: (owner: string) => ({ root: '/unused', owner }),
+  const registry = { reserveLaunch: async (owner: string) => ({ root: '/unused', owner }),
     abandonReservedLaunch: async () => {}, closeOwner: async () => true }
   const qualifier = createInstalledClaudeQualifier({ stateDirectory: '/unused', configuration: null,
     current: () => connection, registry: registry as never })

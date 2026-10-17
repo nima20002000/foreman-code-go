@@ -104,7 +104,7 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
     privateRepositoryRoot: spec.target.destination.canonicalProjectRoot, directoryIdentityHash: spec.target.destination.directoryIdentityHash,
     privateGit: true, diskQuotaBytes: 1024, gitMounts: mounts }
   const inputs = { prepare: vi.fn(async () => { throw new DomainError('SOURCE_IDENTITY_MISMATCH', 'Stop after source verification', 409) }) }
-  const registry = { reserveLaunch: vi.fn(() => { throw new Error('No OCI entry expected') }) }
+  const registry = { reserveLaunch: vi.fn(async () => { throw new Error('No OCI entry expected') }) }
   const ports = createInstalledJobExecutionPorts({ journal, connection, incarnationId: randomUUID(), registry: registry as unknown as NativeProcessRegistry,
     configuration: null, source: { verify: vi.fn(async () => source) }, inputs, authorize: vi.fn(async () => {}),
     appendLog: vi.fn(), observeReceipt: vi.fn(), collectOutputs: vi.fn() })
@@ -165,7 +165,7 @@ describe('installed Job original Git/scheduler propagation', () => {
     const control = `${owner}:control`, exits = new Map<object, number>()
     vi.spyOn(qualification, 'assertJobRuntimeEntryContext').mockResolvedValue(undefined)
     Object.assign(f.registry, {
-      reserveLaunch: vi.fn(() => ({ root: f.root, owner: control, launchId: randomUUID() })),
+      reserveLaunch: vi.fn(async () => ({ root: f.root, owner: control, launchId: randomUUID() })),
       closeRegistration: vi.fn(),
       closeOwner: vi.fn(async (value: string) => value === control),
       snapshot: () => ({ launches: unknownActive ? [{ owner: control, lifecycle: 'active', launchId: randomUUID() }] : [] }),

@@ -10,16 +10,16 @@ import { runCommand, spawnOwnedStdioProcess } from '../src/modules/harnesses/pro
 import { identityAlive, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, nativeProcessExit, spawnNativeProcess, stopRecoveredChild } from '../src/modules/harnesses/recovery/processRegistry.js'
 
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'native-guardian-outcome-'))
   const registry = new NativeProcessRegistry(root)
   const owner = 'native-outcome-fixture'
-  return { root, registry, owner, recovery: registry.reserveLaunch(owner) }
+  return { root, registry, owner, recovery: await registry.reserveLaunch(owner) }
 }
 
 describe('exact native outcome through guardian cleanup', () => {
   for (const code of [0, 7]) it(`returns native exit ${code} after confirmed guardian cleanup`, async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       const result = await runCommand(process.execPath, ['-e', `console.log('native-output');process.exit(${code})`], f.root,
         undefined, undefined, { recovery: f.recovery })
@@ -31,7 +31,7 @@ describe('exact native outcome through guardian cleanup', () => {
   })
 
   it('keeps the guarded native child in a subtree of the caller cgroup', async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       const parent = /^0::(\/[^\n]*)$/m.exec(readFileSync('/proc/self/cgroup', 'utf8'))?.[1]
       assert.ok(parent)
@@ -46,8 +46,8 @@ describe('exact native outcome through guardian cleanup', () => {
   })
 
   it('exposes the native outcome to owned stdio providers while preserving wrapper cleanup facts', async () => {
-    const f = fixture()
-    const owned = spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'process.exit(0)'],
+    const f = await fixture()
+    const owned = await spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'process.exit(0)'],
       cwd: f.root, environment: {}, recovery: f.recovery, onError: () => undefined })
     owned.child.stdout.resume(); owned.child.stderr.resume()
     try {
@@ -63,7 +63,7 @@ describe('exact native outcome through guardian cleanup', () => {
 
   it('preserves native signal failure and missing-executable failure', async () => {
     for (const missing of [false, true]) {
-      const f = fixture()
+      const f = await fixture()
       try {
         const result = await runCommand(missing ? join(f.root, 'missing-native') : process.execPath,
           missing ? [] : ['-e', 'process.kill(process.pid,"SIGTERM")'], f.root,
@@ -76,7 +76,7 @@ describe('exact native outcome through guardian cleanup', () => {
   })
 
   it('returns the native outcome only after detached descendants are gone', async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       const result = await runCommand(process.execPath, ['-e', `
         const {spawn}=require('node:child_process');
@@ -93,7 +93,7 @@ describe('exact native outcome through guardian cleanup', () => {
   })
 
   it('cancellation still rejects after confirmed tree cleanup', async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       const controller = new AbortController()
       const command = assert.rejects(runCommand(process.execPath, ['-e',
@@ -111,7 +111,7 @@ describe('exact native outcome through guardian cleanup', () => {
   })
 
   for (const receipt of ['missing', 'stale', 'invalid-outcome'] as const) it(`never promotes ${receipt} receipt into success`, async () => {
-    const f = fixture()
+    const f = await fixture()
     const child = spawnNativeProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: f.root, env: {}, recovery: f.recovery })
     child.stdout.resume(); child.stderr.resume()
     const listeners = child.listeners('message')
@@ -145,7 +145,7 @@ describe('exact native outcome through guardian cleanup', () => {
 
 for (const outcome of ['no-op', 'failed'] as const) it(
   `journals Claude ${outcome} in the native owner after API loss and before SDK consumption`, async () => {
-    const f = fixture()
+    const f = await fixture()
     const nativeSessionId = randomUUID()
     const requestId = randomUUID()
     const promptUuid = randomUUID()

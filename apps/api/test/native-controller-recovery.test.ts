@@ -56,11 +56,11 @@ afterEach(() => {
   host.overlay = ''
 })
 
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'native-controller-recovery-'))
   roots.push(root)
   const registry = new NativeProcessRegistry(root)
-  const scope = registry.reserveLaunch('container-controller')
+  const scope = await registry.reserveLaunch('container-controller')
   const directory = join(root, createHash('sha256').update(scope.owner).digest('hex'), scope.launchId!)
   const launch = JSON.parse(readFileSync(join(directory, 'intent.json'), 'utf8'))
   const guardian = { pid: 50001, group: 50001, session: 50001, startTicks: '101', state: 'S' }
@@ -75,7 +75,7 @@ function fixture() {
 }
 
 it('closes an exited controller after systemd removes its cgroup, with the recorded provider exit', async () => {
-  const f = fixture()
+  const f = await fixture()
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).resolves.toBeUndefined()
   expect(await f.registry.closeOwner(f.scope.owner)).toBe(true)
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).resolves.toBeUndefined()
@@ -84,7 +84,7 @@ it('closes an exited controller after systemd removes its cgroup, with the recor
 it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live',
   'wrong-provider', 'partial-cgroup-mount', 'changed-cgroup-device', 'over-mounted-boundary', 'invalid-exit'] as const)(
 'keeps ownership unresolved when the cgroup is absent and %s', async failure => {
-  const f = fixture()
+  const f = await fixture()
   if (failure === 'parent-live') host.livePid = f.launch.parent.pid
   if (failure === 'guardian-live') host.livePid = f.guardian.pid
   if (failure === 'provider-live') host.livePid = f.provider.pid
@@ -101,7 +101,7 @@ it.each(['parent-live', 'guardian-live', 'provider-live', 'session-live',
 })
 
 it('confirms a killed native tree without an exit receipt only after qualified kernel removal', async () => {
-  const f = fixture()
+  const f = await fixture()
   unlinkSync(join(f.directory, 'provider-exit.json'))
   host.fullHierarchy = false
   await expect(f.registry.closeRegistration(f.scope, f.scope.launchId!)).rejects.toMatchObject({ code: 'ENOENT' })

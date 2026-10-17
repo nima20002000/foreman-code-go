@@ -46,9 +46,9 @@ describe.skipIf(process.platform !== 'linux')('write-ahead native launch handoff
   })
 
   it('cannot close a still-live parent reservation or allocate over it', async () => {
-    const t = fixture(), scope = t.registry.reserveLaunch(t.owner)
+    const t = fixture(), scope = await t.registry.reserveLaunch(t.owner)
     await expect(t.registry.closeOwner(t.owner, AbortSignal.timeout(75))).rejects.toBeInstanceOf(AggregateError)
-    expect(() => t.registry.reserveLaunch(t.owner)).toThrow()
+    await expect(t.registry.reserveLaunch(t.owner)).rejects.toThrow()
     expect(readRecord(join(t.directory, scope.launchId!, 'intent.json'))).toBeDefined()
     expect(readRecord(join(t.directory, 'retired.json'))).toBeUndefined()
   })

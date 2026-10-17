@@ -272,18 +272,27 @@ class Projection {
     if (launch && launch.lifecycle !== 'closed') this.storageChanges.trackLaunch(ownerKey, id)
     else this.storageChanges.forgetLaunch(ownerKey, id)
   }
-  /** Capture each exact durable close before GC. Only the derived array/revision
-   * is coalesced during synchronous inventory; ownership and receipts are not. */
+  private retirementBatches = 0
+
+  /** Coalesce closure publication until all overlapping retirement batches finish. */
   retirementBatch<T>(work: () => T): T {
-    if (this.retiring) return work()
-    const rows = new Map(this.rows), closed = new Set([...rows].filter(([, row]) => row.lifecycle === 'closed').map(([id]) => id))
-    this.retiring = { rows, closed, eviction: closed.values(), truncated: false }
-    try { return work() }
-    finally {
-      const batch = this.retiring
+    if (!this.retiring) {
+      const rows = new Map(this.rows)
+      const closed = new Set([...rows].filter(([, row]) => row.lifecycle === 'closed').map(([id]) => id))
+      this.retiring = { rows, closed, eviction: closed.values(), truncated: false }
+    }
+    this.retirementBatches++
+    const finish = () => {
+      if (--this.retirementBatches) return
+      const batch = this.retiring!
       this.retiring = undefined
       this.publish(batch.rows, batch.truncated)
     }
+    let result: T
+    try { result = work() } catch (error) { finish(); throw error }
+    if (result instanceof Promise) return result.finally(finish) as T
+    finish()
+    return result
   }
   observeRetirement(path: string): void {
     if (!this.retiring) return this.retirementBatch(() => this.observeRetirement(path))

@@ -92,6 +92,7 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
     }
     if (purpose === 'preparation') scopeOwner = `conversation-prepare:${binding.owner.conversationId}:${randomUUID()}`
     const scope = input.registry.scope(scopeOwner)
+    let launchReservation: Promise<void> | undefined
     const before = async (signal?: AbortSignal) => {
       await directory.assertCurrent(signal)
       await reader.capture()
@@ -134,7 +135,7 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
     }
     const diagnostics = new CodexDiagnostics({ native: operations,
       createRecovery: () => input.registry.scope(`conversation-diagnostics:${binding.owner.conversationId}:${randomUUID()}`),
-      admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
+      admitRecovery: async recovery => { Object.assign(recovery, await input.registry.reserveLaunch(recovery.owner)) },
       abandonRecovery: async recovery => { await input.registry.abandonReservedLaunch(recovery) },
       closeRecovery: async recovery => {
         if (!await input.registry.closeOwner(recovery.owner)) unavailable('Native diagnostic closure is unconfirmed.')
@@ -159,7 +160,11 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
     }
     const start: WorkerConversationAllocation['start'] = async options => {
       await before(input.signal)
-      if (purpose === 'chat') Object.assign(scope, input.registry.reserveLaunch(scope.owner))
+      if (purpose === 'chat') {
+        launchReservation ??= input.registry.reserveLaunch(scope.owner).then(reserved => { Object.assign(scope, reserved) })
+        await launchReservation
+        input.signal.throwIfAborted()
+      }
       let environment: Awaited<ReturnType<typeof prepareWorkerConversationMcp>>['environment'] | undefined
       if (options.applicationAccess) {
         if (mcp) unavailable('The native chat already has a scoped MCP route.')
@@ -198,6 +203,7 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
         diagnostics.stop()
         try { await manager.dispose?.() } catch (error) { errors.push(error) }
         try { await diagnostics.dispose() } catch (error) { errors.push(error) }
+        await launchReservation
         if (scope.launchId) await input.registry.abandonReservedLaunch(scope)
         if (!await input.registry.closeOwner(scope.owner)) unavailable('Native chat closure is unconfirmed.')
         if (purpose === 'chat') {

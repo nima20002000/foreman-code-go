@@ -92,7 +92,7 @@ function fixture() {
   }))
   const closeOwner = vi.fn(async () => true)
   const abandon = vi.fn(async () => {})
-  const registry = { reserveLaunch: (owner: string) => ({ owner, root: '/worker/registry', launchId: 'inspection-launch' }),
+  const registry = { reserveLaunch: async (owner: string) => ({ owner, root: '/worker/registry', launchId: 'inspection-launch' }),
     abandonReservedLaunch: abandon, closeOwner } as unknown as NativeProcessRegistry
   const inspection = createInstalledClaudeOperatorInspection({ stateDirectory: '/worker/state', configuration: null,
     current: () => current, registry })

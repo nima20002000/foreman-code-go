@@ -66,7 +66,7 @@ const RECONNECT_READ_METHODS = new Set(['thread/read', 'thread/turns/list', 'thr
 
 /** All stream and dispatch failures end at this boundary, never at EventEmitter. */
 export class CodexStdioTransport {
-  private owned?: ReturnType<typeof spawnOwnedStdioProcess>
+  private owned?: Awaited<ReturnType<typeof spawnOwnedStdioProcess>>
   private reconnected?: Awaited<ReturnType<typeof attachDetachedStdio>>
   private readonly requestPrefix = randomUUID()
   private detached = false
@@ -127,7 +127,7 @@ export class CodexStdioTransport {
       catch (error) { logIgnoredError('harness', 'publish native API timing', error); runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_unavailable' }) }
     }
     try {
-      this.owned = spawnOwnedStdioProcess({
+      this.owned = await spawnOwnedStdioProcess({
         binary: this.binary, args: ['app-server', '--stdio',
           ...Object.entries(this.restartOptions.mcpTransportOverrides ?? {})
             .flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]),
@@ -139,6 +139,10 @@ export class CodexStdioTransport {
           ...(this.timing?.arguments ?? []),
         ], cwd: this.cwd, environment: this.environment,
         onError: (error) => this.fail(error),
+        ...(signal ? { signal } : {}),
+        beforeSpawn: () => {
+          if (this.stopped) throw new HarnessExecutionError('CODEX_TRANSPORT_REUSED', 'Create a new provider transport.')
+        },
         ...(this.onModelRefreshFailure ? { preserveReadableDrain: true } : {}),
         ...(this.processRecovery ? { recovery: this.processRecovery } : {}),
         ...(this.restartOptions.reconnectableStdio && this.processRecovery ? { reconnectableStdio: true } : {}),

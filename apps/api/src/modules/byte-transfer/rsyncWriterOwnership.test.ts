@@ -126,7 +126,7 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       await expect(f.ownership.quiescent(f.intent, signal())).rejects.toThrow('pending or unconfirmed')
       await f.ownership.stopProcesses(f.intent, signal())
       expect(readRecord(f.ownerPath(ref, 'closed'))).toMatchObject({ ownerDigest: ref.ownerDigest, evidence: 'never-dispatched' })
-      expect(() => f.ownership.spawnServer(ref, ['--server', '.'], signal())).toThrow('no longer dispatchable')
+      await expect(f.ownership.spawnServer(ref, ['--server', '.'], signal())).rejects.toThrow('no longer dispatchable')
       await f.ownership.quiescent(f.intent, signal())
     } finally { await f.dispose() }
   })
@@ -134,14 +134,14 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
     const f = await fixture()
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
-      expect(() => f.ownership.spawnServer(ref, ['--server', '.'], signal())).toThrow('before executable dispatch')
+      await expect(f.ownership.spawnServer(ref, ['--server', '.'], signal())).rejects.toThrow('before executable dispatch')
       const launch = readRecord(f.ownerPath(ref, 'launch')) as { launchId: string }
       expect(launch.launchId).toMatch(/^[a-f0-9-]{36}$/)
       await expect(f.ownership.processesQuiescent(f.intent, signal())).rejects.toThrow('active or unconfirmed')
       await f.ownership.stopProcesses(f.intent, signal())
       expect(readRecord(f.ownerPath(ref, 'closed'))).toMatchObject({ evidence: 'rsync-process-closed', launchId: launch.launchId })
       await f.ownership.quiescent(f.intent, signal())
-      expect(() => f.ownership.spawnServer(ref, ['--server', '.'], signal())).toThrow('no longer dispatchable')
+      await expect(f.ownership.spawnServer(ref, ['--server', '.'], signal())).rejects.toThrow('no longer dispatchable')
     } finally { await f.dispose() }
   })
   it.each(['epoch', 'generation', 'key', 'offline'] as const)('denies changed %s before claim or executable dispatch', async defect => {
@@ -152,7 +152,7 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       if (defect === 'generation') changed.connectionGeneration++
       if (defect === 'key') changed.keyRevision++
       f.change(defect === 'offline' ? undefined : changed)
-      expect(() => f.ownership.spawnServer(ref, ['--server', '.'], signal())).toThrow('binding is not current')
+      await expect(f.ownership.spawnServer(ref, ['--server', '.'], signal())).rejects.toThrow('binding is not current')
       expect(readRecord(f.ownerPath(ref, 'claim'))).toBeUndefined()
       await f.ownership.stopProcesses(f.intent, signal())
     } finally { await f.dispose() }
@@ -163,9 +163,9 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       const args = ['--checksum', '--', 'exact-source', 'exact-destination']
       expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-client', f.pin)).toThrow('command pin unavailable')
       const client = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-client', { ...f.pin, commandDigest: rsyncArgumentDigest(args) })
-      expect(() => f.ownership.spawnProcess(client, f.pin.executable, [...args, 'changed'], signal())).toThrow('binary differs')
+      await expect(f.ownership.spawnProcess(client, f.pin.executable, [...args, 'changed'], signal())).rejects.toThrow('binary differs')
       await writeFile(f.pin.executable, 'changed binary')
-      expect(() => f.ownership.spawnProcess(client, f.pin.executable, args, signal())).toThrow('binary differs')
+      await expect(f.ownership.spawnProcess(client, f.pin.executable, args, signal())).rejects.toThrow('binary differs')
       const server = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
       expect(f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)).toEqual(server)
       expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', { ...f.pin, sha256: 'f'.repeat(64) })).toThrow('active or unconfirmed')
@@ -176,8 +176,8 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
       await expect(f.ownership.stop({ ...f.intent, expiresAt: new Date(Date.now() - 1).toISOString() }, signal())).rejects.toThrow('intent unavailable or changed')
-      expect(() => f.ownership.spawnServer({ ...ref, ownerDigest: 'f'.repeat(64) }, ['--server', '.'], signal())).toThrow('identity conflicts')
-      expect(() => f.ownership.spawnServer({ ...ref, ownerId: randomUUID() }, ['--server', '.'], signal())).toThrow()
+      await expect(f.ownership.spawnServer({ ...ref, ownerDigest: 'f'.repeat(64) }, ['--server', '.'], signal())).rejects.toThrow('identity conflicts')
+      await expect(f.ownership.spawnServer({ ...ref, ownerId: randomUUID() }, ['--server', '.'], signal())).rejects.toThrow()
       expect(readRecord(f.ownerPath(ref, 'claim'))).toBeUndefined()
     } finally { await f.dispose() }
   })
@@ -185,7 +185,7 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
     const f = await fixture()
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
-      expect(() => f.ownership.spawnServer(ref, args, signal())).toThrow('Invalid admitted')
+      await expect(f.ownership.spawnServer(ref, args, signal())).rejects.toThrow('Invalid admitted')
     } finally { await f.dispose() }
   })
   it('rejects unrelated Job/native closure and fake stopped booleans as rsync process retirement', async () => {
@@ -251,7 +251,7 @@ describe.skipIf(process.platform !== 'linux')('causal rsync byte ownership', () 
       await expect(deferred).rejects.toThrow('access closed')
       expect(called).not.toHaveBeenCalled(); expect(first.signal.aborted).toBe(true); expect(second.signal.aborted).toBe(true)
       expect(readRecord(f.ownerPath(server, 'claim'))).toMatchObject({ mode: 'cancelled', ownerDigest: server.ownerDigest })
-      expect(() => f.ownership.spawnServer(server, ['--server', '.'], signal())).toThrow()
+      await expect(f.ownership.spawnServer(server, ['--server', '.'], signal())).rejects.toThrow()
       await f.ownership.drain(signal())
     } finally { await f.dispose() }
   })
@@ -571,7 +571,7 @@ describe.skipIf(process.platform !== 'linux')('actual wrapper admission through 
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
       const wrapper = new RsyncWriterOwnership(f.root, () => undefined)
-      expect(() => wrapper.spawnServer(ref, ['--server', '.'], signal())).toThrow('binding is not current')
+      await expect(wrapper.spawnServer(ref, ['--server', '.'], signal())).rejects.toThrow('binding is not current')
       const waiting = wrapper.waitForServerGrant(ref, signal())
       const actual = processIdentity(process.pid)!
       expect(readRecord(f.ownerPath(ref, 'waiting'))).toMatchObject({ hostBootId: bootIdentity(), process: { pid: actual.pid, startTicks: actual.startTicks } })
@@ -583,10 +583,10 @@ describe.skipIf(process.platform !== 'linux')('actual wrapper admission through 
       const granted = readRecord(f.ownerPath(ref, 'grant'))
       await f.ownership.activateServer(ref, f.binding, signal(), authorize)
       expect(readRecord(f.ownerPath(ref, 'grant'))).toEqual(granted)
-      expect(() => wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow('before executable dispatch')
+      await expect(wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).rejects.toThrow('before executable dispatch')
       expect(readRecord(f.ownerPath(ref, 'claim'))).toMatchObject({ mode: 'process', parent: { pid: actual.pid, startTicks: actual.startTicks } })
       expect(() => f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)).toThrow('active or unconfirmed')
-      expect(() => wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow()
+      await expect(wrapper.spawnGrantedServer(ref, ['--server', '.'], signal())).rejects.toThrow()
       await wrapper.stopServer(ref, signal()); await f.ownership.processesQuiescent(f.intent, signal())
     } finally { await f.dispose() }
   })
@@ -607,7 +607,7 @@ describe.skipIf(process.platform !== 'linux')('actual wrapper admission through 
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin), controller = new AbortController()
       const waiting = f.ownership.waitForServerGrant(ref, controller.signal)
-      const observed = waiting.catch(() => undefined)
+      const observed = waiting.catch(() => { /* ignore: the test asserts the authority failure and then cancels this waiting wrapper. */ })
       await expect(f.ownership.activateServer(ref, f.binding, signal(), async () => {
         if (defect === 'denied') throw new Error('accepted transfer denied')
         f.change(defect === 'offline' ? undefined : { ...f.binding,
@@ -622,7 +622,7 @@ describe.skipIf(process.platform !== 'linux')('actual wrapper admission through 
     const f = await fixture()
     try {
       const ref = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin), controller = new AbortController()
-      const waiting = f.ownership.waitForServerGrant(ref, controller.signal).catch(() => undefined)
+      const waiting = f.ownership.waitForServerGrant(ref, controller.signal).catch(() => { /* ignore: the test asserts the authority failure and then cancels this waiting wrapper. */ })
       let finish!: () => void
       const activated = f.ownership.activateServer(ref, f.binding, controller.signal,
         async () => new Promise<void>(resolve => { finish = resolve }))
@@ -645,7 +645,7 @@ describe.skipIf(process.platform !== 'linux')('actual wrapper admission through 
       if (defect === 'nonce') writeRecord(f.ownerPath(ref, 'grant'), { ...grant, nonce: randomUUID() })
       if (defect === 'waiting') writeRecord(f.ownerPath(ref, 'waiting'), { ...readRecord(f.ownerPath(ref, 'waiting')) as object, process: { pid: process.pid, startTicks: '0' } })
       if (defect === 'stopped') await f.ownership.stopProcesses(f.intent, signal())
-      expect(() => f.ownership.spawnGrantedServer(ref, ['--server', '.'], signal())).toThrow()
+      await expect(f.ownership.spawnGrantedServer(ref, ['--server', '.'], signal())).rejects.toThrow()
       if (defect !== 'stopped') expect(readRecord(f.ownerPath(ref, 'claim'))).toBeUndefined()
       else expect(readRecord(f.ownerPath(ref, 'claim'))).toMatchObject({ mode: 'cancelled' })
     } finally { clock?.mockRestore(); await f.dispose() }
@@ -695,7 +695,7 @@ describe('cross-host rsync control boundary', () => {
       const reference = f.ownership.prepareProcess(f.intent, f.binding, 'rsync-server', f.pin)
       const remote = { ...reference, nodeBinary: '/usr/bin/node', entryPoint: '/opt/app/rsync-wrapper.js' }
       const command = rsyncCommand(endpoint, f.intent, remote)
-      expect(() => new NodeRsyncExecutor().run(command, signal())).toThrow('subprocess owner unavailable')
+      await expect(new NodeRsyncExecutor().run(command, signal())).rejects.toThrow('subprocess owner unavailable')
       expect(command.args).toContain(`--rsync-path=/usr/bin/systemd-run --user --scope --quiet --property=Delegate=yes --collect -- /usr/bin/node /opt/app/rsync-wrapper.js --rsync-root ${endpoint.remoteRoot} --rsync-transfer ${f.intent.transferId} --rsync-owner ${remote.ownerId} --rsync-owner-digest ${remote.ownerDigest}`)
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, entryPoint: '/tmp/$(id)' })).toThrow('Unsafe')
       expect(() => rsyncCommand(endpoint, f.intent, { ...remote, transferId: randomUUID() })).toThrow('remote rsync owner')

@@ -18,7 +18,7 @@ export function withNativeQualificationOwnership(suite: QualificationSuite,
       const assertInstallation = installationGuard(input)
       await assertInstallation(input.signal)
       input.signal.throwIfAborted()
-      const recovery = registry.reserveLaunch(`qualification:${suite.harness}:${randomUUID()}`)
+      const recovery = await registry.reserveLaunch(`qualification:${suite.harness}:${randomUUID()}`)
       const close = async () => {
         await registry.abandonReservedLaunch(recovery)
         if (!await registry.closeOwner(recovery.owner)) throw new Error('Native qualification closure is unconfirmed.')

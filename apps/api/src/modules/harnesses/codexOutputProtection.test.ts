@@ -75,7 +75,7 @@ it.each([
     await mkdir(workspace)
     await mkdir(protectedDirectory)
     const recovery = { root: directory, owner: 'probe-owner' }
-    const registry = { reserveLaunch: vi.fn(() => recovery), abandonReservedLaunch: vi.fn(),
+    const registry = { reserveLaunch: vi.fn(async () => recovery), abandonReservedLaunch: vi.fn(),
       closeOwner: vi.fn(async () => true) }
     const qualified = { binary: '/fixture/codex', identity: 'fixture-identity',
       schemaManifestSha256: 'fixture-schema', providerVersion: 'codex-cli 0.154.0',

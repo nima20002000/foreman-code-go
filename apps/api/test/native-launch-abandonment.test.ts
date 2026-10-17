@@ -6,23 +6,23 @@ import { join } from 'node:path'
 import { describe, it } from 'vitest'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import {
-  NativeProcessRegistry,
+  NativeProcessRegistry, prepareNativeProcessRecovery,
   spawnNativeProcess,
   stopRecoveredChild,
   type NativeProcessRecovery,
 } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readRecord, recordObject, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'native-launch-abandonment-'))
   const registry = new NativeProcessRegistry(root)
-  const scope = registry.reserveLaunch('diagnostic-fixture-owner')
+  const scope = await registry.reserveLaunch('diagnostic-fixture-owner')
   const ownerDirectory = join(root, createHash('sha256').update(scope.owner).digest('hex'))
   const directory = join(ownerDirectory, scope.launchId!)
   return { root, registry, scope, ownerDirectory, directory }
 }
 
-function auxiliary(registry: NativeProcessRegistry, scope: NativeProcessRecovery) {
+async function auxiliary(registry: NativeProcessRegistry, scope: NativeProcessRecovery) {
   const factories = new NativeHarnessFactories({ codexBinary: 'unused', auxiliaryRecovery: () => scope,
     abandonRecovery: async recovery => { await registry.abandonReservedLaunch(recovery) },
     closeRecovery: async recovery => {
@@ -31,14 +31,14 @@ function auxiliary(registry: NativeProcessRegistry, scope: NativeProcessRecovery
   })
   const allocation = factories.allocate({ harness: 'codex', role: 'qualification',
     ownerAgentId: 'qualification', workingDirectory: scope.root, appMcpAccess: 'none' })
-  factories.admitAuxiliary(allocation.manager)
+  await factories.admitAuxiliary(allocation.manager)
   return { factories, manager: allocation.manager }
 }
 
 describe('qualification reservation cleanup', () => {
   it('abandons a never-dispatched reservation before closing its owner', async () => {
-    const f = fixture()
-    const owned = auxiliary(f.registry, f.scope)
+    const f = await fixture()
+    const owned = await auxiliary(f.registry, f.scope)
     try {
       await owned.factories.disposeAuxiliary(owned.manager)
       assert.equal(await f.registry.closeOwner(f.scope.owner), true)
@@ -52,10 +52,10 @@ describe('qualification reservation cleanup', () => {
     const root = mkdtempSync(join(tmpdir(), 'qualification-launch-'))
     const registry = new NativeProcessRegistry(root)
     const scope = kind === 'reserved'
-      ? registry.reserveLaunch('qualification-owner') : registry.scope('qualification-owner')
-    const owned = auxiliary(registry, scope)
+      ? await registry.reserveLaunch('qualification-owner') : registry.scope('qualification-owner')
+    const owned = await auxiliary(registry, scope)
     const child = spawnNativeProcess(process.execPath, ['-e', 'console.log("ready");setInterval(()=>{},1000)'], {
-      cwd: root, env: {}, recovery: scope,
+      cwd: root, env: {}, recovery: await prepareNativeProcessRecovery(scope),
     })
     child.stderr.resume()
     const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
@@ -77,9 +77,9 @@ describe('qualification reservation cleanup', () => {
 
   for (const mutation of [{ root: '/foreign-registry' }, { owner: 'foreign-owner' }, { launchId: '' }]) {
     it(`retains cleanup failure for an invalid ${Object.keys(mutation)[0]} instead of closing another owner`, async () => {
-      const f = fixture()
+      const f = await fixture()
       const original = { ...f.scope }
-      const owned = auxiliary(f.registry, Object.assign(f.scope, mutation))
+      const owned = await auxiliary(f.registry, Object.assign(f.scope, mutation))
       try {
         await assert.rejects(owned.factories.disposeAuxiliary(owned.manager))
         Object.assign(f.scope, original)
@@ -92,7 +92,7 @@ describe('qualification reservation cleanup', () => {
 
 describe('original-parent no-dispatch retirement', () => {
   it('publishes positive no-start evidence and permanently fences the exact abandoned scope', async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       // A live parent and undispatched intent alone remain insufficient evidence.
       await assert.rejects(f.registry.closeRegistration(f.scope, f.scope.launchId!, AbortSignal.timeout(75)))
@@ -111,7 +111,7 @@ describe('original-parent no-dispatch retirement', () => {
   })
 
   it('refuses positive no-start evidence for a real native process that has already entered', async () => {
-    const f = fixture()
+    const f = await fixture()
     const child = spawnNativeProcess(process.execPath, ['-e', 'console.log("native-entered");setInterval(()=>{},1000)'], {
       cwd: f.root, env: {}, recovery: f.scope,
     })
@@ -148,7 +148,7 @@ describe('original-parent no-dispatch retirement', () => {
 
   for (const state of ['claimed.json', 'dispatched.json', 'birth.json', 'containment.json', 'closed.json']) {
     it(`refuses abandonment after ${state} without publishing no-start evidence`, async () => {
-      const f = fixture()
+      const f = await fixture()
       try {
         // Private markers model an already-entered lifecycle; no fixture process runs.
         writeRecord(join(f.directory, state), { id: f.scope.launchId, owner: f.scope.owner })
@@ -162,7 +162,7 @@ describe('original-parent no-dispatch retirement', () => {
   }
 
   it('rejects foreign root, owner, and launch scopes without changing the original reservation', async () => {
-    const f = fixture()
+    const f = await fixture()
     try {
       await assert.rejects(f.registry.abandonReservedLaunch({ ...f.scope, root: join(f.root, 'foreign') }))
       await assert.rejects(f.registry.abandonReservedLaunch({ ...f.scope, owner: 'another-owner' }))
@@ -174,7 +174,7 @@ describe('original-parent no-dispatch retirement', () => {
   })
 
   for (const field of ['boot', 'parent-pid', 'parent-generation', 'owner', 'id']) it(`rejects stale ${field} binding`, async () => {
-    const f = fixture()
+    const f = await fixture()
     const path = join(f.directory, 'intent.json')
     const original = recordObject(readRecord(path))
     try {

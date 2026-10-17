@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto'
-import { lstatSync, readdirSync, renameSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { lstatSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { rename, rm } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
+import { registryOperation } from './registryOperations.js'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
 import { nativeRegistryProjection, type NativeLaunchObservation } from './registryObservation.js'
 import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory,
-  writeRecord, writeRecordBatch } from './storage.js'
+  writeRecord, writeRecordBatch, storageBatch, syncDirectoryAsync } from './storage.js'
 
 /** Preserve every closure before committing a batch of registration removals. */
-export function retireRegistrations(directory: string, observations: ReadonlyMap<string, NativeLaunchObservation>): void {
+export async function retireRegistrations(directory: string, observations: ReadonlyMap<string, NativeLaunchObservation>): Promise<void> {
   const records = new Map<string, unknown>()
   let last: NativeLaunchObservation | undefined
   for (const [id, observation] of observations) {
@@ -19,19 +21,15 @@ export function retireRegistrations(directory: string, observations: ReadonlyMap
   if (!last) return
   // The owner summary needs only the final closure; exact retries use the individual receipts.
   records.set('retired.json', { format: 2, owner: last.owner, id: last.launchId, observation: last })
-  if (observations.size === 1) {
-    for (const [name, value] of records) writeRecord(join(directory, name), value)
-  } else {
-    writeRecordBatch(directory, records)
-  }
-  for (const id of observations.keys()) {
-    renameSync(join(directory, id), join(directory, `.retired-${id}`))
-  }
-  syncDirectory(directory)
-  // The durable renames are the GC commit point. A crash during deletion leaves
-  // only tombstones; registrations cannot reappear as unresolved launches.
-  for (const id of observations.keys()) rmSync(join(directory, `.retired-${id}`), { recursive: true })
-  syncDirectory(directory)
+  await writeRecordBatch(directory, records)
+  const ids = [...observations.keys()]
+  await storageBatch(ids, async id => {
+    await rename(join(directory, id), join(directory, `.retired-${id}`))
+  })
+  await syncDirectoryAsync(directory)
+  // Durable tombstones commit removal before deletion; interrupted GC cannot resurrect a registration.
+  await storageBatch(ids, async id => { await rm(join(directory, `.retired-${id}`), { recursive: true }) })
+  await syncDirectoryAsync(directory)
 }
 
 // Keep fresh closure certificates in place for in-flight recovery and retries.
@@ -153,11 +151,12 @@ export const REGISTRY_RETIREMENT_BUDGET_MS = 100
 const REGISTRY_RETIREMENT_INTERVAL_MS = 60 * 60 * 1000
 
 /** Maintenance sweeps each root in budgeted slices and repeats hourly; passive telemetry never performs GC. */
-export function prepareRegistryRetirement(root: string, retire: (directory: string) => void): void {
+export async function prepareRegistryRetirement(root: string,
+  retire: (directory: string, batch: Map<string, NativeLaunchObservation>) => Promise<void>): Promise<void> {
   const swept = sweptRoots.get(root)
   if ((swept !== undefined && Date.now() - swept < REGISTRY_RETIREMENT_INTERVAL_MS) || !existingPrivateDirectory(root)) return
   const deadline = performance.now() + REGISTRY_RETIREMENT_BUDGET_MS
-  nativeRegistryProjection(root).retirementBatch(() => {
+  await nativeRegistryProjection(root).retirementBatch(async () => {
     const cursor = retirementCursors.get(root)
     // Archived owners leave the listing, so resume after the last visited owner name rather than an index.
     const owners = directoryEntries(root).sort().filter(name => cursor === undefined || name > cursor)
@@ -165,18 +164,23 @@ export function prepareRegistryRetirement(root: string, retire: (directory: stri
       if (performance.now() > deadline) return
       retirementCursors.set(root, ownerKey)
       if (!/^[0-9a-f]{64}$/.test(ownerKey)) continue
-      const directory = join(root, ownerKey)
-      for (const name of directoryEntries(directory)) {
-        const match = /^closed-([0-9a-f-]{36})\.json$/.exec(name)
-        if (match) pruneClosedObservation(directory, match[1]!)
-        if (/^[0-9a-f-]{36}$/.test(name)) {
-          const registration = join(directory, name)
-          if (!existingPrivateDirectory(registration)) continue
-          const closed = existingStat(join(registration, 'closed.json'))
-          if (closed && Date.now() - closed.mtimeMs >= closureRetentionMs) retire(registration)
-        }
-      }
-      pruneRetiredOwner(directory)
+      await registryOperation(JSON.stringify([resolve(root), ownerKey]), async () => {
+        const directory = join(root, ownerKey)
+        const closures = new Map<string, NativeLaunchObservation>()
+        try {
+          for (const name of directoryEntries(directory)) {
+            const match = /^closed-([0-9a-f-]{36})\.json$/.exec(name)
+            if (match) pruneClosedObservation(directory, match[1]!)
+            if (/^[0-9a-f-]{36}$/.test(name)) {
+              const registration = join(directory, name)
+              if (!existingPrivateDirectory(registration)) continue
+              const closed = existingStat(join(registration, 'closed.json'))
+              if (closed && Date.now() - closed.mtimeMs >= closureRetentionMs) await retire(registration, closures)
+            }
+          }
+        } finally { await retireRegistrations(directory, closures) }
+        pruneRetiredOwner(directory)
+      })
     }
     retirementCursors.delete(root)
     sweptRoots.set(root, Date.now())

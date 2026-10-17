@@ -45,7 +45,7 @@ async function fixture(harness: 'codex' = 'codex') {
     presetId: `local-default:${harness}`, enabled: true, driverId: harness, configuration,
     configurationFingerprint: commandInputHash(withAdvancedDefaults(configuration)), qualification: 'unqualified' }
   const checkId = randomUUID(), registry = {
-    reserveLaunch: vi.fn((owner: string) => ({ root: directory, owner, launchId: randomUUID() })),
+    reserveLaunch: vi.fn(async (owner: string) => ({ root: directory, owner, launchId: randomUUID() })),
     abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true),
   }
   const probe = { inspect: vi.fn(async () => ({ executable: binary, identity: 'fixture-stat-generation', version })),

@@ -172,7 +172,7 @@ describe('native runtime construction', () => {
       auxiliaryRecovery: () => recovery, abandonRecovery, closeRecovery }, { mode: 'native' })
     const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics',
       ownerAgentId: 'diagnostics', workingDirectory: '/project', appMcpAccess: 'none' })
-    factories.admitAuxiliary(allocation.manager)
+    await factories.admitAuxiliary(allocation.manager)
     await expect(factories.disposeAuxiliary(allocation.manager)).rejects.toThrow('unconfirmed')
     factories.stopAuxiliaries()
     expect(() => factories.allocate({ harness: 'codex', role: 'qualification', ownerAgentId: 'qualification',
@@ -198,8 +198,8 @@ describe('native runtime construction', () => {
       auxiliaryRecovery: () => recovery, admitRecovery, abandonRecovery, closeRecovery })
     const allocation = factories.allocate({ harness: 'codex', role: 'diagnostics', ownerAgentId: 'diagnostics',
       workingDirectory: '/project', appMcpAccess: 'none' })
-    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
-    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow('Reservation failed')
+    await expect(factories.admitAuxiliary(allocation.manager)).rejects.toThrow('Reservation failed')
+    await expect(factories.admitAuxiliary(allocation.manager)).rejects.toThrow('Reservation failed')
     expect(admitRecovery).toHaveBeenCalledTimes(1)
     await factories.disposeAuxiliary(allocation.manager)
     expect(abandonRecovery).toHaveBeenCalledExactlyOnceWith(recovery)
@@ -217,8 +217,8 @@ describe('native runtime construction', () => {
       auxiliaryRecovery: () => recovery, admitRecovery, closeRecovery })
     const allocation = factories.allocate({ harness: 'codex', role: 'qualification',
       ownerAgentId: 'qualification', workingDirectory: '/project', appMcpAccess: 'none' })
-    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow(failure)
-    expect(() => factories.admitAuxiliary(allocation.manager)).toThrow(failure)
+    await expect(factories.admitAuxiliary(allocation.manager)).rejects.toThrow(failure)
+    await expect(factories.admitAuxiliary(allocation.manager)).rejects.toThrow(failure)
     await factories.disposeAuxiliary(allocation.manager)
     expect(admitRecovery).toHaveBeenCalledOnce()
     expect(closeRecovery).not.toHaveBeenCalled()
@@ -236,7 +236,7 @@ describe('native runtime construction', () => {
         auxiliaryRecovery: () => recovery, admitRecovery, abandonRecovery, closeRecovery })
       const allocation = factories.allocate({ harness: 'codex', role,
         ownerAgentId: role, workingDirectory: '/project', appMcpAccess: 'none' })
-      factories.admitAuxiliary(allocation.manager)
+      await factories.admitAuxiliary(allocation.manager)
       await factories.disposeAuxiliary(allocation.manager)
       await factories.disposeAuxiliary(allocation.manager)
       expect(admitRecovery).toHaveBeenCalledExactlyOnceWith(recovery)

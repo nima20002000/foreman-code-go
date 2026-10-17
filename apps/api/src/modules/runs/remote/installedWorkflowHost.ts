@@ -257,6 +257,7 @@ interface InstalledOperation {
   reader:QualificationReader
   capture:QualificationCapture
   scope:NativeProcessRecovery
+  launchReservation?: Promise<void>
   account:ResolvedProviderAccount|null
   host?:RemoteExecutionHost
   manager?:CodexAppServerSessionManager
@@ -575,14 +576,24 @@ class InstalledWorkflowHostRuntime {
     return host
   }
 
+  private async reserveResidentLaunch(resident: InstalledOperation): Promise<void> {
+    if (resident.launchDisabled || this.closing) unavailable('original_native_owner_closed')
+    if (!resident.scope.launchId) {
+      resident.launchReservation ??= this.registry.reserveLaunch(resident.scope.owner).then(scope => {
+        Object.assign(resident.scope, scope)
+        this.rememberEntry(resident)
+      })
+      await resident.launchReservation
+    }
+    if (resident.launchDisabled || this.closing) unavailable('original_native_owner_closed')
+  }
+
   private createManager(configurationContext: NativeManagerResolutionContext, log: RemoteOperationJournal) {
     const resident=this.operations.get(configurationContext.executionId)
     if(!resident||configurationContext.harness !== 'codex'||!isDeepStrictEqual(configurationContext.configuration,resident.capture.facts.configuration)
       ||configurationContext.workingDirectory!==resident.capture.facts.executionPlacement.workingTree.canonicalCwd)unavailable('accepted_configuration_conflict')
     const actual=resident!,binary=actual.capture.inspection.currentTarget?.installation.launcher.resolvedLauncher
     if(!binary)unavailable('installed_launcher_unavailable')
-    if (!actual.scope.launchId) Object.assign(actual.scope,this.registry.reserveLaunch(actual.scope.owner))
-    this.rememberEntry(actual)
     const instances=new HarnessInstanceRegistry(localHarnessDrivers.filter(driver=>driver.driverId===configurationContext.harness))
     const override=actual.capture.facts.harness.override,installation=actual.capture.facts.harness.installation
     instances.reload([{instanceId:override.instanceId,instanceRevision:override.instanceRevision,driverId:override.driverId,enabled:override.enabled,configuration:override.configuration}])
@@ -595,6 +606,7 @@ class InstalledWorkflowHostRuntime {
       if (actual.reviewAssignment) {
         await workerReviewerAuthorizer(this.forBinding(actual.context.binding))(actual.intent, actual.placement, actual.reviewAssignment)
       } else await workerExecutionAuthorizer(this.forBinding(actual.context.binding))(actual.intent,actual.placement,'start')
+      await this.reserveResidentLaunch(actual)
       installations.assertCurrent(selection)}
     const outputContext: InstalledWorkflowNativeOutputContext = {
       get intent() { return structuredClone(actual.intent) },
@@ -738,8 +750,7 @@ class InstalledWorkflowHostRuntime {
           nativePlacement:capture.facts.executionPlacement,intent,placement,request})
         resident.runtimeLeaf=runtimeLeaf
         resident.runtimeRoots=structuredClone(approvedRoots)
-        if (!resident.scope.launchId) Object.assign(resident.scope, this.registry.reserveLaunch(resident.scope.owner))
-        this.rememberEntry(resident)
+        await this.reserveResidentLaunch(resident)
         return runtimeLeaf
       },
       preflight: async (nativeRequest, access, signal) => {
@@ -1067,6 +1078,7 @@ class InstalledWorkflowHostRuntime {
     const failures:unknown[]=results.flatMap(result=>result.status==='rejected'?[result.reason]:[])
     for(const owned of this.operations.values()) {
       try {
+        await owned.launchReservation
         if(owned.scope.launchId) {
           await this.registry.abandonReservedLaunch(owned.scope)
           if(!await this.registry.closeOwner(owned.scope.owner))unavailable('native_owner_closure_unconfirmed')
@@ -1142,6 +1154,7 @@ class InstalledWorkflowHostRuntime {
     }
     // A Run stopped before entry keeps this live process as the reservation's parent,
     // so only its explicit abandonment can prove that no native process started.
+    await owned?.launchReservation
     if (owned?.scope.launchId) await this.registry.abandonReservedLaunch(owned.scope)
     if ((receipt.native || launches().length) && !await this.registry.closeOwner(processOwner)) return false
     componentLogger('engine').warn({ executionId: owner.attempt.executionId, terminal: Boolean(receipt.terminal) },

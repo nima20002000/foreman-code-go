@@ -188,7 +188,7 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     const nativeFactories = new NativeHarnessFactories({ ...config.harnesses,
        responseJournal,
       auxiliaryRecovery: role => processRegistry.scope(`${role}:${randomUUID()}`),
-      admitRecovery: recovery => { Object.assign(recovery, processRegistry.reserveLaunch(recovery.owner)) },
+      admitRecovery: async recovery => { Object.assign(recovery, await processRegistry.reserveLaunch(recovery.owner)) },
       abandonRecovery: async recovery => { await processRegistry.abandonReservedLaunch(recovery) },
       closeRecovery: async recovery => {
         if (!await processRegistry.closeOwner(recovery.owner)) throw new Error('Diagnostic native process closure is unconfirmed.')

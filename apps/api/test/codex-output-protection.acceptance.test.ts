@@ -18,7 +18,7 @@ describe.skipIf(!enabled)('original native output store protection', () => {
     await mkdir(workspace, { mode: 0o700 })
     await mkdir(protectedDirectory, { mode: 0o700 })
     const registry = new NativeProcessRegistry(join(directory, 'processes'))
-    const admission = registry.reserveLaunch('output-test-installation-read')
+    const admission = await registry.reserveLaunch('output-test-installation-read')
     const signal = AbortSignal.timeout(120_000)
     let failure: { error: unknown } | undefined
     const cleanup = async () => {

@@ -73,7 +73,7 @@ it('replays native creation through production construction and the real manager
       payloads: async () => { throw new Error('Unexpected replay payload discovery.') } },
 
     auxiliary: { recovery: { scope: (owner) => ({ root: join(directory, 'registry'), owner }),
-      reserveLaunch: (owner) => ({ root: join(directory, 'registry'), owner, launchId: 'recorded-launch' }),
+      reserveLaunch: async (owner) => ({ root: join(directory, 'registry'), owner, launchId: 'recorded-launch' }),
       abandonReservedLaunch: async () => true,
       closeOwner: async () => true }, command: unavailable, plugins: { recoveryIdentity: '', list: unavailable, detail: unavailable, change: unavailable },
       mcp: { codex: { read: unavailable, apply: unavailable } },

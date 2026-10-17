@@ -29,10 +29,12 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
     try {
       // Positive format-2 closure fixtures use the real retirement/receipt/GC path.
       // No native provider or guardian is launched by this storage regression.
-      nativeRegistryProjection(root).retirementBatch(() => {
+      await nativeRegistryProjection(root).retirementBatch(async () => {
         for (let index = 0; index < 10_001; index++) {
           const owner = `retired-owner-${index}`, row = seed(root, owner, true)
-          retirements.push(registry.closeOwner(owner))
+          const retirement = registry.closeOwner(owner)
+          retirements.push(retirement)
+          await retirement
           const path = join(row.ownerDirectory, 'retired.json')
           receipts.push({ path, value: JSON.stringify({ format: 2, owner, id: row.id, observation: { owner, launchId: row.id,
             bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: 'native_not_started' } }) })
@@ -59,7 +61,7 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       for (const receipt of receipts) expect(readFileSync(receipt.path, 'utf8')).toBe(receipt.value)
       expect(readdirSync(unresolved.path)).toEqual(['intent.json'])
       await expect(registry.closeRegistration(registry.scope('retired-owner-0'), randomUUID())).rejects.toMatchObject({ code: 'ENOENT' })
-      expect(() => registry.reserveLaunch('unresolved-owner')).toThrow('active or unconfirmed')
+      await expect(registry.reserveLaunch('unresolved-owner')).rejects.toThrow('active or unconfirmed')
     } finally { rmSync(root, { recursive: true, force: true }) }
   // Every retirement fsyncs its receipts; slower disks need time for the full history.
   }, 1_200_000)

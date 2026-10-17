@@ -1,5 +1,5 @@
 import { isRecord } from '../../../shared/records.js'
-import { spawnSync } from 'node:child_process'
+import { open, rename, unlink } from 'node:fs/promises'
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync,
   openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, type Stats } from 'node:fs'
 import { basename, dirname, join, parse, resolve, sep } from 'node:path'
@@ -131,29 +131,56 @@ export function writeRecord(path: string, value: unknown, immutable = false): vo
   recordWritten(path)
 }
 
-/** Linux batches use the host sync utility's syncfs operation for one data barrier.
- * Publish names durably before notifying readers or allowing source records to be removed. */
-export function writeRecordBatch(directory: string, records: ReadonlyMap<string, unknown>): void {
+/** Bound open descriptors and group sync requests so the journal can commit them together. */
+export async function storageBatch<T>(items: readonly T[], work: (item: T) => Promise<void>): Promise<void> {
+  for (let offset = 0; offset < items.length; offset += 64) {
+    const results = await Promise.allSettled(items.slice(offset, offset + 64).map(work))
+    const failures = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
+    if (failures.length) throw new AggregateError(failures, 'Recovery storage batch failed.')
+  }
+}
+
+export async function syncDirectoryAsync(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  try { await handle.sync() } finally { await handle.close() }
+}
+
+/** Commit file contents before publishing names, then commit names before notifying readers. */
+export async function writeRecordBatch(directory: string, records: ReadonlyMap<string, unknown>): Promise<void> {
   if (!records.size) return
   const parent = privateDirectory(directory)
-  const pending: { temporary: string; path: string }[] = []
-  for (const [name, value] of records) {
+  const pending = [...records].map(([name, value]) => {
     if (basename(name) !== name) throw new Error('Recovery batch records must share one directory.')
     const data = JSON.stringify(value)
     if (Buffer.byteLength(data) > 64 * 1024) throw new Error('Recovery record exceeds its size limit.')
-    const temporary = join(parent, `.pending-${randomUUID()}`)
-    const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
-    try { writeFileSync(fd, data) } finally { closeSync(fd) }
-    pending.push({ temporary, path: join(parent, name) })
+    return { temporary: join(parent, `.pending-${randomUUID()}`), path: join(parent, name), data }
+  })
+  try {
+    // Stage all data before issuing grouped fsyncs; serial write/fsync pairs force a journal wait per record.
+    await storageBatch(pending, async ({ temporary, data }) => {
+      const handle = await open(temporary,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)
+      try { await handle.writeFile(data) } finally { await handle.close() }
+    })
+    await storageBatch(pending, async ({ temporary }) => {
+      const handle = await open(temporary, constants.O_WRONLY | constants.O_NOFOLLOW)
+      try { await handle.sync() } finally { await handle.close() }
+    })
+    await storageBatch(pending, async ({ temporary, path }) => { await rename(temporary, path) })
+    await syncDirectoryAsync(parent)
+    for (const { path } of pending) recordWritten(path)
+  } catch (error) {
+    try {
+      await storageBatch(pending, async ({ temporary }) => {
+        try { await unlink(temporary) } catch (cleanupError) {
+          if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError
+        }
+      })
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Recovery publication and temporary cleanup failed.', { cause: cleanupError })
+    }
+    throw error
   }
-  // Directory fsync alone does not guarantee new file contents. Node has no syncfs API;
-  // sync -f flushes this filesystem's data and metadata without per-file journal waits.
-  const synced = spawnSync('sync', ['-f', parent], { encoding: 'utf8' })
-  if (synced.error) throw synced.error
-  if (synced.status !== 0) throw new Error(`Recovery batch filesystem sync failed: ${synced.stderr}`)
-  for (const { temporary, path } of pending) renameSync(temporary, path)
-  syncDirectory(parent)
-  for (const { path } of pending) recordWritten(path)
 }
 
 export function recordObject(value: unknown): Record<string, unknown> {

@@ -21,11 +21,11 @@ import { createHash } from 'node:crypto'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); vi.clearAllMocks() })
 
-function fixture(purpose?: 'command' | 'inspection' | 'session') {
+async function fixture(purpose?: 'command' | 'inspection' | 'session') {
   const root = mkdtempSync(join(tmpdir(), 'native-exit-observation-memory-'))
   roots.push(root)
   const registry = new NativeProcessRegistry(root)
-  const scope = registry.reserveLaunch('memory-owner')
+  const scope = await registry.reserveLaunch('memory-owner')
   const wrapper = Object.assign(new EventEmitter(), { pid: 501, send: vi.fn(), disconnect: vi.fn() })
   child.spawn.mockReturnValueOnce(wrapper)
   const process = spawnNativeProcess('memory-only-cli', ['private-prompt'], {
@@ -39,8 +39,8 @@ function fixture(purpose?: 'command' | 'inspection' | 'session') {
 
 describe('native exit and passive observation IPC composition without subprocesses', () => {
   for (const purpose of ['command', 'inspection', 'session'] as const) {
-    it(`logs ${purpose} success separately from guardian cleanup`, () => {
-      const f = fixture(purpose)
+    it(`logs ${purpose} success separately from guardian cleanup`, async () => {
+      const f = await fixture(purpose)
       f.process.emit('spawn')
       f.process.emit('message', f.receipt)
       f.process.emit('exit', null, 'SIGKILL')
@@ -55,8 +55,8 @@ describe('native exit and passive observation IPC composition without subprocess
     })
   }
 
-  it('logs native failures without replacing them with the guardian cleanup signal', () => {
-    const f = fixture('session')
+  it('logs native failures without replacing them with the guardian cleanup signal', async () => {
+    const f = await fixture('session')
     f.process.emit('message', { ...f.receipt, exitCode: null, exitSignal: 'SIGTERM' })
     f.process.emit('exit', null, 'SIGKILL')
     expect(log.warn).toHaveBeenCalledWith(expect.objectContaining({
@@ -64,16 +64,16 @@ describe('native exit and passive observation IPC composition without subprocess
     }), 'harness session exited')
   })
 
-  it('keeps a missing native receipt as a failure', () => {
-    const f = fixture('command')
+  it('keeps a missing native receipt as a failure', async () => {
+    const f = await fixture('command')
     f.process.emit('exit', null, 'SIGKILL')
     expect(log.warn).toHaveBeenCalledWith(expect.objectContaining({
       exitCode: null, signal: 'SIGKILL',
     }), 'harness command exited')
   })
 
-  it('reports rejected receipts without throwing from the exit observer', () => {
-    const f = fixture('command')
+  it('reports rejected receipts without throwing from the exit observer', async () => {
+    const f = await fixture('command')
     f.process.emit('message', { ...f.receipt, guardian: { pid: 501, startTicks: '101' } })
     expect(() => f.process.emit('exit', null, 'SIGKILL')).not.toThrow()
     expect(log.warn).toHaveBeenCalledWith(expect.objectContaining({ outcomeReceipt: 'invalid' }),
@@ -81,8 +81,8 @@ describe('native exit and passive observation IPC composition without subprocess
     expect(log.info).not.toHaveBeenCalled()
   })
 
-  it('accepts the original exact native outcome around passive publications without adding receipt listeners', () => {
-    const f = fixture()
+  it('accepts the original exact native outcome around passive publications without adding receipt listeners', async () => {
+    const f = await fixture()
     expect(f.process.listeners('message')).toHaveLength(1)
     f.process.emit('message', { operation: 'observation', id: f.scope.launchId })
     f.process.emit('message', { operation: 'observation', id: 'foreign-launch' })
@@ -91,21 +91,21 @@ describe('native exit and passive observation IPC composition without subprocess
     expect(nativeProcessExit(f.process, { exitCode: null, exitSignal: 'SIGKILL' })).toEqual({ exitCode: 0, exitSignal: null })
   })
 
-  it('never promotes a passive observation to an original native success receipt', () => {
-    const f = fixture()
+  it('never promotes a passive observation to an original native success receipt', async () => {
+    const f = await fixture()
     f.process.emit('message', { operation: 'observation', id: f.scope.launchId })
     expect(() => nativeProcessExit(f.process, { exitCode: 0, exitSignal: null })).toThrow('receipt is missing')
   })
 
-  it('preserves exact guardian generation rejection after a passive publication', () => {
-    const f = fixture()
+  it('preserves exact guardian generation rejection after a passive publication', async () => {
+    const f = await fixture()
     f.process.emit('message', { operation: 'observation', id: f.scope.launchId })
     f.process.emit('message', { ...f.receipt, guardian: { pid: 501, startTicks: '101' } })
     expect(() => nativeProcessExit(f.process, { exitCode: null, exitSignal: 'SIGKILL' })).toThrow('Invalid native exit receipt')
   })
 
-  it('does not let observation read failure poison the original native receipt', () => {
-    const f = fixture()
+  it('does not let observation read failure poison the original native receipt', async () => {
+    const f = await fixture()
     const directory = join(f.root, createHash('sha256').update(f.scope.owner).digest('hex'), f.scope.launchId!)
     writeRecord(join(directory, 'provider.json'), { format: 1, id: 'foreign', owner: f.scope.owner, boot: f.receipt.boot })
     f.process.emit('message', { operation: 'observation', id: f.scope.launchId })

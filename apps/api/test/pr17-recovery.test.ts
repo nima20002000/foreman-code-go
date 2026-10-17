@@ -19,7 +19,7 @@ import type { RunOwnership } from '../src/modules/runs/ownership.js'
 const directories: string[] = []
 afterEach(async () => {
   for (const directory of directories.splice(0)) {
-    await new NativeProcessRegistry(directory).closeOwner('execution:test').catch(() => undefined)
+    await new NativeProcessRegistry(directory).closeOwner('execution:test')
     await rm(directory, { recursive: true, force: true })
   }
   vi.restoreAllMocks()
@@ -65,7 +65,7 @@ it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the register
   const root = await directory()
   const registry = new NativeProcessRegistry(root)
   const child = spawnNativeProcess(process.execPath, ['-e', "console.log('ready');process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], {
-    cwd: root, env: {}, recovery: registry.scope('execution:test'),
+    cwd: root, env: {}, recovery: await registry.reserveLaunch('execution:test'),
   })
   let stderr = ''
   child.stderr.on('data', (chunk) => { stderr += String(chunk) })

@@ -65,7 +65,7 @@ it.each([
   roots.push(stateDirectory)
   const registry = {
     scope: (owner: string) => ({ owner, root: join(stateDirectory, 'processes') }),
-    reserveLaunch: () => ({ launchId: 'fixture-launch' }),
+    reserveLaunch: async () => ({ launchId: 'fixture-launch' }),
     abandonReservedLaunch: async () => {}, closeOwner: async () => true,
   } as unknown as NativeProcessRegistry
   const journal = { conversations: { claudeCallbackJournal: () => undefined } } as unknown as RemoteOperationJournal

@@ -57,7 +57,7 @@ async function fixture() {
     admittedAt: new Date().toISOString(), expiresAt: '2100-01-01T00:00:00Z' })
   const directory = await privateFixtureDirectory('ci-native-journal-'); roots.push(directory)
   const path = join(directory, 'journal.json'), journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal)
-  const registry = { scope: vi.fn((owner: string) => ({ root: '/actual-registry', owner })), reserveLaunch: vi.fn(() => ({ root: '/actual-registry', owner: `qualification:${id}:${id}`, launchId: randomUUID() })),
+  const registry = { scope: vi.fn((owner: string) => ({ root: '/actual-registry', owner })), reserveLaunch: vi.fn(async () => ({ root: '/actual-registry', owner: `qualification:${id}:${id}`, launchId: randomUUID() })),
     closeRegistration: vi.fn(), abandonReservedLaunch: vi.fn(async () => true), closeOwner: vi.fn(async () => true),
     snapshot: vi.fn(() => ({ revision: '1', launches: [] })) } as unknown as processes.NativeProcessRegistry
   const authority = { assertCurrent: vi.fn(), readApproval: vi.fn(async () => ({ status: 'approved' as const, fingerprint: admission.fingerprintDigest,
