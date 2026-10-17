@@ -11,7 +11,14 @@ async function server() {
   apps.push(app)
   const tracked = trackInFlightRequests(app, { graceMs: 200, closable: url => url.startsWith('/mcp') })
   // A tool call that never answers, like the two MCP calls that held every production stop for 60 s.
-  app.post('/mcp', () => new Promise(() => {}))
+  let completeMutation: (() => void) | undefined
+  app.post('/mcp', request => {
+    const body = request.body as { params?: { name?: string } }
+    if (body.params?.name === 'workspace_update') {
+      return new Promise(resolve => { completeMutation = () => resolve({ saved: true }) })
+    }
+    return new Promise(() => {})
+  })
   app.post('/slow', () => new Promise(resolve => setTimeout(() => resolve({ done: true }), 400)))
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const port = Number(new URL(address).port)
@@ -22,7 +29,7 @@ async function server() {
     call.on('error', error => resolve({ error: (error as NodeJS.ErrnoException).code ?? error.message }))
     call.end(JSON.stringify(body))
   })
-  return { app, tracked, send }
+  return { app, tracked, send, completeMutation: () => completeMutation!() }
 }
 
 it('names in-flight requests, including the MCP tool being called', async () => {
@@ -42,4 +49,18 @@ it('ends hung MCP calls after the grace so closing does not wait for them', asyn
   expect(Date.now() - started).toBeLessThan(2000)
   expect((await hung).error).toBeDefined()
   expect((await slow).status).toBe(200)
+})
+
+it('lets a completing MCP mutation reply during shutdown grace while disconnecting a hung call', async () => {
+  const { app, tracked, send, completeMutation } = await server()
+  const hung = send('/mcp', { method: 'tools/call', params: { name: 'ci_run' } })
+  const mutation = send('/mcp', { method: 'tools/call', params: { name: 'workspace_update' } })
+  await expect.poll(() => tracked.describe()).toEqual(['POST /mcp ci_run', 'POST /mcp workspace_update'])
+  const closing = app.close()
+  // Release after shutdown has started, comfortably inside the 200 ms grace.
+  await new Promise(resolve => setTimeout(resolve, 50))
+  completeMutation()
+  expect(await mutation).toEqual({ status: 200 })
+  await closing
+  expect((await hung).error).toBeDefined()
 })

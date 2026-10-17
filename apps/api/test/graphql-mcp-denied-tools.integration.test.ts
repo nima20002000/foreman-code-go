@@ -70,7 +70,7 @@ describe.skipIf(!postgresEnabled)('authenticated calls to hidden MCP tools', () 
       const receipts = (await f.db.pool.query(receiptsQuery)).rows
       const providerCounts = { ...f.provider.counts }
       const skill = { workspaceId, skillId: 'denied-skill' }
-      const skillInputs: Record<string, object> = {
+      const skillInputs: Record<string, Record<string, unknown>> = {
         skill_list: { workspaceId }, skill_get: skill, skill_versions_list: skill,
         skill_create: { workspaceId, name: 'Denied skill', instructions: 'Do not save this.' },
         skill_update: { ...skill, expectedRevision: 1, name: 'Denied skill', instructions: 'Do not save this.' },
