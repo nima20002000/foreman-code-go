@@ -1,5 +1,6 @@
 import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as pause } from 'node:timers/promises'
 import { withInteractionResponse } from '@foreman-code/contracts'
 import { describe, expect, it, onTestFailed, vi } from 'vitest'
 import { CodexChildControls } from '../src/modules/harnesses/codexChildControls.js'
@@ -192,6 +193,31 @@ describe('Codex session manager child control wiring over stdio', () => {
       expect(() => lease.pendingInteraction!()).toThrow()
     } finally {
       phase = `disposing fixture after ${phase}`
+      await manager.dispose()
+      await rm(f.directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a held child start pending until the fixture acknowledges it', async () => {
+    const f = await fixture()
+    const manager = new CodexAppServerSessionManager(f.binary)
+    try {
+      const source = input(f.directory)
+      const root = await manager.createSession(source)
+      const child = await seedCodexChild(f.directory, root, source, { status: 'completed' })
+      const lease = manager.subagentControl(child, () => {})!
+      await writeFile(join(f.directory, 'hold-turn-start'), '')
+      const sending = lease.sendInput!(childControlReceipt(child, {
+        nativeTurnId: null, nativeGeneration: lease.generation,
+      }), 'wait').then(() => 'acknowledged', (error: unknown) => error)
+      await until(async () => (await state(f.directory, 'native-child')).turns.length === 2)
+      await pause(500)
+      expect(await Promise.race([sending, Promise.resolve('pending')])).toBe('pending')
+      await writeFile(join(f.directory, 'release-turn-start'), '')
+      expect(await sending).toBe('acknowledged')
+      expect((await state(f.directory, 'native-child')).turns).toHaveLength(2)
+      expect((await state(f.directory, root.nativeSessionId)).turns).toHaveLength(0)
+    } finally {
       await manager.dispose()
       await rm(f.directory, { recursive: true, force: true })
     }
