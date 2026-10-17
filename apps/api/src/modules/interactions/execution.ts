@@ -688,7 +688,7 @@ export class ApprovalExecutionCoordinator {
     // No guessing between attempts/sessions. The pending interaction remains the recovery source.
     if (candidates.length !== 1) return
     const execution = candidates[0]!
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!configuration || configuration.productRole !== 'orchestrator') return
     const native = await this.interactions.coordination.workflowSession(execution.id)
     if (!native?.finalized || execution.state !== 'completed') return
@@ -750,7 +750,7 @@ export class ApprovalExecutionCoordinator {
     if (!execution.nativeSessionId || !['running', 'waiting'].includes(execution.state)) return
     const session = await this.detachedWorkflowSession(owner, execution)
     if (!session) return
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND',
       'The accepted Agent configuration is unavailable.', 409)
     const context = await this.managerContext(execution, configuration)
@@ -1097,7 +1097,7 @@ export class ApprovalExecutionCoordinator {
     signal.throwIfAborted()
     const execution = await this.runs.getExecution(executionId)
     const native = await this.interactions.coordination.workflowSession(executionId)
-    const configuration = execution && await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = execution && await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!job.cleanup || job.state !== 'failed' || !execution || execution.agentId !== job.reviewerAgentId
       || execution.nativeSessionId !== job.nativeSessionId || session.nativeSessionId !== job.nativeSessionId
       || session.harness !== job.provider || !native?.finalized || !configuration
@@ -1138,7 +1138,7 @@ export class ApprovalExecutionCoordinator {
     const execution = await this.runs.getExecution(owned.execution.id)
     const run = await this.runs.get(owned.execution.runId)
     const native = await this.interactions.coordination.workflowSession(owned.execution.id)
-    const configuration = execution && await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = execution && await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     signal.throwIfAborted()
     if (!execution || execution.state !== 'completed' || execution.agentId !== owned.context.agentId
       || execution.runId !== owned.execution.runId || execution.nativeSessionId !== session.nativeSessionId
@@ -1388,7 +1388,7 @@ export class ApprovalExecutionCoordinator {
     }
     if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded' || !execution.nativeSessionId)
       return false
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!configuration || configuration.productRole !== 'orchestrator') return false
     const context = await this.managerContext(execution, configuration)
     if (context.acceptedPlacement?.hostRef.kind !== 'device') return false
@@ -1900,7 +1900,7 @@ export class ApprovalExecutionCoordinator {
       throw new Error('The native session ownership context does not match its durable execution.')
     }
     if (context.purpose === 'reviewer') {
-      const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+      const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
       if (!configuration) throw new Error('The reviewer configuration is unavailable')
       const placementContext = await this.managerContext(execution, configuration)
       if (placementContext.acceptedPlacement?.hostRef.kind === 'device') {
@@ -1959,7 +1959,7 @@ export class ApprovalExecutionCoordinator {
     const run = await this.runs.get(execution.runId)
     if (!run) throw new Error('The durable execution Run is unavailable.')
     if (run.executionState === 'completed') throw new Error('A completed Run cannot restart native work.')
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!configuration || configuration.harness.harness !== context.harness) throw new Error('The durable execution configuration is unavailable or mismatched.')
     if (context.purpose === 'reviewer') {
       const previous = this.ownedSessions.get(execution.id)
@@ -2152,7 +2152,7 @@ export class ApprovalExecutionCoordinator {
   async assertResume(execution: HarnessExecution, value: unknown): Promise<void> {
     const id = value && typeof value === 'object' && 'interactionId' in value ? value.interactionId : undefined
     const interaction = typeof id === 'string' ? await this.interactions.get(id) : undefined
-    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
     if (!interaction || interaction.deliveryState !== 'delivered'
       || !configuration || configuration.harness.harness !== interaction.harness
       || interaction.executionId !== execution.id || interaction.runId !== execution.runId

@@ -143,7 +143,15 @@ export class PostgresRunRepository {
     this.owned(row.run_id, owner)
     return this.read(row.run_id, owner, async (sql, snapshot) => (await readRepeatExecutionLocked(sql, snapshot, id)).execution)
   }
-  getExecutionConfiguration(id: string) { return this.workflows.getAgentConfiguration(id) }
+  async getExecutionConfiguration(id: string, execution?: HarnessExecution) {
+    const configuration = await this.workflows.getAgentConfiguration(id)
+    if (!configuration || !execution) return configuration
+    const { version } = await this.getRepeatSnapshot(execution.runId)
+    const node = version.definition.nodes.find(item => item.id === execution.workflowNodeId)
+    return node && node.kind !== 'job' && node.skills
+      ? this.workflows.resolveNodeSkills(configuration, node.skills, version.nodeSkillSnapshots?.[node.id])
+      : configuration
+  }
   async updateExecution(execution: HarnessExecution, owner: RunOwnership, evidence: RepeatNativeEvidence): Promise<void> {
     const original = captureRepeatNativeEvidence(evidence), incoming = HarnessExecutionSchema.parse(structuredClone(execution))
     this.requireOwner(incoming.runId, owner)

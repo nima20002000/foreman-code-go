@@ -33,8 +33,8 @@ function fixture(kind: 'accounts' | 'maintenance', running = false) {
     tasks: running ? [{ id: randomUUID(), kind: 'update-system', state: 'running',
       startedAt: '2026-10-09T00:00:00Z', finishedAt: null, summary: 'Running…', outputTail: '' }] : [],
   }
-  const probeAccounts = vi.fn(async () => accounts)
-  const probeStatus = vi.fn(async () => status)
+  const probeAccounts = vi.fn(async () => structuredClone(accounts))
+  const probeStatus = vi.fn(async () => structuredClone(status))
   const service = kind === 'accounts'
     ? new ComputerAccountsService(pool, mainId, () => undefined, commands, probeAccounts, () => now)
     : new FleetMaintenanceService(pool, mainId, () => undefined, commands,
@@ -78,22 +78,32 @@ describe.each(['accounts', 'maintenance'] as const)('%s warm reads', kind => {
 
   it('probes again at expiry and on explicit refresh, returning current observations', async () => {
     const f = fixture(kind)
-    await f.read()
+    const original = await f.read()
     f.advance(ttl)
     f.accounts.observedAt = '2026-10-09T00:01:00Z'
     f.status.observedAt = '2026-10-09T00:01:00Z'
+    f.accounts.accounts = [{ tool: 'codex', installed: true, signedIn: true, account: 'fixture-account', details: [] }]
+    f.status.system.packageUpdates = 7
     const expired = await f.read()
     expect(f.probes()).toBe(2)
     expect(expired.computers[0]).toMatchObject(kind === 'accounts'
-      ? { accounts: { observedAt: f.accounts.observedAt } }
-      : { status: { observedAt: f.status.observedAt } })
+      ? { accounts: structuredClone(f.accounts) }
+      : { status: structuredClone(f.status) })
+    expect(await f.read()).toEqual(expired)
+    expect(f.probes()).toBe(2)
+    expect(expired).not.toEqual(original)
     f.accounts.observedAt = '2026-10-09T00:02:00Z'
     f.status.observedAt = '2026-10-09T00:02:00Z'
+    f.accounts.accounts[0]!.signedIn = false
+    f.status.system.packageUpdates = 0
     const refreshed = await f.read(true)
     expect(f.probes()).toBe(3)
     expect(refreshed.computers[0]).toMatchObject(kind === 'accounts'
-      ? { accounts: { observedAt: f.accounts.observedAt } }
-      : { status: { observedAt: f.status.observedAt } })
+      ? { accounts: structuredClone(f.accounts) }
+      : { status: structuredClone(f.status) })
+    expect(await f.read()).toEqual(refreshed)
+    expect(f.probes()).toBe(3)
+    expect(refreshed).not.toEqual(expired)
   })
 
   it('revalidates revoked authority before returning a warm result', async () => {
