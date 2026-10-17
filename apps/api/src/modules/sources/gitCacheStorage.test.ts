@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
@@ -341,3 +341,31 @@ it.each(['exited', 'reused-pid'] as const)('reclaims a legacy reservation after 
   await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
+
+it('reclaims a closed fetch’s recorded packs before checking transfer capacity', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
+  const common = join(clone, '.git')
+  const path = 'objects/pack/tmp_pack_abandoned'
+  await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(7 * 2 ** 20))
+  await writeFile(join(common, path), randomBytes(2 * 2 ** 20))
+  const metadata = await stat(join(common, path), { bigint: true })
+  const gone = spawnSync(process.execPath, ['-e', ''])
+  expect(gone.status).toBe(0)
+  const name = 'transfer-interrupted.reservation'
+  await writeFile(join(f.cache, name), JSON.stringify({ pid: gone.pid, started: 'closed',
+    lifetimeLock: true, fetch: common }))
+  await writeFile(join(f.cache, name + '.artifacts'), JSON.stringify({ path,
+    device: String(metadata.dev), inode: String(metadata.ino), born: String(metadata.birthtimeNs) }) + '\n')
+  await writeFile(join(f.origin, 'source.txt'), 'successor after capacity recovery')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Successor')
+  const successor = git(f.origin, 'rev-parse', 'HEAD')
+
+  await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+  expect(git(clone, 'cat-file', '-t', successor)).toBe('commit')
+  await expect(readFile(join(common, path))).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(readFile(join(f.cache, name))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+})
