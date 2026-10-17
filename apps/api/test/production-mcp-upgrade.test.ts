@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import {
-  APP_MCP_TOKEN, appLauncherConnection, installManagedLauncher, isAppLauncher, readLauncherInstallation,
+  APP_MCP_TIMEOUTS, APP_MCP_TOKEN, appLauncherConnection, installManagedLauncher, isAppLauncher, readLauncherInstallation,
 } from '../src/modules/harnesses/appMcpLauncher.js'
 import { upgradeProductionMcpLauncher } from '../src/modules/harnesses/productionMcpUpgrade.js'
 import { runLauncherProcess } from './helpers/launcherInstallationProcess.js'
@@ -104,6 +104,8 @@ it.each([
       disabled_tools: ['interaction_respond'],
       default_tools_approval_mode: 'prompt',
       tools: { context_get: { approval_mode: 'prompt' } },
+      timeout: 5000,
+      custom_setting: { retained: true },
     }
     const permission = { [`${serverName}_*`]: 'ask' }
     const snapshot: NativeMcpSnapshot = {
@@ -118,7 +120,9 @@ it.each([
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const enabled = applyMcpEdits(snapshot.user, mcpEdits(snapshot, managedEnableChange('graphql', true), managed))
     expect(enabled).toEqual({ [serverName]: { ...entry, enabled: true,
-      startup_timeout_sec: 60, tool_timeout_sec: 300 } })
+      startup_timeout_sec: 60, tool_timeout_sec: APP_MCP_TIMEOUTS.tool_timeout_sec } })
+    const enabledSnapshot = { ...snapshot, user: enabled, effective: enabled }
+    expect(() => mcpEdits(enabledSnapshot, managedEnableChange('graphql', true), managed)).toThrow('matching')
     expect(applyMcpEdits(snapshot.user, mcpEdits(snapshot, managedChange('graphql', false, managed.endpoint), managed)))
       .toEqual({})
     const inherited = { ...snapshot, ownership: { [serverName]: false } }
@@ -126,6 +130,7 @@ it.each([
     expect(() => mcpEdits(inherited, managedChange('graphql', false, managed.endpoint), managed)).toThrow('matching')
     await upgradeProductionMcpLauncher(home)
     expect(managedStatus(snapshot, 'graphql')).toBe('disabled')
+    expect(snapshot.user).toEqual({ [serverName]: entry })
   },
 )
 
@@ -181,7 +186,7 @@ it.each(['codex'] as const)(
     const managed = { preset: 'graphql' as const, endpoint: 'http://127.0.0.1:3041/mcp' }
     const edits = mcpEdits(snapshot, managedEnableChange('graphql', true), managed)
     expect(applyMcpEdits(snapshot.user, edits)).toEqual({ 'foreman-code': { ...entry, enabled: true,
-      startup_timeout_sec: 60, tool_timeout_sec: 300 } })
+      startup_timeout_sec: 60, tool_timeout_sec: APP_MCP_TIMEOUTS.tool_timeout_sec } })
     expect(await runLauncherProcess({ kind: 'recognize', launcher: shared, entry })).toBe('true')
     await runLauncherProcess({ kind: 'older-install', launcher: shared })
     await runLauncherProcess({ kind: 'upgrade', home })

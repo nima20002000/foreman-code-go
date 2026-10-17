@@ -15,7 +15,7 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessMcpSettingsService } from '../src/modules/harnesses/mcpSettings.js'
-import { installManagedLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
+import { APP_MCP_TIMEOUTS, installManagedLauncher } from '../src/modules/harnesses/appMcpLauncher.js'
 import { registerWorkerMcpInstallation } from '../src/modules/harnesses/workerMcpInstallation.js'
 import { withNativeMcpDelivery } from '../src/modules/harnesses/nativeMcpDelivery.js'
 import { applyMcpEdits, fingerprint, mcpEdits, type NativeMcpAdapter, type NativeMcpSnapshot } from '../src/modules/harnesses/nativeMcpCommon.js'
@@ -171,7 +171,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
         const name = preset === 'graphql' ? 'foreman-code' : preset
         const original = structuredClone(snapshots[harness].user[name])
         if (preset === 'graphql') {
-          expect(original).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: 300 })
+          expect(original).toMatchObject({ startup_timeout_sec: 60, tool_timeout_sec: APP_MCP_TIMEOUTS.tool_timeout_sec })
           expect(JSON.parse(await readFile(file, 'utf8'))[name]).toEqual(original)
         }
         for (const enabled of [false, true]) {
@@ -224,6 +224,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(workerHome, '.local/share/graphql/mcp'))
       const oldEntry = { ...installed as Record<string, unknown>, command: previousNode, args: [workerLauncher],
         startup_timeout_sec: 10, tool_timeout_sec: 30,
+        timeout: 5000, custom_setting: { retained: true },
         enabled: false, disabled_tools: ['interaction_respond'] }
       const oldUser = { graphql: oldEntry }
       snapshots[harness] = { ...snapshots[harness], user: oldUser, effective: structuredClone(oldUser),
@@ -244,9 +245,17 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       expect(renamed.servers.map(server => server.name)).toEqual(['foreman-code'])
       expect(snapshots[harness].user['foreman-code']).toMatchObject({ command: process.execPath,
         args: [workerLauncher], enabled: false, disabled_tools: ['interaction_respond'],
-        startup_timeout_sec: 60, tool_timeout_sec: 300 })
+        timeout: 5000, custom_setting: { retained: true },
+        startup_timeout_sec: 60, tool_timeout_sec: APP_MCP_TIMEOUTS.tool_timeout_sec })
       expect(JSON.parse(await readFile(file, 'utf8'))['foreman-code'])
         .toEqual(snapshots[harness].user['foreman-code'])
+      const repairedUser = structuredClone(snapshots[harness].user)
+      const retry = HarnessMcpPlanSchema.parse(decodeMcpToolResult(await client.callTool({
+        name: 'harness_mcp_managed_request', arguments: repairArgs,
+      })))
+      expect(retry).toEqual(rename)
+      expect(snapshots[harness].user).toEqual(repairedUser)
+      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(repairedUser)
     }
     inspectionFails = true
     const now = Date.now()
