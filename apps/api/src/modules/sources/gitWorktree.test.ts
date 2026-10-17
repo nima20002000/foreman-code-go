@@ -40,8 +40,8 @@ setInterval(() => {}, 1000);\n`, { mode: 0o700 })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-    expect(() => process.kill(pid, 0), `Git state after acquisition returned: ${state}`)
-      .toThrow(expect.objectContaining({ code: 'ESRCH' }))
+    // A zombie has exited and released its files, even before its parent reaps it.
+    expect(['gone', 'Z'], 'Git must have ended before acquisition returns').toContain(state)
   } finally {
     lifetime.abort()
     await task
