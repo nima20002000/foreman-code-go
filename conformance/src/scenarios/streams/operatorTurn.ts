@@ -60,6 +60,7 @@ export async function observeOperatorTerminal(stream: BrowserStream, conversatio
 
 /** One fresh conversation, actual native execution, and complete public persistence readback. */
 export async function sendOperatorTurn(context: ScenarioContext, conversation: Conversation, options: OperatorTurnOptions) {
+  const authentication = options.token === undefined ? {} : { token: options.token }
   const inputFiles = options.inputFiles ?? []
   const input = SendOperatorMessageRequestSchema.parse({ requestId: randomUUID(), content: options.content,
     attachments: options.attachments ?? [], configurationVersionId: conversation.operatorConfigurationVersionId })
@@ -70,13 +71,13 @@ export async function sendOperatorTurn(context: ScenarioContext, conversation: C
   assertEmptyOperatorState(before, conversation)
   const path = `/api/operator/conversations/${conversation.id}`
   const stream = await openBrowserStream({ baseUrl: context.target.baseUrl, path: `${path}/events`,
-    headers: context.http.requestHeaders({ token: options.token }), signal: context.signal })
+    headers: context.http.requestHeaders(authentication), signal: context.signal })
   let accepted
   let events: OperatorConversationStreamEvent[]
   try {
     await assertOperatorSnapshot(stream, before)
     accepted = assertAcceptedOperatorTurn(await context.http.request('POST', `${path}/messages`, {
-      body: input, token: options.token,
+      body: input, ...authentication,
     }), before, input, inputFiles)
     events = await observeOperatorTerminal(stream, conversation.id, input.requestId)
   } finally { await stream.close() }

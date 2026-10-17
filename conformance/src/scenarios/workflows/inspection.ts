@@ -46,8 +46,9 @@ export interface ExecutionExpectation {
   continuedFromExecutionId?: string
 }
 
-function executionKey(value: { nodeId: string; attempt: number; occurrenceIndex?: number; tickIndex?: number }) {
-  return JSON.stringify([value.nodeId, value.attempt, value.occurrenceIndex ?? null, value.tickIndex ?? null])
+export function executionKey(nodeId: RunExecutionSummary['workflowNodeId'], attempt: RunExecutionSummary['attempt'],
+  occurrence: RunExecutionSummary['occurrence'], tickIndex: RunExecutionSummary['tickIndex']) {
+  return JSON.stringify([nodeId, attempt, occurrence?.occurrenceIndex ?? null, tickIndex ?? null])
 }
 
 /** Every row is compared in full; expectations select identities, never record snapshots as answers. */
@@ -55,15 +56,14 @@ export async function assertExecutions(ctx: ScenarioContext, fixture: Executable
   record: RunRecordDetail, expected: readonly ExecutionExpectation[]) {
   const response = await ctx.http.request('GET', `${runPath(record.run)}/executions?limit=100`)
   const page = RunExecutionsPageSchema.parse(response.body)
-  const remaining = new Map(expected.map(value => [executionKey({ nodeId: value.nodeId,
-    attempt: value.attempt ?? 1, occurrenceIndex: value.occurrence?.occurrenceIndex, tickIndex: value.tickIndex }), value]))
+  const remaining = new Map(expected.map(value => [executionKey(value.nodeId,
+    value.attempt ?? 1, value.occurrence, value.tickIndex), value]))
   assert.equal(remaining.size, expected.length, 'Expected execution identities must be distinct')
   assert.equal(page.items.length, expected.length)
   assert.equal(new Set(page.items.map(item => item.executionId)).size, page.items.length)
   const rules: NormalizationRule[] = []
   const items = page.items.map((item, index) => {
-    const key = executionKey({ nodeId: item.workflowNodeId, attempt: item.attempt,
-      occurrenceIndex: item.occurrence?.occurrenceIndex, tickIndex: item.tickIndex })
+    const key = executionKey(item.workflowNodeId, item.attempt, item.occurrence, item.tickIndex)
     const wanted = remaining.get(key)
     assert.ok(wanted, `Unexpected or duplicate execution: ${key}`)
     remaining.delete(key)

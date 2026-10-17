@@ -48,15 +48,13 @@ async function assertScheduledReadback(ctx: ScenarioContext, path: string, occur
   await assertProtectedRead(ctx, `${path}/occurrences?limit=25`, expected)
   const scope = { workspaceId: schedule.workspaceId, workflowId: schedule.workflowId }
   const clients = operatorClients(ctx)
-  try {
-    for (const client of [clients.operator, clients.readOnly]) {
-      assert.deepStrictEqual(await callTool(client, 'workflow_schedule_get', scope, ScheduleGetResultSchema), { schedule })
-      assert.deepStrictEqual(await callTool(client, 'workflow_schedule_occurrences_list', { ...scope, limit: 25 },
-        ScheduleOccurrencePageSchema), expected)
-      await assertInvalidCallerDenied(client, 'workflow_schedule_get', scope)
-      await assertInvalidCallerDenied(client, 'workflow_schedule_occurrences_list', { ...scope, limit: 25 })
-    }
-  } finally { await clients.operator.close(); await clients.readOnly.close() }
+  for (const client of [clients.operator, clients.readOnly]) {
+    assert.deepStrictEqual(await callTool(client, 'workflow_schedule_get', scope, ScheduleGetResultSchema), { schedule })
+    assert.deepStrictEqual(await callTool(client, 'workflow_schedule_occurrences_list', { ...scope, limit: 25 },
+      ScheduleOccurrencePageSchema), expected)
+    await assertInvalidCallerDenied(client, 'workflow_schedule_get', scope)
+    await assertInvalidCallerDenied(client, 'workflow_schedule_occurrences_list', { ...scope, limit: 25 })
+  }
 }
 
 export const scheduledWorkflowScenarios: Scenario[] = [{

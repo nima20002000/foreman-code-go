@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {
-  RunHandoffsReadSchema, WorkActivationInputSchema, WorkHandoffResultSchema,
+  RunHandoffsReadSchema, WorkHandoffResultSchema,
   type RunHandoffsRead,
 } from '@foreman-code/contracts/wave25'
 import { assertJson, assertResponse } from '../../assertions.js'
@@ -11,6 +11,7 @@ import { independentCodexSessions } from './agents.js'
 import { createExecutableWorkflow } from './authoring.js'
 import { installCodexScripts } from './codexScript.js'
 import { workflowDigest } from './digest.js'
+import { handoffReadInput } from './handoffInput.js'
 import { assertBindings, assertExecutionDetail, assertExecutions, readExecutionDetail, runScope } from './inspection.js'
 import { runPath, startWorkflow, waitForCompletedRun } from './runs.js'
 
@@ -18,14 +19,9 @@ async function assertHandoffRead(ctx: ScenarioContext, expected: RunHandoffsRead
   const { workspaceId, runId } = expected.scope
   await assertProtectedRead(ctx, `/api/management/workspaces/${workspaceId}/runs/${runId}/handoffs`, expected)
   const { operator, readOnly } = operatorClients(ctx)
-  try {
-    for (const client of [operator, readOnly]) {
-      assert.deepStrictEqual(await callTool(client, 'run_handoffs_get_v1', { workspaceId, runId }, RunHandoffsReadSchema), expected)
-      await assertInvalidCallerDenied(client, 'run_handoffs_get_v1', { workspaceId, runId })
-    }
-  } finally {
-    await operator.close()
-    await readOnly.close()
+  for (const client of [operator, readOnly]) {
+    assert.deepStrictEqual(await callTool(client, 'run_handoffs_get_v1', { workspaceId, runId }, RunHandoffsReadSchema), expected)
+    await assertInvalidCallerDenied(client, 'run_handoffs_get_v1', { workspaceId, runId })
   }
 }
 
@@ -66,7 +62,7 @@ export const handoffWorkflowScenarios: Scenario[] = [{
     const source = executions.find(execution => execution.workflowNodeId === requester.id)!
     const destination = executions.find(execution => execution.workflowNodeId === reviewer.id)!
     const entryDetail = await readExecutionDetail(ctx, run, source.executionId)
-    const entry = WorkActivationInputSchema.parse(entryDetail.value.acceptedInput.value)
+    const entry = handoffReadInput(entryDetail.value.acceptedInput.value)
     assert.equal(entry.work.kind, 'entry')
     const scope = runScope(run)
     assertJson(entry, { executionSemanticsVersion: 3, runInput: run.input, occurrence: null, entry: null, predecessors: [],
@@ -76,7 +72,7 @@ export const handoffWorkflowScenarios: Scenario[] = [{
     await assertExecutionDetail(ctx, completed, source, entry, results[0]!)
     await assertBindings(ctx, run, source, entry, [])
     const receivedDetail = await readExecutionDetail(ctx, run, destination.executionId)
-    const received = WorkActivationInputSchema.parse(receivedDetail.value.acceptedInput.value)
+    const received = handoffReadInput(receivedDetail.value.acceptedInput.value)
     assert.ok(received.work.kind === 'work_request')
     const { request, activation } = received.work
     assert.notEqual(activation.activationId, entry.work.activation.activationId)

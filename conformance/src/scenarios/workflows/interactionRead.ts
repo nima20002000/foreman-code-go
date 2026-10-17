@@ -61,6 +61,8 @@ export async function waitForPendingInput(ctx: ScenarioContext, run: WorkflowRun
 
 export async function assertInteractionReads(ctx: ScenarioContext, interaction: DurableInteraction,
   operator: McpClient, readOnly: McpClient) {
+  const operatorToken = ctx.target.operatorToken
+  assert.ok(operatorToken, 'Interaction authorization checks require the fresh Operator credential.')
   const pending = interaction.status === 'pending'
   const counts = interactionCounts(interaction)
   const query = `runId=${interaction.runId}&limit=25`
@@ -73,9 +75,9 @@ export async function assertInteractionReads(ctx: ScenarioContext, interaction: 
   ] as const) {
     await assertProtectedRead(ctx, path, expected)
     if (path.startsWith('/api/user/')) {
-      assertApiError(await ctx.http.request('GET', path, { token: ctx.target.operatorToken }),
+      assertApiError(await ctx.http.request('GET', path, { token: operatorToken }),
         403, 'MCP_BROWSER_REVIEW_REQUIRED', 'Review this change in the local app.')
-      assertResponse(await ctx.http.request('HEAD', path, { token: ctx.target.operatorToken }), { status: 403, body: null })
+      assertResponse(await ctx.http.request('HEAD', path, { token: operatorToken }), { status: 403, body: null })
     }
   }
   const scope = { runId: interaction.runId }

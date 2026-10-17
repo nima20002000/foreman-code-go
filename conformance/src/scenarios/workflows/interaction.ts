@@ -81,76 +81,75 @@ export const interactionWorkflowScenarios: Scenario[] = (['user-http', 'operator
       interaction: { method, params: { questions, isBlocking: true } }, jsonAnswer: { $ref: 'interaction' },
     }] }])
     const { operator, readOnly } = operatorClients(ctx)
-    try {
-      const identityResponse = await ctx.http.request('GET', '/api/local-human', { token: ctx.target.operatorToken })
-      const identity = LocalHumanAccessSchema.parse(identityResponse.body)
-      assertResponse(identityResponse, { status: 200, body: { principal: { id: '<id>', name: 'Conformance manage',
-        expiresAt: NON_EXPIRING_CREDENTIAL_TIMESTAMP, grants: [{ actions: DEFAULT_MANAGEMENT_ACTIONS, scope: {} }] } } },
-      [{ pointer: '/body/principal/id', kind: 'id' }])
-      const { run } = await startWorkflow(ctx, fixture, { task: 'Retain this exact input while waiting', revision: 71 })
-      const pending = await waitForPendingInput(ctx, run)
-      const execution = await waitForExecution(ctx, run, item => item.state === 'waiting')
-      assertPending(pending, run, execution)
-      const waiting = await waitForRun(ctx, run, record => record.run.executionState === 'waiting')
-      assertResponse(waiting.response, { status: 200, body: { run: { ...run, executionState: 'waiting', startedAt: '<timestamp>' },
-        stopRequested: false, cleanupPending: false } }, [{ pointer: '/body/run/startedAt', kind: 'timestamp' }])
-      assert.deepStrictEqual(await assertExecutions(ctx, fixture, waiting.record,
-        [{ nodeId: execution.workflowNodeId, state: 'waiting', accepted: false }]), [execution])
-      const acceptedInput = RunAcceptedInputValueSchema.parse({ executionSemanticsVersion: 3,
-        runInput: run.input, occurrence: null, entry: null, predecessors: [] })
-      await assertExecutionDetail(ctx, waiting.record, execution, acceptedInput, undefined, false)
-      const input = RespondToInteractionRequestSchema.parse({ interactionId: pending.id,
-        optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision, response })
-      await assertReadOnlyDenied(readOnly, 'interaction_respond', input)
-      assert.deepStrictEqual(await callTool(readOnly, 'interaction_get', { interactionId: pending.id }, ManagedInteractionSchema),
-        { interaction: pending, activity: interactionActivity(pending, false), canRespond: false })
-      assert.deepStrictEqual(await callTool(operator, 'interaction_summary', { runId: run.id }, InteractionSummaryResultSchema),
-        interactionCounts(pending))
-      const userPath = `/api/user/interactions/${pending.id}/respond`
-      const operatorPath = `/api/management/interactions/${pending.id}/respond`
-      const answer = channel === 'operator-mcp'
-        ? await callTool(operator, 'interaction_respond', input, RespondToInteractionResponseSchema)
-        : await (async () => {
-          const result = await ctx.http.request('POST', channel === 'user-http' ? userPath : operatorPath,
-            { body: input, ...(channel === 'user-http' ? {} : { token: ctx.target.operatorToken }) })
-          assert.equal(result.status, 200)
-          const value = RespondToInteractionResponseSchema.parse(result.body)
-          assertResponse(result, { status: 200, body: value })
-          return value
-        })()
-      assert.equal(answer.replayed, false)
-      assert.ok(answer.interaction.revision === 5 || answer.interaction.revision === 6,
-        'Delivery and graph consumption must settle before the response; only worker acknowledgment may race the return')
-      const auditReference = channel === 'user-http' ? 'principal-local-human' : identity.principal.id
-      assertDelivered(answer.interaction, pending, auditReference, answer.interaction.revision)
-      const result = { outcome: 'succeeded' as const, output: { text: JSON.stringify({ answers: response }) } }
-      const completed = await waitForCompletedRun(ctx, run, result)
-      const [settled] = await assertExecutions(ctx, fixture, completed, [{ nodeId: execution.workflowNodeId }])
-      assert.ok(settled)
-      assert.equal(settled.executionId, pending.executionId, 'Respond must resume the original execution, without a new attempt')
-      await assertExecutionDetail(ctx, completed, settled, acceptedInput, result)
-      await assertBindings(ctx, run, settled, acceptedInput, [])
-      const read = await ctx.http.request('GET', `/api/user/interactions/${pending.id}`)
-      const delivered = DurableInteractionSchema.parse(GetInteractionResponseSchema.parse(read.body).interaction)
-      assertDelivered(delivered, pending, auditReference, 6)
-      await assertInteractionReads(ctx, delivered, operator, readOnly)
-      for (const path of [userPath, operatorPath]) {
-        assertResponse(await ctx.http.request('POST', path, { body: input }),
-          { status: 200, body: { interaction: delivered, replayed: true } })
-        assertApiError(await ctx.http.request('POST', path, { body: { ...input, interactionId: 'missing-interaction' } }),
-          400, 'INVALID_INTERACTION', 'The response does not match the requested interaction.')
-      }
-      assertApiError(await ctx.http.request('POST', userPath, { body: input, token: ctx.target.operatorToken }),
-        403, 'MCP_BROWSER_REVIEW_REQUIRED', 'Review this change in the local app.')
-      assert.deepStrictEqual(await callTool(operator, 'interaction_respond', input, RespondToInteractionResponseSchema),
-        { interaction: delivered, replayed: true })
-      await assertInvalidCallerDenied(operator, 'interaction_respond', input)
-      await ctx.target.restart()
-      assertResponse(await ctx.http.request('GET', `${runPath(run)}/record`), { status: 200, body: completed })
-      await assertExecutionDetail(ctx, completed, settled, acceptedInput, result)
-      const restarted = operatorClients(ctx)
-      try { await assertInteractionReads(ctx, delivered, restarted.operator, restarted.readOnly) }
-      finally { await restarted.operator.close(); await restarted.readOnly.close() }
-    } finally { await operator.close(); await readOnly.close() }
+    const operatorToken = ctx.target.operatorToken
+    assert.ok(operatorToken, 'Interaction authorization checks require the fresh Operator credential.')
+    const identityResponse = await ctx.http.request('GET', '/api/local-human', { token: operatorToken })
+    const identity = LocalHumanAccessSchema.parse(identityResponse.body)
+    assertResponse(identityResponse, { status: 200, body: { principal: { id: '<id>', name: 'Conformance manage',
+      expiresAt: NON_EXPIRING_CREDENTIAL_TIMESTAMP, grants: [{ actions: DEFAULT_MANAGEMENT_ACTIONS, scope: {} }] } } },
+    [{ pointer: '/body/principal/id', kind: 'id' }])
+    const { run } = await startWorkflow(ctx, fixture, { task: 'Retain this exact input while waiting', revision: 71 })
+    const pending = await waitForPendingInput(ctx, run)
+    const execution = await waitForExecution(ctx, run, item => item.state === 'waiting')
+    assertPending(pending, run, execution)
+    const waiting = await waitForRun(ctx, run, record => record.run.executionState === 'waiting')
+    assertResponse(waiting.response, { status: 200, body: { run: { ...run, executionState: 'waiting', startedAt: '<timestamp>' },
+      stopRequested: false, cleanupPending: false } }, [{ pointer: '/body/run/startedAt', kind: 'timestamp' }])
+    assert.deepStrictEqual(await assertExecutions(ctx, fixture, waiting.record,
+      [{ nodeId: execution.workflowNodeId, state: 'waiting', accepted: false }]), [execution])
+    const acceptedInput = RunAcceptedInputValueSchema.parse({ executionSemanticsVersion: 3,
+      runInput: run.input, occurrence: null, entry: null, predecessors: [] })
+    await assertExecutionDetail(ctx, waiting.record, execution, acceptedInput, undefined, false)
+    const input = RespondToInteractionRequestSchema.parse({ interactionId: pending.id,
+      optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision, response })
+    await assertReadOnlyDenied(readOnly, 'interaction_respond', input)
+    assert.deepStrictEqual(await callTool(readOnly, 'interaction_get', { interactionId: pending.id }, ManagedInteractionSchema),
+      { interaction: pending, activity: interactionActivity(pending, false), canRespond: false })
+    assert.deepStrictEqual(await callTool(operator, 'interaction_summary', { runId: run.id }, InteractionSummaryResultSchema),
+      interactionCounts(pending))
+    const userPath = `/api/user/interactions/${pending.id}/respond`
+    const operatorPath = `/api/management/interactions/${pending.id}/respond`
+    const answer = channel === 'operator-mcp'
+      ? await callTool(operator, 'interaction_respond', input, RespondToInteractionResponseSchema)
+      : await (async () => {
+        const result = await ctx.http.request('POST', channel === 'user-http' ? userPath : operatorPath,
+          { body: input, ...(channel === 'user-http' ? {} : { token: operatorToken }) })
+        assert.equal(result.status, 200)
+        const value = RespondToInteractionResponseSchema.parse(result.body)
+        assertResponse(result, { status: 200, body: value })
+        return value
+      })()
+    assert.equal(answer.replayed, false)
+    assert.ok(answer.interaction.revision === 5 || answer.interaction.revision === 6,
+      'Delivery and graph consumption must settle before the response; only worker acknowledgment may race the return')
+    const auditReference = channel === 'user-http' ? 'principal-local-human' : identity.principal.id
+    assertDelivered(answer.interaction, pending, auditReference, answer.interaction.revision)
+    const result = { outcome: 'succeeded' as const, output: { text: JSON.stringify({ answers: response }) } }
+    const completed = await waitForCompletedRun(ctx, run, result)
+    const [settled] = await assertExecutions(ctx, fixture, completed, [{ nodeId: execution.workflowNodeId }])
+    assert.ok(settled)
+    assert.equal(settled.executionId, pending.executionId, 'Respond must resume the original execution, without a new attempt')
+    await assertExecutionDetail(ctx, completed, settled, acceptedInput, result)
+    await assertBindings(ctx, run, settled, acceptedInput, [])
+    const read = await ctx.http.request('GET', `/api/user/interactions/${pending.id}`)
+    const delivered = DurableInteractionSchema.parse(GetInteractionResponseSchema.parse(read.body).interaction)
+    assertDelivered(delivered, pending, auditReference, 6)
+    await assertInteractionReads(ctx, delivered, operator, readOnly)
+    for (const path of [userPath, operatorPath]) {
+      assertResponse(await ctx.http.request('POST', path, { body: input }),
+        { status: 200, body: { interaction: delivered, replayed: true } })
+      assertApiError(await ctx.http.request('POST', path, { body: { ...input, interactionId: 'missing-interaction' } }),
+        400, 'INVALID_INTERACTION', 'The response does not match the requested interaction.')
+    }
+    assertApiError(await ctx.http.request('POST', userPath, { body: input, token: operatorToken }),
+      403, 'MCP_BROWSER_REVIEW_REQUIRED', 'Review this change in the local app.')
+    assert.deepStrictEqual(await callTool(operator, 'interaction_respond', input, RespondToInteractionResponseSchema),
+      { interaction: delivered, replayed: true })
+    await assertInvalidCallerDenied(operator, 'interaction_respond', input)
+    await ctx.target.restart()
+    assertResponse(await ctx.http.request('GET', `${runPath(run)}/record`), { status: 200, body: completed })
+    await assertExecutionDetail(ctx, completed, settled, acceptedInput, result)
+    const restarted = operatorClients(ctx)
+    await assertInteractionReads(ctx, delivered, restarted.operator, restarted.readOnly)
   },
 }))
