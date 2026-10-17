@@ -1108,13 +1108,22 @@ export class OperatorChatService {
     const delivery = this.control(id, async () => {
       const row = await this.repository.active(id)
       if (!row || row.active_request_id !== requestId || !row.cancel_requested) return
-      if (['accepted', 'ready'].includes(row.active_phase ?? '') && !this.tasks.has(id)) {
+      const initialSessionBound = row.harness === 'claude' && row.native_session_id
+      const beforeSubmission = row.active_phase === 'accepted' || row.active_phase === 'ready' && !initialSessionBound
+      if (beforeSubmission && !this.tasks.has(id)) {
         await this.complete(id, requestId, { outcome: 'canceled' }); return
       }
       try {
-        const runtime = this.runtimes.get(id)
+        let runtime = this.runtimes.get(id)
+        if (!runtime && row.native_session_id) {
+          const configuration = await this.repository.configuration(row.operator_configuration_version_id)
+          if (!configuration) throw new Error('Pinned Operator configuration was not found.')
+          runtime = await this.cleanupRuntime(id, row, configuration,
+            AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)]))
+        }
         runtime?.manager.setSessionControlPrincipal?.(principal.id)
-        if (runtime && await this.interrupt(id, row, runtime, markDispatchAttempt)) {
+        if (runtime) {
+          await this.interrupt(id, row, runtime, markDispatchAttempt)
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
       } catch (error) {

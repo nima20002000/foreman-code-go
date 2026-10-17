@@ -17,8 +17,10 @@ import { recoverWorkerConversation } from './recoverWorkerConversation.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
+import { agentChatCorrelation } from './agentChatRepository.js'
 
-async function fixture(harness: 'codex' | 'claude', change: 'add' | 'remove' = 'add') {
+async function fixture(harness: 'codex' | 'claude', change: 'add' | 'remove' = 'add',
+  turnStatus: 'completed' | 'submitted' | 'uncertain' = 'completed') {
   const f = workerConversationFixture('agent', harness)
   let base = AgentConfigurationVersionSchema.parse(f.configuration)
   const skill = { skillId: 'node-skill', version: '1', instructions: 'Use the saved node instructions.',
@@ -51,7 +53,9 @@ async function fixture(harness: 'codex' | 'claude', change: 'add' | 'remove' = '
   await journal.reserveTurn(binding, 'original-input', commandInputHash({ prompt: 'Remember this' }))
   await journal.submitted(binding, 'original-input', { nativeTurnId: 'original-turn' })
   const result = { outcome: 'succeeded' as const }
-  await journal.finishTurn(binding, 'original-input', result)
+  if (turnStatus !== 'submitted') {
+    await journal.finishTurn(binding, 'original-input', turnStatus === 'completed' ? result : undefined)
+  }
   const before = structuredClone(records[0]!)
   const principal = { id: 'fixture-principal', name: 'Fixture', audience: 'operator', delegated_from: null,
     grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: {} }],
@@ -119,7 +123,7 @@ async function fixture(harness: 'codex' | 'claude', change: 'add' | 'remove' = '
   const manager = production.create({ conversationId: conversation.id, configuration,
     workingDirectory: binding.workingDirectory, appMcpAccess: 'none' })
   return { ...f, base, binding, configuration, records, before, principal, conversation, version, journal,
-    production, host, manager, start, frames, attach, allocate, launch,
+    production, host, manager, start, frames, attach, allocate, allocation, launch,
     failPersistence: () => { failPersistence = true }, restorePersistence: () => { failPersistence = false },
     cleanup: async () => { await manager.dispose?.(); await host.shutdown(); await production.close() } }
 }
@@ -141,6 +145,88 @@ it.each([['codex', 'add'], ['claude', 'add'], ['codex', 'remove'], ['claude', 'r
     expect(f.allocate).toHaveBeenCalledTimes(1)
     await expect(f.manager.history(f.session)).resolves.toMatchObject({ events: [] })
   } finally { await f.cleanup() }
+})
+
+it.each(['submitted', 'uncertain'] as const)(
+  'settles a cold %s turn before applying the saved Run chat skills', async status => {
+    const f = await fixture('codex', 'add', status)
+    try {
+      await expect(f.manager.attachSession(f.session, f.start)).resolves.toEqual(f.session)
+      const saved = f.records[0]!
+      expect(saved.turns[0]).toMatchObject({ correlationId: 'original-input', nativeTurnId: 'original-turn',
+        status: 'completed', result: { outcome: 'succeeded' } })
+      expect(saved.binding.owner.configurationHash).toBe(commandInputHash(f.configuration))
+      expect(saved.session).toEqual(f.before.session)
+      expect(saved.creation).toEqual(f.before.creation)
+      expect(f.attach).toHaveBeenCalledOnce()
+      expect(f.conversation.worker_conversation_binding).toEqual(saved.binding)
+    } finally { await f.cleanup() }
+  })
+
+it('settles a dispatched cold compaction before applying the saved Run chat skills', async () => {
+  const f = await fixture('codex')
+  const reserved = await f.journal.reserveCompact(f.binding, 'original-compact', commandInputHash('compact'))
+  const state = await f.journal.compactProgress(f.binding, { ...reserved.state, dispatchPhase: 'dispatched',
+    nativeSessionId: f.session.nativeSessionId, nativeOperationId: 'original-boundary', status: 'uncertain' })
+  // The native port returns the result of the dispatched operation on the original session.
+  f.allocation.manager.readCompaction = async () => ({ ...state, status: 'completed' })
+  try {
+    await expect(f.manager.attachSession(f.session, f.start)).resolves.toEqual(f.session)
+    const saved = f.records[0]!
+    expect(saved.compactions[0]?.state).toMatchObject({ requestId: 'original-compact',
+      nativeSessionId: f.session.nativeSessionId, nativeOperationId: 'original-boundary', status: 'completed' })
+    expect(saved.binding.owner.configurationHash).toBe(commandInputHash(f.configuration))
+    expect(f.attach).toHaveBeenCalledOnce()
+  } finally { await f.cleanup() }
+})
+
+it('keeps the skills binding unchanged when cold native history cannot prove completion', async () => {
+  const f = await fixture('codex', 'add', 'submitted')
+  f.allocation.manager.reconcile = async () => ({ correlationId: 'original-input', nativeTurnId: 'original-turn',
+    events: [], pendingInteractions: [] })
+  try {
+    await expect(f.manager.attachSession(f.session, f.start)).rejects.toThrow()
+    expect(f.records[0]).toEqual(f.before)
+    expect(f.conversation.worker_conversation_binding).toEqual(f.binding)
+  } finally { await f.cleanup() }
+})
+
+it('keeps a live turn running even when its terminal result is already journaled', async () => {
+  const f = await fixture('codex')
+  let finish!: () => void
+  let entered!: () => void
+  const held = new Promise<void>(resolve => { finish = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const baseManager = f.production.create({ conversationId: f.conversation.id, configuration: f.base,
+    workingDirectory: f.binding.workingDirectory, appMcpAccess: 'none' })
+  const correlationId = agentChatCorrelation(f.conversation.id, f.conversation.active_request_id)
+  let output: Promise<void> | undefined
+  f.allocation.manager.startTurn = async function* (_session, input) {
+    await input.onSubmitted?.('live-turn')
+    entered()
+    await held
+    yield { type: 'turn.completed', sequence: 1, occurredAt: f.base.createdAt, payload: {} }
+  }
+  try {
+    await baseManager.attachSession(f.session, { ...f.start, configuration: f.base })
+    output = (async () => {
+      for await (const event of baseManager.startTurn(f.session, { prompt: 'Continue', clientCorrelationId: correlationId })) {
+        void event
+      }
+    })()
+    await started
+    await f.journal.finishTurn(f.binding, correlationId, { outcome: 'succeeded' })
+    const before = structuredClone(f.records[0])
+    await expect(f.manager.attachSession(f.session, f.start)).rejects.toThrow('busy')
+    expect(f.records[0]).toEqual(before)
+    expect(f.conversation.worker_conversation_binding).toEqual(f.binding)
+    expect(f.attach).toHaveBeenCalledOnce()
+  } finally {
+    finish()
+    await output
+    await baseManager.dispose?.()
+    await f.cleanup()
+  }
 })
 
 it.each(['denied', 'foreign-hash', 'wrong-node', 'unsaved-skills', 'harness-change'] as const)(

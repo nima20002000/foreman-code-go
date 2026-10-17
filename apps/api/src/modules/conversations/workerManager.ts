@@ -274,9 +274,13 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
         && turn.creationOperationId === fields.operationId)) {
       conflict('The original worker session creation is not established.')
     }
-    this.adopt(raw)
-    await this.options.observeSession?.(record.session)
-    return record.session
+    if (!isDeepStrictEqual(record.binding, this.options.binding)) conflict('The worker returned another conversation owner.')
+    for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
+      if (record.connection[field] !== this.options.channel.binding[field]) conflict('The original worker installation changed.')
+    }
+    const session = await this.attachSession(record.session, start, signal)
+    await this.options.observeSession?.(session)
+    return session
   }
   async configureSessionPreferences(preferences: SessionPreferences) { this.preferences = SessionPreferencesSchema.parse(preferences) }
   async capabilities(signal?: AbortSignal) {
