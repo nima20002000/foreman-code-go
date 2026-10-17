@@ -111,6 +111,10 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
     calls.push({ sql, values })
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql)
       || sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
+    if (sql === 'select archived_at from workspaces where id = $1 for share') {
+      const rows = values[0] === workspaceId ? [{ archived_at: null }] : []
+      return { rows, rowCount: rows.length }
+    }
     if (sql.startsWith('select record from conversation_session_controls')) return { rows: [], rowCount: 0 }
     if (sql.startsWith('select * from operator_conversations')) return { rows: [row()], rowCount: 1 }
     if (sql.startsWith('select count(*)::text as count')) return { rows: [{ count: String(openCount) }], rowCount: 1 }
