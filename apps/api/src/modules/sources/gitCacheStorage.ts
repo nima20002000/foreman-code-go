@@ -10,7 +10,7 @@ import { measureRetainedDirectory } from './retainedDirectoryUsage.js'
 import { writeSourceClaim } from './quotaClaims.js'
 import { SourceError } from './manifest.js'
 import type { GitProcessOptions, GitProcessResult } from './gitProcess.js'
-import { removeAbandonedFetchArtifacts } from './gitFetchRecovery.js'
+import { awaitFetchLocks, removeAbandonedFetchArtifacts } from './gitFetchRecovery.js'
 
 type GitRunner = (args: string[], options: GitProcessOptions) => Promise<GitProcessResult>
 
@@ -177,7 +177,8 @@ async function recoverUnlockedRepository(common: string): Promise<boolean> {
     throw error
   }
   try {
-    return await lockTransfer(repository, { nonBlocking: true }) && await removeAbandonedFetchArtifacts(common)
+    return await lockTransfer(repository, { nonBlocking: true })
+      && (await removeAbandonedFetchArtifacts(common)).length === 0
   } finally { await repository.close() }
 }
 
@@ -196,7 +197,8 @@ async function recoverFetches(root: FileHandle, held?: string): Promise<void> {
     } finally { await file.close() }
     const common = owner.fetch
     if (typeof common !== 'string' || !isAbsolute(common) || owner.lifetimeLock !== true) continue
-    if (common === held ? await removeAbandonedFetchArtifacts(common) : await recoverUnlockedRepository(common)) {
+    if (common === held ? (await removeAbandonedFetchArtifacts(common)).length === 0
+      : await recoverUnlockedRepository(common)) {
       await rm(anchored(root, name), { force: true })
     }
   }
@@ -238,6 +240,7 @@ interface CacheTransfer {
 
 async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLock): Promise<GitProcessResult> {
   const { root, cacheRoot, args, index, command, target, common, createdTarget, options, run, lockFd } = input
+  if (command === 'fetch') await awaitFetchLocks(common, options.signal)
   const reservation = await lockStorage(async () => {
     await recoverFetches(root, command === 'fetch' ? common : undefined)
     return reserveTransfer(root, options.signal, {
@@ -263,9 +266,11 @@ async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLoc
     const closed = await closeTransferWriters(root, reservation)
     try {
       const failed = !result || result.code !== 0
-      // Only a killed Git leaves its locks; the repository lock (still held) proves this fetch's writers are gone.
-      const recovery = command === 'fetch' && failed && !await removeAbandonedFetchArtifacts(common)
+      // Only a killed Git leaves its locks; ones not yet stale stay recorded for a later acquisition to recover.
+      const recovery = command === 'fetch' && failed && (await removeAbandonedFetchArtifacts(common)).length > 0
       if (command === 'clone' && createdTarget && failed) await rm(target, { recursive: true, force: true })
+      // A kept fetch record (never staging) reserves nothing once its writers are gone.
+      if (recovery) await closed.close()
       await lockStorage(() => releaseTransfer(root, reservation.name, { staging: completedStaging, recovery }))
     } finally { await closed.close() }
   }
