@@ -1,0 +1,23 @@
+{
+  "source": "d02f2efe46e017bff7eeec243658f3205f044840",
+  "package": "./internal/transfer",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "unitRoots": [
+    "TestStagingBinaryChunksAndExactDuplicate",
+    "TestStagingCancellationDoesNotAcknowledgeData",
+    "TestStagingCloseRetainsBytesAndRejectsFurtherUse",
+    "TestStagingCorruptCommittedPrefixFailsWithoutTruncation",
+    "TestStagingDataSyncFailureReturnsNoPrefix",
+    "TestStagingDetectsPartHardlinkAddedAfterOpen",
+    "TestStagingDirectorySyncPropagatesFailure",
+    "TestStagingEmptyObjectRejectsAdditionalBytes",
+    "TestStagingFullVerificationRechecksBytesAndLength",
+    "TestStagingInvalidChunksLeaveCommittedBytesUnchanged",
+    "TestStagingReconcileTruncatesOnlyUncommittedTail",
+    "TestStagingRejectsUnsafeExistingPartFiles",
+    "TestStagingRejectsUnsafeNamesAndLimitsWithoutCreatingParts"
+  ],
+  "unitPattern": "^(TestStagingBinaryChunksAndExactDuplicate|TestStagingCancellationDoesNotAcknowledgeData|TestStagingCloseRetainsBytesAndRejectsFurtherUse|TestStagingCorruptCommittedPrefixFailsWithoutTruncation|TestStagingDataSyncFailureReturnsNoPrefix|TestStagingDetectsPartHardlinkAddedAfterOpen|TestStagingDirectorySyncPropagatesFailure|TestStagingEmptyObjectRejectsAdditionalBytes|TestStagingFullVerificationRechecksBytesAndLength|TestStagingInvalidChunksLeaveCommittedBytesUnchanged|TestStagingReconcileTruncatesOnlyUncommittedTail|TestStagingRejectsUnsafeExistingPartFiles|TestStagingRejectsUnsafeNamesAndLimitsWithoutCreatingParts)$",
+  "setupCorrection": "Restore sourceci-suite umask077 omitted by temporaryhook",
+  "priorTicket": "9b7f51fd-f0e8-443e-9ad7-ecf2d28ced21"
+}
