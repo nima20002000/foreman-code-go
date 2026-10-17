@@ -226,6 +226,22 @@ it('retries a CircleCI cancellation that had no active workflow without marking 
   expect(f.circle.triggered).toHaveLength(1)
 })
 
+it('does not resend an accepted cancellation while waiting for CircleCI workflow creation', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  f.circle.phantoms = 1
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
+  const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1 } as const
+  f.advance(75_000)
+  expect(await f.cloud.handle(read)).toMatchObject({ run: { state: 'starting' } })
+  expect(f.circle.canceled).toEqual(['run-1'])
+  f.advance(4_000)
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting' } })
+  expect(f.circle.canceled).toEqual(['run-1'])
+  expect(f.circle.triggered).toHaveLength(1)
+})
+
 
 describe('GitHub Actions CI on a public mirror', () => {
   it('shares one publication across concurrent starts of the same commit', async () => {
