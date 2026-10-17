@@ -93,6 +93,13 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
         started.push({ computer: computer.label, request })
         return { operation: 'start', run }
       }
+      if (request.operation === 'cancel' && computer.hostRef.kind !== 'cloud' && !runs.has(request.runId)) {
+        // HostCiRunner remembers Stop before admission and returns it to any delayed Start.
+        const now = new Date().toISOString()
+        const run: CiHostRun = { runId: request.runId, state: 'canceled', step: null, exitCode: null,
+          startedAt: now, finishedAt: now, logBytes: 0, message: 'Canceled before execution.' }
+        runs.set(request.runId, { computer: computer.label, run, log: '', request })
+      }
       const entry = runs.get(request.runId)
       if (!entry) throw new DomainError('CI_RUN_UNKNOWN', 'Unknown run.', 404)
       if (request.operation === 'cancel') {
