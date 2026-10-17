@@ -8,7 +8,7 @@ set -euo pipefail
 case "${SUITE:-}" in
   unit|unit-*)
     case "${1:-}" in start|prepare|cleanup) exit 0 ;; esac
-    exec node "$(dirname "$0")/ci-main-go-diagnostic.mjs"
+    exec node "$(dirname "$0")/ci-selected-diagnostic.mjs" qconf
     ;;
 esac
 umask 077
