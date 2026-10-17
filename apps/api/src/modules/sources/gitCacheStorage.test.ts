@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
@@ -411,3 +411,59 @@ it('reclaims another repository’s abandoned fetch packs before refusing a tran
   await expect(readFile(join(common, pack))).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
+
+it('reclaims a repository’s abandoned fetch packs while a snapshot reader keeps it open, admitting another transfer',
+  async () => {
+    const f = await fixture()
+    const signal = AbortSignal.timeout(30_000)
+    const other = join(f.root, 'other-origin')
+    await mkdir(other, { mode: 0o700 })
+    git(other, 'init', '--template=', '-q', '-b', 'main')
+    const commitIn = async (origin: string, text: string) => {
+      await writeFile(join(origin, 'source.txt'), text)
+      git(origin, 'add', '-A')
+      git(origin, 'commit', '-qm', text)
+      return git(origin, 'rev-parse', 'HEAD')
+    }
+    const environment = { ...gitFixtureEnvironment(), HOME: join(f.root, 'home') }
+    const system = systemGitWorktreePorts(environment)
+    const ports: GitWorktreePorts = { cloneDirectory: system.cloneDirectory, git: (args, options) => system.git(
+      args.map(arg => arg === 'https://github.com/fixture/project.git' ? `file://${f.origin}`
+        : arg === 'https://github.com/fixture/other.git' ? `file://${other}` : arg), options) }
+    const clone = await ensureCommit(ports, 'fixture/project', f.commit, signal)
+    const otherClone = await ensureCommit(ports, 'fixture/other', await commitIn(other, 'first'), signal)
+    const common = join(clone, '.git')
+    const pack = 'objects/pack/tmp_pack_abandoned'
+    const writer = await interruptedFetchWriter(f.root, common, { [pack]: 2 * 2 ** 20 })
+    const api = await fetchingApi(f.root, f.cache, clone, writer.args, environment)
+    try {
+      const transfer = await writer.started()
+      const exited = once(api, 'exit')
+      api.kill('SIGKILL')
+      await exited
+      await transfer.write()
+      await transfer.die()
+    } finally {
+      if (api.exitCode === null && api.signalCode === null) api.kill('SIGKILL')
+      writer.close()
+    }
+    // Source capture's exact object reader stays open in the repository whose fetch was abandoned.
+    const reader = spawn('git', ['-C', clone, 'cat-file', '--batch'],
+      { env: environment, stdio: ['pipe', 'pipe', 'ignore'] })
+    try {
+      const answered = once(reader.stdout!, 'data')
+      reader.stdin!.write(`${f.commit}\n`)
+      expect(String((await answered)[0])).toContain(`${f.commit} commit`)
+      await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(7 * 2 ** 20))
+      const otherCommit = await commitIn(other, 'other successor')
+
+      await expect(ensureCommit(ports, 'fixture/other', otherCommit, signal)).resolves.toBe(otherClone)
+      expect(git(otherClone, 'cat-file', '-t', otherCommit)).toBe('commit')
+      await expect(readFile(join(common, pack))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+    } finally {
+      const closed = once(reader, 'exit')
+      reader.stdin!.end()
+      await closed
+    }
+  }, 30_000)
