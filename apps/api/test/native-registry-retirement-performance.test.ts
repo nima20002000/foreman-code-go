@@ -26,6 +26,30 @@ function fixture() {
   return {root,owner,ownerDirectory,registry,seedClosed}
 }
 describe.skipIf(process.platform!=='linux')('bounded original native retirement projection',()=>{
+  it.each(['cleanup', 'admission'] as const)('keeps timers running while %s makes a large retirement batch durable', async operation => {
+    const f = fixture()
+    const ids = Array.from({ length: 1_000 }, () => f.seedClosed().id)
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 1)
+    try {
+      if (operation === 'cleanup') expect(await f.registry.closeOwner(f.owner)).toBe(true)
+      else {
+        const scope = await f.registry.reserveLaunch(f.owner)
+        expect(scope.launchId).toBeDefined()
+        expect(await f.registry.abandonReservedLaunch(scope)).toBe(true)
+      }
+      expect(ticks).toBeGreaterThan(1)
+      for (const id of ids) {
+        expect(f.registry.closedRegistration(f.owner, id)).toMatchObject({
+          owner: f.owner, launchId: id, lifecycle: 'closed', closureEvidence: 'native_not_started',
+        })
+        expect(existsSync(join(f.ownerDirectory, id))).toBe(false)
+      }
+    } finally {
+      clearInterval(timer)
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  })
   it('compacts all 10,005 original F11 registrations with a bounded number of full inventory scans',async()=>{
     const f=fixture(),projection=nativeRegistryProjection(f.root)
     const baseline=f.registry.snapshot(),controller=new AbortController()
