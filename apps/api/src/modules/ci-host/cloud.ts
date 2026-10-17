@@ -627,11 +627,17 @@ export class CloudCi {
     if (this.ports.now().getTime() - Date.parse(dispatchedAt) < CLOUD_START_TIMEOUT_MS) return run
     // Retire the pipeline before retrying so it cannot acquire a workflow later.
     if (run.providerRunId) {
-      try {
-        await this.provider.cancel(run)
-      } catch (error) {
-        if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
-        return this.reconcileLookupFailure(run, error)
+      if (!run.dispatch?.cancelAccepted) {
+        let accepted: boolean
+        try {
+          accepted = await this.provider.cancel(run) !== false
+        } catch (error) {
+          if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
+          return this.reconcileLookupFailure(run, error)
+        }
+        if (accepted && run.dispatch) {
+          run = await this.save({ ...run, dispatch: { ...run.dispatch, cancelAccepted: true } })
+        }
       }
       const status = await this.provider.status(run)
       if (!status.done) {
@@ -1239,13 +1245,17 @@ export class CloudCi {
     let stopped = discoveryComplete && !run.dispatch?.uncertain && (ids.size > 0 || !run.dispatch?.attempts)
     for (const providerRunId of ids) {
       const attempt = { ...run, providerRunId }
-      // CircleCI can accept cancellation before the pipeline has created any workflows.
-      if (!canceled.has(providerRunId) || this.provider.id === 'circleci') {
-        await this.provider.cancel(attempt)
-        canceled.add(providerRunId)
+      let status = canceled.has(providerRunId) ? await this.provider.status(attempt) : undefined
+      const stillActive = this.provider.id === 'circleci' && discoveryComplete && status?.done === false
+        && await this.provider.find(attempt) !== null
+      if (!canceled.has(providerRunId) || stillActive) {
+        const accepted = await this.provider.cancel(attempt)
+        if (accepted === false) canceled.delete(providerRunId)
+        else canceled.add(providerRunId)
         run = await this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled] } })
+        status = undefined
       }
-      if (!(await this.provider.status(attempt)).done) stopped = false
+      if (!(status ?? await this.provider.status(attempt)).done) stopped = false
     }
     this.polled.set(run.runId, this.ports.now().getTime())
     const now = this.ports.now().toISOString()
@@ -1357,7 +1367,7 @@ export class CloudCi {
     if (!run.providerQueuedAt) run = await this.save({ ...run, providerQueuedAt: since })
     if (!reassign || run.queueCancelRequested || now.getTime() - Date.parse(since) < CLOUD_START_TIMEOUT_MS) return run
     try {
-      await this.provider.cancel(run)
+      if (await this.provider.cancel(run) === false) return run
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
       return this.reconcileLookupFailure(run, error)
