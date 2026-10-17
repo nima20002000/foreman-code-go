@@ -3,7 +3,9 @@ import { CI_HOST_START_PROTOCOL_VERSION } from '@foreman-code/contracts'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
+import { readOperationalFailures } from '../diagnostics/logger.js'
 import { HostCiRunner, type HostCiPorts } from './runner.js'
 
 const writes = vi.hoisted(() => ({ running: undefined as (() => Promise<void>) | undefined }))
@@ -25,7 +27,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
-async function fixture() {
+async function fixture(options: { launch?: () => Promise<void> } = {}) {
   const root = await privateFixtureDirectory('host-ci-recovery-')
   roots.push(root)
   const control = { state: 'active', code: 0, stopCode: 0, launches: 0 }
@@ -36,7 +38,10 @@ async function fixture() {
         await mkdir(args.at(-2)!, { recursive: true })
         await writeFile(join(args.at(-2)!, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture' } }))
       }
-      if (file === 'systemd-run') control.launches++
+      if (file === 'systemd-run') {
+        control.launches++
+        await options.launch?.()
+      }
       if (file === 'systemctl' && args.includes('stop')) {
         if (control.stopCode === 0) control.state = 'inactive'
         return { code: control.stopCode, stdout: '', stderr: control.stopCode ? 'Manager unavailable' : '' }
@@ -144,6 +149,61 @@ it.each([
   await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
   await expect(access(f.source)).resolves.toBeUndefined()
   await expect(f.runner.status()).resolves.toMatchObject({ slotsUsed: 1 })
+})
+
+it.each([
+  { state: '', code: 1 },
+  { state: 'deactivating', code: 3 },
+  { state: 'inactive', code: 1 },
+])('keeps an observed running state during a slow launch with unresolved status: $state/$code', async control => {
+  const entered = deferred()
+  const release = deferred()
+  const f = await fixture({ launch: async () => {
+    entered.resolve()
+    await release.promise
+  } })
+  try {
+    await f.runner.handle(f.request)
+    await entered.promise
+    expect(f.runner.isUpdateIdle()).toBe(false)
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+    Object.assign(f.control, control)
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+    const recovered = new HostCiRunner(f.root, f.ports, {})
+    await expect(recovered.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+    await expect(access(f.source)).resolves.toBeUndefined()
+    await expect(recovered.status()).resolves.toMatchObject({ slotsUsed: 1 })
+    expect(f.control.launches).toBe(1)
+  } finally {
+    release.resolve()
+    await f.runner.beginDrain()
+  }
+  await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+})
+
+it('records a background launch failure when its run directory disappears without rejecting drain', async () => {
+  const entered = deferred()
+  const release = deferred()
+  const f = await fixture({ launch: async () => {
+    entered.resolve()
+    await release.promise
+  } })
+  try {
+    await f.runner.handle(f.request)
+    await entered.promise
+    await rm(join(f.root, 'runs', f.request.runId), { recursive: true })
+    const drained = f.runner.beginDrain()
+    release.resolve()
+    await expect(drained).resolves.toBeUndefined()
+    expect(f.runner.isUpdateIdle()).toBe(true)
+    await expect(f.runner.handle(f.read)).rejects.toMatchObject({ code: 'CI_RUN_UNKNOWN' })
+    expect(readOperationalFailures()).toContainEqual(expect.objectContaining({
+      component: 'jobs', operation: 'record CI launch failure', lastError: 'CI_RUN_UNKNOWN',
+    }))
+  } finally {
+    release.resolve()
+    await f.runner.beginDrain()
+  }
 })
 
 it('persists failed cancellation, retains capacity after restart and retries before releasing the slot', async () => {
