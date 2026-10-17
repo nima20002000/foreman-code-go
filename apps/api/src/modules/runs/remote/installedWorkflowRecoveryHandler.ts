@@ -45,7 +45,7 @@ export async function recoverInstalledWorkflowReply(input: {
   lifetimeSignal: AbortSignal
   assertCurrent(): void
   authorize(action: 'read' | 'stop' | 'control'): Promise<void>
-}) {
+}): Promise<{ payload: unknown } | undefined> {
   const { frame, journal, binding } = input
   if (await journal.isRetired(frame.intent.operationId) && frame.method !== 'status'
     && frame.method !== 'physical-readout') return undefined
@@ -103,6 +103,9 @@ export async function recoverInstalledWorkflowReply(input: {
   if (frame.method === 'control') action = frame.command.action.kind === 'stop' ? 'stop' : 'control'
   await input.authorize(action)
   input.assertCurrent()
+  if (frame.method === 'history' && frame.metadata) {
+    return { payload: input.recovery.historyPages.read(frame) }
+  }
   if (!receipt.native) {
     if (!receipt.entryAttempted && receipt.terminal) {
       if (!hasPositiveRemoteNonEntryClosure(receipt)) throw new Error('Original preparation closure changed')
@@ -154,7 +157,7 @@ export async function recoverInstalledWorkflowReply(input: {
         providerId: status.receipt.native.turnId, result },
     } : {}) }
   const historyReply = frame.method === 'history'
-    ? pageNativeHistory(history, frame.afterSequence, frame.metadata) : undefined
+    ? pageNativeHistory(history, frame.afterSequence) : undefined
   if (capture && frame.method !== 'physical-readout' && frame.method !== 'physical-ack') {
     let source: WorkflowOriginalNativeSource = { type: 'boundary' }
     if (historyReply) source = { type: 'history', history: nativeHistoryPageSource(historyReply)! }
@@ -204,7 +207,8 @@ export async function recoverInstalledWorkflowReply(input: {
     return { payload: ack }
   }
   if (frame.method === 'history' || frame.method === 'reconcile-response') {
-    return { payload: { ...(historyReply ?? pageNativeHistory(history)), status } }
+    return { payload: input.recovery.historyPages.remember({ ...(historyReply ?? pageNativeHistory(history)), status },
+      frame.intent, frame.placement) }
   }
   if (frame.method === 'pending') return { payload: null }
   if (frame.method === 'prepare' || frame.method === 'reattach') {
