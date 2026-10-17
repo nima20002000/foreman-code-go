@@ -457,7 +457,7 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
   }
 
   async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
-    const { delivery } = await this.exclusive(session.nativeSessionId, async () => {
+    const dispatch = async () => {
       const runtime = this.requireRuntime(session)
       const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === nativeRequestId)
       if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
@@ -495,7 +495,10 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       })()
       // Resolution may require reconciliation or closure, so release the lifecycle lock after dispatch.
       return { delivery }
-    })
+    }
+    // Without lifecycle work to wait for, reserve the callback before another caller can inspect it.
+    const { delivery } = await (this.locks.has(session.nativeSessionId)
+      ? this.exclusive(session.nativeSessionId, dispatch) : dispatch())
     await delivery
   }
 

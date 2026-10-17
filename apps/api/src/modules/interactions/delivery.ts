@@ -65,19 +65,21 @@ function matchingCodexCommandExecution(
     && event.payload.nativeRequestId === interaction.nativeRequestId)
   if (!submissions.length || submissions.some((event) => event.payload.optionId !== interaction.selectedOptionId
     || event.payload.semantic !== interaction.selectedSemantic
-    || event.payload.responseDigest !== responseValueDigest(object(interaction.nativeResponse)?.response))) return undefined
+    || event.payload.responseDigest !== undefined
+      && event.payload.responseDigest !== responseValueDigest(object(interaction.nativeResponse)?.response))) return undefined
   for (const submitted of submissions) {
     const reserved = relevant.findLast((event) => event.connectionId === submitted.connectionId
       && event.sequence < submitted.sequence && event.type === 'interaction.submitting'
       && event.payload.nativeRequestId === interaction.nativeRequestId
       && event.payload.optionId === interaction.selectedOptionId)
-    if (!reserved) continue
+    // A reservation permits resolution before the write callback; submitted alone proves the ordinary ordering.
+    const sentSequence = reserved?.sequence ?? submitted.sequence
     const pending = relevant.find((event) => event.connectionId === submitted.connectionId
-      && event.sequence < reserved.sequence && event.type === 'interaction.pending'
+      && event.sequence < sentSequence && event.type === 'interaction.pending'
       && event.payload.nativeRequestId === interaction.nativeRequestId
       && event.payload.nativeRequestType === interaction.nativeRequestType && event.payload.turnId === turnId)
     const resolved = relevant.find((event) => event.connectionId === submitted.connectionId
-      && event.sequence > reserved.sequence && event.type === 'interaction.resolved'
+      && event.sequence > sentSequence && event.type === 'interaction.resolved'
       && event.payload.nativeRequestId === interaction.nativeRequestId
       && event.payload.submittedOptionId === interaction.selectedOptionId
       && event.payload.evidence === 'serverRequest/resolved')
