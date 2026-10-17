@@ -1,0 +1,16 @@
+{
+  "source": "cc297a793ae190d20025369e5c635e2b954027ca",
+  "package": "./internal/transfer",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/transfer/errors_linux.go",
+    "internal/transfer/errors_linux_test.go",
+    "internal/transfer/integrity_linux.go",
+    "internal/transfer/staging_linux.go"
+  ],
+  "unitRoots": [
+    "TestStagingSentinelErrorMessagesAndWrapping",
+    "TestStagingValidationErrorsKeepDistinctIdentity"
+  ],
+  "unitPattern": "^(TestStagingSentinelErrorMessagesAndWrapping|TestStagingValidationErrorsKeepDistinctIdentity)$"
+}
