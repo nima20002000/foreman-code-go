@@ -99,9 +99,9 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     options?: { priority: DeviceRequestPriority }): Promise<CiHostReply> {
     if (request.operation === 'start') {
       try {
-        if (computer.hostRef.kind === 'device') this.workerExecution.requireEnabled(computer.hostRef)
+        if (computer.hostRef.kind === 'device') this.workerExecution.requireEnabled({ kind: computer.hostRef.kind })
         request = await this.prepareStart(computer, request)
-        if (computer.hostRef.kind === 'device') this.workerExecution.requireEnabled(computer.hostRef)
+        if (computer.hostRef.kind === 'device') this.workerExecution.requireEnabled({ kind: computer.hostRef.kind })
       } catch (error) {
         throw new CiStartPreflightError(error)
       }

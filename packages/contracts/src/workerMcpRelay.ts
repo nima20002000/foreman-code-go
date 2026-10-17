@@ -111,9 +111,8 @@ export function decodeWorkerMcpRequest(result: DeviceApplicationResult): unknown
     return result.payload
   }
   const metadata = BinaryRequestSchema.parse(result.payload)
-  const { bodyBytes, ...envelope } = metadata
-  delete envelope.bodyEncoding
+  const { bodyBytes, bodyEncoding, ...envelope } = metadata
   if (result.bytes.byteLength !== bodyBytes) throw new Error('MCP binary request length differs from its metadata')
-  const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(result.bytes)) as unknown
+  const body = JSON.parse(new TextDecoder(bodyEncoding, { fatal: true }).decode(result.bytes)) as unknown
   return { ...envelope, body: z.json().parse(body) }
 }
