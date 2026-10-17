@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events'
 import { setTimeout as wait } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
@@ -25,7 +25,17 @@ class Socket extends EventEmitter {
 }
 const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex')
 const roots: string[] = []
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true }) })
+afterEach(async () => {
+  vi.useRealTimers()
+  for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true })
+})
+async function stagingRoot() {
+  const parent = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true, mode: 0o700 })
+  const root = await mkdtemp(join(parent, 'byte-carrier-'))
+  roots.push(root)
+  return root
+}
 function binding(): DeviceSessionBinding {
   return { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
     authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 77 }
@@ -75,11 +85,13 @@ it('fences a replaced UUID session even when numeric generation is unchanged', a
 it.each([0, 1_100])('moves immutable source-package bytes over the existing binary carrier and verifies server-derived receipt after %i ms of delayed work', async delayMs => {
   const bytes = Buffer.alloc(20_000, 7), original = binding(), intent = intentFor(original, bytes)
   let current = original, granted = true
-  const root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const root = await stagingRoot()
   const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => current, accepted: {
     intent: async id => { if (id !== intent.transferId) throw new Error('Unknown accepted intent'); return intent },
     authorize: async accepted => { if (!granted || !isDeepStrictEqual(accepted, intent)) throw new Error('Denied original operation grant') },
   } })
+  // Carrier assertions control transport time; filesystem latency must not expire the heartbeat.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const channels = pair(original, receiver.extension), client = createChannelTransferClient(channels.worker)
   try {
     const receipt = await client.sender({ read: async (_, offset, length) => bytes.subarray(offset, offset + length) }).send(intent)
@@ -103,7 +115,7 @@ it.each([0, 1_100])('moves immutable source-package bytes over the existing bina
   } finally { await channels.close(); await receiver.receiver.close() }
 })
 it('rejects an old captured sender context before dispatching through a replacement channel', async () => {
-  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const original = binding(), root = await stagingRoot()
   const bytes = Buffer.from('data'), intent = intentFor(original, bytes), receiver = createAuthenticatedTransferReceiver({ stagingRoot: root,
     current: () => original, accepted: { intent: async () => intent, authorize: async () => {} } })
   const channels = pair(original, receiver.extension)
@@ -115,7 +127,7 @@ it('rejects an old captured sender context before dispatching through a replacem
 })
 
 it('shares the supplied original canonical journal with fallback and preserves its accepted/current fences', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'graphql-shared-carrier-')); roots.push(root)
+  const root = await stagingRoot()
   const original = binding(), bytes = Buffer.from('data'), intent = intentFor(original, bytes)
   let bound = original, denied = false
   const accepted = { intent: async () => intent, authorize: async () => { if (denied) throw new Error('Denied original grant') } }
@@ -139,7 +151,7 @@ it('shares the supplied original canonical journal with fallback and preserves i
 })
 
 it('reports an idle-expired receiver transfer to the sender as expired, not as a generic rejection', async () => {
-  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const original = binding(), root = await stagingRoot()
   const bytes = Buffer.from('data'), intent = { ...intentFor(original, bytes), expiresAt: new Date(Date.now() + 3_600_000).toISOString() }
   let now = Date.now()
   const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original, clock: () => now,
@@ -154,7 +166,7 @@ it('reports an idle-expired receiver transfer to the sender as expired, not as a
 })
 
 it('waits for the device to reconnect instead of spending its retries while the channel is absent', async () => {
-  const original = binding(), root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
+  const original = binding(), root = await stagingRoot()
   const bytes = Buffer.from('data'), intent = intentFor(original, bytes)
   const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original,
     accepted: { intent: async () => intent, authorize: async () => {} } })
