@@ -162,4 +162,20 @@ describe('public HTTP credential diagnostics', () => {
     expect(JSON.parse(preview)).toBe('SYNTHETIC_COOKIE_HEADER\nCookie: [redacted]\nreason="retain next line"; requestId=cookie-request-17')
     assertAbsent(failure, ['synthetic-cookie-one', 'synthetic-cookie-two'])
   })
+
+  it('preserves redaction of unquoted bracket and parenthesis credential values', async () => {
+    const text = 'SYNTHETIC_DELIMITED_VALUES; password=(synthetic-parenthesis-tail); secret=[synthetic-bracket-tail]; reason="keep punctuation context"; requestId=delimited-request-17'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(text, { status: 422, headers: { 'content-type': 'text/plain' } })))
+    const failure = await failureOf(() => createWorkspace(context(), 'Credential diagnostics'))
+    expect(JSON.parse(previewOf(failure))).toBe('SYNTHETIC_DELIMITED_VALUES; password=[redacted]; secret=[redacted]; reason="keep punctuation context"; requestId=delimited-request-17')
+    assertAbsent(failure, ['synthetic-parenthesis-tail', 'synthetic-bracket-tail'])
+  })
+
+  it('retains an empty Cookie header and the following diagnostic line', async () => {
+    const text = 'SYNTHETIC_EMPTY_COOKIE\nCookie:\nreason="retain next line"; requestId=empty-cookie-request-17'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(text, { status: 403, headers: { 'content-type': 'text/plain' } })))
+    const failure = await failureOf(() => createWorkspace(context(), 'Credential diagnostics'))
+    expect(JSON.parse(previewOf(failure))).toBe(text)
+    expect(failure.details).toMatchObject({ status: 403, responseBodyTruncated: false })
+  })
 })

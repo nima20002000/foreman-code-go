@@ -53,7 +53,7 @@ function credentialEnd(text: string, start: number, cookie: boolean): number {
   while (end < text.length) {
     const character = text[end]!
     if (character === '\\' && end + 1 < text.length) end += 2
-    else if (/[\s,;&<>{}\[\]()]/.test(character)) break
+    else if (/[\s,;&<>]/.test(character)) break
     else end++
   }
   return end
@@ -77,8 +77,15 @@ function redactText(text: string, secrets: readonly string[]): string {
   function nextCredential(): Span | undefined {
     for (let match = labels.exec(text); match; match = labels.exec(text)) {
       if (match[1] !== undefined && !sensitiveKey(match[1])) continue
+      const cookie = /cookie/i.test(match[1] ?? '')
+      const newline = cookie ? match[0].search(/[\r\n]/) : -1
+      if (newline !== -1) {
+        // Header spacing cannot carry an empty Cookie into the next line.
+        labels.lastIndex = match.index + newline
+        continue
+      }
       const start = match.index + match[0].length
-      const end = credentialEnd(text, start, /cookie/i.test(match[1] ?? ''))
+      const end = credentialEnd(text, start, cookie)
       if (end === start) continue
       labels.lastIndex = end
       return { start, end }
