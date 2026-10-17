@@ -9,6 +9,7 @@ import { HarnessInstanceSettingsRepository } from '../harnesses/instanceSettings
 import { HostHarnessProfileEvidenceRepository } from '../harnesses/instanceSettings/profileRepository.js'
 import { DomainError } from '../errors.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
+import { randomUUID } from 'node:crypto'
 
 it('rejects a revoked credential, a foreign channel and Agent management MCP before forwarding', async () => {
   const f = workerConversationFixture()
@@ -36,4 +37,27 @@ it('rejects a revoked credential, a foreign channel and Agent management MCP bef
     expect(authenticate).toHaveBeenCalledOnce()
     expect(forward).not.toHaveBeenCalled()
   } finally { await pool.end() }
+})
+
+it('authorizes retained execution ownership after a thinking-only edit and denies changed execution settings', async () => {
+  const f = workerConversationFixture()
+  if (!('operatorId' in f.configuration)) throw new Error('Operator fixture required')
+  const original = f.configuration
+  let accepted = { ...original, id: randomUUID(), version: 2, showThinking: true }
+  const binding = { ...f.binding, appMcpAccess: 'scoped' as const }
+  const principal = { id: 'delegated', expiresAt: new Date(Date.now() + 600_000).toISOString() }
+  const pool = { query: async () => ({ rows: [{ owner_principal_id: 'owner', delegated_from: 'owner',
+    principal_id: principal.id, record: accepted, worker_conversation_binding: binding }] }) } as unknown as pg.Pool
+  const profiles = { admit: async () => ({}) } as unknown as AcceptedHarnessProfileAdmission<ClaudeProfileOwner>
+  const relay = new MainWorkerConversationMcp({ pool, access: { authenticate: async () => principal } as never,
+    operators: { configuration: async () => original } as unknown as PostgresOperatorConversationRepository,
+    profiles, claudeProfiles: profiles, bridge: new MainWorkerConversationBridge(), current: () => f.connection,
+    forward: () => ({ request: async () => ({ statusCode: 200, contentType: 'application/json', body: '{}' }) }) })
+  const request = { version: 1, operation: 'conversation-mcp.request', token: 'scoped-fixture-token', binding,
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } }
+  await expect(relay.handle(request, f.connection, AbortSignal.timeout(1000)))
+    .resolves.toMatchObject({ statusCode: 200 })
+  accepted = { ...accepted, harness: { ...accepted.harness, model: 'changed-model' } }
+  await expect(relay.handle(request, f.connection, AbortSignal.timeout(1000)))
+    .rejects.toMatchObject({ code: 'WORKER_CONVERSATION_MCP_DENIED' })
 })

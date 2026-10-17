@@ -11,6 +11,7 @@ import { deriveDispatch, freezePlacement } from '../src/modules/placement/bindin
 import { DomainError } from '../src/modules/errors.js'
 import { agentFileReader } from '../src/modules/ci-host/agentFileReader.js'
 import { AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE } from '@foreman-code/contracts/source-materialization'
+import { workerConversationFixture } from '../src/modules/conversations/workerFixtures.test-support.js'
 
 class Socket extends EventEmitter {
   bufferedAmount = 0
@@ -81,6 +82,35 @@ function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limi
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated namespace carrier mechanics', () => {
+  it('dispatches conversation cancellation through reserved stop capacity on a saturated link', async () => {
+    const releases: Array<() => void> = []
+    const handled = vi.fn(async (payload: unknown) => {
+      if (payload === 'occupied') await new Promise<void>(resolve => { releases.push(resolve) })
+      return { payload }
+    })
+    const pair = setup(handled)
+    const occupied = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'occupied'))
+    const f = workerConversationFixture()
+    const target = { ...f.binding, profile: { ...f.binding.profile, target: { ...f.binding.profile.target,
+      hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+      applicationInstallationId: binding.workerInstallationId } } }
+    let cancellation: Promise<unknown> | undefined
+    try {
+      await flush()
+      expect(releases).toHaveLength(8)
+      const request = { method: 'conversation.cancel', binding: target, session: f.session, nativeTurnId: 'active-turn' }
+      cancellation = pair.main.request('execution-v1', request)
+      await flush()
+      expect(handled.mock.calls.map(([payload]) => payload)).toContainEqual(request)
+      await expect(cancellation).resolves.toEqual({ payload: request })
+      expect(pair.rawMain.frames.map(frame => JSON.parse(frame)).filter(frame => frame.type === 'application-open'
+        && frame.admission === 'stop')).toHaveLength(1)
+    } finally {
+      for (const release of releases) release()
+      await pair.close()
+      await Promise.allSettled([...occupied, ...(cancellation ? [cancellation] : [])])
+    }
+  })
   it('distinguishes an evicted physical reply from an unavailable native process across the channel', async () => {
     const pair = setup(async () => {
       throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original physical reply is no longer retained.',
