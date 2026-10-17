@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { stopGroup } from './integration-process.mjs'
+import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
 const repository = fileURLToPath(new URL('..', import.meta.url))
 const reporter = join(repository, 'scripts/ci-progress-reporter.mjs')
-const temporary = process.env.TMPDIR ?? join(homedir(), '.cache', 'foreman-tmp')
+const temporary = process.env.TMPDIR ?? tmpdir()
 mkdirSync(temporary, { recursive: true })
 
 test('CI suite kills a synchronous looping Vitest test and reports its file and name', { timeout: 85_000 }, async t => {
@@ -31,17 +32,20 @@ test('planner never returns', () => {
     reporters: ['default', ...${existsSync(reporter) ? JSON.stringify([reporter]) : '[]'}]
   } }
 `)
-  writeFileSync(join(directory, 'bin/pnpm'), `#!${process.execPath}
+  writeFileSync(join(directory, 'bin/corepack'), `#!${process.execPath}
 const { spawnSync } = require('node:child_process')
 if (process.argv.includes('test')) {
   const result = spawnSync(process.execPath, [process.env.FIXTURE_VITEST, 'run', '--config', 'vitest.config.mjs'],
     { cwd: process.env.FIXTURE_ROOT, stdio: 'inherit' })
+  if (result.error) throw result.error
   process.exit(result.status ?? 1)
 }
 `, { mode: 0o755 })
   const child = spawn('bash', [join(repository, 'scripts/ci-suite.sh')], {
     cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full', CI_PREREQUISITES_UNTRACKED: '1',
+      HOME: join(directory, 'home'), COREPACK_HOME: join(directory, 'corepack'),
+      FOREMAN_CODE_CI_CONTRACTS_CACHE: '', CI_PARTITION: '', BASH_ENV: '', ENV: '',
       CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
       CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_IDLE_MS: '20000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'),
       CI_WATCHDOG_MESSAGE_FILE: join(directory, 'watchdog-message.json'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
@@ -80,30 +84,14 @@ if (process.argv.includes('test')) {
   }
 })
 
-test('CI suite leaves silent check commands such as typecheck outside the test-progress watchdog', async t => {
-  const directory = mkdtempSync(join(temporary, 'ci-check-'))
-  t.after(() => rmSync(directory, { recursive: true, force: true }))
-  mkdirSync(join(directory, 'bin'))
-  writeFileSync(join(directory, 'bin/pnpm'), `#!${process.execPath}
-require('node:fs').appendFileSync(process.env.FIXTURE_CALLS, process.argv.slice(2).join(' ') + '\\n')
-`, { mode: 0o755 })
+test('CI suite leaves silent Go and retained TS checks outside the test-progress watchdog', t => {
   for (const suite of ['typecheck-api', 'lint-other', 'build']) {
-    const watchdog = join(directory, `watchdog-${suite}`)
-    const calls = join(directory, `calls-${suite}`)
-    const child = spawn('bash', [join(repository, 'scripts/ci-suite.sh')], {
-      cwd: repository, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: suite, SCOPE: 'full',
-        CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
-        CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: watchdog, CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
-        FIXTURE_CALLS: calls },
-    })
-    let output = ''
-    child.stdout.on('data', bytes => { output += bytes })
-    child.stderr.on('data', bytes => { output += bytes })
-    const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve) })
-    assert.equal(code, 0, output)
-    assert.ok(existsSync(calls), output)
-    // A wrapped command would get a progress file and be killed after a minute without test events.
+    const fixture = goCiFixture(t)
+    const watchdog = join(fixture.directory, 'watchdog')
+    const result = fixture.run(suite, '', { CI_EXPECTED_DURATION_MS: '1000',
+      CI_WATCHDOG_DIRECTORY: watchdog, CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.ok(fixture.calls().length > 0)
     assert.equal(existsSync(join(watchdog, 'progress.jsonl')), false, `${suite} ran under the test watchdog`)
   }
 })
@@ -196,6 +184,7 @@ test('Node test failures count as started tests instead of setup failures', asyn
     const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
       '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
       { stdio: 'inherit', env: environment })
+    assert.equal(result.error, undefined, result.error?.message)
     const report = JSON.parse(readFileSync(file + '.json', 'utf8'))
     assert.deepEqual(report.testResults.flatMap(file => file.assertionResults.map(test => [test.fullName, test.status])),
       [['fails', 'failed']])

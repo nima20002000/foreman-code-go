@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { durationSlice, measuredUnitDurations, unitFiles } from './ci-unit-files.mjs'
+import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
 test('duration slices balance measured work and cover every file exactly once', () => {
   const durations = { a: 100, b: 80, c: 60, d: 40, e: 20, f: 10 }
@@ -75,34 +73,29 @@ test('JSON reporter timings retain only successful files inside the selected pac
 
 for (const exitCode of [0, 7]) {
   test(`unit runner saves durations and preserves command exit ${exitCode}`, t => {
-    const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'unit-durations-'))
-    t.after(() => rmSync(directory, { recursive: true, force: true }))
-    const output = join(directory, 'reports', 'durations.json')
+    const fixture = goCiFixture(t, { SCOPE: 'full', SLICE: '1/3', FIXTURE_WEB_FILES: JSON.stringify([
+      'apps/web/src/duration-first.test.tsx', 'apps/web/src/duration-second.test.tsx', 'apps/web/src/duration-third.test.tsx',
+    ]) })
+    const directory = fixture.directory
+    const output = fixture.environment.DURATIONS_OUTPUT
     const calls = join(directory, 'calls.json')
-    const root = fileURLToPath(new URL('..', import.meta.url))
-    mkdirSync(join(directory, 'reports'))
-    writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+    writeFileSync(join(directory, 'corepack'), `#!${process.execPath}
 const { writeFileSync } = require('node:fs')
-const { resolve } = require('node:path')
 const args = process.argv.slice(2)
 if (args.includes('build')) process.exit(0)
 writeFileSync(process.env.CALLS_FILE, JSON.stringify(args))
 const report = args.find(arg => arg.startsWith('--outputFile.json=')).split('=').slice(1).join('=')
 const file = args.find(arg => arg.endsWith('.test.tsx') || arg.endsWith('.test.ts') || arg.endsWith('.spec.ts'))
 writeFileSync(report, JSON.stringify({ testResults: [
-  { name: resolve(file), startTime: 100, endTime: 175, status: 'passed' }
+  { name: 'apps/web/' + file, startTime: 100, endTime: 175, status: 'passed',
+    assertionResults: [{ fullName: 'renders the selected state', status: 'passed', duration: 75 }] }
 ] }))
 process.exit(Number(process.env.SUITE_EXIT_CODE))
 `, { mode: 0o755 })
-    const result = spawnSync('bash', ['scripts/ci-suite.sh'], {
-      cwd: root, encoding: 'utf8',
-      env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3',
-        CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '',
-        CI_HOST_RUNNER: '0',
-        DURATIONS_INPUT: '', DURATIONS_OUTPUT: output, CI_STATE: join(directory, 'state'),
-        PATH: `${directory}${delimiter}${process.env.PATH}`, CALLS_FILE: calls,
-        SUITE_EXIT_CODE: String(exitCode) },
+    const result = fixture.run('unit-web', '', {
+      PATH: `${directory}${delimiter}${fixture.environment.PATH}`, CALLS_FILE: calls, SUITE_EXIT_CODE: String(exitCode),
     })
+    assert.ifError(result.error)
     assert.equal(result.status, exitCode, result.stderr)
     const args = JSON.parse(readFileSync(calls, 'utf8'))
     assert.ok(args.includes('--reporter=default'))
@@ -112,6 +105,7 @@ process.exit(Number(process.env.SUITE_EXIT_CODE))
     assert.equal(Object.keys(measured).length, 1)
     assert.equal(Object.values(measured)[0], 75)
     assert.ok(Object.keys(measured)[0].startsWith('apps/web/src/'))
-    assert.equal(JSON.parse(readFileSync(`${output}.vitest.json`, 'utf8')).testResults.length, 1)
+    const reportPath = join(fixture.state, 'unit-web.durations.json.vitest.json')
+    assert.equal(JSON.parse(readFileSync(reportPath, 'utf8')).testResults.length, 1)
   })
 }

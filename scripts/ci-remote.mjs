@@ -327,7 +327,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('usage: node scripts/ci-remote.mjs <suite> -- <local command...>')
     process.exit(2)
   }
-  if (environment.CI === 'true' || environment.FOREMAN_CODE_CI_LOCAL === '1') {
+  if (['true', '1'].includes(environment.CI) || environment.CI_HOST_RUNNER === '1'
+    || environment.FOREMAN_CODE_CI_HOST === '1' || environment.FOREMAN_CODE_CI_LOCAL === '1') {
     const child = spawn(command[0], command.slice(1), { stdio: 'inherit' })
     child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0) })
   } else {

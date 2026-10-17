@@ -250,11 +250,29 @@ function hostDatabase(action) {
   }
 }
 
+function goCiDatabase(action) {
+  const runId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
+  if (!/^[0-9a-f-]{36}$/.test(runId)) throw new Error('Invalid host CI database owner')
+  const temporary = process.env.FOREMAN_CODE_CI_DATABASE_STATE ?? process.env.TMPDIR
+  if (!process.env.CI_STATE && !temporary) throw new Error('Go CI database cleanup requires its private run directory')
+  const state = process.env.CI_STATE ?? join(temporary, 'foreman-ci-state')
+  const command = action === 'up' ? 'database-start' : 'database-stop'
+  const script = fileURLToPath(new URL('./ci-go-prerequisites.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script, command], {
+    env: { ...process.env, CI_STATE: state }, stdio: 'inherit',
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`Go CI PostgreSQL ${action} failed with status ${result.status}`)
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const action = process.argv[2]
   if (!['up', 'down', 'stop'].includes(action)) throw new Error('Usage: test-db.mjs up|down|stop')
   const started = performance.now()
-  if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase(action)
+  // The deployed host controller calls this file directly when a job finishes or is cancelled.
+  // Fork CI must never enter the old shared-server or broad compose-cleanup path.
+  if (process.env.FOREMAN_CODE_CI_HOST_RUN_ID) goCiDatabase(action)
+  else if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase(action)
   else hostDatabase(action)
   process.stdout.write(`[test-db] ${action} completed in ${Math.round(performance.now() - started)} ms\n`)
 }

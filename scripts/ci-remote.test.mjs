@@ -32,16 +32,32 @@ test('snapshots uncommitted and untracked changes as a commit on HEAD without to
   assert.equal(git('status', '--porcelain'), 'M a.txt\n?? new.txt')
 })
 
-test('runs the local command on a CI machine and keeps its exit code', () => {
-  const run = spawnSync(process.execPath, [script, 'unit', '--', process.execPath, '-e', 'process.exit(3)'],
-    { env: { ...process.env, CI: 'true' } })
-  assert.equal(run.status, 3)
-})
+function commandEnvironment(t, overrides = {}) {
+  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-command-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const env = { ...process.env, HOME: directory, TMPDIR: directory,
+    XDG_CONFIG_HOME: join(directory, 'config'), XDG_STATE_HOME: join(directory, 'state'),
+    XDG_CACHE_HOME: join(directory, 'cache'), CI: '', CI_HOST_RUNNER: '',
+    FOREMAN_CODE_CI_HOST: '', FOREMAN_CODE_CI_LOCAL: '', ...overrides }
+  delete env.NODE_TEST_CONTEXT
+  delete env.NODE_OPTIONS
+  return env
+}
 
-test('refuses to run tests on a developer machine when Main is unreachable, and says how to proceed', () => {
+for (const environment of [{ CI: 'true' }, { CI: '1' }, { CI_HOST_RUNNER: '1' },
+  { FOREMAN_CODE_CI_HOST: '1' }, { FOREMAN_CODE_CI_LOCAL: '1' }]) {
+  test(`runs the CI command and keeps its exit code with ${JSON.stringify(environment)}`, t => {
+    const run = spawnSync(process.execPath, [script, 'unit', '--', process.execPath, '-e', 'process.exit(3)'],
+      { env: commandEnvironment(t, environment), encoding: 'utf8' })
+    assert.equal(run.error, undefined, run.error?.message)
+    assert.equal(run.status, 3, run.stderr)
+  })
+}
+
+test('refuses to run tests on a developer machine when Main is unreachable, and says how to proceed', t => {
   const run = spawnSync(process.execPath, [script, 'unit', '--', process.execPath, '-e', 'process.exit(0)'],
-    { env: { ...process.env, CI: '', FOREMAN_CODE_CI_LOCAL: '', FOREMAN_CODE_MAIN_URL: 'http://127.0.0.1:9',
-      FOREMAN_CODE_OPERATOR_TOKEN: 'test-token' }, encoding: 'utf8' })
+    { env: commandEnvironment(t), encoding: 'utf8' })
+  assert.equal(run.error, undefined, run.error?.message)
   assert.equal(run.status, 1)
   assert.match(run.stderr, /FOREMAN_CODE_CI_LOCAL=1/)
 })

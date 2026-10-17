@@ -56,16 +56,19 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CI: 'true'
-      # ubuntu-latest is a full systemd VM; the suite probes a delegated user service before integration.
+      # The runner is a full systemd VM; the suite probes a delegated user service before integration.
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
-      FOREMAN_CODE_CI_CLIS_PREFIX: .logs/ci-clis
+      FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
+      CI_STATE: .logs/ci-state
+      CGO_ENABLED: '1'
       SUITE: ${{ inputs.suite }}
+      GO_SUITE: ${{ contains(fromJSON('["typecheck","typecheck-api","lint","lint-api","unit","unit-api","build","build-api","integration"]'), inputs.suite) }}
       SLICE: ${{ inputs.slice }}
       SCOPE: ${{ inputs.scope }}
       SELECTED_FILES: ${{ inputs.files }}
@@ -84,23 +87,48 @@ jobs:
         with:
           node-version: 22.23.2
       # The pinned pnpm through corepack, as on our computers; Worker tests read it offline from corepack's cache.
-      - run: corepack enable && corepack install
+      - run: |
+          umask 077
+          mkdir -p .logs
+          corepack enable && corepack install
+      - name: Go native prerequisites
+        if: env.GO_SUITE == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
+          node scripts/ci-go-prerequisites.mjs native
       - id: cache-inputs
         run: |
           echo "packages=$(node scripts/ci-packages.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
           if [ "$SUITE" != install ]; then
             echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
           fi
+          if [ "$GO_SUITE" = true ]; then
+            echo "go=$(node scripts/ci-go-prerequisites.mjs cache-key)" >> "$GITHUB_OUTPUT"
+          fi
           # A stable per-shard key, so each shard's warm cache is reused by the same shard of later runs.
           echo "shard=$(printf '%s|%s' "$SLICE" "$CI_PARTITION" | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
-          # The CLIs install with the 48-hour package age rule; a weekly key refreshes them.
-          echo "clis=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-      # Harness CLIs installed by the suite's start step; restored before it so a hit skips the install.
-      - if: contains(fromJSON('["unit","unit-api","integration"]'), inputs.suite)
+      - name: Go toolchain cache
+        if: env.GO_SUITE == 'true'
         uses: actions/cache@v4
         with:
-          path: .logs/ci-clis
-          key: clis-v1-${{ runner.os }}-${{ runner.arch }}-node22.23.2-${{ steps.cache-inputs.outputs.clis }}
+          path: .logs/ci-go-cache/toolchains
+          key: go-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci-go-versions.json') }}
+      - name: Staticcheck cache
+        if: contains(fromJSON('["lint","lint-api"]'), inputs.suite)
+        uses: actions/cache@v4
+        with:
+          path: .logs/ci-go-cache/tools
+          key: go-staticcheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci-go-versions.json') }}
+      - id: go-cache
+        if: env.GO_SUITE == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .logs/ci-go-cache/modules
+            .logs/ci-go-cache/build
+          key: go-artifacts-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-inputs.outputs.go }}-${{ inputs.ref }}
+          restore-keys: go-artifacts-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-inputs.outputs.go }}-
       - run: scripts/ci-suite.sh start
       # Installed packages without the pnpm store: half the size, so the restore is twice as fast.
       - id: packages
@@ -110,6 +138,8 @@ jobs:
             node_modules
             apps/*/node_modules
             packages/*/node_modules
+            conformance/node_modules
+            backend/bridge/claude/node_modules
             !node_modules/.pnpm-store
             !node_modules/.vitest-cache
             !**/node_modules/.cache
@@ -141,12 +171,6 @@ jobs:
         with:
           path: packages/contracts/dist
           key: contracts-build-${{ runner.os }}-${{ steps.cache-inputs.outputs.contracts }}
-      - name: API build cache
-        if: inputs.suite == 'build' || inputs.suite == 'build-api'
-        uses: actions/cache@v4
-        with:
-          path: apps/api/dist
-          key: api-build-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/api/src/**', '!apps/api/src/**/*.test.ts', '!apps/api/src/**/__tests__/**', 'apps/api/tsconfig*.json', 'apps/api/package.json', 'packages/contracts/src/**', '!packages/contracts/src/**/*.test.ts', '!packages/contracts/src/**/*.spec.ts', 'packages/contracts/tsconfig*.json', 'packages/contracts/package.json', 'scripts/copy-api-runtime.mjs') }}
       # Both suites check the same no-emit web projects; share semantic results instead of checking them twice.
       - name: Web TypeScript cache
         if: (startsWith(inputs.suite, 'typecheck') || startsWith(inputs.suite, 'build')) && inputs.suite != 'typecheck-api' && inputs.suite != 'build-api'
@@ -165,17 +189,32 @@ jobs:
             node_modules/.vitest-cache
             apps/*/node_modules/.cache
             packages/*/node_modules/.cache
+            conformance/node_modules/.cache
+            backend/bridge/claude/node_modules/.cache
             !apps/web/node_modules/.cache/tsc
           key: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ steps.cache-inputs.outputs.shard }}
           restore-keys: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
         # The output is also kept as an artifact, so Main settles the result without downloading the provider log.
         shell: bash
-        run: scripts/ci-suite.sh 2>&1 | tee "${{ runner.temp }}/suite.log"
+        run: |
+          chmod go-w .logs
+          scripts/ci-suite.sh 2>&1 | tee "${{ runner.temp }}/suite.log"
         env:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
           TEST_RESULTS_OUTPUT: ${{ runner.temp }}/test-results.json
           CI_WATCHDOG_MESSAGE_FILE: ${{ runner.temp }}/watchdog-message.json
+      - name: Remove disposable PostgreSQL
+        if: always()
+        run: node scripts/ci-go-prerequisites.mjs database-stop
+      - name: Save Go module and build caches
+        if: always() && steps.go-cache.conclusion == 'success' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .logs/ci-go-cache/modules
+            .logs/ci-go-cache/build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
       - name: Save suite caches
         if: always() && steps.suite-cache.conclusion == 'success' && steps.suite-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -184,6 +223,8 @@ jobs:
             node_modules/.vitest-cache
             apps/*/node_modules/.cache
             packages/*/node_modules/.cache
+            conformance/node_modules/.cache
+            backend/bridge/claude/node_modules/.cache
             !apps/web/node_modules/.cache/tsc
           key: ${{ steps.suite-cache.outputs.cache-primary-key }}
       # Each failing integration file's full test log, for diagnosis without rerunning it.

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, matchesGlob, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readJsonReport, reportDuration, writeJsonReport } from './ci-report-io.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
@@ -48,16 +49,35 @@ export function durationSlice(files, durations, slice = '') {
 }
 
 export function measuredUnitDurations(report, repository, suite) {
-  const prefix = suite === 'unit-api' ? 'apps/api/' : 'apps/web/'
+  const prefixes = { 'unit-api': 'apps/api', 'unit-web': 'apps/web', go: 'backend', conformance: 'conformance' }
+  const prefix = prefixes[suite]
+  if (!prefix) throw new Error(`Unknown duration suite: ${suite}`)
   const durations = {}
   for (const result of report.testResults ?? []) {
     const file = relative(repository, resolve(repository, result.name)).replaceAll('\\', '/')
-    const elapsed = result.endTime - result.startTime
-    if (file.startsWith(prefix) && result.status === 'passed' && Number.isFinite(elapsed) && elapsed > 0) {
-      durations[file] = elapsed
+    const elapsed = reportDuration(result)
+    if ((file === prefix || file.startsWith(`${prefix}/`)) && result.status === 'passed'
+      && Number.isFinite(elapsed) && elapsed > 0) {
+      durations[file] = Math.min(elapsed, 24 * 3_600_000)
     }
   }
-  return durations
+  // Keep in step with CiDurationsSchema, including when a Go module grows beyond 1,000 packages.
+  return Object.fromEntries(Object.entries(durations).sort(([a], [b]) => a.localeCompare(b)).slice(0, 1000))
+}
+
+export function mergeDurations(reports) {
+  const entries = new Map()
+  for (const report of reports) {
+    if (!report || typeof report !== 'object' || Array.isArray(report)) throw new Error('Invalid durations report.')
+    for (const [path, elapsed] of Object.entries(report)) {
+      if (!path || path.length > 300 || !Number.isFinite(elapsed) || elapsed <= 0 || elapsed > 24 * 3_600_000) {
+        throw new Error(`Invalid measured duration for ${path}.`)
+      }
+      if (entries.has(path)) throw new Error(`Duplicate measured duration for ${path}.`)
+      entries.set(path, elapsed)
+    }
+  }
+  return Object.fromEntries([...entries].sort(([a], [b]) => a.localeCompare(b)).slice(0, 1000))
 }
 
 function readDurations(path) {
@@ -66,7 +86,11 @@ function readDurations(path) {
 
 if (process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`) {
   const [command, suite, argument, output] = process.argv.slice(2)
-  if (command === 'select') {
+  if (command === 'merge') {
+    const [, destination, ...inputs] = process.argv.slice(2)
+    if (!destination || !inputs.length) throw new Error('Usage: ci-unit-files.mjs merge <output> <durations.json>...')
+    writeJsonReport(destination, mergeDurations(inputs.map(readJsonReport)))
+  } else if (command === 'select') {
     const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0')
     const heavy = readDurations(resolve(root, 'apps/web/heavy-tests.json')).files
     const files = unitFiles(tracked, suite, heavy)

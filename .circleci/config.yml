@@ -50,7 +50,9 @@ jobs:
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
-      FOREMAN_CODE_CI_CLIS_PREFIX: .logs/ci-clis
+      FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
+      CI_STATE: .logs/ci-state
+      CGO_ENABLED: '1'
       SUITE: << pipeline.parameters.suite >>
       SLICE: << pipeline.parameters.slice >>
       SCOPE: << pipeline.parameters.scope >>
@@ -68,6 +70,8 @@ jobs:
       - run:
           name: Checkout tested commit
           command: |
+            umask 077
+            chmod go-w .
             started=$(date +%s%3N)
             git init --quiet .
             repository_url="$CIRCLE_REPOSITORY_URL"
@@ -88,6 +92,7 @@ jobs:
       - run:
           name: Node and pnpm
           command: |
+            umask 077
             # Immutable caches restored by their exact key are not saved again at the end of the job.
             # The app keeps private files only under folders other users cannot replace; the image's home is group-writable.
             chmod go-w "$HOME"
@@ -110,24 +115,43 @@ jobs:
             fi
             echo "export PATH=\"$bin:\$PATH\"" >> "$BASH_ENV"
             export PATH="$bin:$PATH"
-            corepack enable
+            corepack enable && corepack install
             node --version
             mkdir -p .logs
             node scripts/ci-packages.mjs key "$PWD" > .logs/ci-packages-key
-            # The harness CLIs install with the 48-hour package age rule; a weekly key refreshes them.
-            date -u +%G-W%V > .logs/ci-clis-key
             if [ "$SUITE" != install ]; then
               node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
             fi
       - when:
           condition:
             matches:
-              pattern: '^(unit|unit-api|integration)$'
+              pattern: '^((typecheck|lint|unit|build)(-api)?|integration)$'
+              value: << pipeline.parameters.suite >>
+          steps:
+            - run:
+                name: Go native prerequisites
+                command: |
+                  sudo apt-get update
+                  sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
+                  node scripts/ci-go-prerequisites.mjs native
+                  node scripts/ci-go-prerequisites.mjs cache-key > .logs/ci-go-cache-key
+            # start/prepare installs the pinned Go toolchain here, never into the system Go directory.
+            - restore_cache:
+                keys:
+                  - go-toolchain-v1-{{ arch }}-{{ checksum "scripts/ci-go-versions.json" }}
+            - restore_cache:
+                keys:
+                  - go-artifacts-v1-{{ arch }}-{{ checksum ".logs/ci-go-cache-key" }}-{{ .Revision }}
+                  - go-artifacts-v1-{{ arch }}-{{ checksum ".logs/ci-go-cache-key" }}-
+      - when:
+          condition:
+            matches:
+              pattern: '^lint(-api)?$'
               value: << pipeline.parameters.suite >>
           steps:
             - restore_cache:
                 keys:
-                  - clis-v1-{{ arch }}-node22.23.2-{{ checksum ".logs/ci-clis-key" }}
+                  - go-staticcheck-v1-{{ arch }}-{{ checksum "scripts/ci-go-versions.json" }}
       - run: scripts/ci-suite.sh start
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - restore_cache:
@@ -152,8 +176,13 @@ jobs:
           name: Suite
           command: |
             set -o pipefail
+            chmod go-w .logs
             mkdir -p .logs/ci-durations
             scripts/ci-suite.sh 2>&1 | tee .logs/ci-durations/suite.log
+      - run:
+          name: Remove disposable PostgreSQL
+          when: always
+          command: node scripts/ci-go-prerequisites.mjs database-stop
       # Publish results before cache saves and any early halt.
       - store_artifacts:
           path: .logs/ci-durations
@@ -173,6 +202,24 @@ jobs:
                   - apps/web/node_modules/.tmp
                   - apps/worker/node_modules/.cache
                   - packages/contracts/node_modules/.cache
+                  - conformance/node_modules/.cache
+                  - backend/bridge/claude/node_modules/.cache
+      - when:
+          condition:
+            matches:
+              pattern: '^((typecheck|lint|unit|build)(-api)?|integration)$'
+              value: << pipeline.parameters.suite >>
+          steps:
+            - save_cache:
+                key: go-artifacts-v1-{{ arch }}-{{ checksum ".logs/ci-go-cache-key" }}-{{ .Revision }}
+                when: always
+                paths:
+                  - .logs/ci-go-cache/modules
+                  - .logs/ci-go-cache/build
+            - save_cache:
+                key: go-toolchain-v1-{{ arch }}-{{ checksum "scripts/ci-go-versions.json" }}
+                paths:
+                  - .logs/ci-go-cache/toolchains
       # Keep summaries and failing files' logs; the per-slot copies and the archive of them are successful-file noise.
       - run:
           name: Trim integration logs
@@ -186,14 +233,14 @@ jobs:
       - when:
           condition:
             matches:
-              pattern: '^(unit|unit-api|integration)$'
+              pattern: '^lint(-api)?$'
               value: << pipeline.parameters.suite >>
           steps:
             - save_cache:
-                key: clis-v1-{{ arch }}-node22.23.2-{{ checksum ".logs/ci-clis-key" }}
+                key: go-staticcheck-v1-{{ arch }}-{{ checksum "scripts/ci-go-versions.json" }}
                 paths:
-                  - .logs/ci-clis
-      # Immutable keys already restored exactly need no save; a hit on all three ends the job here.
+                  - .logs/ci-go-cache/tools
+      # Go caches have already been saved; the original immutable caches can now skip repeated saves.
       - run:
           name: Skip saves of restored caches
           command: |
@@ -206,7 +253,7 @@ jobs:
           paths:
             - ~/.nvm/versions/node/v22.23.2
       # The suite adds its own caches under these folders; the packages cache keeps only the installed state.
-      - run: rm -rf node_modules/.vitest-cache apps/*/node_modules/.cache apps/*/node_modules/.tmp packages/*/node_modules/.cache
+      - run: rm -rf node_modules/.vitest-cache apps/*/node_modules/.cache apps/*/node_modules/.tmp packages/*/node_modules/.cache conformance/node_modules/.cache backend/bridge/claude/node_modules/.cache
       - save_cache:
           key: packages-with-store-metadata-v2-{{ checksum ".logs/ci-packages-key" }}
           paths:
@@ -216,6 +263,8 @@ jobs:
             - apps/web/node_modules
             - apps/worker/node_modules
             - packages/contracts/node_modules
+            - conformance/node_modules
+            - backend/bridge/claude/node_modules
       - when:
           condition:
             not:
