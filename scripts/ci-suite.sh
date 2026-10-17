@@ -19,7 +19,9 @@ case "${SUITE:-}" in
     echo '[go-diagnostic] exact candidate c22533a4823846c13a05263909af291938e36ddb backend verified'
     code=0
     ci_go_typecheck || code=$?
-    ci_go_lint || { if [ "$code" = 0 ]; then code=$?; if [ "$code" = 0 ]; then code=1; fi; fi; }
+    lint_code=0
+    ci_go_lint || lint_code=$?
+    if [ "$code" = 0 ]; then code="$lint_code"; fi
     echo "[go-diagnostic] completed with exit $code; diagnostic evidence only"
     exit "$code" ;;
 esac
