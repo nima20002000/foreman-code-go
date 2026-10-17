@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CiPart, CiSuite } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
@@ -6,6 +7,7 @@ import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 import { affectedSnapshot } from '../../../../../scripts/ci-affected.mjs'
 import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 import { cloudService } from './cloudService.testSupport.js'
+import { cloudSuiteRunner } from './cloudRunner.testSupport.js'
 
 import { confirmCancellation, fixture } from './cloud.testSupport.js'
 import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
@@ -327,24 +329,59 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.dispatched).toEqual([])
   })
 
-  it.each(['unit', 'integration'] as const)('declines oversized fragmented %s selections without retaining a start', async suite => {
+  it.each([
+    ['github', 'unit'], ['github', 'integration'], ['circleci', 'unit'], ['circleci', 'integration'],
+  ] as const)('runs oversized fragmented %s %s selections with the complete file list', async (provider, suite) => {
     const candidates = Array.from({ length: 600 }, (_, index) =>
       `apps/api/test/fragment${String(index).padStart(3, '0')}.${suite === 'integration' ? 'integration.' : ''}test.ts`)
-    const f = await fixture(Object.fromEntries(candidates.map(file => [file, ''])), { provider: 'circleci' })
+    const f = await fixture(Object.fromEntries(candidates.map(file => [file, ''])), { provider })
     const runId = randomUUID()
     const files = candidates.filter((_, index) => index % 2 === 0)
     const request = { operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
       suite, scope: 'affected', files }
-    await expect(f.cloud.handle(request)).rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    const started = await f.cloud.handle(request)
+    expect(started).toMatchObject({ run: { state: provider === 'github' ? 'starting' : 'running' } })
+    const dispatches = provider === 'github' ? f.dispatched : f.circle.triggered
+    expect(dispatches).toHaveLength(1)
+    const command = dispatches[0]!
+    const ref = command[command.indexOf(provider === 'github' ? '--ref' : '--branch') + 1]!
+    const checkout = await f.checkoutMirror(ref)
+    const inline = command.find(value => value.startsWith(suite === 'unit' ? 'files=' : 'slice='))
+    if (provider === 'github') expect(inline!.slice(inline!.indexOf('=') + 1).length).toBeGreaterThan(500)
+    else {
+      expect(command.find(value => value.startsWith('partition='))).toMatch(/^partition=sha256:[a-f0-9]{64}$/)
+      const manifest = JSON.parse(await readFile(join(checkout, 'ci-dispatch-inputs.json'), 'utf8'))
+      expect(manifest[suite === 'unit' ? 'files' : 'slice'].length).toBeGreaterThan(500)
+    }
+    const runner = await cloudSuiteRunner(checkout, command, provider)
+    const result = runner.run()
+    expect(result.status, result.stderr).toBe(0)
+    const calls = (await readFile(runner.calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    expect(calls).toEqual(suite === 'integration' ? [['pnpm', 'test:integration', '--files', ...files]] : [
+      ['pnpm', '--filter', '@foreman-code/contracts', 'build'],
+      ['--', 'corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run',
+        ...files.map(file => file.slice('apps/api/'.length))],
+    ])
+    expect(await f.reopen().handle(request)).toMatchObject({ run: { runId } })
+    expect(dispatches).toHaveLength(1)
+  })
+
+  it('rejects oversized CircleCI inline dispatch parameters before sending a trigger', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    const runId = randomUUID()
+    const durations = JSON.stringify({ ['apps/api/test/' + 'sample'.repeat(90) + '.integration.test.ts']: 1 })
+    expect(durations.length).toBeGreaterThan(500)
+    await expect(f.cloud.provider.dispatch({ mirror: 'octo/site-ci', branch: 'main', runId,
+      suite: 'integration', slice: '', durations })).rejects.toMatchObject({
+      code: 'CI_CLOUD_UNAVAILABLE', message: expect.stringContaining('durations longer than 500 characters'),
+    })
     expect(f.circle.triggered).toEqual([])
-    // Reusing the id after a declined placement must still dispatch the caller's valid selection.
-    expect(await f.reopen().handle({ ...request, files: files.slice(0, 1) }))
+    const file = 'apps/api/test/a.integration.test.ts'
+    expect(await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+      repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'affected', files: [file] }))
       .toMatchObject({ run: { state: 'running' } })
     expect(f.circle.triggered).toHaveLength(1)
-    const input = f.circle.triggered[0]!.find(value => value.startsWith(suite === 'unit' ? 'files=' : 'slice='))!
-    const inventory = f.run('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort()
-      .filter(file => suite === 'unit' || file.endsWith('.integration.test.ts'))
-    expect(selectByIndexes(inventory, input.slice(input.indexOf('=') + 1))).toEqual(files.slice(0, 1))
+    expect(f.circle.triggered[0]).toContain('slice=s:0')
   })
 
   it.each(['unit', 'integration'] as const)('starts a sparse %s selection on CircleCI that is too long to list index by index', async suite => {

@@ -1,51 +1,15 @@
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFile, unlink, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { expect, it } from 'vitest'
-import { parse } from 'yaml'
 import { integrationPartition } from '@foreman-code/contracts'
 import { repositoryFileList, selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 import { fixture } from './cloud.testSupport.js'
+import { cloudSuiteRunner } from './cloudRunner.testSupport.js'
 
-const root = fileURLToPath(new URL('../../../../../', import.meta.url))
 const parameter = (args: string[], name: string) => args.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1)
-
-async function runner(checkout: string, command: string[], provider: 'github' | 'circleci') {
-  const path = provider === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
-  const workflow = parse(await readFile(join(root, path), 'utf8'))
-  const declarations = provider === 'github' ? workflow.on.workflow_dispatch.inputs : workflow.parameters
-  const parameters = Object.fromEntries(Object.entries(declarations).map(([name, value]) => [name,
-    parameter(command, name) ?? (value as { default?: string }).default ?? '']))
-  const template = workflow.jobs.ci.env ?? workflow.jobs.ci.environment
-  const environment = Object.fromEntries(Object.entries(template).map(([name, value]) => [name,
-    String(value).replace(/\$\{\{\s*inputs\.(\w+)\s*\}\}|<<\s*pipeline.parameters\.(\w+)\s*>>/g,
-      (_match, github: string | undefined, circle: string | undefined) => String(parameters[github ?? circle!])),
-  ]))
-  // Install runtime modules without changing the miniature repository's tracked file inventory.
-  for (const file of ['scripts/ci-suite.sh', 'scripts/ci-files.mjs', 'scripts/ci-selection.mjs',
-    'scripts/ci-affected.mjs', 'packages/contracts/src/ciPartition.mjs',
-    'packages/contracts/src/integrationScheduling.mjs', 'packages/contracts/src/ciImportGraph.mjs']) {
-    await mkdir(dirname(join(checkout, file)), { recursive: true })
-    await copyFile(join(root, file), join(checkout, file))
-  }
-  const bin = join(checkout, 'bin')
-  await mkdir(bin)
-  const calls = join(checkout, 'calls.jsonl')
-  await writeFile(calls, '')
-  await writeFile(join(bin, 'corepack'), `#!${process.execPath}
-require('node:fs').appendFileSync(process.env.CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')
-`, { mode: 0o755 })
-  const run = () => spawnSync('bash', ['scripts/ci-suite.sh'], { cwd: checkout, encoding: 'utf8', env: {
-    ...process.env, ...environment, PATH: `${bin}:${process.env.PATH}`, CALLS_FILE: calls,
-    CI_HOST_RUNNER: '1', CI_PREREQUISITES_UNTRACKED: '1', CI_USER_SYSTEMD: '0',
-    CI_EXPECTED_DURATION_MS: '', TEST_RESULTS_OUTPUT: '', CI_STATE: join(checkout, 'state'),
-    DURATIONS_OUTPUT: join(checkout, 'durations.json'),
-    FOREMAN_CODE_CI_CLIS_PREFIX: '', FOREMAN_CODE_CI_TYPECHECK_CACHE: '',
-  } })
-  return { run, calls }
-}
 
 it.each(['github', 'circleci'] as const)('runs an oversized partition on %s with its complete file list', async provider => {
   const files = Array.from({ length: 40 }, (_, index) => `apps/api/test/selected-${index.toString().padStart(3, '0')}.integration.test.ts`)
@@ -65,7 +29,7 @@ it.each(['github', 'circleci'] as const)('runs an oversized partition on %s with
   }
   const ref = command[command.indexOf(provider === 'circleci' ? '--branch' : '--ref') + 1]!
   const checkout = await f.checkoutMirror(ref)
-  const suite = await runner(checkout, command, provider)
+  const suite = await cloudSuiteRunner(checkout, command, provider)
   const result = suite.run()
   expect(result.status, result.stderr).toBe(0)
   const calls = (await readFile(suite.calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
@@ -98,7 +62,7 @@ it('runs a CircleCI affected file selection that exceeds the compact index param
   const command = f.circle.triggered[0]!
   expect(parameter(command, 'partition')).toMatch(/^sha256:[a-f0-9]{64}$/)
   const checkout = await f.checkoutMirror(command[command.indexOf('--branch') + 1]!)
-  const suite = await runner(checkout, command, 'circleci')
+  const suite = await cloudSuiteRunner(checkout, command, 'circleci')
   const result = suite.run()
   expect(result.status, result.stderr).toBe(0)
   const calls = (await readFile(suite.calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
@@ -136,7 +100,7 @@ it('selects affected files against an explicit base from a shallow CircleCI exec
   const clone = spawnSync('git', ['clone', '--quiet', '--depth=1', '--branch', ref,
     pathToFileURL(join(f.root, 'mirror.git')).href, checkout], { encoding: 'utf8' })
   expect(clone.status, clone.stderr).toBe(0)
-  const suite = await runner(checkout, command, 'circleci')
+  const suite = await cloudSuiteRunner(checkout, command, 'circleci')
   const result = suite.run()
   expect(result.status, result.stderr).toBe(0)
   const calls = (await readFile(suite.calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
