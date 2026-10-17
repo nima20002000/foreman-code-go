@@ -193,15 +193,16 @@ afterEach(() => {
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
   it('unlocks a rejected Agent branch prefix and restores the saved draft on Discard and reload', async () => {
-    // Recovery needs only immediate responses, not elapsed polling or typing time.
-    vi.useFakeTimers()
+    // Freeze the clock and polling; query notifications settle through the UI.
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     const startedAt = Date.now()
-    const update = async (action: () => void) => {
-      await act(async () => {
-        action()
-        await vi.advanceTimersByTimeAsync(0)
-      })
+    const openSettings = async () => {
+      const navigation = await screen.findByLabelText('Agents and connections')
+      fireEvent.click(within(navigation).getByRole('button', { name: 'Entry · Node 0' }))
+      return within(await screen.findByLabelText('node-0 settings'))
     }
+    const actions = () => within(screen.getByLabelText('Draft actions'))
+    const save = () => actions().getByRole('button', { name: 'Save changes' })
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({
       code: 'WORKTREE_BINDING_REQUIRED', message: 'Select an approved root for this Agent branch prefix.',
     }, 409))
@@ -209,35 +210,46 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     const discard = vi.spyOn(nextDraftApi, 'editDiscard')
     let view = mount()
     const saved = structuredClone(edit().graph)
-    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
-    await update(() => fireEvent.change(screen.getByRole('textbox', { name: 'Agent branch prefix' }), {
-      target: { value: 'foreman/journey-worker' },
-    }))
-    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' })))
-    expect(saveButton()).toBeEnabled()
-    await update(() => fireEvent.click(saveButton()))
-    expect(screen.getAllByText('Select an approved root for this Agent branch prefix.')).not.toHaveLength(0)
-    expect(readEditOutbox(key)).toBeUndefined()
+    const settings = await openSettings()
+    const branchPrefix = await settings.findByLabelText('Agent branch prefix')
+    expect(branchPrefix).toHaveRole('textbox')
+    fireEvent.change(branchPrefix, { target: { value: 'foreman/journey-worker' } })
+    const apply = settings.getByLabelText('Save agent settings')
+    expect(apply).toHaveRole('button')
+    fireEvent.click(apply)
+    await waitFor(() => expect(save()).toBeEnabled())
+    fireEvent.click(save())
+    expect(await screen.findAllByText('Select an approved root for this Agent branch prefix.')).not.toHaveLength(0)
+    await waitFor(() => {
+      expect(save()).toBeEnabled()
+      expect(actions().getByRole('button', { name: 'Discard changes' })).toBeEnabled()
+      expect(readEditOutbox(key)).toBeUndefined()
+    })
     expect(nativeNode(edit().graph.nodes[0]).worktree?.branchPrefix).toBe('foreman/journey-worker')
     expect(screen.queryByRole('button', { name: 'Reconcile Save' })).not.toBeInTheDocument()
 
-    await update(() => { view = reopen(view) })
-    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBeInTheDocument()
-    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
-    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Use workflow default' })).toBeEnabled()
-    await update(() => fireEvent.click(screen.getByRole('button', { name: /^Discard changes$/ })))
-    await update(() => fireEvent.click(within(screen.getByRole('alertdialog'))
-      .getByRole('button', { name: 'Discard changes' })))
+    view = reopen(view)
+    expect(await screen.findByLabelText('Workflow authoring')).toHaveRole('region')
+    const retainedSettings = await openSettings()
+    const retainedPrefix = await retainedSettings.findByLabelText('Agent branch prefix')
+    expect(retainedPrefix).toHaveValue('foreman/journey-worker')
+    expect(retainedPrefix).toBeEnabled()
+    expect(retainedSettings.getByRole('button', { name: 'Use workflow default' })).toBeEnabled()
+    fireEvent.click(actions().getByRole('button', { name: 'Discard changes' }))
+    const confirmation = await screen.findByRole('alertdialog', { name: 'Discard your changes?' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(within(screen.getByLabelText('Workflow controls'))
+      .getByRole('button', { name: 'Start saved version' })).toBeEnabled())
     expect(nextDraftDirty(edit())).toBe(false)
     expect(edit().graph).toEqual(saved)
     expect(readEditSnapshot(key)?.graph).toEqual(saved)
 
-    await update(() => { reopen(view) })
-    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBeInTheDocument()
-    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
-    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toHaveValue('')
-    expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
+    reopen(view)
+    expect(await screen.findByLabelText('Workflow authoring')).toHaveRole('region')
+    const restoredSettings = await openSettings()
+    const restoredPrefix = await restoredSettings.findByLabelText('Agent branch prefix')
+    expect(restoredPrefix).toHaveValue('')
+    expect(restoredPrefix).toBeEnabled()
     expect(edit().graph).toEqual(saved)
     expect(stage).toHaveBeenCalledOnce()
     expect(advance).not.toHaveBeenCalled()
