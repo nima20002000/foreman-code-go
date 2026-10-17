@@ -1,0 +1,56 @@
+{
+  "source": "e5cd3120a74a5edef9bcafdf409bad6d448df5b8",
+  "sourceTree": "b03d74cf7d5ee34eec0639fc4e5948e11e83068b",
+  "package": "./internal/devices",
+  "goFiles": [
+    "internal/devices/identity_key.go",
+    "internal/devices/identity_key_test.go",
+    "internal/devices/main_identity.go",
+    "internal/devices/main_identity_integration_test.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [
+    "TestMainIdentityConvergesConcurrentStartsAndSurvivesRestart",
+    "TestMainIdentityRejectsWrongInstallationWithoutWriting",
+    "TestMainIdentityRefusesCorruptionWithoutReplacingPersistedRecord",
+    "TestMainIdentityPropagatesCallerCancellationWithoutCreatingIdentity"
+  ],
+  "mode": "integration-only",
+  "compositionProvenance": {
+    "scope": "devices",
+    "main": "81884d7ffa550ba9991a709e4ce89b536fcc2355",
+    "mainTree": "413f513f71438946d9c039af3d3ead4eed552402",
+    "feature": "5f02bb46c5283006f828235da985471f3b1bc2e3",
+    "featureTree": "e6e8053084d4b0be91ebd5c5e61311011d707c1a",
+    "composition": "e5cd3120a74a5edef9bcafdf409bad6d448df5b8",
+    "compositionTree": "b03d74cf7d5ee34eec0639fc4e5948e11e83068b",
+    "branch": "go/diagnostic-devices-pg-e5cd3120",
+    "files": [
+      {
+        "path": "backend/internal/devices/identity_key.go",
+        "preimage": null,
+        "sourceBlob": "50a08d72d0a86d2bfa4923a7ab9b94db1ed93637",
+        "composedBlob": "50a08d72d0a86d2bfa4923a7ab9b94db1ed93637"
+      },
+      {
+        "path": "backend/internal/devices/identity_key_test.go",
+        "preimage": null,
+        "sourceBlob": "c23010befe4bea1dc7e5fee7a655d13be672e325",
+        "composedBlob": "c23010befe4bea1dc7e5fee7a655d13be672e325"
+      },
+      {
+        "path": "backend/internal/devices/main_identity.go",
+        "preimage": null,
+        "sourceBlob": "e8851bdfd0f6a3ca15fd5e29b453406ae406e3a5",
+        "composedBlob": "e8851bdfd0f6a3ca15fd5e29b453406ae406e3a5"
+      },
+      {
+        "path": "backend/internal/devices/main_identity_integration_test.go",
+        "preimage": null,
+        "sourceBlob": "11e8a880854181b706b30f567250cacb3853937b",
+        "composedBlob": "11e8a880854181b706b30f567250cacb3853937b"
+      }
+    ],
+    "sourceChanges": "Only unchanged feature Go blobs added to exact schema-fixed main"
+  }
+}
