@@ -254,6 +254,9 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
   }
 
   protected assertTurnStartable(runtime: Runtime, session: NativeSessionReference): void {
+    if (runtime.input.kind === 'operator' && runtime.input.observationOnly) {
+      throw new HarnessExecutionError('CODEX_OBSERVATION_ONLY', 'Refresh the scoped environment before sending another turn.')
+    }
     if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
     if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
     if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)) {
