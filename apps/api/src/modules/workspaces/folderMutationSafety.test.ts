@@ -41,28 +41,37 @@ function database(path: string) {
     messages: [] as unknown[][], turns: [] as Record<string, unknown>[],
     receipts: [] as Array<{ operation: string; commandId: string; result: unknown }>,
     sessionControls: undefined as SessionControlState | undefined,
+    runDirectories: [] as Array<{ path: string }>,
     readChatReferences: async () => {},
+    beforeMessage: async () => {},
   }
-  const locks = new Map<string, { owner: object; done: ReturnType<typeof deferred> }>()
+  const locks = new Map<string, Map<object, { shared: boolean; done: ReturnType<typeof deferred> }>>()
   const blocked = deferred()
   function connect() {
     const owner = {}
     const held = new Set<string>()
     const releaseLocks = () => {
       for (const key of held) {
-        locks.get(key)!.done.resolve(undefined)
-        locks.delete(key)
+        const owners = locks.get(key)!
+        owners.get(owner)!.done.resolve(undefined)
+        owners.delete(owner)
+        if (!owners.size) locks.delete(key)
       }
       held.clear()
     }
     const query = async (text: string, values: unknown[] = []) => {
       if (text.includes('pg_advisory_xact_lock')) {
         const key = String(values[0])
-        while (locks.has(key) && locks.get(key)!.owner !== owner) {
+        const shared = text.includes('pg_advisory_xact_lock_shared')
+        let conflict
+        while ((conflict = [...(locks.get(key) ?? [])].find(([other, lock]) =>
+          other !== owner && (!shared || !lock.shared)))) {
           blocked.resolve()
-          await locks.get(key)!.done.promise
+          await conflict[1].done.promise
         }
-        locks.set(key, locks.get(key) ?? { owner, done: deferred() })
+        const owners = locks.get(key) ?? new Map()
+        owners.set(owner, owners.get(owner) ?? { shared, done: deferred() })
+        locks.set(key, owners)
         held.add(key)
         return result([])
       }
@@ -75,16 +84,17 @@ function database(path: string) {
     return { query, release: releaseLocks }
   }
   async function execute(text: string, values: unknown[]) {
-    if (text.includes('with continuing_runs')) return result([])
+    if (text.includes('with continuing_runs')) return result(state.runDirectories)
     if (text.includes('select execution_location')) return result([])
     if (text.includes('from workspace_repository_imports')) return result(state.imports)
     if (text.includes("c.record->>'workingDirectory'")) {
       if (text.includes('active_request_id is not null')) {
-        const rows = state.turns.length && state.hostKind === 'main' ? [{ path }] : []
+        const rows = state.turns.length && state.hostKind === 'main'
+          ? [{ path: conversation.record.workingDirectory }] : []
         await state.readChatReferences()
         return result(rows)
       }
-      return result([{ path, host_kind: state.hostKind }])
+      return result([{ path: conversation.record.workingDirectory, host_kind: state.hostKind }])
     }
     if (text.includes('select * from operator_conversations')) return result([conversation])
     if (text.includes('select archived_at from workspaces')) return result([{ archived_at: null }])
@@ -93,6 +103,7 @@ function database(path: string) {
       return result(state.sessionControls ? [{ record: state.sessionControls }] : [])
     }
     if (text.includes('insert into operator_conversation_messages')) {
+      await state.beforeMessage()
       state.messages.push(values)
       return result([])
     }
@@ -216,10 +227,11 @@ it('keeps retained-folder files when follow-up admission wins recursive removal'
   await writeFile(join(f.path, 'work.txt'), 'retained work')
   const entered = deferred()
   const release = deferred()
-  const sending = f.send(randomUUID(), async () => {
+  f.state.beforeMessage = async () => {
     entered.resolve()
     await release.promise
-  })
+  }
+  const sending = f.send()
   await entered.promise
   const deleting = f.remove().then(value => ({ value }), (error: unknown) => ({ error }))
   try {
@@ -248,6 +260,103 @@ it('does not check a device conversation directory on the application host', asy
   await rm(f.path, { recursive: true })
   expect(await f.send()).toMatchObject({ turn: { delivery: 'queued' } })
 })
+
+it.each(['sibling', 'device', 'receipt replay'] as const)(
+  'admits an unrelated %s chat while recursive removal is paused', async kind => {
+    const f = await fixture()
+    const requestId = randomUUID()
+    if (kind === 'receipt replay') await f.send(requestId)
+    if (kind === 'device') f.state.hostKind = 'device'
+    const other = join(f.root, 'other-project')
+    await mkdir(other)
+    const folder = (await f.folders.list(principal, {})).items.find(item => item.path === other)!
+    const checked = deferred()
+    const release = deferred()
+    f.state.readChatReferences = async () => {
+      checked.resolve()
+      await release.promise
+    }
+    const deleting = f.folders.delete(principal, 'http', {
+      path: other, expectedIdentity: folder.identity, commandId: randomUUID(),
+    })
+    await checked.promise
+    const sending = f.send(requestId)
+    try {
+      const first = await Promise.race([
+        sending.then(value => ({ value })),
+        f.blocked.promise.then(() => ({ blocked: true })),
+      ])
+      expect(first).toMatchObject({ value: { replayed: kind === 'receipt replay', turn: { delivery: 'queued' } } })
+    } finally {
+      release.resolve()
+      await deleting
+      await sending
+    }
+    await expect(lstat(other)).rejects.toMatchObject({ code: 'ENOENT' })
+  },
+)
+
+it('serializes a child chat folder with recursive removal of its parent', async () => {
+  const f = await fixture()
+  f.conversation.record.workingDirectory = join(f.path, 'child')
+  await mkdir(f.conversation.record.workingDirectory)
+  const folder = (await f.folders.list(principal, {})).items[0]!
+  const checked = deferred()
+  const release = deferred()
+  f.state.readChatReferences = async () => {
+    checked.resolve()
+    await release.promise
+  }
+  const deleting = f.folders.delete(principal, 'http', {
+    path: f.path, expectedIdentity: folder.identity, commandId: randomUUID(),
+  })
+  await checked.promise
+  const sending = f.send().then(value => ({ value }), (error: unknown) => ({ error }))
+  try {
+    await Promise.race([sending, f.blocked.promise])
+  } finally {
+    release.resolve()
+  }
+  await deleting
+  expect(await sending).toMatchObject({ error: { code: 'AGENT_CHAT_DIRECTORY_UNAVAILABLE' } })
+  expect(f.state.turns).toHaveLength(0)
+  expect(f.state.messages).toHaveLength(0)
+})
+
+it.each(['rename', 'delete', 'undo'] as const)(
+  'protects overlapping active chat and Run directories from folder-picker %s', async action => {
+    for (const source of ['chat', 'run'] as const) {
+      for (const overlap of ['same', 'parent', 'child'] as const) {
+        const f = await fixture()
+        const creationCommandId = randomUUID()
+        const folder = (await f.browser.create(principal, 'http', {
+          parentPath: f.root, name: 'active-folder', commandId: creationCommandId,
+        })).value
+        let retainedPath = folder.path
+        if (overlap === 'parent') retainedPath = f.root
+        if (overlap === 'child') retainedPath = join(folder.path, 'working')
+        if (source === 'chat') {
+          await f.send()
+          f.conversation.record.workingDirectory = retainedPath
+        } else {
+          f.state.runDirectories.push({ path: retainedPath })
+        }
+        if (action === 'delete') {
+          expect(await f.browser.deleteFolders(principal, 'http', { paths: [folder.path], commandId: randomUUID() }))
+            .toMatchObject({ value: { deleted: [], failed: [{ path: folder.path, message: expect.any(String) }] } })
+        } else if (action === 'rename') {
+          await expect(f.browser.renameCreated(principal, 'http', {
+            path: folder.path, name: 'renamed', commandId: randomUUID(),
+          })).rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
+        } else {
+          await expect(f.browser.undoCreated(principal, 'http', { creationCommandId, commandId: randomUUID() }))
+            .rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
+        }
+        expect((await lstat(folder.path)).isDirectory()).toBe(true)
+      }
+    }
+  },
+)
 
 it.each(['rename', 'delete', 'undo'] as const)('protects an unfinished import from folder-picker %s', async action => {
   const f = await fixture()
