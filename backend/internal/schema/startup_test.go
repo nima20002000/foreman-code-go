@@ -238,12 +238,7 @@ func (s *fixtureSession) Query(context.Context, string, ...any) (pgx.Rows, error
 }
 
 func (s *fixtureSession) QueryRow(context.Context, string, ...any) pgx.Row {
-	if len(s.rowResults) == 0 {
-		return fixtureRow{err: errors.New("unexpected database inspection")}
-	}
-	value := s.rowResults[0]
-	s.rowResults = s.rowResults[1:]
-	return fixtureRow{value: value}
+	return fixtureRow{session: s}
 }
 
 func (s *fixtureSession) Release(cause error) {
@@ -252,22 +247,29 @@ func (s *fixtureSession) Release(cause error) {
 }
 
 type fixtureRow struct {
-	value bool
-	err   error
+	session *fixtureSession
 }
 
 func (r fixtureRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
-	}
 	if len(dest) != 1 {
 		return fmt.Errorf("expected one result destination, got %d", len(dest))
+	}
+	if values, ok := dest[0].(*[]string); ok {
+		*values = []string{
+			"30min", "5s", "0", "0", "UTF8", "on", `"$user", public`,
+			"on", "content", "notice", "on", "", "heap",
+		}
+		return nil
 	}
 	value, ok := dest[0].(*bool)
 	if !ok {
 		return fmt.Errorf("unexpected result destination %T", dest[0])
 	}
-	*value = r.value
+	if len(r.session.rowResults) == 0 {
+		return errors.New("unexpected database inspection")
+	}
+	*value = r.session.rowResults[0]
+	r.session.rowResults = r.session.rowResults[1:]
 	return nil
 }
 

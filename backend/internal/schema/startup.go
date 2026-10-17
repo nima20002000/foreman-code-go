@@ -31,6 +31,10 @@ func (b *Baseline) Prepare(ctx context.Context, pool database.Acquirer, checkpoi
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	return database.WithTransaction(ctx, pool, func(ctx context.Context, sql database.Querier) error {
+		settings, err := readBaselineSessionSettings(ctx, sql)
+		if err != nil {
+			return err
+		}
 		if _, err := sql.Exec(ctx, "set local statement_timeout = 0"); err != nil {
 			return fmt.Errorf("set schema operation timeout: %w", err)
 		}
@@ -39,6 +43,12 @@ func (b *Baseline) Prepare(ctx context.Context, pool database.Acquirer, checkpoi
 		}
 		if err := b.prepareApplication(ctx, sql); err != nil {
 			return err
+		}
+		if err := restoreBaselineSessionSettings(ctx, sql, settings); err != nil {
+			return err
+		}
+		if _, err := sql.Exec(ctx, "set local statement_timeout = 0"); err != nil {
+			return fmt.Errorf("set schema operation timeout: %w", err)
 		}
 		if err := probeCheckpoints(ctx, sql, checkpointSchema); err != nil {
 			return incompatibleCause("checkpoint schema is unavailable", err)
