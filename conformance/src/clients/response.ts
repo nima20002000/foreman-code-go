@@ -13,14 +13,73 @@ interface SuccessExpectation {
   contract: string
 }
 
-function redactText(text: string, secrets: readonly string[]): string {
-  for (const secret of secrets) {
-    text = text.replaceAll(secret, REDACTED)
-    text = text.replaceAll(JSON.stringify(secret).slice(1, -1), REDACTED)
+function sensitiveKey(key: string): boolean {
+  return CREDENTIAL_KEY.test(key.replace(/[^a-z0-9]/gi, ''))
+}
+
+function credentialEnd(text: string, start: number, cookie: boolean): number {
+  const scheme = /^(?:Bearer|Basic)\s+/i.exec(text.slice(start))
+  if (scheme) start += scheme[0].length
+
+  let openingSlashes = 0
+  while (text[start + openingSlashes] === '\\') openingSlashes++
+  const quote = text[start + openingSlashes]
+  if (quote === '"' || quote === "'") {
+    let slashes = 0
+    for (let index = start + openingSlashes + 1; index < text.length; index++) {
+      const character = text[index]
+      if (character === '\\') {
+        slashes++
+        continue
+      }
+      // JSON-encoded quotes have 1, 3, ... preceding slashes. An escaped
+      // interior quote has another encoding level and must not end the value.
+      if (character === quote && slashes >= openingSlashes
+        && (slashes - openingSlashes) % (2 * (openingSlashes + 1)) === 0) return index + 1
+      slashes = 0
+    }
+    // An unterminated quoted credential has no trustworthy end delimiter.
+    return text.length
   }
-  return text
-    .replace(/\b(Bearer|Basic)\s+[^\s"'\\,;<>]+/gi, `$1 ${REDACTED}`)
-    .replace(/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie|authorization)\s*[:=]\s*)[^\s"'\\,;&<>]+/gi, `$1${REDACTED}`)
+
+  // A Cookie/Set-Cookie header can contain several credentials separated by
+  // semicolons. Preserve later lines, not a later cookie from this header.
+  if (cookie) {
+    const newline = /[\r\n]/.exec(text.slice(start))
+    return newline === null ? text.length : start + newline.index
+  }
+
+  let end = start
+  while (end < text.length) {
+    const character = text[end]!
+    if (character === '\\' && end + 1 < text.length) end += 2
+    else if (/[\s,;&<>{}\[\]()]/.test(character)) break
+    else end++
+  }
+  return end
+}
+
+function redactText(text: string, secrets: readonly string[]): string {
+  const variants = [...new Set(secrets.flatMap(secret => [secret, JSON.stringify(secret).slice(1, -1)]))]
+    .filter(secret => secret.length > 0).sort((left, right) => right.length - left.length)
+  const known = variants.length === 0 ? null
+    : new RegExp(variants.map(secret => secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+  // One replacement pass, longest match first: neither secret prefixes nor
+  // duplicates may expose a suffix or rescan an inserted redaction marker.
+  const redactKnown = (part: string): string => known === null ? part : part.replace(known, REDACTED)
+  const labels = /\b(?:([a-z][a-z0-9_-]*)(?:\\*["'])?\s*[:=]\s*|(?:Bearer|Basic)\s+)/gi
+  let result = ''
+  let cursor = 0
+  for (let match = labels.exec(text); match; match = labels.exec(text)) {
+    if (match[1] !== undefined && !sensitiveKey(match[1])) continue
+    const start = match.index + match[0].length
+    const end = credentialEnd(text, start, /cookie/i.test(match[1] ?? ''))
+    if (end === start) continue
+    result += redactKnown(text.slice(cursor, start)) + REDACTED
+    cursor = end
+    labels.lastIndex = end
+  }
+  return result + redactKnown(text.slice(cursor))
 }
 
 function boundedText(text: string, maximumBytes: number): { text: string; truncated: boolean } {
@@ -34,18 +93,27 @@ function boundedText(text: string, maximumBytes: number): { text: string; trunca
 
 function bodyPreview(body: unknown) {
   const secrets: string[] = []
-  function collectSecrets(value: unknown): void {
-    if (typeof value === 'string' && value.length) secrets.push(value)
-    else if (value && typeof value === 'object') for (const child of Object.values(value)) collectSecrets(child)
-  }
-  const serialized = JSON.stringify(body, (key, value: unknown) => {
-    if (CREDENTIAL_KEY.test(key.replace(/[^a-z0-9]/gi, ''))) {
-      collectSecrets(value)
-      return REDACTED
+  function collectSecrets(value: unknown, sensitive = false): void {
+    if (typeof value === 'string' && sensitive && value.length) secrets.push(value)
+    else if (Array.isArray(value)) for (const child of value) collectSecrets(child, sensitive)
+    else if (value && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) collectSecrets(child, sensitive || sensitiveKey(key))
     }
+  }
+
+  collectSecrets(body)
+  function sanitize(value: unknown): unknown {
+    if (typeof value === 'string') return redactText(value, secrets)
+    if (Array.isArray(value)) return value.map(sanitize)
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+      redactText(key, secrets), sensitiveKey(key) ? REDACTED : sanitize(child),
+    ]))
     return value
-  }) ?? String(body)
-  return { ...boundedText(redactText(serialized, secrets), BODY_PREVIEW_BYTES), secrets }
+  }
+  // Sanitize decoded keys and leaves before JSON adds quotes and backslashes.
+  // Keep the actual response untouched for the strict contract parser.
+  const serialized = JSON.stringify(sanitize(body)) ?? redactText(String(body), secrets)
+  return { ...boundedText(serialized, BODY_PREVIEW_BYTES), secrets }
 }
 
 function safeCause(cause: unknown, secrets: readonly string[]): Error {
