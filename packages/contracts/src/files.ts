@@ -231,6 +231,13 @@ export type FilePage = z.infer<typeof FilePageSchema>;
 
 export const AgentFileListInputSchema = z.object({ scope: FileScopeSchema, ...Page }).strict();
 export const AgentFileListResultSchema = FilePageSchema;
+export const AgentReferenceListInputSchema = AgentFileListInputSchema.pick({ cursor: true, limit: true }).strict();
+export const AgentReferenceManifestSchema = z.object({
+  items: z.array(z.object(FileRevisionSchema.unwrap().shape).pick({
+    fileId: true, revisionId: true, filename: true, mediaType: true, byteSize: true,
+  }).extend({ scope: PermanentFileScopeSchema, state: z.enum(['pending', 'ready', 'removed']) }).strict()),
+  pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
+}).strict();
 export const AgentFileReadInputSchema = MessageAttachmentRefSchema.extend({
   offset: z.number().int().min(0).max(MAX_FILE_BYTES).default(0),
   length: z.number().int().min(1).max(MAX_FILE_READ_BYTES).default(MAX_FILE_READ_BYTES),

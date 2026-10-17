@@ -1,5 +1,5 @@
 import { APP_MCP_TOKEN } from '../harnesses/appMcpLauncher.js'
-import { WORKER_MCP_EXTENSION, decodeWorkerMcpResult, WorkerConversationMcpRequestSchema, WorkerConversationMcpAuthorizationSchema,
+import { WORKER_MCP_EXTENSION, decodeWorkerMcpResult, encodeWorkerMcpRequest, WorkerConversationMcpRequestSchema, WorkerConversationMcpAuthorizationSchema,
   WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
@@ -10,7 +10,7 @@ import { withWorkerMcpDeadline } from '../devices/workerMcpDeadline.js'
 export async function prepareWorkerConversationMcp(input: {
   source: WorkerConversationRpcRequest
   token: string
-  request(namespace: string, payload: unknown, options: { signal: AbortSignal; timeoutMs: number }): Promise<DeviceApplicationResult>
+  request(namespace: string, payload: unknown, options: { signal: AbortSignal; timeoutMs: number; bytes?: Uint8Array }): Promise<DeviceApplicationResult>
   signal: AbortSignal
 }) {
   const owner = input.source.binding.owner
@@ -20,8 +20,10 @@ export async function prepareWorkerConversationMcp(input: {
   const fields = { version: 1, binding: input.source.binding, token: input.token, admissionId: input.source.admissionId }
   const request = async (payload: unknown, signal: AbortSignal) => {
     signal.throwIfAborted()
-    const reply = await input.request(WORKER_MCP_EXTENSION.namespace, WorkerConversationMcpRequestSchema.parse(payload),
-      { signal, timeoutMs: deviceRequestTimeoutMs })
+    const parsed = WorkerConversationMcpRequestSchema.parse(payload)
+    const carrier: DeviceApplicationResult = parsed.operation === 'conversation-mcp.request' ? encodeWorkerMcpRequest(parsed) : { payload: parsed }
+    const reply = await input.request(WORKER_MCP_EXTENSION.namespace, carrier.payload,
+      { signal, timeoutMs: deviceRequestTimeoutMs, ...(carrier.bytes ? { bytes: carrier.bytes } : {}) })
     signal.throwIfAborted()
     return decodeWorkerMcpResult(reply)
   }

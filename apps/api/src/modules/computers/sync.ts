@@ -22,8 +22,9 @@ export class ComputerSyncService {
   private readonly identityRequests = new Map<string, { target: DeviceProvisioningTarget; request: Promise<SyncIdentity> }>()
   private knownPeerIds = new Set<string>()
   private readonly lifetime = new AbortController()
+  private readonly reconciliations = new Map<string, Promise<unknown[]>>()
+  private readonly workspaceRequests = new Map<string, Promise<unknown[]>>()
   private queued = 0
-  private pending: Promise<unknown> = Promise.resolve()
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
@@ -83,7 +84,12 @@ export class ComputerSyncService {
     })
     // The preference is committed before external configuration; reconnect retries the saved desired state.
     let message: string | null = null
-    try { await this.reconcile() } catch (error) {
+    try {
+      await this.workspaceRequests.get(input.workspaceId)
+      await this.reconciliations.get(`workspace:${input.workspaceId}`)
+      const failures = await this.synchronize(undefined, input.workspaceId)
+      if (failures.length) throw new AggregateError(failures)
+    } catch (error) {
       message = error instanceof Error ? error.message.slice(0, 500) : 'Sync setup will retry when this computer reconnects.'
     }
     const status = await this.readAuthorized(principal, source, 'settings:update', { target: input.target })
@@ -94,7 +100,7 @@ export class ComputerSyncService {
     this.lifetime.abort(new DomainError('SYNC_CLOSING', 'Shared file sync is shutting down.', 503))
   }
 
-  async join(): Promise<void> { await this.pending }
+  async join(): Promise<void> { await Promise.allSettled(this.reconciliations.values()) }
 
   private assertOpen(): void {
     this.lifetime.signal.throwIfAborted()
@@ -114,25 +120,38 @@ export class ComputerSyncService {
     })
   }
 
-  private synchronize(target?: DeviceProvisioningTarget): Promise<unknown[]> {
+  private synchronize(target?: DeviceProvisioningTarget, workspaceId?: string): Promise<unknown[]> {
     this.assertOpen()
+    let key = 'all'
+    if (target) key = buildComputerKey(target)
+    if (workspaceId) key = `workspace:${workspaceId}`
+    const existing = this.reconciliations.get(key)
+    if (existing) return existing
     this.queued++
-    const task = this.pending.then(async () => {
-      this.assertOpen()
+    const task = (async () => {
       if (target) await this.assertTarget(this.pool, target)
       this.assertOpen()
-      const failures: unknown[] = []
-      this.identities = await this.repository.identities()
-      this.knownPeerIds = new Set(this.identities.map(peer => peer.identity.deviceId))
-      this.identityRequests.clear()
-      const workspaces = await this.repository.workspaces()
-      for (const workspace of workspaces) {
-        this.assertOpen()
-        failures.push(...await this.configureWorkspace(workspace))
+      for (const peer of await this.repository.identities()) {
+        if (!this.identities.some(value => sameDeviceProvisioningTarget(value.target, peer.target))) {
+          this.identities.push(peer)
+        }
+        this.knownPeerIds.add(peer.identity.deviceId)
       }
-      return failures
-    }).finally(() => { this.queued-- })
-    this.pending = task.then(() => undefined, () => undefined)
+      const workspaces = (await this.repository.workspaces()).filter(workspace =>
+        workspaceId === undefined || workspace.id === workspaceId)
+      const failures = await Promise.all(workspaces.map(workspace => {
+        const pending = this.workspaceRequests.get(workspace.id)
+        if (pending) return pending
+        const request = this.configureWorkspace(workspace).finally(() => this.workspaceRequests.delete(workspace.id))
+        this.workspaceRequests.set(workspace.id, request)
+        return request
+      }))
+      return failures.flat()
+    })().finally(() => {
+      this.queued--
+      this.reconciliations.delete(key)
+    })
+    this.reconciliations.set(key, task)
     return task
   }
 
@@ -166,39 +185,45 @@ export class ComputerSyncService {
     const members = await Promise.all((await this.repository.computers()).map(async target => ({ target,
       enabled: mainEnabled && workspace.targets.some(member => sameDeviceProvisioningTarget(member, target))
         && (await this.repository.preference(this.pool, workspace.id, target)).enabled })))
-    const peers: { target: DeviceProvisioningTarget; identity: SyncIdentity }[] = []
     const failures: unknown[] = []
-    for (const member of members) {
-      this.assertOpen()
-      if (!member.enabled) continue
-      try { peers.push({ target: member.target, identity: await this.identity(member.target) }) } catch (error) {
-        failures.push(error)
+    const identities = new Map(members.filter(member => member.enabled).map(member =>
+      [buildComputerKey(member.target), this.identity(member.target).then(identity => ({ identity }), error => ({ error }))]))
+    const hubRequest = identities.get(buildComputerKey(main))
+    const configure = async (member: typeof members[number]) => {
+      const known = members.flatMap(candidate => {
+        const peer = this.identities.find(value => sameDeviceProvisioningTarget(value.target, candidate.target))
+        return candidate.enabled && peer ? [peer] : []
+      })
+      const hub = known.find(peer => peer.target.hostRef.kind === 'main')
+      const missingIdentity = members.some(candidate => candidate.enabled
+        && !known.some(peer => sameDeviceProvisioningTarget(peer.target, candidate.target)))
+      let peers: SyncIdentity[] = []
+      if (member.target.hostRef.kind === 'main') {
+        peers = known.filter(peer => peer.target.hostRef.kind === 'device').map(peer => peer.identity)
+      } else if (hub) {
+        peers = [hub.identity]
       }
+      await this.computer(member.target, { operation: 'configure', workspaceId: workspace.id,
+        enabled: member.enabled, peers: peers.map(({ deviceId, address }) => ({ deviceId, address })),
+        preserveUnknownPeers: member.target.hostRef.kind === 'main' && missingIdentity,
+        knownPeerIds: [...this.knownPeerIds] })
     }
-    const hub = peers.find(peer => peer.target.hostRef.kind === 'main')
-    const known = members.flatMap(member => {
-      const peer = this.identities.find(value => sameDeviceProvisioningTarget(value.target, member.target))
-      return member.enabled && peer ? [peer] : []
-    })
-    const missingIdentity = members.some(member => member.enabled
-      && !known.some(peer => sameDeviceProvisioningTarget(peer.target, member.target)))
-    for (const member of members) {
-      this.assertOpen()
-      const selected = peers.find(peer => sameDeviceProvisioningTarget(peer.target, member.target))
-      if (member.enabled && (!selected || !hub)) {
-        continue
-      }
-      const remotePeers = member.target.hostRef.kind === 'main'
-        ? known.filter(peer => peer.target.hostRef.kind === 'device').map(peer => ({
-          deviceId: peer.identity.deviceId, address: peer.identity.address }))
-        : hub ? [{ deviceId: hub.identity.deviceId, address: hub.identity.address }] : []
+    await Promise.all(members.map(async member => {
       try {
-        await this.computer(member.target, { operation: 'configure', workspaceId: workspace.id,
-          enabled: member.enabled && Boolean(selected) && Boolean(hub), peers: remotePeers,
-          preserveUnknownPeers: member.target.hostRef.kind === 'main' && missingIdentity,
-          knownPeerIds: [...this.knownPeerIds] })
+        this.assertOpen()
+        if (member.enabled) {
+          const selected = await identities.get(buildComputerKey(member.target))!
+          if ('error' in selected) throw selected.error
+          const hub = await hubRequest
+          if (!hub || 'error' in hub) return
+        }
+        await configure(member)
+        // Each newly available Worker also updates Main, without waiting for unavailable peers.
+        if (member.enabled && member.target.hostRef.kind === 'device') {
+          await configure({ target: main, enabled: true })
+        }
       } catch (error) { failures.push(error) }
-    }
+    }))
     return failures
   }
 
@@ -206,7 +231,9 @@ export class ComputerSyncService {
     const key = buildComputerKey(target)
     const pending = this.identityRequests.get(key)
     if (pending && sameDeviceProvisioningTarget(pending.target, target)) return pending.request
-    const request = this.refreshIdentity(target)
+    const request = this.refreshIdentity(target).finally(() => {
+      if (this.identityRequests.get(key)?.request === request) this.identityRequests.delete(key)
+    })
     this.identityRequests.set(key, { target, request })
     return request
   }

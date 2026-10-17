@@ -46,7 +46,7 @@ export class WorkspaceManagementService {
     private readonly locations: WorkspaceLocationService,
     private readonly defaults: Pick<PostgresFoundationSettingsRepository, 'getWorkspaceDefaults'> = new PostgresFoundationSettingsRepository(pool),
     projectRoot = workspaceStorageRoot(),
-  ) { this.storageFolders = new WorkspaceStorageFolders(pool, commands, projectRoot) }
+  ) { this.storageFolders = new WorkspaceStorageFolders(pool, commands, projectRoot, locations.runnerId) }
 
   async list(principal: ManagementPrincipal, input: { cursor?: string | undefined; limit: number; includeArchived: boolean }) {
     if (!hasAction(principal, 'workspaces:read')) requireAuthorization(principal, 'workspaces:read')

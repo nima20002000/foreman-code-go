@@ -43,6 +43,21 @@ export class SyncRepository {
       from run_node_placements p join runs r on r.id=p.run_id
       where p.record#>>'{payload,kind}'='agent' and r.execution_state in ('queued','running','waiting','interrupted')
     `)).rows
+    const conversations = await this.pool.query<typeof hosts[number]>(`
+      select c.workspace_id,
+        coalesce(c.worker_conversation_binding#>'{profile,target,hostRef}',
+          v.record#>'{harnessProfileSelection,target,hostRef}') as host,
+        coalesce(c.worker_conversation_binding#>>'{profile,target,applicationInstallationId}',
+          v.record#>>'{harnessProfileSelection,target,applicationInstallationId}') as installation_id,
+        c.worker_conversation_binding#>>'{sourceExecution,placement,registration,keyRevision}' as key_revision,
+        c.worker_conversation_binding#>>'{sourceExecution,placement,registration,authorizationRevision}' as authorization_revision
+      from operator_conversations c
+      join agent_configuration_versions v on v.id=c.agent_configuration_version_id
+      where c.kind='agent' and (c.active_request_id is not null or exists(
+        select 1 from operator_conversation_turns t where t.conversation_id=c.id
+          and t.delivery in ('queued','submitting','accepted','unknown')))
+    `)
+    hosts.push(...conversations.rows)
     const computers = await this.computers()
     return workspaces.map(workspace => {
       const targets = new Map<string, DeviceProvisioningTarget>()

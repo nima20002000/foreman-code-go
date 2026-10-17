@@ -15,7 +15,12 @@ export async function assertNoActiveAgentChats(sql: SqlQuery, workspaceIds: stri
 
 export async function activeAgentChatDirectories(sql: SqlQuery): Promise<string[]> {
   const result = await sql.query<{ path: string }>(`select c.record->>'workingDirectory' as path
-    from operator_conversations c where c.kind='agent'
+    from operator_conversations c
+    left join agent_configuration_versions v on v.id=c.agent_configuration_version_id
+    where c.kind='agent'
+      and coalesce(c.worker_conversation_binding#>>'{profile,target,hostRef,kind}',
+        c.record#>>'{directoryBinding,placement,hostRef,kind}',
+        v.record#>>'{harnessProfileSelection,target,hostRef,kind}', 'main')='main'
       and (c.active_request_id is not null or exists(
         select 1 from operator_conversation_turns t where t.conversation_id=c.id
           and t.delivery in ('queued','submitting','accepted','unknown')))`)
