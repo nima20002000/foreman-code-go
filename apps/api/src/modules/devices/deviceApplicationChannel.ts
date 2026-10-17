@@ -1,3 +1,4 @@
+import { CI_HOST_NAMESPACE, CiHostRequestSchema } from '@foreman-code/contracts'
 import { componentLogger } from '../diagnostics/logger.js'
 import { createHash, randomUUID } from 'node:crypto'
 import {
@@ -192,6 +193,10 @@ export class DeviceApplicationChannel {
     }).finally(() => { this.heartbeatAuthorizing = false })
   }
   private stopRequest(namespace: string, payload: unknown): boolean {
+    if (namespace === CI_HOST_NAMESPACE) {
+      const parsed = CiHostRequestSchema.safeParse(payload)
+      return parsed.success && parsed.data.operation === 'cancel'
+    }
     if (namespace === EXECUTION_AUTHORITY_EXTENSION.namespace) {
       const parsed = ExecutionAuthorityRequestSchema.safeParse(payload)
       return parsed.success && parsed.data.action === 'stop'
@@ -239,7 +244,8 @@ export class DeviceApplicationChannel {
     const extension = this.negotiated(namespace, true)
     this.current()
     const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
-    const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
+    const stop = (namespace === stopNamespace || namespace === CI_HOST_NAMESPACE && this.options.side === 'main')
+      && !options.bytes && this.stopRequest(namespace, payload)
     const priority = effectiveDeviceRequestPriority(namespace, payload, options.priority)
     const bulk = deviceRequestIsBulk(namespace, payload, options.bytes !== undefined)
     const observation = options.bytes === undefined && deviceRequestIsObservation(namespace, payload)
@@ -521,7 +527,8 @@ export class DeviceApplicationChannel {
       const kind = frame.kind as Assembly['kind']
       const stopNamespace = this.options.side === 'worker' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
       if (frame.admission !== undefined) {
-        const allowed = kind === 'request' && (frame.admission === 'stop' && frame.namespace === stopNamespace
+        const allowed = kind === 'request' && (frame.admission === 'stop'
+          && (frame.namespace === stopNamespace || frame.namespace === CI_HOST_NAMESPACE && this.options.side === 'worker')
           || frame.admission === 'observation' && ['execution-v1', 'computer-maintenance-v2'].includes(frame.namespace))
         if (!allowed) throw new DeviceConnectionError('malformed-frame')
       }

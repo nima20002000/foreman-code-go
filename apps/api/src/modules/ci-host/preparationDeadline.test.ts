@@ -1,8 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
+import { randomUUID } from 'node:crypto'
+import { createServer, type Socket } from 'node:net'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { systemHostCiPorts } from './runner.js'
 import { withHostCiRunLock } from './runnerLock.js'
@@ -14,17 +16,30 @@ async function kill(child: ChildProcess) {
   await exited
 }
 
+function killWriter(pid: number) {
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+  }
+}
+
 it('enforces the preparation deadline after API exit and keeps the repository locked until writers stop', async () => {
   const root = await mkdtemp(join(persistentFixtureRoot, 'preparation-deadline-'))
   const repository = join(root, 'repository')
   await mkdir(repository)
-  const writerPid = join(root, 'writer.pid')
+  const socketName = `\0preparation-deadline-${randomUUID()}`
+  const server = createServer()
+  server.listen(socketName)
+  await once(server, 'listening')
+  const connected = once(server, 'connection')
   const writer = join(root, 'writer.mjs')
   // Ignore TERM so the independent supervisor must escalate to stop this writer.
   await writeFile(writer, `
-    import { writeFileSync } from 'node:fs';
+    import { connect } from 'node:net';
     process.on('SIGTERM', () => {});
-    writeFileSync(${JSON.stringify(writerPid)}, String(process.pid));
+    const socket = connect(${JSON.stringify(socketName)});
+    socket.on('connect', () => socket.end(String(process.pid)));
     setInterval(() => {}, 1000);
   `)
   const launcher = join(root, 'api.mjs')
@@ -40,10 +55,11 @@ it('enforces the preparation deadline after API exit and keeps the repository lo
   api.stderr!.on('data', chunk => { errors += String(chunk) })
   let pid: number | undefined
   try {
-    await vi.waitFor(async () => {
-      expect(api.exitCode, errors).toBeNull()
-      pid = Number(await readFile(writerPid, 'utf8'))
-    })
+    const [socket] = await Promise.race([connected, once(api, 'exit').then(() => {
+      throw new Error(`Fixture API exited before its writer connected: ${errors}`)
+    })]) as [Socket]
+    const [bytes] = await once(socket, 'data') as [Buffer]
+    pid = Number(bytes.toString())
     await kill(api)
     expect(await withHostCiRunLock(repository, async () => 'released', { nonBlocking: true })).toBeUndefined()
     await expect(withHostCiRunLock(repository, async () => 'released', { signal: AbortSignal.timeout(3000) }))
@@ -55,11 +71,8 @@ it('enforces the preparation deadline after API exit and keeps the repository lo
     if (processState) expect(processState.slice(processState.lastIndexOf(') ') + 2).split(' ')[0]).toBe('Z')
   } finally {
     await kill(api)
-    if (pid) {
-      try { process.kill(pid, 'SIGKILL') } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
-      }
-    }
+    if (pid) killWriter(pid)
+    server.close()
     await rm(root, { recursive: true, force: true })
   }
 })

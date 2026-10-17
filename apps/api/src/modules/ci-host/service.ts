@@ -612,11 +612,9 @@ export class HostCiService {
     if (!intent) return
     this.stoppingRuns += 1
     try {
-      // Drain dispatch before selecting tickets, including starts awaiting their provider reply.
-      await this.dispatching
       // Groups other requesters still share keep running; the Run's Agents only leave them.
       const groups = await releaseStoppedRun(this.pool, runId, intent.workspace_id)
-      const tickets = groups.length ? (await this.pool.query<{ id: string }>(`select id from ci_runs
+      const tickets = async () => groups.length ? (await this.pool.query<{ id: string }>(`select id from ci_runs
         where workspace_id=$1 and group_id=any($2::uuid[]) and state in ('queued','starting','running')
         order by id`, [intent.workspace_id, groups])).rows : []
       const audit: CiCancellation = {
@@ -626,8 +624,16 @@ export class HostCiService {
         runId,
         reason: 'run_stop',
       }
-      const results = await Promise.allSettled(tickets.map(ticket =>
+      const assigned = await tickets()
+      const initial = await Promise.allSettled(assigned.map(ticket =>
         this.cancelTicket(intent.workspace_id, ticket.id, audit)))
+      // Stop reaches assigned executors before pending Start replies release their dispatch claims.
+      await this.dispatching
+      const retryIds = initial.flatMap((result, index) =>
+        result.status === 'rejected' ? [assigned[index]!.id] : [])
+      const remaining = new Set([...retryIds, ...(await tickets()).map(ticket => ticket.id)])
+      const results = await Promise.allSettled([...remaining].map(id =>
+        this.cancelTicket(intent.workspace_id, id, audit)))
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Run CI cancellation is incomplete.')
     } finally {
