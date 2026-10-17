@@ -129,23 +129,10 @@ function processSnapshot(procRoot) {
   return records
 }
 
-// Samples can miss processes that are born and reaped between polls, and brief RSS peaks.
-// Retained identities account for observed descendants after their parent exits or changes groups.
-export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
-  clockTicksPerSecond, pageSizeBytes } = {}) {
-  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Process metrics require a positive PID')
-  const units = clockTicksPerSecond && pageSizeBytes
-    ? { clockTicksPerSecond, pageSizeBytes }
-    : linuxProcessUnits()
-  const started = performance.now()
+function processTree(pid, procRoot) {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Process tracking requires a positive PID')
   const identities = new Map()
-  // CPU a process had already used when tracking began is not this job's, e.g. a reused coordinator's earlier files.
-  const initialTicks = new Map()
-  let peakRssBytes = 0
   let rootGroup
-  let sampled = false
-  let result
-  let sampleError
   const sample = () => {
     const records = processSnapshot(procRoot)
     if (!rootGroup) rootGroup = records.get(pid)?.group
@@ -166,12 +153,71 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
         }
       }
     }
-    let rssBytes = 0
     for (const ownedPid of owned) {
       const record = records.get(ownedPid)
       const previous = identities.get(ownedPid)
-      if (!sampled) initialTicks.set(ownedPid, record.ticks)
       identities.set(ownedPid, { ...record, ticks: Math.max(previous?.ticks ?? 0, record.ticks) })
+    }
+    return { records, owned }
+  }
+  return {
+    identities,
+    sample,
+    processGroups(records = sample().records) {
+      const groups = new Set()
+      for (const [ownedPid, identity] of identities) {
+        const record = records.get(ownedPid)
+        if (record?.started === identity.started && record.state !== 'Z') groups.add(record.group)
+      }
+      return [...groups]
+    },
+  }
+}
+
+/** Descendant ownership does not require getconf or resource accounting. */
+export function startProcessGroupTracking(pid, { procRoot = '/proc', intervalMs = 100 } = {}) {
+  const tree = processTree(pid, procRoot)
+  let sampleError
+  tree.sample()
+  const timer = setInterval(() => {
+    try {
+      tree.sample()
+    } catch (error) {
+      sampleError = error
+      clearInterval(timer)
+    }
+  }, intervalMs)
+  timer.unref()
+  return {
+    processGroups() {
+      if (sampleError) throw sampleError
+      return tree.processGroups()
+    },
+    stop() { clearInterval(timer) },
+  }
+}
+
+// Samples can miss processes that are born and reaped between polls, and brief RSS peaks.
+// Retained identities account for observed descendants after their parent exits or changes groups.
+export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
+  clockTicksPerSecond, pageSizeBytes } = {}) {
+  const tree = processTree(pid, procRoot)
+  const units = clockTicksPerSecond && pageSizeBytes
+    ? { clockTicksPerSecond, pageSizeBytes }
+    : linuxProcessUnits()
+  const started = performance.now()
+  // CPU a process had already used when tracking began is not this job's, e.g. a reused coordinator's earlier files.
+  const initialTicks = new Map()
+  let peakRssBytes = 0
+  let sampled = false
+  let result
+  let sampleError
+  const sample = () => {
+    const { records, owned } = tree.sample()
+    let rssBytes = 0
+    for (const ownedPid of owned) {
+      const record = records.get(ownedPid)
+      if (!sampled) initialTicks.set(ownedPid, record.ticks)
       if (record.state !== 'Z') rssBytes += record.rssPages * units.pageSizeBytes
     }
     peakRssBytes = Math.max(peakRssBytes, rssBytes)
@@ -189,15 +235,7 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
   }, intervalMs)
   timer.unref()
   return {
-    processGroups() {
-      const records = sample()
-      const groups = new Set()
-      for (const [ownedPid, identity] of identities) {
-        const record = records.get(ownedPid)
-        if (record?.started === identity.started && record.state !== 'Z') groups.add(record.group)
-      }
-      return [...groups]
-    },
+    processGroups() { return tree.processGroups(sample()) },
     stop() {
       if (result) return result
       clearInterval(timer)
@@ -206,7 +244,7 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
       result = {
         durationMs: performance.now() - started,
         peakRssBytes,
-        cpuSeconds: [...identities.values()].reduce((total, record) =>
+        cpuSeconds: [...tree.identities.values()].reduce((total, record) =>
           total + record.ticks - (initialTicks.get(record.pid) ?? 0), 0) / units.clockTicksPerSecond,
       }
       return result

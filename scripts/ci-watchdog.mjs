@@ -3,7 +3,7 @@ import { closeSync, mkdirSync, openSync, readSync, writeFileSync } from 'node:fs
 import { dirname, resolve } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
-import { startProcessMetrics } from './dense-resources.mjs'
+import { startProcessGroupTracking, startProcessMetrics } from './dense-resources.mjs'
 import { stopGroup } from './integration-process.mjs'
 import { ciTestResults } from './ci-test-results.mjs'
 
@@ -23,6 +23,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   const child = spawn(command[0], command.slice(1), { detached: true, stdio: ['inherit', 'pipe', 'pipe'],
     env: { ...env, CI_WATCHDOG_ACTIVE: '1', CI_PROGRESS_FILE: progressFile, CI_REPOSITORY_ROOT: process.cwd() } })
   await new Promise((ready, reject) => { child.once('spawn', ready); child.once('error', reject) })
+  const processGroups = startProcessGroupTracking(child.pid)
   let monitor
   try {
     monitor = startProcessMetrics(child.pid)
@@ -44,7 +45,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   child.stdout.on('data', bytes => output(process.stdout, bytes))
   child.stderr.on('data', bytes => output(process.stderr, bytes))
   const stop = () => {
-    const groups = monitor ? monitor.processGroups() : [child.pid]
+    const groups = processGroups.processGroups()
     stopping ??= Promise.all(groups.map(group => stopGroup(group, { graceMs: 1000 })))
     return stopping
   }
@@ -117,6 +118,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   } finally {
     clearInterval(timer)
     closeSync(progress)
+    processGroups.stop()
     monitor?.stop()
     for (const [signal, handler] of signals) process.off(signal, handler)
   }

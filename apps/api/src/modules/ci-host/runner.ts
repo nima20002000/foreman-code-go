@@ -695,7 +695,9 @@ export class HostCiRunner {
     return withHostCiRunLock(this.runDirectory(meta.runId), () => this.launchRun(meta))
   }
 
-  private async withRepository<T>(repository: string, work: () => Promise<T>) {
+  private async withRepository<T>(repository: string, work: () => Promise<T>,
+    options: { nonBlocking?: boolean } = {}) {
+    if (options.nonBlocking && this.repositoryQueues.has(repository)) return undefined
     const previous = this.repositoryQueues.get(repository) ?? Promise.resolve()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
@@ -709,7 +711,7 @@ export class HostCiRunner {
         const gitDirectory = join(clone, '.git')
         if (existsSync(gitDirectory)) await removeStaleGitLocks(gitDirectory)
         return work()
-      })
+      }, options)
     } finally {
       release()
       if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
@@ -721,10 +723,12 @@ export class HostCiRunner {
     const source = await this.withRepository(meta.repository, async () => {
       const current = await this.readMeta(meta.runId)
       if (current.state !== 'starting' || current.cancellationRequested) return
-      return this.checkout(meta, signal)
+      const source = await this.checkout(meta, signal)
+      await this.selectFiles(meta, source, signal)
+      return source
     })
     if (!source) return
-    await this.selectFiles(meta, source)
+    signal?.throwIfAborted()
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
     const stoppedScript = join(this.runDirectory(meta.runId), 'stopped.sh')
@@ -850,7 +854,8 @@ export class HostCiRunner {
       memoryBytes: Math.min(Math.max(2 ** 30, shards * 2 ** 28), half.memoryBytes) }
   }
 
-  private async selectFiles(meta: RunMeta, source: string) {
+  private async selectFiles(meta: RunMeta, source: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     if (meta.scope !== 'affected' || meta.files !== undefined) return
     const full = (reason: string) => {
       meta.scope = 'full'
@@ -861,29 +866,33 @@ export class HostCiRunner {
     let baseCommit = meta.baseCommit
     if (baseCommit) {
       const available = await this.ports.run('git', ['cat-file', '-e', `${baseCommit}^{commit}`],
-        { cwd: source, env: this.environment })
+        { cwd: source, env: this.environment, signal })
+      signal?.throwIfAborted()
       if (available.code !== 0) {
         const fetched = await this.ports.run('git', ['fetch', '--quiet', '--no-tags', '--depth=1', 'origin', baseCommit],
-          { cwd: source, env: this.environment })
+          { cwd: source, env: this.environment, signal })
+        signal?.throwIfAborted()
         if (fetched.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
       }
       const ancestor = await this.ports.run('git', ['merge-base', '--is-ancestor', baseCommit, meta.commit],
-        { cwd: source, env: this.environment })
+        { cwd: source, env: this.environment, signal })
+      signal?.throwIfAborted()
       if (ancestor.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
     } else {
       const branch = meta.defaultBranch ?? 'main'
       const ref = `refs/remotes/origin/${branch}`
-      await this.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:${ref}`], source)
-      if ((await this.git(['rev-parse', ref], source)).trim() === meta.commit) {
+      await this.git(['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:${ref}`], source, signal)
+      if ((await this.git(['rev-parse', ref], source, signal)).trim() === meta.commit) {
         return full('The commit is the workspace default branch head.')
       }
-      const base = await this.ports.run('git', ['merge-base', meta.commit, ref], { cwd: source, env: this.environment })
+      const base = await this.ports.run('git', ['merge-base', meta.commit, ref], { cwd: source, env: this.environment, signal })
+      signal?.throwIfAborted()
       if (base.code !== 0) return full('No merge-base with the workspace default branch is available.')
       baseCommit = base.stdout.trim()
     }
-    const changed = (await this.git(['diff', '--name-only', '--no-renames', '-z', baseCommit, meta.commit], source))
+    const changed = (await this.git(['diff', '--name-only', '--no-renames', '-z', baseCommit, meta.commit], source, signal))
       .split('\0').filter(Boolean)
-    const selection = await this.repositorySelection(meta, source, selector, changed)
+    const selection = await this.repositorySelection(meta, source, selector, changed, signal)
     if (selection.scope === 'full') return full(selection.reason)
     const files = await this.partFiles(meta, source, selection.files)
     meta.files = files
@@ -891,7 +900,9 @@ export class HostCiRunner {
       : 'No affected files for this suite part.'
   }
 
-  private async repositorySelection(meta: RunMeta, source: string, selector: string, changed: string[]) {
+  private async repositorySelection(meta: RunMeta, source: string, selector: string, changed: string[],
+    signal?: AbortSignal) {
+    signal?.throwIfAborted()
     // selectAffectedFiles also supports repositories whose snapshot helper assumes origin/main.
     const code = [
       "import { execFileSync } from 'node:child_process'",
@@ -909,7 +920,8 @@ export class HostCiRunner {
       '  exports: manifest ? JSON.parse(manifest).exports : {} })))',
     ].join('\n')
     const result = await this.ports.run('node', ['--input-type=module', '-e', code, selector,
-      meta.suite, meta.commit, JSON.stringify(changed)], { cwd: source, env: this.environment })
+      meta.suite, meta.commit, JSON.stringify(changed)], { cwd: source, env: this.environment, signal })
+    signal?.throwIfAborted()
     if (result.code !== 0) throw new Error(`Affected selection failed: ${result.stderr.trim().slice(0, 500)}`)
     const selection = JSON.parse(result.stdout) as { scope: unknown; files: unknown; reason: string }
     const scope = CiScopeSchema.parse(selection.scope)
@@ -1237,14 +1249,16 @@ export class HostCiRunner {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
       if (existsSync(join(directory, 'src'))) {
         const standalone = (await stat(join(directory, 'src/.git')).catch(fallbackOnMissing(null)))?.isDirectory()
-        await this.withRepository(meta.repository, async () => {
+        const removed = await this.withRepository(meta.repository, async () => {
           if (!standalone) {
             await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
               { cwd: clone, env: this.environment })
           }
           await rm(join(directory, 'src'), { recursive: true, force: true })
           await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
-        })
+          return true
+        }, { nonBlocking: true })
+        if (!removed) return meta
       }
       await rm(join(directory, 'tmp'), { recursive: true, force: true })
     }
