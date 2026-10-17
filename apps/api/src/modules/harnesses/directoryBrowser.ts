@@ -9,8 +9,10 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
 import { ignoreError } from '../diagnostics/ignoredError.js'
-import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../workspaces/projectFolderCleanup.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK, continuingRunDirectories } from '../workspaces/projectFolderCleanup.js'
 import { pathsOverlap } from '../workspaces/filesystem.js'
+import { activeAgentChatDirectories } from '../conversations/activeAgentChats.js'
+import { lockWorkspaceFolders } from '../workspaces/folderLocks.js'
 
 export function isInside(root: string, path: string): boolean {
   const rel = relative(root, path)
@@ -28,6 +30,13 @@ export class HarnessDirectoryBrowser {
       throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
     }
     await this.assertNoUnfinishedImport(client, path)
+    const directories = [
+      ...await activeAgentChatDirectories(client),
+      ...await continuingRunDirectories(client, 'runner-local'),
+    ]
+    if (directories.some(directory => pathsOverlap(path, directory))) {
+      throw new DomainError('DIRECTORY_IN_USE', 'This folder is used by queued or active work or pending Run cleanup.', 409)
+    }
   }
 
   private async assertNoUnfinishedImport(client: pg.PoolClient, path: string) {
@@ -107,6 +116,7 @@ export class HarnessDirectoryBrowser {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${current}`])
         const target = resolve(dirname(current), accepted.name)
         if (target === current) return { path: current, name: accepted.name, creationCommandId: accepted.creationCommandId }
+        await lockWorkspaceFolders(client, [current, target])
         if ((await readdir(current)).length) throw new DomainError('DIRECTORY_NOT_EMPTY', 'Only an empty folder can be renamed here.', 409)
         await this.assertFolderUnused(client, current)
         await this.assertNoUnfinishedImport(client, target)
@@ -149,6 +159,7 @@ export class HarnessDirectoryBrowser {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The created folder is no longer available.', 409)
         }
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${path}`])
+        await lockWorkspaceFolders(client, [path])
         const identity = await lstat(path, { bigint: true })
         if (!identity.isDirectory() || String(identity.dev) !== created.device || String(identity.ino) !== created.inode) {
           throw new DomainError('DIRECTORY_CHANGED', 'The original folder has been replaced and cannot be undone.', 409)
@@ -183,6 +194,7 @@ export class HarnessDirectoryBrowser {
           }
           await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${path}`])
         }
+        await lockWorkspaceFolders(client, paths)
         const deleted: string[] = []
         const failed: { path: string; message: string }[] = []
         for (const path of paths) {

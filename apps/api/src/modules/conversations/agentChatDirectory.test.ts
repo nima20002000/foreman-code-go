@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman-code/contracts/workspace-root-policies'
 import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
-import { resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agentChatDirectory.js'
+import { assertAgentChatDirectoryAvailable, resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agentChatDirectory.js'
+import { freezePlacement } from '../placement/binding.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
 
 function fixture() {
@@ -86,3 +89,46 @@ it('requires an explicitly approved read-write root for the Claude profile', asy
   f.policy.accessMode = 'read-only'
   await expect(resolveAgentChatDirectory(input)).rejects.toThrow('approved host settings')
 })
+
+it.each(['codex', 'claude'] as const)(
+  'checks a first %s Run follow-up on its accepted Worker without a saved profile selector', async harness => {
+    const sql = runDirectorySql(harness, 'device', 'main')
+    await expect(assertAgentChatDirectoryAvailable(sql, 'conversation')).resolves.toBeUndefined()
+  },
+)
+
+it('uses the accepted Main placement even when a saved profile selects a Worker', async () => {
+  const sql = runDirectorySql('codex', 'main', 'device')
+  await expect(assertAgentChatDirectoryAvailable(sql, 'conversation'))
+    .rejects.toMatchObject({ code: 'AGENT_CHAT_DIRECTORY_UNAVAILABLE' })
+})
+
+function runDirectorySql(harness: 'codex' | 'claude', hostKind: 'main' | 'device', profileHostKind: 'main' | 'device') {
+  const mainId = randomUUID()
+  const path = join(homedir(), '.cache', 'foreman-tmp', randomUUID(), 'worker-project')
+  const digest = 'a'.repeat(64)
+  const placement = freezePlacement({ schemaVersion: 1, mainId, mainInstallationId: mainId,
+    runId: 'run', nodeId: 'node',
+    hostRef: hostKind === 'device' ? { kind: 'device', mainId, deviceId: randomUUID() } : { kind: 'main', mainId },
+    registration: hostKind === 'device'
+      ? { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 } : null,
+    destination: { canonicalProjectRoot: path, canonicalCwd: path, managedRuntimeRoot: '/runtime',
+      directoryIdentityHash: digest, rootPolicyId: 'policy', rootPolicyRevision: '1', locationRevision: '1',
+      attestationId: 'attestation', attestationHash: digest },
+    source: { revisionId: 'source', manifestDigest: digest, materializationId: 'materialization', materializationDigest: digest },
+    payload: { kind: 'agent', agentId: 'agent', agentConfigurationVersionId: 'configuration', driverId: harness,
+      driverRevision: '1', instanceId: 'instance', instanceRevision: '1', harnessInstallationId: 'harness',
+      installationFingerprint: digest, runtimeContractVersion: 1, protocolRevision: '1', credentialScopeRefs: [],
+      artifactOutputs: { version: 1, outputKeys: ['result'] } },
+  })
+  const query = async (text: string, values: unknown[]) => {
+    if (text.includes('from run_node_placements')) {
+      return { rows: values[0] === placement.runId && values[1] === placement.nodeId ? [{ record: placement }] : [] }
+    }
+    if (text.includes('from operator_conversations')) {
+      return { rows: [{ path, host_kind: profileHostKind, origin_run_id: 'run', workflow_node_id: 'node' }] }
+    }
+    return { rows: [] }
+  }
+  return { query } as unknown as Pick<pg.Pool, 'query'>
+}

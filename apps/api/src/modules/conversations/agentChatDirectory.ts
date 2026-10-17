@@ -9,21 +9,28 @@ import { ApprovedRootAllowlistSchema, WorkspaceRootPolicySchema } from '@foreman
 import { requiredLocationAccess } from '../workspaces/location.js'
 import { DomainError } from '../errors.js'
 import { workspaceRootHostScope } from '../sources/rootPolicies.js'
+import { readAcceptedPlacement } from '../placement/persistence.js'
+import { lockWorkspaceFolders } from '../workspaces/folderLocks.js'
 
 function unavailable(message: string): never { throw new DomainError('AGENT_CHAT_DIRECTORY_UNAVAILABLE', message, 409) }
 
-/** Admission holds the folder lifecycle lock until the queued turn commits. */
+/** Admission holds the saved Main directory until the queued turn commits. */
 export async function assertAgentChatDirectoryAvailable(sql: Pick<pg.Pool, 'query'>, conversationId: string) {
-  const directory = (await sql.query<{ path: string; host_kind: string }>(`
-    select c.record->>'workingDirectory' as path,
+  const directory = (await sql.query<{
+    path: string; host_kind: string; origin_run_id: string | null; workflow_node_id: string
+  }>(`
+    select c.record->>'workingDirectory' as path,c.origin_run_id,c.workflow_node_id,
       coalesce(c.worker_conversation_binding#>>'{profile,target,hostRef,kind}',
         c.record#>>'{directoryBinding,placement,hostRef,kind}',
         v.record#>>'{harnessProfileSelection,target,hostRef,kind}', 'main') as host_kind
     from operator_conversations c
     left join agent_configuration_versions v on v.id=c.agent_configuration_version_id
     where c.id=$1 and c.kind='agent'`, [conversationId])).rows[0]
-  if (directory?.host_kind === 'device') return
   if (!directory?.path) unavailable('The conversation’s saved folder is unavailable.')
+  const placement = directory.origin_run_id
+    ? await readAcceptedPlacement(sql, directory.origin_run_id, directory.workflow_node_id) : undefined
+  if ((placement?.hostRef.kind ?? directory.host_kind) === 'device') return
+  await lockWorkspaceFolders(sql, [directory.path])
   try {
     if ((await stat(directory.path)).isDirectory()) return
   } catch (error) {

@@ -17,8 +17,10 @@ export async function activeAgentChatDirectories(sql: SqlQuery): Promise<string[
   const result = await sql.query<{ path: string }>(`select c.record->>'workingDirectory' as path
     from operator_conversations c
     left join agent_configuration_versions v on v.id=c.agent_configuration_version_id
+    left join run_node_placements p on p.run_id=c.origin_run_id and p.node_id=c.workflow_node_id
     where c.kind='agent'
-      and coalesce(c.worker_conversation_binding#>>'{profile,target,hostRef,kind}',
+      and coalesce(p.record#>>'{hostRef,kind}',
+        c.worker_conversation_binding#>>'{profile,target,hostRef,kind}',
         c.record#>>'{directoryBinding,placement,hostRef,kind}',
         v.record#>>'{harnessProfileSelection,target,hostRef,kind}', 'main')='main'
       and (c.active_request_id is not null or exists(
