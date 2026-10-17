@@ -61,6 +61,7 @@ import type { NativeHarnessSessionManager, NativeSessionStart, AgentChatNativeSe
 import { primeInitialNativeStream } from '../harnesses/claudeSdk/initialStream.js'
 import { nativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { legacySkillPrompt } from '../skills/instructions.js'
+import { configurationWithNodeSkills } from '../skills/nodeSkills.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { PostgresWorkflowRepository } from '../workflows/postgres.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
@@ -331,7 +332,9 @@ export class AgentChatService {
       if (row) assertRunChatConversation(row, context, executionId, source)
       key = row?.agent_key ?? runChatStorageKey(context, executionId)
       const sourceResolution = { context, key, executionId, source, ...(row ? { row } : {}) }
-      const configuration = await this.workflows.getAgentConfiguration(row?.agent_configuration_version_id ?? source.agentConfigurationVersionId)
+      const pinned = await this.workflows.getAgentConfiguration(row?.agent_configuration_version_id ?? source.agentConfigurationVersionId)
+      const configuration = pinned && node.skills
+        ? configurationWithNodeSkills(pinned, node.skills, version.nodeSkillSnapshots?.[node.id]) : pinned
       if (!configuration) return { ...sourceResolution, blocked: { reason: 'agent_missing',
         message: 'The Agent configuration used by this Run is unavailable. Its transcript remains readable.' } }
       if (configuration.harness.harness === 'opencode') {
@@ -585,7 +588,7 @@ export class AgentChatService {
     const row = await this.conversation(workspaceId, id, principal, write ? 'agent_chat:write' : 'agent_chat:read')
     this.runtimes.get(id)?.manager.setSessionControlPrincipal?.(principal.id)
     const state = await this.readConversation(principal, workspaceId, id)
-    const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+    const configuration = await this.conversationConfiguration(row)
     const runtime = write && !row.active_request_id && row.native_session_id && configuration
       ? await this.runtime(row, configuration, `session-control:${id}`, this.lifetime.signal, principal.id) : this.runtimes.get(id)
     const session = runtime?.session ?? (row.native_session_id ? {
@@ -1011,6 +1014,19 @@ export class AgentChatService {
   }
   private runtimeDirectory(id: string) { return join(resolve(this.runtimeRoot), 'agent-chat', id) }
 
+  private async conversationConfiguration(row: AgentConversationRow): Promise<AgentConfigurationVersion | undefined> {
+    const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+    if (!configuration || row.record.origin.kind !== 'run_execution') return configuration
+    const run = await this.runs.getForWorkspace(row.workspace_id, row.record.origin.runId)
+    const version = run ? await this.workflows.getSavedVersion(run.workflowVersionId) : undefined
+    const node = version?.definition.nodes.find(item => item.id === row.workflow_node_id)
+    if (!version || !node || node.kind === 'job' || node.agentId !== row.agent_id) {
+      throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The originating Run node configuration is unavailable.', 409)
+    }
+    return node.skills ? configurationWithNodeSkills(configuration, node.skills, version.nodeSkillSnapshots?.[node.id])
+      : configuration
+  }
+
   private async runtime(row: AgentConversationRow, configuration: AgentConfigurationVersion, correlationId: string, signal: AbortSignal, controlPrincipalId?: string): Promise<Runtime> {
     this.assertOpen()
     const unavailable = this.sessionUnavailable(row, configuration)
@@ -1148,7 +1164,7 @@ export class AgentChatService {
       const row = await this.repository.get(id)
       if (!row || row.active_request_id !== turn.requestId) return
       if (row.cancel_requested) { await this.settle(id, turn.requestId, { outcome: 'canceled' }); return }
-      const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+      const configuration = await this.conversationConfiguration(row)
       if (!configuration) throw new DomainError('AGENT_CHAT_CONFIGURATION_MISSING', 'The pinned Agent configuration is unavailable.', 409)
       const selectedMode = await this.repository.turnSessionMode(id, turn.requestId)
       const principalId = await this.repository.turnPrincipalId(id, turn.requestId)
@@ -1538,7 +1554,7 @@ export class AgentChatService {
           this.events.publish(id, 'state', { delivery: 'unknown' })
           return
         }
-        const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
+        const configuration = await this.conversationConfiguration(row)
         if (!configuration) throw new Error('The pinned Agent configuration is unavailable.')
         const binding = requestId ? row : { ...row, active_native_turn_id: target!.targetNativeTurnId }
         const runtime = await this.runtime(binding, configuration, correlationId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(60_000)]))
