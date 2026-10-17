@@ -13,7 +13,7 @@ describe.skipIf(!postgresEnabled)('inspection database page bounds', () => {
       const nodes = fixture.version.definition.nodes
       const history = Array.from({ length: 360 }, (_, index) => {
         const node = nodes[index % nodes.length]!
-        if (node.kind === 'job') throw new Error('Expected an Agent node')
+        expect(node.kind ?? 'agent').toBe('agent')
         return { id: `execution-${String(index).padStart(4, '0')}`, nodeId: node.id, agentId: node.agentId,
           configurationId: fixture.version.agentConfigurationVersionIds[node.agentId],
           attempt: index + 1, createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, Math.floor(index / 3))).toISOString() }

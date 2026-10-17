@@ -1,7 +1,7 @@
 import { closeSync, fstatSync } from 'node:fs'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { openPrivateRoot } from './privateFilesystem.js'
 import { sourceFileWriter } from './sourceFileWriter.js'
@@ -64,13 +64,18 @@ it('rejects failed data waits before publishing completion and closes owned writ
     expect(await readFile(join(f.root, f.entry.path))).toEqual(f.bytes)
   } finally {
     writer.close()
-    for (const file of state.files) {
-      try { fstatSync(file) } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EBADF') continue
-        throw error
+    const files = state.files
+    onTestFinished(() => {
+      for (const file of files) {
+        try {
+          fstatSync(file)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EBADF') continue
+          throw error
+        }
+        closeSync(file)
       }
-      closeSync(file)
-    }
+    })
     await f.tree.close()
   }
 })

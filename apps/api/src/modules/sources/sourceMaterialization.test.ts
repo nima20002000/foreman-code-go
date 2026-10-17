@@ -122,7 +122,7 @@ describe('private materialization', () => {
           bytesReady.then(() => {
             signal?.removeEventListener('abort', abort)
             resolve()
-          })
+          }, reject)
           if (signal?.aborted) abort()
         })
         return f.bytes
