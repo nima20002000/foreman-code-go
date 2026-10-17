@@ -65,25 +65,39 @@ Readiness checks the database and the actual configured checkpoint tables.
 an empty database from an actual embedded dump. Unknown histories are rejected.
 Later numbered SQL migrations have their own checked ledger.
 
-The current partial slice has no `assets/baseline.sql`: PostgreSQL tooling was
-unavailable where it was authored. Empty-database startup therefore fails with
-an explicit missing-baseline error. The expected-head asset is source-derived
+Fresh startup requires `assets/baseline.sql`, captured by the controller through
+Foreman CI. Without that actual dump, empty-database startup fails with an
+explicit missing-baseline error. The expected-head asset is source-derived
 metadata, not evidence that a database was migrated. Follow the schema package's
 capture instructions and verify the actual dump before enabling fresh startup.
 
 ## Verification
 
 The Go toolchain and direct modules are pinned in `go.mod`. Their releases were
-checked against the 48-hour age policy. `go.sum` must be produced and committed
-using the pinned toolchain; it is not fabricated from unverified values.
+checked against the 48-hour age policy. The committed module graph and `go.sum`
+come from the controller's real Foreman CI module-resolution capture.
 
-Run formatting, build, vet, and public-interface tests with that toolchain,
-then request the controller's full Foreman CI round on the exact PR head.
-Use the repository-pinned pnpm for retained TypeScript work. CI tooling and
-conformance expectations have separate owners.
+Run formatting, build, vet, and all tests only through Foreman CI on the exact
+reviewed head. Use the repository-pinned pnpm for retained TypeScript work.
+CI tooling and conformance expectations have separate owners; the controller
+captures the real SQL baseline and formatting artifacts separately.
 
-This partial slice has not passed Go compilation, Go tests, the full CI round,
-or conformance. It must not be merged until the controller reports the required
-passing gate. The remaining foundations include contract generation and
-validation, canonical JSON, access middleware, static files, body-limit parity,
-rotating logs, and browser stream/WebSocket helpers.
+The CI integration phase selects tests with the `integration` build tag. These
+tests require `FOREMAN_CODE_CI_TEST_ADMIN_URL`, which the CI database prerequisite
+exports for its freshly provisioned PostgreSQL instance. They do not fall back
+to an application `DATABASE_URL`. The shared `internal/testdb` fixture creates
+a unique empty database for each test and drops only that owned database after
+its connections close. CI owns the PostgreSQL instance, random port, and
+isolated HOME/state. The Go tests do not start or stop that instance.
+
+The tagged tests verify transaction commit, rollback and cancellation by
+persisted readback; schema startup, restart and migration-history rejection
+against the actual captured baseline; and readiness and error responses over
+a real loopback HTTP listener backed by PostgreSQL. Missing disposable-resource
+configuration or a missing baseline fails the relevant tests instead of
+skipping them. Ordinary unit tests do not provide this database evidence.
+
+Keep the first skeleton draft until the controller reports the required full
+CI and conformance gate on its exact head. Later foundations include contract
+generation and validation, canonical JSON, access middleware, static files,
+body-limit parity, rotating logs, and browser stream/WebSocket helpers.
