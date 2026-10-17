@@ -138,6 +138,7 @@ test('an explicitly selected file with zero tests fails', t => {
   delete environment.NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
     'unit', '--files-from', selection], { cwd: fixture.directory, env: environment, encoding: 'utf8' })
-  assert.equal(result.status, 1, result.stderr)
+  assert.equal(result.status, 1, JSON.stringify({ stderr: result.stderr, stdout: result.stdout,
+    results: fixture.results() }))
   assert.match(result.stderr, /executed zero tests/)
 })
