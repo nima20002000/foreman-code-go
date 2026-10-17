@@ -240,6 +240,7 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   const user = await openPlugin()
   const dialog = within(screen.getByRole('dialog', { name: 'notes plugin' }))
   const refresh = dialog.getByRole('button', { name: 'Refresh plugin' })
+  expect(detailReads).toEqual([false])
   try {
     await user.click(refresh)
     await waitFor(() => expect(refreshRequested).toBe(true))
