@@ -1,0 +1,115 @@
+{
+  "source": "7c282ec9015d4f8c3b575c184a093cbde012197f",
+  "sourceHookSha256": "8708d1869a3ba79cd8342fb2a309c504984eb80e8c6bdef2917da4e21d6f156e",
+  "groups": {
+    "scripts": [
+      {
+        "name": "selector-bash-syntax",
+        "program": "bash",
+        "args": [
+          "-n",
+          "scripts/ci-suite.sh"
+        ]
+      },
+      {
+        "name": "node-syntax-0",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected-run.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-1",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-node-test-reporter.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-2",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/test-support/go-ci-fixture.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-3",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected-retained.test.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-4",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected-input.test.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-5",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected-run.test.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-6",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected.test.mjs"
+        ]
+      },
+      {
+        "name": "selector-seven-file-lint",
+        "program": "node",
+        "args": [
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-affected-run.mjs",
+          "scripts/ci-node-test-reporter.mjs",
+          "scripts/test-support/go-ci-fixture.mjs",
+          "scripts/ci-affected-retained.test.mjs",
+          "scripts/ci-affected-input.test.mjs",
+          "scripts/ci-affected-run.test.mjs",
+          "scripts/ci-affected.test.mjs"
+        ]
+      },
+      {
+        "name": "selector-four-cli-testfiles",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-affected-retained.test.mjs",
+          "scripts/ci-affected-input.test.mjs",
+          "scripts/ci-affected-run.test.mjs",
+          "scripts/ci-affected.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 50
+      },
+      {
+        "name": "selector-one-node-reporter-case",
+        "program": "node",
+        "args": [
+          "--test",
+          "--test-name-pattern=^the\\ Node\\ reporter\\ records\\ passing\\ and\\ failing\\ tests\\ with\\ their\\ file\\ and\\ failure\\ detail$",
+          "scripts/ci-test-results.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 1
+      }
+    ]
+  },
+  "requiredExports": []
+}
