@@ -27,6 +27,7 @@ import { validRunChatSkillsTransition } from './workerRunChatBinding.js'
 
 export interface WorkerConversationAllocation {
   observationOnly?: true
+  hasExited?(): boolean
   manager: NativeHarnessSessionManager
   inspector?: NativeMcpInspector
   start(input: { correlationId: string; instructionsDelivered: boolean;
@@ -344,8 +345,19 @@ export class WorkerConversationHost {
 
   private async settleResident(resident: Resident, record: WorkerConversationReceipt,
     request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
-    if (!record.session || !isDeepStrictEqual(resident.binding, record.binding)
-      || !isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(record.session)))) {
+    if (!record.session || !isDeepStrictEqual(resident.binding, record.binding)) {
+      unavailable('The original native chat owner changed.')
+    }
+    if (resident.allocation.hasExited?.()) {
+      const id = record.binding.owner.conversationId
+      await resident.allocation.close()
+      this.residents.delete(id)
+      await this.authorize(request, connection, signal)
+      const allocation = await this.recover(record, resident.configuration, connection, signal, request)
+      this.residents.set(id, { ...resident, allocation })
+      return
+    }
+    if (!isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(record.session)))) {
       unavailable('The original native chat owner changed.')
     }
     const manager = resident.allocation.manager

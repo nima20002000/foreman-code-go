@@ -45,13 +45,19 @@ export async function recoverWorkerConversation(input: {
     && isDeepStrictEqual(request.previousBinding, record.binding)
     && isDeepStrictEqual(request.source, session)
     && validRunChatSkillsTransition(record.binding, request.binding, request.previousConfiguration, input.configuration)
+  const settlingSkills = request.method === 'conversation.open' && request.mode === 'attach'
+    && request.previousBinding && request.previousConfiguration
+    && isDeepStrictEqual(request.previousBinding, record.binding)
+    && isDeepStrictEqual(request.source, session)
+    && isDeepStrictEqual(input.configuration, request.previousConfiguration)
+    && validRunChatSkillsTransition(record.binding, request.binding, input.configuration, request.configuration)
   const targetBinding = changingAccess || changingSkills ? request.binding : record.binding
   if (!session || !owner || !record.creation || record.closing || record.closed) {
     unavailable('The persisted chat has no recoverable native session.')
   }
   if (commandInputHash(input.configuration) !== targetBinding.owner.configurationHash
     || input.configuration.harness.harness !== session.harness || owner.sessionId !== session.nativeSessionId
-    || !isDeepStrictEqual(request.binding, record.binding) && !changingAccess && !changingSkills) {
+    || !isDeepStrictEqual(request.binding, record.binding) && !changingAccess && !changingSkills && !settlingSkills) {
     unavailable('The saved conversation configuration or native session changed.')
   }
   for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
