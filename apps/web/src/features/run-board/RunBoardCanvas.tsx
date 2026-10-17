@@ -4,7 +4,7 @@ import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, t
 import { AgentNodeView } from '../../shared/ui/nocturne/Canvas'
 import type { ActivitySnapshotV1 } from '@foreman-code/contracts'
 import { CiServerNode, type CiServerFlowNode } from '../workflow-board/inspect/CiServer'
-import { isActiveCiJob, runCiApi } from '../workflow-board/inspect/ciServer'
+import { ciJobRefreshing, runCiApi } from '../workflow-board/inspect/ciServer'
 import { runInspectionQueryKey } from '../workflow-board/inspect/queries'
 import { useBoardCiServer } from '../workflow-board/inspect/useBoardCiServer'
 import '../workflow-board/inspect/inspection.css'
@@ -74,7 +74,7 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
     queryFn: ({ signal }) => runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal }),
     retry: false, refetchInterval: (query) => {
       if (isRunAccessError(query.state.error)) return false
-      return active || query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false
+      return active || query.state.data?.jobs.some(ciJobRefreshing) ? 1500 : false
     },
   })
   const names = useMemo(() => new Map(snapshot.nodes.map((node) => [node.id, node.name])), [snapshot.nodes])

@@ -29,7 +29,7 @@ import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import { CiServerDialog, CiServerNode, CiTransferEdge,
   type CiServerFlowNode, type CiTransferFlowEdge } from './CiServer'
 import { useCiTransfers } from './useCiTransfers'
-import { CI_SERVER_NODE_ID, ciNodeActivities, ciServerFlowNode, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
+import { CI_SERVER_NODE_ID, ciNodeActivities, ciServerFlowNode, ciServerSummary, ciJobRefreshing, runCiApi } from './ciServer'
 import { useInspectionPresentation } from './presentation'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
@@ -154,7 +154,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     queryFn: ({ signal }) => runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal }),
     enabled: Boolean(version && !canonicalDenied), retry: false, staleTime: 0,
     refetchInterval: (query) => isRunAccessError(query.state.error) ? false
-      : live || query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false,
+      : live || query.state.data?.jobs.some(ciJobRefreshing) ? 1500 : false,
   })
   const ciDenied = useProtectedAccessError(ciList)
   const ciRunJobs = !ciDenied && ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined

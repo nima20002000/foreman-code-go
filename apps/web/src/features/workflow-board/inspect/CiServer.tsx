@@ -10,7 +10,7 @@ import { formatClock, formatDuration } from '../../run-subagents/presentation'
 import { ciComputerLabel, ciJobLabel } from './runLiveStatus'
 import { runInspectionQueryKey } from './queries'
 import { WorkflowJobs } from './WorkflowJobs'
-import { CI_PLACEMENT_LABELS, ciJobDuration, isActiveCiJob, runCiApi, type CiServerSummary } from './ciServer'
+import { CI_PLACEMENT_LABELS, ciJobDuration, ciJobRefreshing, isActiveCiJob, runCiApi, type CiServerSummary } from './ciServer'
 import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
 import { isApiAccessError } from '../../../shared/api/accessError'
 
@@ -164,6 +164,7 @@ function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: 
         <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></Alert>
       : !results ? <EmptyState icon="terminal" title="No test results for this job"
         description={isActiveCiJob(job) ? 'Results arrive when the job finishes.'
+          : job.collection === 'pending' ? 'Collecting the finished job\'s results.'
           : 'Vitest unit and integration jobs report their tests when they finish; other jobs have only a log.'} />
       : <CiTestFiles files={results.files} truncated={results.truncated} />}
     {query.isError && results ? <Alert tone="warning" title="Test results could not be refreshed.">
@@ -195,7 +196,7 @@ function CiJobLog({ scope, job }: { scope: RepeatGraphScopeV3; job: CiRunJob }) 
     enabled: started, retry: false,
     refetchInterval: state => {
       if (isApiAccessError(state.state.error)) return false
-      return isActiveCiJob(job) ? 3000 : false
+      return ciJobRefreshing(job) ? 3000 : false
     },
   })
   const denied = useProtectedAccessError(query)
