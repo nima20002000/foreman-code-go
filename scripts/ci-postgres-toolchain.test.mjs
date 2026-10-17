@@ -134,7 +134,8 @@ function downloadFixture(t, { primary = 'unavailable', fallback = 'valid', patch
   return { ...fixture, script: fixtureScript, pins,
     downloads: () => readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
     temporaryInstalls: () => existsSync(env.FOREMAN_CODE_CI_POSTGRES_CACHE)
-      ? readdirSync(env.FOREMAN_CODE_CI_POSTGRES_CACHE).filter(name => name.startsWith('install.')) : [],
+      ? readdirSync(env.FOREMAN_CODE_CI_POSTGRES_CACHE, { withFileTypes: true })
+        .filter(entry => entry.name.startsWith('install.') && entry.isDirectory()).map(entry => entry.name) : [],
   }
 }
 
