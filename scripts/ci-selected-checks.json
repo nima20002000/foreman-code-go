@@ -1,0 +1,59 @@
+{
+  "source": "c502f9c9e0a1723f16f5c59530aa5e42048a1aca",
+  "sourceHookSha256": "8708d1869a3ba79cd8342fb2a309c504984eb80e8c6bdef2917da4e21d6f156e",
+  "groups": {
+    "scripts": [
+      {
+        "name": "node-syntax-0",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-node-test-reporter.mjs"
+        ]
+      },
+      {
+        "name": "node-syntax-1",
+        "program": "node",
+        "args": [
+          "--check",
+          "scripts/ci-affected-run.test.mjs"
+        ]
+      },
+      {
+        "name": "reporter-two-file-lint",
+        "program": "node",
+        "args": [
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-node-test-reporter.mjs",
+          "scripts/ci-affected-run.test.mjs"
+        ]
+      },
+      {
+        "name": "affected-run-eight-cases",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-affected-run.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 8
+      },
+      {
+        "name": "one-node-reporter-case",
+        "program": "node",
+        "args": [
+          "--test",
+          "--test-name-pattern=^the\\ Node\\ reporter\\ records\\ passing\\ and\\ failing\\ tests\\ with\\ their\\ file\\ and\\ failure\\ detail$",
+          "scripts/ci-test-results.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 1
+      }
+    ]
+  },
+  "requiredExports": []
+}
