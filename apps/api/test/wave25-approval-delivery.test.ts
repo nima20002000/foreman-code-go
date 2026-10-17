@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { matchingDeliveryEvidence, type NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
+import { matchingDeliveryEvidence, responseValueDigest, type NativeResponseDeliveryEvidence } from '../src/modules/interactions/delivery.js'
 import { deliveryFixture } from './helpers/wave25ApprovalFixture.js'
 
 const event = (sequence: number, type: string, payload: Record<string, unknown>, connectionId = 'codex-connection') => ({
@@ -16,11 +16,14 @@ function codexExecutionHistory() {
   f.history.events = [
     event(1, 'interaction.pending', { nativeRequestId: f.interaction.nativeRequestId,
       nativeRequestType: f.interaction.nativeRequestType, turnId: 'turn-worker' }),
-    event(2, 'interaction.submitted', { nativeRequestId: f.interaction.nativeRequestId,
-      optionId: f.interaction.selectedOptionId, semantic: f.interaction.selectedSemantic }),
-    event(3, 'interaction.resolved', { nativeRequestId: f.interaction.nativeRequestId,
+    event(2, 'interaction.submitting', { nativeRequestId: f.interaction.nativeRequestId,
+      optionId: f.interaction.selectedOptionId }),
+    event(3, 'interaction.submitted', { nativeRequestId: f.interaction.nativeRequestId,
+      optionId: f.interaction.selectedOptionId, semantic: f.interaction.selectedSemantic,
+      responseDigest: responseValueDigest(undefined) }),
+    event(4, 'interaction.resolved', { nativeRequestId: f.interaction.nativeRequestId,
       submittedOptionId: f.interaction.selectedOptionId, evidence: 'serverRequest/resolved' }),
-    event(4, 'item.completed', { threadId: f.session.nativeSessionId, turnId: 'turn-worker', item: {
+    event(5, 'item.completed', { threadId: f.session.nativeSessionId, turnId: 'turn-worker', item: {
       id: 'command-item', type: 'commandExecution', status: 'completed', command: '/bin/bash -lc pwd',
       cwd: '/workspace', exitCode: 0, aggregatedOutput: '/workspace\n',
     } }),
@@ -101,17 +104,18 @@ describe('Exact native approval delivery evidence', () => {
     const f = codexExecutionHistory()
     f.interaction.selectedSemantic = semantic
     f.interaction.selectedOptionId = `codex-${semantic}`
-    f.history.events[1]!.payload.semantic = semantic
     f.history.events[1]!.payload.optionId = f.interaction.selectedOptionId
-    f.history.events[2]!.payload.submittedOptionId = f.interaction.selectedOptionId
+    f.history.events[2]!.payload.semantic = semantic
+    f.history.events[2]!.payload.optionId = f.interaction.selectedOptionId
+    f.history.events[3]!.payload.submittedOptionId = f.interaction.selectedOptionId
     expect(matchingDeliveryEvidence(f.interaction, f.session, f.history)).toBeUndefined()
   })
   it.each([
     ['missing provider resolution', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events = f.history.events.filter((e) => e.type !== 'interaction.resolved') }],
     ['cleared without execution', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events = f.history.events.filter((e) => e.type !== 'item.completed') }],
-    ['different option', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events[1]!.payload.optionId = 'other-option' }],
-    ['different connection', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events[3]!.connectionId = 'other-connection' }],
-    ['non-executed item', (f: ReturnType<typeof codexExecutionHistory>) => { (f.history.events[3]!.payload.item as Record<string, unknown>).exitCode = null }],
+    ['different option', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events[2]!.payload.optionId = 'other-option' }],
+    ['different connection', (f: ReturnType<typeof codexExecutionHistory>) => { f.history.events[4]!.connectionId = 'other-connection' }],
+    ['non-executed item', (f: ReturnType<typeof codexExecutionHistory>) => { (f.history.events[4]!.payload.item as Record<string, unknown>).exitCode = null }],
   ])('does not qualify Codex history with %s', (_name, change) => {
     const f = codexExecutionHistory(); change(f)
     expect(matchingDeliveryEvidence(f.interaction, f.session, f.history)).toBeUndefined()

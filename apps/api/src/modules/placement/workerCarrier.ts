@@ -69,7 +69,9 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
     throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native manager allocation requires the accepted Agent configuration.', 409)
   }
-  const sources = new Map<string, { connection: DeviceConnectionIdentity; response: unknown }>()
+  const sources = new Map<string, Array<{
+    connection: DeviceConnectionIdentity; response: unknown; observing: boolean
+  }>>()
   const workerExecution = options.workerExecution ?? new WorkerExecutionPolicy()
   // The Worker boot this manager last reached; only a reconnect of that boot may receive a replay.
   let reached: DeviceConnectionIdentity | undefined
@@ -114,9 +116,13 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         return next.payload
       }, signal)
       const receipt = receiptFromResponse(response)
-      if (receipt) {
-        if (!sources.has(receiptKey(receipt)) && sources.size >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
-        sources.set(receiptKey(receipt), { connection: connection.identity, response })
+      // Metadata continuations use the first page's receipt and are not observed separately.
+      if (receipt && !(request.method === 'history' && request.metadata)) {
+        const key = receiptKey(receipt)
+        if (!sources.has(key) && sources.size >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
+        const pending = sources.get(key) ?? []
+        pending.push({ connection: connection.identity, response, observing: false })
+        sources.set(key, pending)
       }
       return response
     },
@@ -127,12 +133,18 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       return true
     } },
     observeReceipt: async receipt => {
-      const key = receiptKey(receipt), original = sources.get(key)
-      if (!original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
+      const key = receiptKey(receipt)
+      const pending = sources.get(key)
+      const original = pending?.find(source => !source.observing)
+      if (!pending || !original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
+      original.observing = true
       try {
         const result = await VerifiedRemoteEvidence.commit(receipt, original.connection, await options.commit(receipt, original.connection, original.response))
         if (result === 'rejected') throw new DomainError('REMOTE_OBSERVATION_REJECTED', 'Main ownership rejected the original worker receipt.', 409)
-      } finally { sources.delete(key) }
+      } finally {
+        pending.splice(pending.indexOf(original), 1)
+        if (!pending.length) sources.delete(key)
+      }
     },
   })
 }
