@@ -1,0 +1,11 @@
+{
+  "source": "c9c4fc33d85906dff615a525c0cd860aa4248628",
+  "productBase": "8edfdba17d4bae2a0c6d8186345054c6efd1fca5",
+  "package": "./internal/schema",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "integration": true,
+  "integrationRoots": [
+    "TestCapturedBaselinePreservesCallerSessionSettings"
+  ],
+  "integrationPattern": "^TestCapturedBaselinePreservesCallerSessionSettings$"
+}
