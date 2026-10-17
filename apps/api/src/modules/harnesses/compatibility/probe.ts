@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants, createReadStream } from 'node:fs'
 import { access, lstat, mkdir, mkdtemp, open, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { finished } from 'node:stream/promises'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
@@ -132,6 +133,11 @@ async function command(binary: string, args: string[], directory: string, enviro
   owned.child.stdout.setEncoding('utf8'); owned.child.stderr.setEncoding('utf8')
   owned.child.stdout.on('data', (chunk: string) => collect('stdout', Buffer.from(chunk)))
   owned.child.stderr.on('data', (chunk: string) => collect('stderr', Buffer.from(chunk)))
+  const completed = Promise.all([
+    owned.closed,
+    finished(owned.child.stdout, { readable: true, writable: false, cleanup: true }),
+    finished(owned.child.stderr, { readable: true, writable: false, cleanup: true }),
+  ]).then(([result]) => result)
   const abort = () => { rejectFailure(signal.reason); void owned.close().catch(rejectFailure) }
   const closeOwned = async () => {
     try { await owned.close(); processes.delete(owned) } catch {
@@ -142,7 +148,7 @@ async function command(binary: string, args: string[], directory: string, enviro
   owned.child.stdin.end()
   if (signal.aborted) abort()
   try {
-    const result = await Promise.race([owned.closed, failure])
+    const result = await Promise.race([completed, failure])
     signal.throwIfAborted()
     if (result.exitCode !== 0) {
       if (ownership && stderr.includes('Native launch refused: delegated cgroup v2 with cgroup.kill is required.')) {

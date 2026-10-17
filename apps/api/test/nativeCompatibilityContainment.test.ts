@@ -30,22 +30,22 @@ vi.mock('../src/modules/harnesses/process.js', async () => {
 
 it.each(['before-handoff', 'after-exit'] as const)(
   'reports refused native containment with %s output without blaming the CLI or exposing diagnostic output', async delivery => {
-  diagnostic.delivery = delivery
-  const directory = await mkdtemp(join(tmpdir(), 'native-diagnostic-'))
-  const binary = join(directory, 'codex')
-  await writeFile(binary, `#!${process.execPath}\n`, { mode: 0o700 })
-  const probe = nativeCompatibilityProbe({ codex: binary }, directory, process.env, 5_000, {
-    recovery: { root: directory, owner: 'diagnostic-fixture' },
-    beforeCommand: async () => {},
-  })
-  try {
-    await expect(probe.inspect('codex', new AbortController().signal)).rejects.toMatchObject({
-      code: 'NATIVE_CONTAINMENT_UNAVAILABLE',
-      message: 'Native diagnostics require a delegated cgroup v2 with cgroup.kill. '
-        + 'Run the application or tests in their delegated service or scope and retry.',
+    diagnostic.delivery = delivery
+    const directory = await mkdtemp(join(tmpdir(), 'native-diagnostic-'))
+    const binary = join(directory, 'codex')
+    await writeFile(binary, `#!${process.execPath}\n`, { mode: 0o700 })
+    const probe = nativeCompatibilityProbe({ codex: binary }, directory, process.env, 5_000, {
+      recovery: { root: directory, owner: 'diagnostic-fixture' },
+      beforeCommand: async () => {},
     })
-  } finally {
-    await probe.close?.()
-    await rm(directory, { recursive: true, force: true })
-  }
-})
+    try {
+      await expect(probe.inspect('codex', new AbortController().signal)).rejects.toMatchObject({
+        code: 'NATIVE_CONTAINMENT_UNAVAILABLE',
+        message: 'Native diagnostics require a delegated cgroup v2 with cgroup.kill. '
+          + 'Run the application or tests in their delegated service or scope and retry.',
+      })
+    } finally {
+      await probe.close?.()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })

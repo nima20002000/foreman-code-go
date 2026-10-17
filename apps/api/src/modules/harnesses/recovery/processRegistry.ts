@@ -38,6 +38,10 @@ interface LaunchRecord {
   format: 1; id: string; owner: string; boot: string; parent: LinuxProcessIdentity; controlKey: string
 }
 interface BirthRecord { format: 1; id: string; owner: string; boot: string; guardian: LinuxProcessIdentity; containment?: NativeCgroupBoundary }
+type RegistrationClosure =
+  | { kind: 'unstarted'; launch: LaunchRecord }
+  | { kind: 'active'; launch: LaunchRecord; birth?: BirthRecord }
+
 export interface NativeProcessExit { exitCode: number | null; exitSignal: NodeJS.Signals | null }
 const owned = new WeakMap<ChildProcess, { scope: NativeProcessRecovery; id: string; closed?: boolean;
   exit?: NativeProcessExit; receiptError?: Error; restartDetachable?: true }>()
@@ -252,19 +256,6 @@ function unstartedGuardianAlive(directory: string, launch: LaunchRecord): boolea
   return !!guardian && identityAlive(guardian)
 }
 
-async function waitForUnstartedGuardian(directory: string, launch: LaunchRecord, signal?: AbortSignal): Promise<void> {
-  const end = Date.now() + 5_000
-  // IPC disconnection asks an unstarted guardian to exit; retirement must join that exit.
-  while (unstartedGuardianAlive(directory, launch)) {
-    signal?.throwIfAborted()
-    if (readRecord(join(directory, 'birth.json')) !== undefined) throw new Error('Conflicting native startup evidence.')
-    if (Date.now() >= end) throw new Error('Native registration still has a live process; retirement is unconfirmed.')
-    await delay(25, undefined, signal ? { signal } : {})
-  }
-  signal?.throwIfAborted()
-  if (readRecord(join(directory, 'birth.json')) !== undefined) throw new Error('Conflicting native startup evidence.')
-}
-
 /** Compact proven closures BEFORE enforcing the unresolved-work bound. */
 async function inventory(directory: string, owner: string): Promise<string[]> {
   return nativeRegistryProjection(dirname(directory)).retirementBatch(async () => {
@@ -448,7 +439,7 @@ export class NativeProcessRegistry {
     const attempt = timeRuntimeOperation('harness', 'process.close',
       async () => {
         await this.preparation
-        await registryOperation(ownerOperation(scope), () => this.closeRegistered(scope, id, signal))
+        await this.closeRegistered(scope, id, signal)
       }, { ownerId: scope.owner })
     closing.set(identity, attempt)
     void attempt.finally(() => { if (closing.get(identity) === attempt) closing.delete(identity) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
@@ -457,6 +448,42 @@ export class NativeProcessRegistry {
 
   private async closeRegistered(scope: NativeProcessRecovery, id: string, signal?: AbortSignal): Promise<void> {
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error('Invalid process registration.')
+    const observe = () => registryOperation(ownerOperation(scope), () => this.closeRegistrationStep(scope, id, signal))
+    let observation = await observe()
+    const end = Date.now() + 5_000
+    const forceAt = Date.now() + 1_000
+    let requested = false
+    let forced = false
+    while (observation) {
+      signal?.throwIfAborted()
+      const { launch } = observation
+      if (observation.kind === 'active' && observation.birth) {
+        const birth = observation.birth
+        if (birth.containment && !forced && (Date.now() >= forceAt || !identityAlive(birth.guardian))) {
+          killCgroup(birth.containment)
+          forced = true
+        }
+        if (!requested && identityAlive(birth.guardian)) {
+          try { await stopGuardian(launch, birth, signal); requested = true } catch (error) {
+            if (signal?.aborted) throw error
+            // Guardian can exit between lookup and connect. Observe again; never signal a stored PID.
+          }
+        }
+      }
+      // Keep storage mutations serialized, but let admissions inspect and reject live work while exit is pending.
+      await delay(25, undefined, signal ? { signal } : {})
+      if (Date.now() >= end) {
+        if (observation.kind === 'unstarted') {
+          throw new Error('Native registration still has a live process; retirement is unconfirmed.')
+        }
+        throw new Error('Native closure is unconfirmed. No PID-only termination or replacement process was attempted.')
+      }
+      observation = await observe()
+    }
+  }
+
+  private async closeRegistrationStep(scope: NativeProcessRecovery, id: string,
+    signal?: AbortSignal): Promise<RegistrationClosure | undefined> {
     signal?.throwIfAborted()
     const directory = join(privateDirectory(scope.root), key(scope.owner), id)
     // A retry after the GC rename must use the exact durable retirement receipt,
@@ -478,64 +505,41 @@ export class NativeProcessRegistry {
     const launch = launchRecord(readRecord(join(directory, 'intent.json')))
     if (launch.owner !== scope.owner || launch.id !== id) throw new Error('Native process owner mismatch.')
     const alreadyClosed = closedRecord(directory, launch)
-    const boot = bootIdentity()
     const neverStarted = readRecord(join(directory, 'not-started.json'))
     if (neverStarted !== undefined) {
       const record = recordObject(neverStarted)
       if (record.id !== id || record.owner !== scope.owner || readRecord(join(directory, 'birth.json')) !== undefined) {
         throw new Error('Conflicting native startup evidence.')
       }
-      await waitForUnstartedGuardian(directory, launch, signal)
+      if (unstartedGuardianAlive(directory, launch)) return { kind: 'unstarted', launch }
       if (alreadyClosed) await retireRegistration(directory, launch)
       else await confirmClosed(directory, launch, 'native_not_started')
       return
     }
     if (alreadyClosed) { await retireRegistration(directory, launch); return }
-    // A different kernel boot proves no process from the earlier boot can execute.
-    if (launch.boot !== boot) { await confirmClosed(directory, launch, 'linux_boot_changed'); return }
-    const end = Date.now() + 5_000
-    let requested = false
-    const forceAt = Date.now() + 1_000
-    let forced = false
-    while (Date.now() < end) {
-      signal?.throwIfAborted()
-      const rawBirth = readRecord(join(directory, 'birth.json'))
-      if (rawBirth === undefined) {
-        const dispatched = readRecord(join(directory, 'dispatched.json'))
-        if (dispatched === undefined) {
-          // Parent persists dispatched BEFORE sending the native configuration.
-          if (!identityAlive(launch.parent)) { await confirmClosed(directory, launch, 'native_not_started'); return }
-        } else {
-          const record = recordObject(dispatched)
-          const guardian = recordObject(record.guardian)
-          if (record.id !== id || !Number.isSafeInteger(guardian.pid) || Number(guardian.pid) <= 1
-            || typeof guardian.startTicks !== 'string' || !/^\d+$/.test(guardian.startTicks)) throw new Error('Invalid guardian dispatch record.')
-          if (!identityAlive({ pid: Number(guardian.pid), startTicks: guardian.startTicks })) {
-            // The guardian cannot start a native executable until birth.json is durable.
-            // Re-read after observing exit so a concurrent final publication cannot be missed.
-            if (readRecord(join(directory, 'birth.json')) === undefined) { await confirmClosed(directory, launch, 'native_not_started'); return }
-          }
-        }
+    if (launch.boot !== bootIdentity()) { await confirmClosed(directory, launch, 'linux_boot_changed'); return }
+    const rawBirth = readRecord(join(directory, 'birth.json'))
+    if (rawBirth === undefined) {
+      const dispatched = readRecord(join(directory, 'dispatched.json'))
+      if (dispatched === undefined) {
+        if (!identityAlive(launch.parent)) { await confirmClosed(directory, launch, 'native_not_started'); return }
       } else {
-        const birth = birthRecord(rawBirth, launch)
-        const evidence = observeCgroupClosure(directory, launch, birth)
-        if (evidence) { await confirmClosed(directory, launch, evidence); return }
-        if (birth.containment && !forced && (Date.now() >= forceAt || !identityAlive(birth.guardian))) {
-          killCgroup(birth.containment)
-          forced = true
-        }
-        // Without a kernel boundary, even a vanished session cannot prove that
-        // detached descendants are gone. Keep legacy work fenced on this boot.
-        if (!requested && identityAlive(birth.guardian)) {
-          try { await stopGuardian(launch, birth, signal); requested = true } catch (error) {
-            if (signal?.aborted) throw error
-            // Guardian can exit between lookup and connect. Observe again; never signal a stored PID.
-          }
+        const record = recordObject(dispatched)
+        const guardian = recordObject(record.guardian)
+        if (record.id !== id || !Number.isSafeInteger(guardian.pid) || Number(guardian.pid) <= 1
+          || typeof guardian.startTicks !== 'string' || !/^\d+$/.test(guardian.startTicks)) throw new Error('Invalid guardian dispatch record.')
+        if (!identityAlive({ pid: Number(guardian.pid), startTicks: guardian.startTicks })
+          && readRecord(join(directory, 'birth.json')) === undefined) {
+          await confirmClosed(directory, launch, 'native_not_started')
+          return
         }
       }
-      await delay(25, undefined, signal ? { signal } : {})
+      return { kind: 'active', launch }
     }
-    throw new Error('Native closure is unconfirmed. No PID-only termination or replacement process was attempted.')
+    const birth = birthRecord(rawBirth, launch)
+    const evidence = observeCgroupClosure(directory, launch, birth)
+    if (evidence) { await confirmClosed(directory, launch, evidence); return }
+    return { kind: 'active', launch, birth }
   }
 }
 
