@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
@@ -24,6 +25,7 @@ function seed(root: string, owner: string, closed = false) {
 
 describe.skipIf(process.platform !== 'linux')('passive harness metadata with compact retired history', () => {
   it('preserves over 10,000 exact retired owner receipts and one unresolved launch, including after process restart', async () => {
+    const started = performance.now()
     const root = mkdtempSync(join(tmpdir(), 'harness-retired-history-')), registry = new NativeProcessRegistry(root)
     const receipts: { path: string; value: string }[] = [], retirements: Promise<boolean>[] = []
     try {
@@ -63,6 +65,8 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       await expect(registry.closeRegistration(registry.scope('retired-owner-0'), randomUUID())).rejects.toMatchObject({ code: 'ENOENT' })
       await expect(registry.reserveLaunch('unresolved-owner')).rejects.toThrow('active or unconfirmed')
     } finally { rmSync(root, { recursive: true, force: true }) }
+    // CI treats 180 seconds without a completed test as a hang.
+    expect(performance.now() - started).toBeLessThan(180_000)
   // Every retirement fsyncs its receipts; slower disks need time for the full history.
   }, 1_200_000)
 
