@@ -74,8 +74,7 @@ async function approvalFixture() {
   const source = input('/project')
   delete source.environment
   const session = await manager.createSession(source)
-  const stream = manager.startTurn(session, { prompt: 'run command', clientCorrelationId: 'turn' })
-    [Symbol.asyncIterator]()
+  const stream = manager.startTurn(session, { prompt: 'run command', clientCorrelationId: 'turn' })[Symbol.asyncIterator]()
   let event = await stream.next()
   while (!event.done && event.value.type !== 'turn.started') event = await stream.next()
   expect(event.done).toBe(false)
@@ -91,10 +90,10 @@ async function approvalFixture() {
       cwd: request.cwd, status: 'completed', exitCode: 0 } })
   const interaction: DurableInteraction = {
     id: 'interaction', revision: 1, workspaceId: 'workspace', workflowId: 'workflow', runId: 'run',
-    executionId: 'execution', requestingAgentId: 'agent', ...session,
+    executionId: 'execution', requestingAgentId: 'agent', graphThreadId: 'run', ...session,
     nativeRequestId: pending.turn.nativeRequestId, nativeRequestType: pending.nativeRequestType,
     request: pending.request, responseOptions: pending.responseOptions, approval: { handler: 'user' },
-    selectedOptionId: option.optionId, selectedSemantic: option.semantic, nativeResponse: option,
+    selectedOptionId: option.optionId, selectedSemantic: option.semantic, nativeResponse: { ...option } as DurableInteraction['nativeResponse'],
     status: 'delivery_pending', deliveryState: 'submitted',
     createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
   }
