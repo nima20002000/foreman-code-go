@@ -1,0 +1,33 @@
+{
+  "source": "4a67cb0d8d3c3741ad465e0eddbe7dc7d72394ae",
+  "ownerDeclaredSource": "4a67cb0d8d3c3741ad465e0eddbe7dc7d72394ae",
+  "sourceTree": "04dc99e7c9a8b6e2bdc6568fd59859dcd474e9cf",
+  "package": "./internal/sources",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/sources/git_process.go",
+    "internal/sources/git_process_lifecycle_test.go",
+    "internal/sources/git_process_test.go"
+  ],
+  "unitFlags": [
+    "-race",
+    "-timeout=30s"
+  ],
+  "unitRoots": [
+    "TestGitProcessCancellationStopsDescendants",
+    "TestGitProcessDeadlineStopsTermIgnoringDescendants",
+    "TestGitProcessPreCanceledContextIsInterrupted",
+    "TestGitProcessNormalExitReleasesDescendantLocks",
+    "TestGitProcessDeadlineSurvivesCallerExit",
+    "TestGitProcessUsesSystemGitObjectIdentity",
+    "TestGitProcessReportsExitStatusAndStreams",
+    "TestGitProcessUsesLiteralArgumentsAndExplicitEnvironment",
+    "TestGitProcessCreatesPrivateFiles",
+    "TestGitProcessInheritsLockDescriptors",
+    "TestGitProcessEnforcesFileSizeLimit",
+    "TestGitProcessBoundsEachOutputStream",
+    "TestGitProcessDecodesMalformedUTF8",
+    "TestGitProcessReportsStartFailure"
+  ],
+  "unitPattern": "^TestGitProcess"
+}
