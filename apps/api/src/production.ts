@@ -2198,7 +2198,7 @@ function configureHttpApplication(composition: ProductionComposition) {
   const runtimeServices = composition.runtimeServices = { ...operatorServices, extensions: operatorExtensions, harnessSettings }
   const localHuman = new PostgresLocalHumanAccess(database.pool, access)
   interactions.useWorkDirectionActions({
-    start: (principal, source, input) => operatorServices.runs.start(principal, source, input),
+    start: (principal, source, input, options) => operatorServices.runs.start(principal, source, input, options),
     wake: () => engine.reconcile(),
   })
   const runtimeBuildIdentity = readRuntimeBuildIdentity()

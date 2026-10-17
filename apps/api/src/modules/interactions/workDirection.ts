@@ -6,15 +6,19 @@ import type pg from 'pg'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../run-graph/connection.js'
+import { openRunGraphPublication } from '../run-graph/publication.js'
+import { readPublicProjectionLocked } from '../run-graph/compactSnapshot.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
+import type { RepeatStartOptions } from '../runs/repeatStartAdmission.js'
 import { requestWorkflowStopLocked } from '../runs/repeatLifecycle.js'
-import { fail, lockInteraction, readContext } from './wave25/context.js'
+import { fail, lockInteraction, readContext, scopeForRun } from './wave25/context.js'
 import { transact } from './wave25/transaction.js'
 import { nextInteraction, publishInteraction } from './wave25/publication.js'
 import { assertInteractionResponseActive, type InteractionResponseOptions } from './cancellation.js'
 
 export interface WorkDirectionActions {
-  start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: RunStartV3Input): Promise<{ run: { id: string } }>
+  start(principal: ManagementPrincipal, source: 'http' | 'mcp', input: RunStartV3Input,
+    options: Pick<RepeatStartOptions, 'continuation'>): Promise<{ run: { id: string } }>
   wake(): Promise<void>
 }
 
@@ -130,6 +134,27 @@ export class WorkDirectionRepository {
     [principalId, source, `interaction:${interaction.id}`, JSON.stringify({ replayed, optionId: interaction.selectedOptionId })])
   }
 
+  private async lockContinuation(sql: GraphTransactionSql, interaction: DurableInteraction,
+    principalId: string): Promise<(runId: string) => Promise<void>> {
+    const scope = await scopeForRun(sql, interaction.runId)
+    const publication = await openRunGraphPublication(sql, scope, readPublicProjectionLocked)
+    const current = await lockInteraction(sql, interaction.id)
+    await this.authorize(sql, principalId, current)
+    beforeGraphCommit(sql, async () => { await this.authorize(sql, principalId, current) })
+    if (current.status !== 'delivery_pending' || current.selectedOptionId !== 'continue') {
+      return fail('WORK_DIRECTION_WAIT_CONFLICT')
+    }
+    const context = await readContext(sql, current, true)
+    return async (runId) => {
+      const next = nextInteraction(current, { status: 'delivered', deliveryState: 'delivered',
+        deliveredAt: new Date().toISOString(), continuationRunId: runId })
+      await publishInteraction(publication, context, current, next, { mutate: async (transaction) => {
+        await transaction.query('update run_work_direction_responses set continuation_run_id=$2 where interaction_id=$1',
+          [current.id, runId])
+      } })
+    }
+  }
+
   /** A fixed Start command and input survive response retries and application restart. */
   async complete(interaction: DurableInteraction): Promise<DurableInteraction> {
     if (interaction.status !== 'delivery_pending') return interaction
@@ -144,22 +169,18 @@ export class WorkDirectionRepository {
       await readContext(publication.sql, current, true)
       return this.authorize(publication.sql, saved.principal_id, current)
     })
-    const started = await this.actions.start(principal, saved.source, RunStartV3InputSchema.parse(saved.start_input))
+    const started = await this.actions.start(principal, saved.source, RunStartV3InputSchema.parse(saved.start_input), {
+      continuation: { lock: (sql) => this.lockContinuation(sql, interaction, saved.principal_id) },
+    })
     return transact(this.pool, interaction.runId, async (publication) => {
       const sql = publication.sql
       const current = await lockInteraction(sql, interaction.id)
       await this.authorize(sql, saved.principal_id, current)
       beforeGraphCommit(sql, async () => { await this.authorize(sql, saved.principal_id, current) })
-      if (current.status === 'delivered') return current
-      if (current.status !== 'delivery_pending' || current.selectedOptionId !== 'continue') return fail('WORK_DIRECTION_WAIT_CONFLICT')
-      const context = await readContext(sql, current, true)
-      const next = nextInteraction(current, { status: 'delivered', deliveryState: 'delivered',
-        deliveredAt: new Date().toISOString(), continuationRunId: started.run.id })
-      await publishInteraction(publication, context, current, next, { mutate: async (transaction) => {
-        await transaction.query('update run_work_direction_responses set continuation_run_id=$2 where interaction_id=$1',
-          [current.id, started.run.id])
-      } })
-      return next
+      if (current.status !== 'delivered' || current.continuationRunId !== started.run.id) {
+        return fail('WORK_DIRECTION_WAIT_CONFLICT')
+      }
+      return current
     })
   }
 }
