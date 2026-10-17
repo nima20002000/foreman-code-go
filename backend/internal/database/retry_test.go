@@ -40,6 +40,13 @@ func TestDatabaseRetryRejectsAnExplicitNonpositiveTimeout(t *testing.T) {
 		if err == nil {
 			t.Fatal("Expected invalid timeout to fail")
 		}
+		var invalid *database.InvalidRetryTimeoutError
+		if !errors.As(err, &invalid) || invalid.Timeout != timeout {
+			t.Fatalf("The retry error did not identify its rejected timeout: %v", err)
+		}
+		if err.Error() != "Database retry timeout must be positive." {
+			t.Fatalf("The public TypeScript retry diagnostic changed: %q", err.Error())
+		}
 	}
 }
 

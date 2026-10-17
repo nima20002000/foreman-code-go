@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -50,7 +49,7 @@ func Load(environment Environment) (Config, error) {
 		result.Host = host
 	}
 	if !loopbackHost(result.Host) {
-		return Config{}, errors.New("The local app requires a loopback HOST: 127.0.0.1, ::1 or localhost.")
+		return Config{}, &ValidationError{Setting: "HOST", Message: "The local app requires a loopback HOST: 127.0.0.1, ::1 or localhost."}
 	}
 	port, err := integer(resolved, "PORT", 3000, 65535)
 	if err != nil {
@@ -71,12 +70,12 @@ func Load(environment Environment) (Config, error) {
 		return Config{}, err
 	}
 	if value, exists := resolved["FOREMAN_CODE_LOCAL_PRODUCTION"]; exists && value != "0" && value != "1" {
-		return Config{}, errors.New("FOREMAN_CODE_LOCAL_PRODUCTION must be 0 or 1.")
+		return Config{}, &ValidationError{Setting: "FOREMAN_CODE_LOCAL_PRODUCTION", Message: "FOREMAN_CODE_LOCAL_PRODUCTION must be 0 or 1."}
 	}
 	if resolved["FOREMAN_CODE_LOCAL_PRODUCTION"] == "1" {
 		databaseURL, err := whatwgurl.Parse(result.Database.ConnectionString)
 		if err != nil || !loopbackURLHost(databaseURL.Hostname()) {
-			return Config{}, errors.New("Local production requires a loopback API and database.")
+			return Config{}, &ValidationError{Setting: "DATABASE_URL", Message: "Local production requires a loopback API and database."}
 		}
 	}
 	return result, nil
@@ -86,7 +85,7 @@ func loadDatabase(environment Environment) (Database, error) {
 	connectionString := environment["DATABASE_URL"]
 	_, err := whatwgurl.Parse(connectionString)
 	if err != nil || !strings.HasPrefix(connectionString, "postgresql://") {
-		return Database{}, errors.New("DATABASE_URL must be a postgresql:// URL.")
+		return Database{}, &ValidationError{Setting: "DATABASE_URL", Message: "DATABASE_URL must be a postgresql:// URL."}
 	}
 	maxConnections, err := integer(environment, "DATABASE_POOL_MAX", 10, math.MaxInt32)
 	if err != nil {
@@ -115,7 +114,7 @@ func integer(environment Environment, name string, fallback, maximum int64) (int
 	}
 	parsed, finite := finiteNumber(trimSpace(value))
 	if !finite || math.Trunc(parsed) != parsed || parsed < 1 || parsed > float64(maximum) {
-		return 0, fmt.Errorf("%s must be a positive integer at most %d.", name, maximum)
+		return 0, &ValidationError{Setting: name, Message: fmt.Sprintf("%s must be a positive integer at most %d.", name, maximum)}
 	}
 	return int64(parsed), nil
 }

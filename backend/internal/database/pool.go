@@ -47,12 +47,12 @@ type DB struct {
 // This builds configuration only; it does not connect to a database.
 func PoolConfig(options config.Database, applicationName string) (*pgxpool.Config, error) {
 	if options.MaxConnections < 1 || options.ConnectionTimeout <= 0 || options.QueryTimeout <= 0 || options.LockTimeout < 0 {
-		return nil, errors.New("Database pool size and timeouts must be positive; lock timeout may be zero.")
+		return nil, errors.New("database pool size and timeouts must be positive; lock timeout may be zero")
 	}
 	poolConfig, err := pgxpool.ParseConfig(options.ConnectionString)
 	if err != nil {
 		// Parse errors can contain the connection string, including its password.
-		return nil, errors.New("The PostgreSQL connection configuration is invalid.")
+		return nil, errors.New("invalid PostgreSQL connection configuration")
 	}
 	poolConfig.MaxConns = options.MaxConnections
 	poolConfig.MinConns = min(options.MaxConnections, 4)

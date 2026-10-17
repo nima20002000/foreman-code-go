@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,7 +43,10 @@ func TestProductAliasesRejectExactValueConflictsWithoutSecrets(t *testing.T) {
 				"FOREMAN_CODE_" + suffix: "private-value",
 				"GRAPHQL_" + suffix:      "private-value ",
 			}, suffix)
-			if err == nil || !strings.Contains(err.Error(), "conflicts with") || strings.Contains(err.Error(), "private-value") {
+			var invalid *config.ValidationError
+			want := "FOREMAN_CODE_" + suffix + " conflicts with GRAPHQL_" + suffix + ". Supply one value or matching values."
+			if !errors.As(err, &invalid) || invalid.Setting != "FOREMAN_CODE_"+suffix ||
+				err.Error() != want || strings.Contains(err.Error(), "private-value") {
 				t.Fatalf("Expected a conflict naming settings only, got %v", err)
 			}
 		})

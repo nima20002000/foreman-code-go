@@ -56,7 +56,7 @@ func (a *App) Serve(ctx context.Context, listener net.Listener) error {
 		}()
 	}
 	remaining := len(a.services) + 1
-	failure, remaining := awaitStop(ctx, results, remaining)
+	remaining, failure := awaitStop(ctx, results, remaining)
 	failure = errors.Join(failure, unused.close())
 	shutdownContext, cancelShutdown := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancelShutdown()
@@ -77,22 +77,22 @@ func (a *App) Serve(ctx context.Context, listener net.Listener) error {
 	return errors.Join(failure, shutdownError)
 }
 
-func awaitStop(ctx context.Context, results <-chan serviceResult, remaining int) (error, int) {
+func awaitStop(ctx context.Context, results <-chan serviceResult, remaining int) (int, error) {
 	for remaining > 0 {
 		select {
 		case <-ctx.Done():
-			return nil, remaining
+			return remaining, nil
 		case result := <-results:
 			remaining--
 			if failure := stoppedServiceError(result); failure != nil {
-				return failure, remaining
+				return remaining, failure
 			}
 			if result.http {
-				return nil, remaining
+				return remaining, nil
 			}
 		}
 	}
-	return nil, remaining
+	return remaining, nil
 }
 
 func stoppedServiceError(result serviceResult) error {
