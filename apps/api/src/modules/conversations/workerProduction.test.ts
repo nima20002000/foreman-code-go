@@ -13,13 +13,13 @@ import { nativeCorrelation } from './operatorChatRepository.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 
-it('admits a thinking-only next turn through the production Worker channel without replacing saved execution ownership', async () => {
+it.each([false, true])('admits a thinking-only next turn through the production Worker channel (attachments: %s)', async fileInputs => {
   const f = workerConversationFixture()
   if (!('operatorId' in f.configuration) || f.binding.owner.kind !== 'operator') throw new Error('Operator fixture required')
   const accepted = OperatorConfigurationVersionSchema.parse({ ...f.configuration, id: randomUUID(), version: 2,
     contentHash: `sha256:${'b'.repeat(64)}`, showThinking: true })
   const root = '/approved/runtime'
-  const binding = { ...f.binding, workingDirectory: workerOperatorDirectory(root, f.binding.owner),
+  const binding = { ...f.binding, appMcpAccess: fileInputs ? 'scoped' as const : 'none' as const, workingDirectory: workerOperatorDirectory(root, f.binding.owner),
     accountBinding: legacyProviderAccountBinding(f.configuration.harness, f.configuration.harnessProfileSelection)! }
   const first = { correlationId: 'first-turn',
     inputHash: commandInputHash({ prompt: 'First turn', mode: 'regular', preferences: null }),
@@ -41,6 +41,7 @@ it('admits a thinking-only next turn through the production Worker channel witho
     if (sql.includes('from provider_account_accepted_bindings')) return { rows: [{ binding: binding.accountBinding }] }
     return { rows: [conversation], rowCount: 1 }
   }) } as unknown as pg.Pool
+  const prepareFiles = vi.fn(async () => undefined)
   const frames: WorkerConversationRpcRequest[] = []
   let connection = f.connection
   const request = async (raw: unknown) => {
@@ -48,6 +49,11 @@ it('admits a thinking-only next turn through the production Worker channel witho
     receipt.connection = connection
     frames.push(request)
     if (request.method === 'conversation.start-turn') {
+      if (fileInputs) {
+        await production.bridge.handle({ method: 'conversation.files', binding, admissionId: request.admissionId,
+          session: f.session, correlationId: request.correlationId,
+          action: { phase: 'prepare', executionHostId: 'attachment-host' } }, connection, AbortSignal.timeout(1000))
+      }
       receipt.turns.push({ correlationId: request.correlationId,
         inputHash: commandInputHash({ prompt: request.prompt, mode: request.sessionMode ?? 'regular',
           preferences: request.preferences ?? null }),
@@ -75,10 +81,10 @@ it('admits a thinking-only next turn through the production Worker channel witho
       namespace === WORKSPACE_ROOT_EXTENSION.namespace ? roots : channel }),
     profiles, claudeProfiles: profiles,
     operators: { configuration: async () => f.configuration }, agents: {}, registry: {}, qualifications: {},
-    suiteRevisions: {}, access: {}, mcpForward: () => ({}),
+    suiteRevisions: {}, access: {}, mcpForward: () => ({}), files: () => prepareFiles,
   } as unknown as Parameters<typeof createProductionWorkerConversations>[0])
   const manager = production.create({ conversationId: conversation.id, configuration: accepted,
-    workingDirectory: '/main/runtime', appMcpAccess: 'none' })
+    workingDirectory: '/main/runtime', appMcpAccess: binding.appMcpAccess, ...(fileInputs ? { fileInputs } : {}) })
   try {
     await expect(manager.attachSession(f.session, { kind: 'operator', configuration: accepted,
       correlationId: nativeCorrelation(conversation.id, 'next-turn'), workingDirectory: '/main/runtime' }))
@@ -87,6 +93,7 @@ it('admits a thinking-only next turn through the production Worker channel witho
     for await (const event of manager.startTurn(f.session, { prompt: 'Continue',
       clientCorrelationId: nativeCorrelation(conversation.id, 'next-turn') })) events.push(event)
     expect(events).toEqual([])
+    expect(prepareFiles).toHaveBeenCalledTimes(fileInputs ? 1 : 0)
     expect(frames.filter(frame => frame.method === 'conversation.start-turn')).toHaveLength(1)
     expect(frames.find(frame => frame.method === 'conversation.open')).toMatchObject({
       mode: 'attach', binding, configuration: f.configuration,
@@ -121,4 +128,56 @@ it('rejects execution, profile, owner and bound-hash changes during a presentati
   ]) expect(() => workerExecutionConfiguration(f.binding, candidate, configuration)).toThrow()
   expect(() => workerExecutionConfiguration({ ...f.binding, owner: { ...f.binding.owner,
     configurationHash: '0'.repeat(64) } }, accepted, configuration)).toThrow()
+})
+
+it.each(['codex', 'claude'] as const)('exposes journal-only %s creation recovery through the production manager', async harness => {
+  const f = workerConversationFixture('agent', harness)
+  if (!('agentId' in f.configuration) || f.binding.owner.kind !== 'agent') throw new Error('Agent fixture required')
+  const binding = { ...f.binding,
+    accountBinding: legacyProviderAccountBinding(f.configuration.harness, f.configuration.harnessProfileSelection)! }
+  const principal = { id: 'owner', name: 'Owner', audience: 'operator', delegated_from: null,
+    grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: {} }],
+    expires_at: new Date(Date.now() + 600_000), revoked_at: null }
+  const conversation = { id: binding.owner.conversationId, kind: 'agent', workspace_id: f.configuration.workspaceId,
+    workflow_id: binding.owner.workflowId, workflow_node_id: binding.owner.workflowNodeId,
+    agent_id: f.configuration.agentId, agent_configuration_version_id: f.configuration.id,
+    active_request_id: 'request', native_session_id: null, deleted_at: null,
+    owner_principal_id: principal.id, payload: { ownerPrincipalId: principal.id }, record: { status: 'open' },
+    worker_conversation_binding: binding }
+  const pool = { query: vi.fn(async (sql: string) => {
+    if (sql.includes('from management_principals')) return { rows: [principal] }
+    if (sql.includes('from provider_account_accepted_bindings')) return { rows: [{ binding: binding.accountBinding }] }
+    return { rows: [conversation], rowCount: 1 }
+  }) } as unknown as pg.Pool
+  const operationId = 'original-creation'
+  const receipt: WorkerConversationReceipt = { binding, connection: f.connection, session: f.session,
+    nativeOwner: f.nativeOwner, revision: 2, closing: false, closed: false,
+    creation: { operationId, inputHash: commandInputHash(harness === 'claude'
+      ? { mode: 'initial-turn', correlationId: operationId }
+      : { mode: 'create', source: null, preferences: null }) },
+    turns: harness === 'claude' ? [{ correlationId: operationId, inputHash: commandInputHash('original prompt'),
+      status: 'uncertain', nativeTurnId: null, sessionMode: 'regular', creationOperationId: operationId }] : [],
+    compactions: [], desiredPreferences: null, appliedPreferences: null }
+  const methods: string[] = []
+  const channel = { binding: f.connection, request: async (raw: unknown) => {
+    const request = WorkerConversationRpcRequestSchema.parse(raw)
+    methods.push(request.method)
+    if (request.method !== 'conversation.status') throw new Error('Creation recovery must only inspect the journal')
+    return { payload: { receipt } }
+  } }
+  const profiles = { admit: async () => ({ override: { configuration: f.configuration.harness,
+    target: binding.profile.target } }), revalidate: async () => {} }
+  const production = createProductionWorkerConversations({ pool, endpoint: () => ({ captureRequest: () => channel }),
+    profiles, claudeProfiles: profiles, operators: {}, agents: {}, registry: {}, qualifications: {},
+    suiteRevisions: {}, access: {}, mcpForward: () => ({}),
+  } as unknown as Parameters<typeof createProductionWorkerConversations>[0])
+  const manager = production.create({ conversationId: conversation.id, configuration: f.configuration,
+    workingDirectory: binding.workingDirectory, appMcpAccess: 'none' })
+  try {
+    expect(manager.reconcileSessionCreation).toBeTypeOf('function')
+    await expect(manager.reconcileSessionCreation!({ kind: 'agent-chat', configuration: f.configuration,
+      conversationId: conversation.id, workflowId: binding.owner.workflowId, workflowNodeId: binding.owner.workflowNodeId,
+      workingDirectory: binding.workingDirectory, correlationId: operationId })).resolves.toEqual(f.session)
+    expect(methods).toEqual(['conversation.status'])
+  } finally { await manager.dispose?.(); await production.close() }
 })
