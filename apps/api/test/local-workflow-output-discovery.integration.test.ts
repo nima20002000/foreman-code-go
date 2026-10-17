@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS, HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -7,7 +8,6 @@ import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -47,8 +47,7 @@ it.runIf(Boolean(process.env.TEST_DATABASE_URL))(
       const credential = await new Wave25WorkerCredentialService(db.pool, access).issueForExecution(execution.id)
       const commands = new PostgresCommandCoordinator(db.pool)
       app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-        appMcp: { access, interactions: new PostgresAppInteractionService(db.pool, {} as never, commands),
-          commands, bugReports: new BugReportService(db.pool, commands) },
+        appMcp: workerToolServices(db.pool, commands).appMcp(access, new PostgresAppInteractionService(db.pool, {} as never, commands)),
       })
       const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
       const connect = async (token: string) => {

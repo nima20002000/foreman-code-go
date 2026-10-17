@@ -97,7 +97,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       const config = { ...loadConfig({ ...process.env, HOST: '127.0.0.1', PORT: String(port),
         DATABASE_URL: suppliedUrl.replace(/^postgres:/, 'postgresql:'),
         HARNESS_WORKSPACE_ROOT: runtimeRoot, DATABASE_QUERY_TIMEOUT_MS: '10000' }),
-        workspaceStorageRoot: projectPath, ...(artifacts ? { fileStorageRoot: join(directory, 'files') } : {}) }
+        workspaceStorageRoot: projectPath, fileStorageRoot: join(directory, 'files') }
       const database = createDatabase(config.database)
       const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
       let app: ReturnType<typeof buildProductionApp>['app'] | undefined
@@ -247,7 +247,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         }
         observeEngine(production)
         app = production.app
-        if (artifacts) production.registerFileStorage()
+        production.registerFileStorage()
         await production.initialize()
         expect((await settings.getHarnessDefaults()).claude?.model).toBe('claude-haiku-4-5-20251001')
         await app.listen({ host: config.host, port: config.port })
@@ -492,7 +492,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
               await production.shutdown()
               production = buildProductionApp(config, database, checkpoints, false)
               observeEngine(production)
-              if (artifacts) production.registerFileStorage()
+              production.registerFileStorage()
               app = production.app
               await production.initialize()
               await app.listen({ host: config.host, port: config.port })

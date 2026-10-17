@@ -1,3 +1,4 @@
+import { workerToolServices } from './workerMcpServices.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -63,9 +64,10 @@ export async function codexNativeAcceptanceFixture(approvalPolicy: 'never' | 'on
     const principal = await access.authenticate(issued.environment.variables.GRAPHQL_MCP_TOKEN, 'worker')
     assert.equal(principal.agentId, configuration.agentId)
     assert(principal.grants.every(grant => grant.actions.every(action => action === 'interactions:read')))
+    const commands = new PostgresCommandCoordinator(pool)
     app = buildApp({ logger: false, readiness: { database: { ping: async () => { await pool.query('select 1') } },
-      checkpoints: { ping: async () => {} } }, appMcp: { access,
-      interactions: new PostgresAppInteractionService(pool, new PostgresInteractionRepository(pool), new PostgresCommandCoordinator(pool)) } })
+      checkpoints: { ping: async () => {} } }, appMcp: workerToolServices(pool, commands).appMcp(access,
+      new PostgresAppInteractionService(pool, new PostgresInteractionRepository(pool), commands)) })
     const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
     await installAppLauncher()
     routes = new AppMcpRoutes(pool, endpoint)

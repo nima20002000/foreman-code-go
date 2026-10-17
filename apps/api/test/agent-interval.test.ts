@@ -4,25 +4,23 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'
-import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { RunHistoryService } from '../src/modules/runs/history.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { intervalRuntime } from './helpers/intervalRuntime.js'
 
 it('re-activates a looping node with its loop prompt in its own session without routing and keeps the settled Run idle until Stop', async () => {
   const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime('Check the deploy log for errors.')
   const commands = new PostgresCommandCoordinator(runtime.db.pool)
-  // The Agent's default tools include bug reporting and CI, so discovery needs those services composed.
-  const bugReports = new BugReportService(runtime.db.pool, commands)
-  const services = { commands, bugReports, ci: {} } as unknown as OperatorServices
+  const tools = workerToolServices(runtime.db.pool, commands)
+  const services = { commands, bugReports: tools.bugReports, ci: tools.ci } as unknown as OperatorServices
   const app = buildApp({
     logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access: runtime.access, services },
-    appMcp: { access: runtime.access, commands, bugReports,
-      interactions: new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands) },
+    appMcp: tools.appMcp(runtime.access, new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands)),
   })
   const clients: Client[] = []
   let finished: Promise<void> | undefined
@@ -51,7 +49,13 @@ it('re-activates a looping node with its loop prompt in its own session without 
       return { client, principalId: credential.principalId }
     }
     const checker = await connect(checkId)
-    expect((await checker.client.listTools()).tools.map(tool => tool.name)).toContain('run_status_get')
+    const tools = (await checker.client.listTools()).tools
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'run_status_get', 'files.references_list', 'files.reference_read',
+    ]))
+    for (const tool of tools.filter(tool => tool.name.startsWith('files.reference'))) {
+      expect(tool.annotations?.readOnlyHint).toBe(true)
+    }
     const read = await checker.client.callTool({ name: 'run_status_get', arguments: {} })
     expect(read.isError).not.toBe(true)
     const status = AgentRunStatusSchema.parse(decodeMcpToolResult(read))

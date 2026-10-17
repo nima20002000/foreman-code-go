@@ -1,3 +1,4 @@
+import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import Fastify from 'fastify'
 import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
@@ -9,6 +10,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { rejectableDeferred } from './helpers/deferred.js'
 
 const principal: ManagementPrincipal = {
@@ -46,13 +48,14 @@ function fixture(options: { ci?: boolean; defaults?: GraphqlAgentTool[] } = {}) 
       code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error),
     } })
   })
-  registerGraphqlMcp(app, { access, interactions, operator })
+  const services = { access, interactions, operator, references: workerToolServices(pool, commands as unknown as PostgresCommandCoordinator).references }
+  registerGraphqlMcp(app, services)
   const rpc = (method: string, params?: object, token = 'worker-token') => app.inject({
     method: 'POST', url: '/mcp',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
     payload: { jsonrpc: '2.0', id: 1, method, ...(params ? { params } : {}) },
   })
-  return { app, rpc, query, saved, operator, commands }
+  return { services, app, rpc, query, saved, operator, commands }
 }
 
 function decode(body: string) {
@@ -106,6 +109,26 @@ describe('authenticated workflow MCP tool discovery', () => {
       expect(response.statusCode).toBe(200)
       expect(decode(response.body).result?.tools?.map(tool => tool.name).sort()).toEqual(expectedTools)
     } finally { result.resolve({ rows: [f.saved] }); await f.app.close() }
+  })
+
+  it('discovers selected reference tools along with context from the shared Worker services', async () => {
+    const f = fixture({ defaults: ['context_get', 'files.references_list', 'files.reference_read'] })
+    try {
+      const response = await f.rpc('tools/list')
+      expect(response.statusCode).toBe(200)
+      expect(decode(response.body).result?.tools?.map(tool => tool.name).sort())
+        .toEqual(['context_get', 'files.reference_read', 'files.references_list'])
+    } finally { await f.app.close() }
+  })
+
+  it('still fails discovery when selected reference services are deliberately absent', async () => {
+    const f = fixture({ defaults: ['context_get', 'files.references_list', 'files.reference_read'] })
+    delete (f.services as { references?: unknown }).references
+    try {
+      const response = await f.rpc('tools/list')
+      expect(response.statusCode).toBe(503)
+      expect(decode(response.body).error?.code).toBe('MCP_TOOL_DISCOVERY_FAILED')
+    } finally { await f.app.close() }
   })
 
   it('fails discovery when the pinned configuration cannot be read', async () => {

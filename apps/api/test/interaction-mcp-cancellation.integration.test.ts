@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
@@ -16,9 +17,7 @@ async function setup() {
   closes.push(f.close)
   const app = buildApp({
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: f.access, interactions: new PostgresAppInteractionService(
-      f.pool, f.repository, f.commands, f.service,
-    ) },
+    appMcp: workerToolServices(f.pool, f.commands).appMcp(f.access, new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)),
   })
   const endpoint = `${await app.listen({ host: '127.0.0.1', port: 0 })}/mcp`
   closes.push(() => app.close())

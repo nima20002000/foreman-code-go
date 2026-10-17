@@ -1,3 +1,6 @@
+import type { AppMcpServices } from '../../src/mcp/app/types.js'
+import type { PostgresAccessService } from '../../src/modules/access/postgres.js'
+import type { AppInteractionService } from '../../src/modules/interactions/app.js'
 import { join } from 'node:path'
 import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { AgentReferenceService } from '../../src/modules/files/references/agentService.js'
@@ -29,5 +32,9 @@ export function workerToolServices(pool: Pool, commands: PostgresCommandCoordina
     bytes: new FileByteStorage(join(root, 'worker-reference-files'), MAX_FILE_BYTES),
     authorization: new PostgresAgentReferenceAuthorization(pool), reads: new PostgresReferenceReadRepository(pool),
   })
-  return { bugReports, ci, references }
+  return { bugReports, ci, references,
+    appMcp(access: PostgresAccessService, interactions: AppInteractionService): AppMcpServices {
+      return { access, commands, interactions, bugReports, references }
+    },
+  }
 }

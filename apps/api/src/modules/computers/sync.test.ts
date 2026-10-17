@@ -1,3 +1,4 @@
+import { workerToolServices } from '../../../test/helpers/workerMcpServices.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -119,7 +120,7 @@ it('serves authenticated Agent context while optional shared-file installation i
     {} as never, {} as never), { syncedFolder: f.service.sharedFolder.bind(f.service) })
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access, services: { commands: f.commands } as OperatorServices }, appMcp: { access, interactions } })
+    operator: { access, services: { commands: f.commands } as OperatorServices }, appMcp: workerToolServices(f.pool, f.commands).appMcp(access, interactions) })
   const origin = await app.listen({ host: '127.0.0.1', port: 0 })
   const client = new Client({ name: 'pending-sync-context', version: '1' })
   cleanups.push(async () => { await client.close(); await app.close() })

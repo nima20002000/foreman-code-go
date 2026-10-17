@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { sharedFolderId } from '../src/modules/computers/syncthingComputer.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -110,7 +111,7 @@ it('returns the stable workspace directory through authenticated MCP and denies 
     return worker
   })
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access, interactions: service } })
+    appMcp: workerToolServices(pool, {} as never).appMcp(access, service) })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const client = new Client({ name: 'workspace-sync-context', version: '1' })
   try {

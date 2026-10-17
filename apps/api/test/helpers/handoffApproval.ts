@@ -1,3 +1,4 @@
+import { workerToolServices } from './workerMcpServices.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { expect, vi } from 'vitest'
@@ -7,7 +8,6 @@ import { WorkActivationInputSchema, makeCurrentWorkflowFixture, parseWorkHandoff
 import { buildApp } from '../../src/app.js'
 import { DomainError } from '../../src/modules/errors.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
-import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { PostgresAppInteractionService } from '../../src/modules/interactions/app.js'
 import { assertOrchestratorGraphAuthority } from '../../src/modules/interactions/graphAuthority.js'
 import { PostgresRepeatReviewerBindings } from '../../src/modules/interactions/repeatReviewer.js'
@@ -212,8 +212,8 @@ export async function runHandoffApproval({ restart }: { restart: boolean }): Pro
     }
     const commands = new PostgresCommandCoordinator(f.db.pool)
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, runtime.repository,
-        commands, runtime.service), commands, bugReports: new BugReportService(f.db.pool, commands) } })
+      appMcp: workerToolServices(f.db.pool, commands).appMcp(f.access,
+        new PostgresAppInteractionService(f.db.pool, runtime.repository, commands, runtime.service)) })
     const origin = await app.listen({ host: 'localhost', port: 0 })
     const firstReviewerId = await reviewThroughMcp(f, runtime, origin)
     const secondReviewerId = await reviewThroughMcp(f, runtime, origin, firstReviewerId)

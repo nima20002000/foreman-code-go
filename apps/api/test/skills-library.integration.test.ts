@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -330,7 +331,7 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
     // A Worker Agent (Coder or Orchestrator role) on the one server is not offered skill management, and a
     // direct call is refused (the unified server lists only each role's own tools).
     for (const role of ['coder', 'orchestrator'] as const) {
-      const server = await createGraphqlMcpServer({ role, principal: { id: `worker-${role}`, name: role, audience: 'worker', agentId: 'agent-1',
+      const server = await createGraphqlMcpServer({ references: workerToolServices(database.pool, commands).references, role, principal: { id: `worker-${role}`, name: role, audience: 'worker', agentId: 'agent-1',
         expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants: [{ actions: ['skills:read', 'skills:publish'], scope: {} }] },
       operator: services, interactions: { canRead: async () => true, canRespond: async () => role === 'orchestrator' } as unknown as AppInteractionService })
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
