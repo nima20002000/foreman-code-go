@@ -554,3 +554,53 @@ it.each(['running', 'restarted'] as const)('refreshes regenerated peer identitie
   await expect(f.createService().reconcile()).rejects.toThrow()
   expect(await folderDevices(0)).toEqual([{ deviceID: mainId }, { deviceID: workerId }])
 })
+
+it('configures healthy computers and unrelated workspaces while another identity is stalled', async () => {
+  const f = await fixture()
+  f.hosts.push({ ...f.hosts[0]!, host: f.targets[2]!.hostRef, installation_id: f.targets[2]!.applicationInstallationId })
+  const entered = deferred(), release = deferred()
+  const request = f.endpoint.request.bind(f.endpoint)
+  vi.spyOn(f.endpoint, 'request').mockImplementation(async (id, namespace, payload, options) => {
+    const input = SyncChannelRequestSchema.parse(payload)
+    if (id === f.devices[0]!.deviceId && input.request.operation === 'identity') {
+      entered.resolve()
+      await release.promise
+    }
+    return request(id, namespace, payload, options)
+  })
+  const reconciling = f.service.reconcile()
+  try {
+    await entered.promise
+    await vi.waitFor(async () => {
+      const main = await f.rest[0]!.rest('GET', '/rest/config/folders') as { id: string }[]
+      const healthy = await f.rest[2]!.rest('GET', '/rest/config/folders') as { id: string }[]
+      expect(main.map(folder => folder.id)).toContain(sharedFolderId('workspace-b'))
+      expect(healthy.map(folder => folder.id)).toContain(sharedFolderId('workspace-a'))
+    })
+  } finally { release.resolve(); await reconciling }
+})
+
+it('coalesces simultaneous reconciliations instead of configuring every workspace twice', async () => {
+  const f = await fixture()
+  const entered = deferred(), release = deferred()
+  const prepare = f.rest[0]!.ports.prepare.bind(f.rest[0]!.ports)
+  f.rest[0]!.ports.prepare = async () => { entered.resolve(); await release.promise; return prepare() }
+  const writes = vi.spyOn(f.rest[1]!.ports, 'rest')
+  const first = f.service.reconcile()
+  await entered.promise
+  const duplicate = f.service.reconcile()
+  release.resolve()
+  await Promise.all([first, duplicate])
+  const folders = writes.mock.calls.filter(([method, path]) => method === 'POST' && path === '/rest/config/folders')
+  expect(folders).toHaveLength(1)
+})
+
+it('updates one workspace without reconciling unrelated workspace folders', async () => {
+  const f = await fixture()
+  await f.service.reconcile()
+  const writes = vi.spyOn(f.rest[0]!.ports, 'rest')
+  await f.service.update(f.writer, 'mcp', { target: f.targets[1], workspaceId: 'workspace-a', enabled: false })
+  const folders = writes.mock.calls.filter(([method, path]) => method === 'POST' && path === '/rest/config/folders')
+  expect(folders.length).toBeGreaterThan(0)
+  for (const [, , body] of folders) expect(body).toMatchObject({ label: 'workspace-a' })
+})
