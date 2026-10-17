@@ -211,9 +211,11 @@ ready() {
 
 # .go files and conformance are not understood by the frozen TS affected selector.
 # Frontend duration shards remain supported, while Go ignores all supplied partitions and file indexes.
-if [ "${SCOPE:-affected}" != full ]; then echo 'Running full fork CI scope, including the complete Go backend.'; fi
-export SCOPE=full
-unset SELECTED_FILES CI_PARTITION CI_SELECTION_COMMIT
+if [ "${1:-}" != affected ]; then
+  if [ "${SCOPE:-affected}" != full ]; then echo 'Running full fork CI scope, including the complete Go backend.'; fi
+  export SCOPE=full
+  unset SELECTED_FILES CI_PARTITION CI_SELECTION_COMMIT
+fi
 if [ "$go_part" = 1 ]; then ready go; ci_go_verify; fi
 
 reports=()
@@ -302,6 +304,20 @@ unit_other() {
   script_tests "$directory/scripts.json" || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; }
   return "$code"
 }
+
+if [ "${1:-}" = affected ]; then
+  build_contracts
+  if [ "${4:-}" = scripts ]; then
+    ready scripts-db
+    database_environment="$(node scripts/ci-go-prerequisites.mjs scripts-database-env)"
+    eval "$database_environment"
+  fi
+  TEST_RESULTS_OUTPUT="$test_results" DURATIONS_OUTPUT="$durations_output" node --input-type=module -e '
+    import { executeAffected } from "./scripts/ci-affected-run.mjs"
+    process.exitCode = await executeAffected(process.argv[1], process.argv[2])
+  ' "$2" "$3"
+  exit $?
+fi
 
 case "${SUITE:-}" in
   install) ;;

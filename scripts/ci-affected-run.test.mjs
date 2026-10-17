@@ -4,7 +4,6 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { ciTestResults } from './ci-test-results.mjs'
 import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
 function delegatedSuite(t) {
@@ -67,6 +66,9 @@ for (const failing of [false, true]) {
     const root = fixture.directory
     mkdirSync(join(root, 'reports'))
     const file = 'scripts/value.test.mjs'
+    writeFileSync(join(root, 'scripts/unselected.test.mjs'), `import { test } from 'node:test'
+test('unselected', () => { throw new Error('An unrelated file was executed') })
+`)
     writeFileSync(join(root, file), `import { test } from 'node:test'
 import assert from 'node:assert/strict'
 test('passes', () => assert.equal(1, 1))
@@ -84,11 +86,8 @@ test('second case', () => assert.equal(1, ${failing ? 2 : 1}))
       'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
     assert.equal(result.status, failing ? 1 : 0, result.stderr)
     assert.doesNotMatch(result.stderr, /EINVAL|Unhandled 'error' event/)
-    const goTests = fixture.calls().filter(call => call.tool === 'go' && call.args[0] === 'test')
-    assert.deepEqual(goTests.map(call => call.args), [['test', '-json', '-count=1', './...']])
-    assert.ok(goTests.every(call => call.scope === 'full'))
-    const report = JSON.parse(readFileSync(join(fixture.state, 'unit-other/scripts.json'), 'utf8'))
-    const results = ciTestResults([report], root)
+    assert.equal(fixture.calls().some(call => call.tool === 'go' && call.args[0] === 'test'), false)
+    const results = JSON.parse(readFileSync(join(fixture.state, 'affected-results.json'), 'utf8'))
     assert.deepEqual(results.summary, { passed: failing ? 1 : 2, failed: failing ? 1 : 0, skipped: 0 })
     assert.equal(results.files.length, 1)
     assert.equal(results.files[0].status, failing ? 'failed' : 'passed')
@@ -119,10 +118,27 @@ test('passes', () => assert.equal(1, 1))
     'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const results = JSON.parse(readFileSync(output, 'utf8'))
-  assert.deepEqual(results.summary, { passed: 6, failed: 0, skipped: 0 })
+  assert.deepEqual(results.summary, { passed: 1, failed: 0, skipped: 0 })
   const nodeResult = results.files.find(result => result.file === file)
   assert.ok(nodeResult, JSON.stringify(results.files))
   assert.equal(nodeResult.status, 'passed')
   assert.deepEqual(nodeResult.tests.map(({ name, status }) => [name, status]), [['passes', 'passed']])
-  assert.ok(results.files.some(result => result.file === 'backend/runtime'))
+  assert.deepEqual(results.files.map(result => result.file), [file])
+  const durations = JSON.parse(readFileSync(fixture.environment.DURATIONS_OUTPUT, 'utf8'))
+  assert.ok(durations[file] > 0)
+})
+
+test('an explicitly selected file with zero tests fails', t => {
+  const fixture = delegatedSuite(t)
+  const file = 'scripts/empty.test.mjs'
+  writeFileSync(join(fixture.directory, file), '// No registered tests.\n')
+  const selection = join(fixture.directory, 'selected.json')
+  writeFileSync(selection, JSON.stringify([file]))
+  const environment = { ...fixture.environment }
+  delete environment.NODE_TEST_CONTEXT
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+    'unit', '--files-from', selection], { cwd: fixture.directory, env: environment, encoding: 'utf8' })
+  assert.equal(result.status, 1, JSON.stringify({ stderr: result.stderr, stdout: result.stdout,
+    results: fixture.results() }))
+  assert.match(result.stderr, /executed zero tests/)
 })

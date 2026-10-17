@@ -24,9 +24,6 @@ for (const suite of ['typecheck', 'lint', 'unit', 'integration', 'build']) {
       assert.equal(selection.scope, 'full')
       assert.deepEqual(selection.files, [])
       assert.match(selection.reason, /complete Go backend and retained TypeScript/)
-      assert.deepEqual(affectedCommands(suite, changedFiles), [
-        ['env', `SUITE=${suite}`, 'SCOPE=full', 'bash', 'scripts/ci-suite.sh'],
-      ])
     }
   })
 }
@@ -49,22 +46,21 @@ test('legacy file index decoding stays available for retained web shards and hos
 })
 
 for (const files of [[], ['apps/api/src/feature.test.ts']]) {
-  test(`the legacy affected CLI still runs full Go and retained checks for ${files.length} explicit TS files`, t => {
+  test(`the affected CLI never executes frozen API tests for ${files.length} explicit TS files`, t => {
     const fixture = goCiFixture(t)
     const selection = join(fixture.directory, 'selected.json')
     writeFileSync(selection, JSON.stringify(files))
     const result = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
-      'typecheck', '--files-from', selection], { cwd: fixture.directory, encoding: 'utf8',
+      'unit', '--files-from', selection], { cwd: fixture.directory, encoding: 'utf8',
       env: { ...fixture.environment, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: '1/9', CI_PARTITION: '{}' } })
     assert.equal(result.error, undefined, result.error?.message)
-    assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stdout, /Ignoring the frozen TypeScript selection/)
+    assert.equal(result.status, files.length ? 1 : 0, result.stderr)
+    if (files.length) assert.match(result.stderr, /Unsupported affected file/)
+    else assert.match(result.stdout, /No affected files/)
     assert.deepEqual(fixture.calls().filter(call => call.tool === 'go' && call.args[0] !== 'env')
-      .map(call => call.args), [['build', './...'], ['vet', './...']])
+      .map(call => call.args), [])
     const checks = fixture.calls().filter(call => call.tool === 'corepack')
-    assert.ok(checks.some(call => call.args.includes('@foreman-code/web')))
-    assert.ok(checks.every(call => call.scope === 'full'))
-    assert.equal(checks.some(call => call.args.includes('@foreman-code/api')), false)
+    assert.deepEqual(checks, [])
   })
 }
 
