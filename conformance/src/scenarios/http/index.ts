@@ -18,6 +18,7 @@ import { fileRetentionScenario } from './file-retention.js'
 import { fileReferenceScenarios } from './file-references.js'
 import { conversationFilesScenario } from './conversation-files.js'
 import { workspaceRootsScenario } from './workspace-roots.js'
+import { workspaceProductScenario } from './workspace-product.js'
 
 export const httpScenarios: Scenario[] = [
   workspaceMutationScenario,
@@ -40,4 +41,5 @@ export const httpScenarios: Scenario[] = [
   agentScenario,
   skillConsumerScenario,
   ...authenticationScenarios,
+  workspaceProductScenario,
 ]
