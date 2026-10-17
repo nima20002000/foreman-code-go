@@ -3,9 +3,9 @@ import { EventEmitter } from 'node:events'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { TransferContextSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
@@ -42,9 +42,20 @@ function pair(bound: DeviceSessionBinding, server: DeviceExtensionRegistration) 
   const extensions = negotiateDeviceExtensions(extensionDescriptors([server]), extensionDescriptors([client]))
   const main = new DeviceApplicationChannel({ side: 'main', binding: bound, socket: mainSocket, signal: stop.signal, extensions, registrations: [server], revalidate: async () => {} })
   const worker = new DeviceApplicationChannel({ side: 'worker', binding: bound, socket: workerSocket, signal: stop.signal, extensions, registrations: [client] })
-  const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000), worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
-  for (const task of tasks) void task.catch(() => {})
-  return { worker, rawWorker, async close() { stop.abort(); main.close(); worker.close(); await Promise.allSettled(tasks); await Promise.all([main.join(), worker.join()]) } }
+  const runs = Promise.allSettled([
+    main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
+    worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000),
+  ])
+  return { worker, rawWorker, async close() {
+    stop.abort()
+    main.close()
+    worker.close()
+    await Promise.all([main.join(), worker.join()])
+    await expect(runs).resolves.toEqual([
+      { status: 'rejected', reason: expect.objectContaining({ code: 'transport' }) },
+      { status: 'rejected', reason: expect.objectContaining({ code: 'transport' }) },
+    ])
+  } }
 }
 it('retains the actual UUID epoch and rejects numeric generation substitution', () => {
   const actual = binding(), context = transferContextForBinding(actual)
@@ -102,7 +113,7 @@ it('rejects an old captured sender context before dispatching through a replacem
 })
 
 it('shares the supplied original canonical journal with fallback and preserves its accepted/current fences', async () => {
-  const root = await mkdtemp('/tmp/graphql-shared-carrier-'); roots.push(root)
+  const root = await mkdtemp(join(tmpdir(), 'graphql-shared-carrier-')); roots.push(root)
   const original = binding(), bytes = Buffer.from('data'), intent = intentFor(original, bytes)
   let bound = original, denied = false
   const accepted = { intent: async () => intent, authorize: async () => { if (denied) throw new Error('Denied original grant') } }
@@ -145,12 +156,24 @@ it('waits for the device to reconnect instead of spending its retries while the 
   const bytes = Buffer.from('data'), intent = intentFor(original, bytes)
   const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original,
     accepted: { intent: async () => intent, authorize: async () => {} } })
-  const channels = pair(original, receiver.extension)
-  let connected = false
-  setTimeout(() => { connected = true }, 1_000)
+  vi.useFakeTimers()
+  let channels: ReturnType<typeof pair> | undefined
+  const reconnect = setTimeout(() => { channels = pair(original, receiver.extension) }, 1_000)
   try {
-    const client = createChannelTransferClient({ captureRequest: namespace => connected ? channels.worker.captureRequest(namespace) : undefined })
-    const receipt = await client.sender({ read: async (_, offset, length) => bytes.subarray(offset, offset + length) }).send(intent)
-    expect(receipt.byteSize).toBe(bytes.length)
-  } finally { await channels.close(); await receiver.receiver.close() }
+    const client = createChannelTransferClient({ captureRequest: namespace => channels?.worker.captureRequest(namespace) })
+    const read = vi.fn(async (_: TransferIntent, offset: number, length: number) => bytes.subarray(offset, offset + length))
+    const result = Promise.allSettled([client.sender({ read }).send(intent)])
+    await vi.advanceTimersByTimeAsync(750)
+    expect(read).not.toHaveBeenCalled()
+    // Process due timers before delivering queued socket frames.
+    vi.advanceTimersByTime(250)
+    vi.useRealTimers()
+    await expect(result).resolves.toEqual([{ status: 'fulfilled', value: expect.objectContaining({ byteSize: bytes.length }) }])
+    expect(read).toHaveBeenCalledTimes(1)
+  } finally {
+    clearTimeout(reconnect)
+    vi.useRealTimers()
+    await channels?.close()
+    await receiver.receiver.close()
+  }
 })
