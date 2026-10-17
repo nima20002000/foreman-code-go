@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { deferred } from './helpers/deferred.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -101,19 +102,31 @@ describe.skipIf(!postgresEnabled)('Agent 3 dedicated PostgreSQL publication owne
     expect(owner).toBeDefined()
     try {
       const connection = owner!.oneShotConnection()
-      const order: string[] = []
-      let entered!: () => void
-      const started = new Promise<void>((resolve) => { entered = resolve })
+      const table = `publication_${randomUUID().replaceAll('-', '')}`
+      await pool.query(`create table ${table}(label text primary key)`)
+      const entered = deferred()
+      const finish = deferred()
       const publication = connection.transaction(async (sql) => {
-        await sql.query('select 1')
-        entered()
-        await sql.query('select pg_sleep(0.02)')
-        order.push('transaction')
+        await sql.query(`insert into ${table} values ('publication')`)
+        entered.resolve()
+        await finish.promise
       })
-      await started
-      const query = owner!.client.query('select 1').then(() => { order.push('outside') })
-      await Promise.all([publication, query])
-      expect(order).toEqual(['transaction', 'outside'])
+      await entered.promise
+      let outsideFinished = false
+      const outside = owner!.client.query(`insert into ${table} values ('outside')`).then(() => {
+        outsideFinished = true
+      })
+      try {
+        // No SQL is pending in the transaction while the outside operation tries to run.
+        await new Promise(resolve => setTimeout(resolve, 100))
+        expect(outsideFinished).toBe(false)
+        expect((await pool.query(`select label from ${table}`)).rows).toEqual([])
+      } finally {
+        finish.resolve()
+        await Promise.all([publication, outside])
+      }
+      expect((await pool.query(`select label from ${table} order by label`)).rows)
+        .toEqual([{ label: 'outside' }, { label: 'publication' }])
     } finally { await owner?.release() }
   })
   it('reads actual PostgreSQL lock ownership rather than echoing an expected fence', async () => {
