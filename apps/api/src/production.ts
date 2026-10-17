@@ -1712,7 +1712,8 @@ function configureConversationManagers(composition: ProductionComposition) {
     processRegistry, responseJournal, managers: operatorManagers, nativeFactories,
     accountBinding: conversationId => operatorAccountBindings.get(conversationId),
     createDevice: (configuration, conversationId, fileInputs) => workerChats!.create({
-      configuration, conversationId, workingDirectory: operatorWorkingDirectory, appMcpAccess: fileInputs ? 'none' : 'scoped' }),
+      configuration, conversationId, workingDirectory: operatorWorkingDirectory, fileInputs,
+      appMcpAccess: fileInputs && configuration.harness.harness === 'claude' ? 'none' : 'scoped' }),
     createSelected: (configuration, conversationId, fileInputs, recovery) => {
       if (configuration.harness.harness === 'opencode') {
         throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)

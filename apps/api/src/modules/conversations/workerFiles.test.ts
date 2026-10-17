@@ -13,10 +13,11 @@ import { prepareCodexFileTurn } from '../harnesses/codexFiles/index.js'
 import { filePorts, fileScope, sourceRef, publishedRef } from '../../../test/fixtures/codex-file-runtime-helpers.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 
-async function fixture(options: { repeatCopies?: boolean } = {}) {
+async function fixture(options: { repeatCopies?: boolean; scopedOperator?: boolean } = {}) {
   const repeatCopies = options.repeatCopies
   const directory = await privateFixtureDirectory('worker-attachments-')
-  const f = workerConversationFixture('agent')
+  const f = workerConversationFixture(options.scopedOperator ? 'operator' : 'agent')
+  if (options.scopedOperator) f.binding.appMcpAccess = 'scoped'
   f.binding.owner.conversationId = fileScope.chat.conversationId
   const bridge = new MainWorkerConversationBridge()
   const ports = filePorts()
@@ -54,7 +55,8 @@ async function fixture(options: { repeatCopies?: boolean } = {}) {
     }
   const lease = bridge.capture({
     request: { method: 'conversation.start-turn', binding: f.binding, session: f.session,
-      prompt: 'Read the attached notes.', correlationId: 'message' }, current, channel,
+      prompt: 'Read the attached notes.', correlationId: 'message',
+      ...(options.scopedOperator ? { fileInputs: true } : {}) }, current, channel,
     callbacks: { submitted: async () => {}, files: prepareFiles },
   })
   await lease.request()
@@ -167,7 +169,7 @@ it('acknowledges repeated transfer frames without duplicating bytes or replacing
   } finally { await f.close() }
 })
 
-it('rejects file authority on read-only leases and on management-MCP sessions', async () => {
+it('rejects file authority on read-only leases and on Operator turns without file admission', async () => {
   for (const requestKind of ['read', 'scoped'] as const) {
     const f = workerConversationFixture('operator')
     const bridge = new MainWorkerConversationBridge()
@@ -221,4 +223,23 @@ it('restores file callbacks for the recorded turn while retaining its original w
     await turn!.close()
     await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
   } finally { await recovery?.close(); await f.close() }
+})
+
+it('delivers Codex attachments alongside scoped Operator MCP without sharing file credentials', async () => {
+  const f = await fixture({ scopedOperator: true })
+  try {
+    const turn = await f.prepare()
+    expect(turn).toBeDefined()
+    const input = await turn!.nativeInput('Read the attached notes.')
+    expect(input[0]).toMatchObject({ type: 'text' })
+    await f.submitted()
+    await turn!.activate('native-turn')
+    expect(await turn!.call({ threadId: f.session.nativeSessionId, turnId: 'native-turn',
+      tool: 'files_list', arguments: { scope: fileScope } })).toMatchObject({ success: true })
+    expect(f.ports.tokens.size).toBe(1)
+    f.current.mockRejectedValueOnce(new Error('Sender revoked'))
+    await expect(turn!.publications()).rejects.toThrow('Sender revoked')
+    await turn!.close()
+    expect(f.ports.tokens.size).toBe(0)
+  } finally { await f.close() }
 })

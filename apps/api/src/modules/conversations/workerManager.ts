@@ -264,10 +264,16 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     const fields = this.startFields(start)
     const raw = await this.request({ method: 'conversation.status' }, signal)
     const record = z.object({ receipt: WorkerConversationReceiptSchema.optional() }).parse(raw).receipt
-    const inputHash = commandInputHash({ mode: forkSource ? 'fork' : 'create', source: forkSource ?? null,
-      preferences: fields.preferences ?? null })
+    const initialTurn = this.harness === 'claude' && !forkSource
+    const inputHash = commandInputHash(initialTurn
+      ? { mode: 'initial-turn', correlationId: fields.operationId }
+      : { mode: forkSource ? 'fork' : 'create', source: forkSource ?? null, preferences: fields.preferences ?? null })
     if (!record?.session || record.creation?.operationId !== fields.operationId
-      || record.creation.inputHash !== inputHash) conflict('The original worker session creation is not established.')
+      || record.creation.inputHash !== inputHash
+      || initialTurn && !record.turns.some(turn => turn.correlationId === fields.operationId
+        && turn.creationOperationId === fields.operationId)) {
+      conflict('The original worker session creation is not established.')
+    }
     this.adopt(raw)
     await this.options.observeSession?.(record.session)
     return record.session
@@ -411,6 +417,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   startTurn(session: NativeSessionReference, input: NativeTurnInput, signal?: AbortSignal) {
     this.assertSession(session)
     return this.stream(this.frame({ method: 'conversation.start-turn', session, prompt: input.prompt,
+      ...(this.options.files ? { fileInputs: true } : {}),
       correlationId: input.clientCorrelationId, ...(input.sessionMode ? { sessionMode: input.sessionMode } : {}),
       ...(input.sessionPreferences ? { preferences: input.sessionPreferences } : {}) }), input, undefined, signal)
   }
