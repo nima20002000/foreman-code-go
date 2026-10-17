@@ -93,7 +93,7 @@ func (t *Transport) Start(ctx context.Context) error {
 		ClientInfo: &protocol.ClientInfo{Name: "foreman-code", Title: protocol.Some("Foreman Code"), Version: "0.1.0"},
 		Capabilities: protocol.Some(&protocol.InitializeCapabilities{
 			ExperimentalApi: protocol.Some(true),
-			Extensions: protocol.Some(map[string]json.RawMessage{"openai/form": json.RawMessage(`{}`)}),
+			Extensions:      protocol.Some(map[string]json.RawMessage{"openai/form": json.RawMessage(`{}`)}),
 		}),
 	}
 	data, err := json.Marshal(params)

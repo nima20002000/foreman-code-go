@@ -103,7 +103,7 @@ func (t *Transport) write(ctx context.Context, message any) (bool, error) {
 	}
 	type deliveryResult struct {
 		submitted bool
-		err error
+		err       error
 	}
 	result := make(chan deliveryResult, 1)
 	var submitted, canceled bool // guarded by t.mu

@@ -241,4 +241,3 @@ func (t *Transport) notifyDisconnect(err error) {
 	}()
 	t.options.OnDisconnect(err)
 }
-

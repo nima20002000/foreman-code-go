@@ -7,29 +7,29 @@ package protocol
 import "encoding/json"
 
 type ClientInfo struct {
-	Name	string	`json:"name"`
-	Title	Optional[string]	`json:"title,omitzero"`
-	Version	string	`json:"version"`
+	Name    string           `json:"name"`
+	Title   Optional[string] `json:"title,omitzero"`
+	Version string           `json:"version"`
 }
 
 type InitializeCapabilities struct {
-	ExperimentalApi	Optional[bool]	`json:"experimentalApi,omitzero"`
-	Extensions	Optional[map[string]json.RawMessage]	`json:"extensions,omitzero"`
-	McpServerOpenaiFormElicitation	Optional[bool]	`json:"mcpServerOpenaiFormElicitation,omitzero"`
-	OptOutNotificationMethods	Optional[[]string]	`json:"optOutNotificationMethods,omitzero"`
-	RequestAttestation	Optional[bool]	`json:"requestAttestation,omitzero"`
+	ExperimentalApi                Optional[bool]                       `json:"experimentalApi,omitzero"`
+	Extensions                     Optional[map[string]json.RawMessage] `json:"extensions,omitzero"`
+	McpServerOpenaiFormElicitation Optional[bool]                       `json:"mcpServerOpenaiFormElicitation,omitzero"`
+	OptOutNotificationMethods      Optional[[]string]                   `json:"optOutNotificationMethods,omitzero"`
+	RequestAttestation             Optional[bool]                       `json:"requestAttestation,omitzero"`
 }
 
 type InitializeParams struct {
-	Capabilities	Optional[*InitializeCapabilities]	`json:"capabilities,omitzero"`
-	ClientInfo	*ClientInfo	`json:"clientInfo"`
+	Capabilities Optional[*InitializeCapabilities] `json:"capabilities,omitzero"`
+	ClientInfo   *ClientInfo                       `json:"clientInfo"`
 }
 
 type InitializeResponse struct {
-	CodexHome	V2AbsolutePathBuf	`json:"codexHome"`
-	PlatformFamily	string	`json:"platformFamily"`
-	PlatformOs	string	`json:"platformOs"`
-	UserAgent	string	`json:"userAgent"`
+	CodexHome      V2AbsolutePathBuf `json:"codexHome"`
+	PlatformFamily string            `json:"platformFamily"`
+	PlatformOs     string            `json:"platformOs"`
+	UserAgent      string            `json:"userAgent"`
 }
 
 type V2AbsolutePathBuf string
@@ -37,7 +37,7 @@ type V2AbsolutePathBuf string
 type V2AllowDenyRequirement string
 
 type V2AnalyticsConfig struct {
-	Enabled	Optional[bool]	`json:"enabled,omitzero"`
+	Enabled Optional[bool] `json:"enabled,omitzero"`
 }
 
 type V2ApprovalsReviewer string
@@ -47,24 +47,24 @@ type V2AskForApproval = json.RawMessage
 type V2AutoCompactTokenLimitScope = json.RawMessage
 
 type V2BrowserUseConfig struct {
-	AllowHistoryAccess	Optional[bool]	`json:"allow_history_access,omitzero"`
-	DefaultOriginPolicy	Optional[*V2BrowserUseOriginPolicyConfig]	`json:"default_origin_policy,omitzero"`
-	Origins	Optional[map[string]*V2BrowserUseOriginPolicyConfig]	`json:"origins,omitzero"`
+	AllowHistoryAccess  Optional[bool]                                       `json:"allow_history_access,omitzero"`
+	DefaultOriginPolicy Optional[*V2BrowserUseOriginPolicyConfig]            `json:"default_origin_policy,omitzero"`
+	Origins             Optional[map[string]*V2BrowserUseOriginPolicyConfig] `json:"origins,omitzero"`
 }
 
 type V2BrowserUseOriginPolicyConfig struct {
-	Access	Optional[V2AllowDenyRequirement]	`json:"access,omitzero"`
-	Downloads	Optional[V2AllowDenyRequirement]	`json:"downloads,omitzero"`
-	FullCdpAccess	Optional[V2AllowDenyRequirement]	`json:"full_cdp_access,omitzero"`
-	Uploads	Optional[V2AllowDenyRequirement]	`json:"uploads,omitzero"`
+	Access        Optional[V2AllowDenyRequirement] `json:"access,omitzero"`
+	Downloads     Optional[V2AllowDenyRequirement] `json:"downloads,omitzero"`
+	FullCdpAccess Optional[V2AllowDenyRequirement] `json:"full_cdp_access,omitzero"`
+	Uploads       Optional[V2AllowDenyRequirement] `json:"uploads,omitzero"`
 }
 
 type V2CancelLoginAccountParams struct {
-	LoginID	string	`json:"loginId"`
+	LoginID string `json:"loginId"`
 }
 
 type V2CancelLoginAccountResponse struct {
-	Status	V2CancelLoginAccountStatus	`json:"status"`
+	Status V2CancelLoginAccountStatus `json:"status"`
 }
 
 type V2CancelLoginAccountStatus string
@@ -72,98 +72,98 @@ type V2CancelLoginAccountStatus string
 type V2CodexErrorInfo = json.RawMessage
 
 type V2ComputerUseConfig struct {
-	DefaultAppAccess	Optional[V2AllowDenyRequirement]	`json:"default_app_access,omitzero"`
-	Macos	Optional[*V2ComputerUseMacosConfig]	`json:"macos,omitzero"`
-	Windows	Optional[*V2ComputerUseWindowsConfig]	`json:"windows,omitzero"`
+	DefaultAppAccess Optional[V2AllowDenyRequirement]      `json:"default_app_access,omitzero"`
+	Macos            Optional[*V2ComputerUseMacosConfig]   `json:"macos,omitzero"`
+	Windows          Optional[*V2ComputerUseWindowsConfig] `json:"windows,omitzero"`
 }
 
 type V2ComputerUseMacosConfig struct {
-	BundleIds	Optional[map[string]V2AllowDenyRequirement]	`json:"bundle_ids,omitzero"`
+	BundleIds Optional[map[string]V2AllowDenyRequirement] `json:"bundle_ids,omitzero"`
 }
 
 type V2ComputerUseWindowsConfig struct {
-	Aumids	Optional[map[string]V2AllowDenyRequirement]	`json:"aumids,omitzero"`
-	Exes	Optional[[]*V2ComputerUseWindowsExeConfig]	`json:"exes,omitzero"`
+	Aumids Optional[map[string]V2AllowDenyRequirement] `json:"aumids,omitzero"`
+	Exes   Optional[[]*V2ComputerUseWindowsExeConfig]  `json:"exes,omitzero"`
 }
 
 type V2ComputerUseWindowsExeConfig struct {
-	Access	V2AllowDenyRequirement	`json:"access"`
-	BinaryName	Optional[string]	`json:"binary_name,omitzero"`
-	ProductName	string	`json:"product_name"`
-	PublisherName	string	`json:"publisher_name"`
+	Access        V2AllowDenyRequirement `json:"access"`
+	BinaryName    Optional[string]       `json:"binary_name,omitzero"`
+	ProductName   string                 `json:"product_name"`
+	PublisherName string                 `json:"publisher_name"`
 }
 
 type V2Config struct {
-	Analytics	Optional[*V2AnalyticsConfig]	`json:"analytics,omitzero"`
-	ApprovalPolicy	Optional[V2AskForApproval]	`json:"approval_policy,omitzero"`
-	ApprovalsReviewer	Optional[V2ApprovalsReviewer]	`json:"approvals_reviewer,omitzero"`
-	BrowserUse	Optional[*V2BrowserUseConfig]	`json:"browser_use,omitzero"`
-	CompactPrompt	Optional[string]	`json:"compact_prompt,omitzero"`
-	ComputerUse	Optional[*V2ComputerUseConfig]	`json:"computer_use,omitzero"`
-	Desktop	Optional[map[string]json.RawMessage]	`json:"desktop,omitzero"`
-	DeveloperInstructions	Optional[string]	`json:"developer_instructions,omitzero"`
-	ForcedChatgptWorkspaceID	Optional[V2ForcedChatgptWorkspaceIds]	`json:"forced_chatgpt_workspace_id,omitzero"`
-	ForcedLoginMethod	Optional[V2ForcedLoginMethod]	`json:"forced_login_method,omitzero"`
-	Instructions	Optional[string]	`json:"instructions,omitzero"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	ModelAutoCompactTokenLimit	Optional[int64]	`json:"model_auto_compact_token_limit,omitzero"`
-	ModelAutoCompactTokenLimitScope	Optional[V2AutoCompactTokenLimitScope]	`json:"model_auto_compact_token_limit_scope,omitzero"`
-	ModelContextWindow	Optional[int64]	`json:"model_context_window,omitzero"`
-	ModelProvider	Optional[string]	`json:"model_provider,omitzero"`
-	ModelReasoningEffort	Optional[V2ReasoningEffort]	`json:"model_reasoning_effort,omitzero"`
-	ModelReasoningSummary	Optional[V2ReasoningSummary]	`json:"model_reasoning_summary,omitzero"`
-	ModelVerbosity	Optional[V2Verbosity]	`json:"model_verbosity,omitzero"`
-	ReviewModel	Optional[string]	`json:"review_model,omitzero"`
-	SandboxMode	Optional[V2SandboxMode]	`json:"sandbox_mode,omitzero"`
-	SandboxWorkspaceWrite	Optional[*V2SandboxWorkspaceWrite]	`json:"sandbox_workspace_write,omitzero"`
-	ServiceTier	Optional[string]	`json:"service_tier,omitzero"`
-	Tools	Optional[*V2ToolsV2]	`json:"tools,omitzero"`
-	WebSearch	Optional[V2WebSearchMode]	`json:"web_search,omitzero"`
+	Analytics                       Optional[*V2AnalyticsConfig]           `json:"analytics,omitzero"`
+	ApprovalPolicy                  Optional[V2AskForApproval]             `json:"approval_policy,omitzero"`
+	ApprovalsReviewer               Optional[V2ApprovalsReviewer]          `json:"approvals_reviewer,omitzero"`
+	BrowserUse                      Optional[*V2BrowserUseConfig]          `json:"browser_use,omitzero"`
+	CompactPrompt                   Optional[string]                       `json:"compact_prompt,omitzero"`
+	ComputerUse                     Optional[*V2ComputerUseConfig]         `json:"computer_use,omitzero"`
+	Desktop                         Optional[map[string]json.RawMessage]   `json:"desktop,omitzero"`
+	DeveloperInstructions           Optional[string]                       `json:"developer_instructions,omitzero"`
+	ForcedChatgptWorkspaceID        Optional[V2ForcedChatgptWorkspaceIds]  `json:"forced_chatgpt_workspace_id,omitzero"`
+	ForcedLoginMethod               Optional[V2ForcedLoginMethod]          `json:"forced_login_method,omitzero"`
+	Instructions                    Optional[string]                       `json:"instructions,omitzero"`
+	Model                           Optional[string]                       `json:"model,omitzero"`
+	ModelAutoCompactTokenLimit      Optional[int64]                        `json:"model_auto_compact_token_limit,omitzero"`
+	ModelAutoCompactTokenLimitScope Optional[V2AutoCompactTokenLimitScope] `json:"model_auto_compact_token_limit_scope,omitzero"`
+	ModelContextWindow              Optional[int64]                        `json:"model_context_window,omitzero"`
+	ModelProvider                   Optional[string]                       `json:"model_provider,omitzero"`
+	ModelReasoningEffort            Optional[V2ReasoningEffort]            `json:"model_reasoning_effort,omitzero"`
+	ModelReasoningSummary           Optional[V2ReasoningSummary]           `json:"model_reasoning_summary,omitzero"`
+	ModelVerbosity                  Optional[V2Verbosity]                  `json:"model_verbosity,omitzero"`
+	ReviewModel                     Optional[string]                       `json:"review_model,omitzero"`
+	SandboxMode                     Optional[V2SandboxMode]                `json:"sandbox_mode,omitzero"`
+	SandboxWorkspaceWrite           Optional[*V2SandboxWorkspaceWrite]     `json:"sandbox_workspace_write,omitzero"`
+	ServiceTier                     Optional[string]                       `json:"service_tier,omitzero"`
+	Tools                           Optional[*V2ToolsV2]                   `json:"tools,omitzero"`
+	WebSearch                       Optional[V2WebSearchMode]              `json:"web_search,omitzero"`
 }
 
 type V2ConfigBatchWriteParams struct {
-	Edits	[]*V2ConfigEdit	`json:"edits"`
-	ExpectedVersion	Optional[string]	`json:"expectedVersion,omitzero"`
-	FilePath	Optional[string]	`json:"filePath,omitzero"`
-	ReloadUserConfig	Optional[bool]	`json:"reloadUserConfig,omitzero"`
+	Edits            []*V2ConfigEdit  `json:"edits"`
+	ExpectedVersion  Optional[string] `json:"expectedVersion,omitzero"`
+	FilePath         Optional[string] `json:"filePath,omitzero"`
+	ReloadUserConfig Optional[bool]   `json:"reloadUserConfig,omitzero"`
 }
 
 type V2ConfigEdit struct {
-	KeyPath	string	`json:"keyPath"`
-	MergeStrategy	V2MergeStrategy	`json:"mergeStrategy"`
-	Value	json.RawMessage	`json:"value"`
+	KeyPath       string          `json:"keyPath"`
+	MergeStrategy V2MergeStrategy `json:"mergeStrategy"`
+	Value         json.RawMessage `json:"value"`
 }
 
 type V2ConfigLayer struct {
-	Config	json.RawMessage	`json:"config"`
-	DisabledReason	Optional[string]	`json:"disabledReason,omitzero"`
-	Name	V2ConfigLayerSource	`json:"name"`
-	Version	string	`json:"version"`
+	Config         json.RawMessage     `json:"config"`
+	DisabledReason Optional[string]    `json:"disabledReason,omitzero"`
+	Name           V2ConfigLayerSource `json:"name"`
+	Version        string              `json:"version"`
 }
 
 type V2ConfigLayerMetadata struct {
-	Name	V2ConfigLayerSource	`json:"name"`
-	Version	string	`json:"version"`
+	Name    V2ConfigLayerSource `json:"name"`
+	Version string              `json:"version"`
 }
 
 type V2ConfigLayerSource = json.RawMessage
 
 type V2ConfigReadParams struct {
-	Cwd	Optional[string]	`json:"cwd,omitzero"`
-	IncludeLayers	Optional[bool]	`json:"includeLayers,omitzero"`
+	Cwd           Optional[string] `json:"cwd,omitzero"`
+	IncludeLayers Optional[bool]   `json:"includeLayers,omitzero"`
 }
 
 type V2ConfigReadResponse struct {
-	Config	*V2Config	`json:"config"`
-	Layers	Optional[[]*V2ConfigLayer]	`json:"layers,omitzero"`
-	Origins	map[string]*V2ConfigLayerMetadata	`json:"origins"`
+	Config  *V2Config                         `json:"config"`
+	Layers  Optional[[]*V2ConfigLayer]        `json:"layers,omitzero"`
+	Origins map[string]*V2ConfigLayerMetadata `json:"origins"`
 }
 
 type V2ConfigWriteResponse struct {
-	FilePath	V2AbsolutePathBuf	`json:"filePath"`
-	OverriddenMetadata	Optional[*V2OverriddenMetadata]	`json:"overriddenMetadata,omitzero"`
-	Status	V2WriteStatus	`json:"status"`
-	Version	string	`json:"version"`
+	FilePath           V2AbsolutePathBuf               `json:"filePath"`
+	OverriddenMetadata Optional[*V2OverriddenMetadata] `json:"overriddenMetadata,omitzero"`
+	Status             V2WriteStatus                   `json:"status"`
+	Version            string                          `json:"version"`
 }
 
 type V2ForcedChatgptWorkspaceIds = json.RawMessage
@@ -173,32 +173,32 @@ type V2ForcedLoginMethod string
 type V2FunctionCallOutputBody = json.RawMessage
 
 type V2GitInfo struct {
-	Branch	Optional[string]	`json:"branch,omitzero"`
-	OriginUrl	Optional[string]	`json:"originUrl,omitzero"`
-	Sha	Optional[string]	`json:"sha,omitzero"`
+	Branch    Optional[string] `json:"branch,omitzero"`
+	OriginUrl Optional[string] `json:"originUrl,omitzero"`
+	Sha       Optional[string] `json:"sha,omitzero"`
 }
 
 type V2InputModality = json.RawMessage
 
 type V2ItemCompletedNotification struct {
-	CompletedAtMs	int64	`json:"completedAtMs"`
-	Item	V2ThreadItem	`json:"item"`
-	ThreadID	string	`json:"threadId"`
-	TurnID	string	`json:"turnId"`
+	CompletedAtMs int64        `json:"completedAtMs"`
+	Item          V2ThreadItem `json:"item"`
+	ThreadID      string       `json:"threadId"`
+	TurnID        string       `json:"turnId"`
 }
 
 type V2LegacyAppPathString string
 
 type V2ListMcpServerStatusParams struct {
-	Cursor	Optional[string]	`json:"cursor,omitzero"`
-	Detail	Optional[V2McpServerStatusDetail]	`json:"detail,omitzero"`
-	Limit	Optional[uint32]	`json:"limit,omitzero"`
-	ThreadID	Optional[string]	`json:"threadId,omitzero"`
+	Cursor   Optional[string]                  `json:"cursor,omitzero"`
+	Detail   Optional[V2McpServerStatusDetail] `json:"detail,omitzero"`
+	Limit    Optional[uint32]                  `json:"limit,omitzero"`
+	ThreadID Optional[string]                  `json:"threadId,omitzero"`
 }
 
 type V2ListMcpServerStatusResponse struct {
-	Data	[]*V2McpServerStatus	`json:"data"`
-	NextCursor	Optional[string]	`json:"nextCursor,omitzero"`
+	Data       []*V2McpServerStatus `json:"data"`
+	NextCursor Optional[string]     `json:"nextCursor,omitzero"`
 }
 
 type V2LoginAccountParams = json.RawMessage
@@ -210,24 +210,24 @@ type V2McpAuthStatus string
 type V2McpServerConnectionStatus string
 
 type V2McpServerInfo struct {
-	Description	Optional[string]	`json:"description,omitzero"`
-	Icons	Optional[[]json.RawMessage]	`json:"icons,omitzero"`
-	Name	string	`json:"name"`
-	Title	Optional[string]	`json:"title,omitzero"`
-	Version	string	`json:"version"`
-	WebsiteUrl	Optional[string]	`json:"websiteUrl,omitzero"`
+	Description Optional[string]            `json:"description,omitzero"`
+	Icons       Optional[[]json.RawMessage] `json:"icons,omitzero"`
+	Name        string                      `json:"name"`
+	Title       Optional[string]            `json:"title,omitzero"`
+	Version     string                      `json:"version"`
+	WebsiteUrl  Optional[string]            `json:"websiteUrl,omitzero"`
 }
 
 type V2McpServerStatus struct {
-	AuthStatus	V2McpAuthStatus	`json:"authStatus"`
-	Name	string	`json:"name"`
-	PluginID	Optional[string]	`json:"pluginId,omitzero"`
-	ResourceTemplates	[]*V2ResourceTemplate	`json:"resourceTemplates"`
-	Resources	[]*V2Resource	`json:"resources"`
-	RuntimeStatus	Optional[V2McpServerConnectionStatus]	`json:"runtimeStatus,omitzero"`
-	ServerInfo	Optional[*V2McpServerInfo]	`json:"serverInfo,omitzero"`
-	Tools	map[string]*V2Tool	`json:"tools"`
-	ToolsError	Optional[string]	`json:"toolsError,omitzero"`
+	AuthStatus        V2McpAuthStatus                       `json:"authStatus"`
+	Name              string                                `json:"name"`
+	PluginID          Optional[string]                      `json:"pluginId,omitzero"`
+	ResourceTemplates []*V2ResourceTemplate                 `json:"resourceTemplates"`
+	Resources         []*V2Resource                         `json:"resources"`
+	RuntimeStatus     Optional[V2McpServerConnectionStatus] `json:"runtimeStatus,omitzero"`
+	ServerInfo        Optional[*V2McpServerInfo]            `json:"serverInfo,omitzero"`
+	Tools             map[string]*V2Tool                    `json:"tools"`
+	ToolsError        Optional[string]                      `json:"toolsError,omitzero"`
 }
 
 type V2McpServerStatusDetail string
@@ -235,71 +235,71 @@ type V2McpServerStatusDetail string
 type V2MergeStrategy string
 
 type V2MisalignmentErrorDetails struct {
-	DetailedExplanation	Optional[string]	`json:"detailedExplanation,omitzero"`
-	ErrorType	Optional[string]	`json:"errorType,omitzero"`
-	Steer	Optional[*V2MisalignmentSteer]	`json:"steer,omitzero"`
+	DetailedExplanation Optional[string]               `json:"detailedExplanation,omitzero"`
+	ErrorType           Optional[string]               `json:"errorType,omitzero"`
+	Steer               Optional[*V2MisalignmentSteer] `json:"steer,omitzero"`
 }
 
 type V2MisalignmentSteer struct {
-	Message	string	`json:"message"`
+	Message string `json:"message"`
 }
 
 type V2Model struct {
-	AdditionalSpeedTiers	Optional[[]string]	`json:"additionalSpeedTiers,omitzero"`
-	AvailabilityNux	Optional[*V2ModelAvailabilityNux]	`json:"availabilityNux,omitzero"`
-	DefaultReasoningEffort	V2ReasoningEffort	`json:"defaultReasoningEffort"`
-	DefaultServiceTier	Optional[string]	`json:"defaultServiceTier,omitzero"`
-	Description	string	`json:"description"`
-	DisplayName	string	`json:"displayName"`
-	Hidden	bool	`json:"hidden"`
-	ID	string	`json:"id"`
-	InputModalities	Optional[[]V2InputModality]	`json:"inputModalities,omitzero"`
-	IsDefault	bool	`json:"isDefault"`
-	Model	string	`json:"model"`
-	ModelSpecialty	Optional[string]	`json:"modelSpecialty,omitzero"`
-	MultiAgentVersion	Optional[V2MultiAgentVersion]	`json:"multiAgentVersion,omitzero"`
-	ServiceTiers	Optional[[]*V2ModelServiceTier]	`json:"serviceTiers,omitzero"`
-	SupportedReasoningEfforts	[]*V2ReasoningEffortOption	`json:"supportedReasoningEfforts"`
-	SupportsPersonality	Optional[bool]	`json:"supportsPersonality,omitzero"`
-	Upgrade	Optional[string]	`json:"upgrade,omitzero"`
-	UpgradeInfo	Optional[*V2ModelUpgradeInfo]	`json:"upgradeInfo,omitzero"`
+	AdditionalSpeedTiers      Optional[[]string]                `json:"additionalSpeedTiers,omitzero"`
+	AvailabilityNux           Optional[*V2ModelAvailabilityNux] `json:"availabilityNux,omitzero"`
+	DefaultReasoningEffort    V2ReasoningEffort                 `json:"defaultReasoningEffort"`
+	DefaultServiceTier        Optional[string]                  `json:"defaultServiceTier,omitzero"`
+	Description               string                            `json:"description"`
+	DisplayName               string                            `json:"displayName"`
+	Hidden                    bool                              `json:"hidden"`
+	ID                        string                            `json:"id"`
+	InputModalities           Optional[[]V2InputModality]       `json:"inputModalities,omitzero"`
+	IsDefault                 bool                              `json:"isDefault"`
+	Model                     string                            `json:"model"`
+	ModelSpecialty            Optional[string]                  `json:"modelSpecialty,omitzero"`
+	MultiAgentVersion         Optional[V2MultiAgentVersion]     `json:"multiAgentVersion,omitzero"`
+	ServiceTiers              Optional[[]*V2ModelServiceTier]   `json:"serviceTiers,omitzero"`
+	SupportedReasoningEfforts []*V2ReasoningEffortOption        `json:"supportedReasoningEfforts"`
+	SupportsPersonality       Optional[bool]                    `json:"supportsPersonality,omitzero"`
+	Upgrade                   Optional[string]                  `json:"upgrade,omitzero"`
+	UpgradeInfo               Optional[*V2ModelUpgradeInfo]     `json:"upgradeInfo,omitzero"`
 }
 
 type V2ModelAvailabilityNux struct {
-	Message	string	`json:"message"`
+	Message string `json:"message"`
 }
 
 type V2ModelListParams struct {
-	Cursor	Optional[string]	`json:"cursor,omitzero"`
-	IncludeHidden	Optional[bool]	`json:"includeHidden,omitzero"`
-	Limit	Optional[uint32]	`json:"limit,omitzero"`
+	Cursor        Optional[string] `json:"cursor,omitzero"`
+	IncludeHidden Optional[bool]   `json:"includeHidden,omitzero"`
+	Limit         Optional[uint32] `json:"limit,omitzero"`
 }
 
 type V2ModelListResponse struct {
-	Data	[]*V2Model	`json:"data"`
-	NextCursor	Optional[string]	`json:"nextCursor,omitzero"`
+	Data       []*V2Model       `json:"data"`
+	NextCursor Optional[string] `json:"nextCursor,omitzero"`
 }
 
 type V2ModelServiceTier struct {
-	Description	string	`json:"description"`
-	ID	string	`json:"id"`
-	Name	string	`json:"name"`
+	Description string `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
 }
 
 type V2ModelUpgradeInfo struct {
-	MigrationMarkdown	Optional[string]	`json:"migrationMarkdown,omitzero"`
-	Model	string	`json:"model"`
-	ModelLink	Optional[string]	`json:"modelLink,omitzero"`
-	RetirementAt	Optional[int64]	`json:"retirementAt,omitzero"`
-	UpgradeCopy	Optional[string]	`json:"upgradeCopy,omitzero"`
+	MigrationMarkdown Optional[string] `json:"migrationMarkdown,omitzero"`
+	Model             string           `json:"model"`
+	ModelLink         Optional[string] `json:"modelLink,omitzero"`
+	RetirementAt      Optional[int64]  `json:"retirementAt,omitzero"`
+	UpgradeCopy       Optional[string] `json:"upgradeCopy,omitzero"`
 }
 
 type V2MultiAgentVersion string
 
 type V2OverriddenMetadata struct {
-	EffectiveValue	json.RawMessage	`json:"effectiveValue"`
-	Message	string	`json:"message"`
-	OverridingLayer	*V2ConfigLayerMetadata	`json:"overridingLayer"`
+	EffectiveValue  json.RawMessage        `json:"effectiveValue"`
+	Message         string                 `json:"message"`
+	OverridingLayer *V2ConfigLayerMetadata `json:"overridingLayer"`
 }
 
 type V2Personality string
@@ -307,8 +307,8 @@ type V2Personality string
 type V2ReasoningEffort string
 
 type V2ReasoningEffortOption struct {
-	Description	string	`json:"description"`
-	ReasoningEffort	V2ReasoningEffort	`json:"reasoningEffort"`
+	Description     string            `json:"description"`
+	ReasoningEffort V2ReasoningEffort `json:"reasoningEffort"`
 }
 
 type V2ReasoningSummary = json.RawMessage
@@ -316,24 +316,24 @@ type V2ReasoningSummary = json.RawMessage
 type V2RequestID = json.RawMessage
 
 type V2Resource struct {
-	Meta	Optional[json.RawMessage]	`json:"_meta,omitzero"`
-	Annotations	Optional[json.RawMessage]	`json:"annotations,omitzero"`
-	Description	Optional[string]	`json:"description,omitzero"`
-	Icons	Optional[[]json.RawMessage]	`json:"icons,omitzero"`
-	MimeType	Optional[string]	`json:"mimeType,omitzero"`
-	Name	string	`json:"name"`
-	Size	Optional[int64]	`json:"size,omitzero"`
-	Title	Optional[string]	`json:"title,omitzero"`
-	Uri	string	`json:"uri"`
+	Meta        Optional[json.RawMessage]   `json:"_meta,omitzero"`
+	Annotations Optional[json.RawMessage]   `json:"annotations,omitzero"`
+	Description Optional[string]            `json:"description,omitzero"`
+	Icons       Optional[[]json.RawMessage] `json:"icons,omitzero"`
+	MimeType    Optional[string]            `json:"mimeType,omitzero"`
+	Name        string                      `json:"name"`
+	Size        Optional[int64]             `json:"size,omitzero"`
+	Title       Optional[string]            `json:"title,omitzero"`
+	Uri         string                      `json:"uri"`
 }
 
 type V2ResourceTemplate struct {
-	Annotations	Optional[json.RawMessage]	`json:"annotations,omitzero"`
-	Description	Optional[string]	`json:"description,omitzero"`
-	MimeType	Optional[string]	`json:"mimeType,omitzero"`
-	Name	string	`json:"name"`
-	Title	Optional[string]	`json:"title,omitzero"`
-	UriTemplate	string	`json:"uriTemplate"`
+	Annotations Optional[json.RawMessage] `json:"annotations,omitzero"`
+	Description Optional[string]          `json:"description,omitzero"`
+	MimeType    Optional[string]          `json:"mimeType,omitzero"`
+	Name        string                    `json:"name"`
+	Title       Optional[string]          `json:"title,omitzero"`
+	UriTemplate string                    `json:"uriTemplate"`
 }
 
 type V2SandboxMode string
@@ -341,15 +341,15 @@ type V2SandboxMode string
 type V2SandboxPolicy = json.RawMessage
 
 type V2SandboxWorkspaceWrite struct {
-	ExcludeSlashTmp	Optional[bool]	`json:"exclude_slash_tmp,omitzero"`
-	ExcludeTmpdirEnvVar	Optional[bool]	`json:"exclude_tmpdir_env_var,omitzero"`
-	NetworkAccess	Optional[bool]	`json:"network_access,omitzero"`
-	WritableRoots	Optional[[]string]	`json:"writable_roots,omitzero"`
+	ExcludeSlashTmp     Optional[bool]     `json:"exclude_slash_tmp,omitzero"`
+	ExcludeTmpdirEnvVar Optional[bool]     `json:"exclude_tmpdir_env_var,omitzero"`
+	NetworkAccess       Optional[bool]     `json:"network_access,omitzero"`
+	WritableRoots       Optional[[]string] `json:"writable_roots,omitzero"`
 }
 
 type V2ServerRequestResolvedNotification struct {
-	RequestID	V2RequestID	`json:"requestId"`
-	ThreadID	string	`json:"threadId"`
+	RequestID V2RequestID `json:"requestId"`
+	ThreadID  string      `json:"threadId"`
 }
 
 type V2SessionSource = json.RawMessage
@@ -357,65 +357,65 @@ type V2SessionSource = json.RawMessage
 type V2SortDirection string
 
 type V2Thread struct {
-	AgentNickname	Optional[string]	`json:"agentNickname,omitzero"`
-	AgentRole	Optional[string]	`json:"agentRole,omitzero"`
-	CliVersion	string	`json:"cliVersion"`
-	CreatedAt	int64	`json:"createdAt"`
-	Cwd	V2AbsolutePathBuf	`json:"cwd"`
-	Ephemeral	bool	`json:"ephemeral"`
-	ForkedFromID	Optional[string]	`json:"forkedFromId,omitzero"`
-	GitInfo	Optional[*V2GitInfo]	`json:"gitInfo,omitzero"`
-	HistoryMode	Optional[V2ThreadHistoryMode]	`json:"historyMode,omitzero"`
-	ID	string	`json:"id"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	ModelProvider	string	`json:"modelProvider"`
-	Name	Optional[string]	`json:"name,omitzero"`
-	Originator	Optional[string]	`json:"originator,omitzero"`
-	ParentThreadID	Optional[string]	`json:"parentThreadId,omitzero"`
-	Path	Optional[string]	`json:"path,omitzero"`
-	Preview	string	`json:"preview"`
-	ProjectID	*string	`json:"projectId"`
-	ReasoningEffort	Optional[V2ReasoningEffort]	`json:"reasoningEffort,omitzero"`
-	RecencyAt	Optional[int64]	`json:"recencyAt,omitzero"`
-	Section	Optional[*V2ThreadSection]	`json:"section,omitzero"`
-	SectionEnteredAt	Optional[int64]	`json:"sectionEnteredAt,omitzero"`
-	SessionID	string	`json:"sessionId"`
-	Source	V2SessionSource	`json:"source"`
-	Status	V2ThreadStatus	`json:"status"`
-	ThreadSource	Optional[V2ThreadSource]	`json:"threadSource,omitzero"`
-	Turns	[]*V2Turn	`json:"turns"`
-	UpdatedAt	int64	`json:"updatedAt"`
+	AgentNickname    Optional[string]              `json:"agentNickname,omitzero"`
+	AgentRole        Optional[string]              `json:"agentRole,omitzero"`
+	CliVersion       string                        `json:"cliVersion"`
+	CreatedAt        int64                         `json:"createdAt"`
+	Cwd              V2AbsolutePathBuf             `json:"cwd"`
+	Ephemeral        bool                          `json:"ephemeral"`
+	ForkedFromID     Optional[string]              `json:"forkedFromId,omitzero"`
+	GitInfo          Optional[*V2GitInfo]          `json:"gitInfo,omitzero"`
+	HistoryMode      Optional[V2ThreadHistoryMode] `json:"historyMode,omitzero"`
+	ID               string                        `json:"id"`
+	Model            Optional[string]              `json:"model,omitzero"`
+	ModelProvider    string                        `json:"modelProvider"`
+	Name             Optional[string]              `json:"name,omitzero"`
+	Originator       Optional[string]              `json:"originator,omitzero"`
+	ParentThreadID   Optional[string]              `json:"parentThreadId,omitzero"`
+	Path             Optional[string]              `json:"path,omitzero"`
+	Preview          string                        `json:"preview"`
+	ProjectID        *string                       `json:"projectId"`
+	ReasoningEffort  Optional[V2ReasoningEffort]   `json:"reasoningEffort,omitzero"`
+	RecencyAt        Optional[int64]               `json:"recencyAt,omitzero"`
+	Section          Optional[*V2ThreadSection]    `json:"section,omitzero"`
+	SectionEnteredAt Optional[int64]               `json:"sectionEnteredAt,omitzero"`
+	SessionID        string                        `json:"sessionId"`
+	Source           V2SessionSource               `json:"source"`
+	Status           V2ThreadStatus                `json:"status"`
+	ThreadSource     Optional[V2ThreadSource]      `json:"threadSource,omitzero"`
+	Turns            []*V2Turn                     `json:"turns"`
+	UpdatedAt        int64                         `json:"updatedAt"`
 }
 
 type V2ThreadForkParams struct {
-	ApprovalPolicy	Optional[V2AskForApproval]	`json:"approvalPolicy,omitzero"`
-	ApprovalsReviewer	Optional[V2ApprovalsReviewer]	`json:"approvalsReviewer,omitzero"`
-	BaseInstructions	Optional[string]	`json:"baseInstructions,omitzero"`
-	Config	Optional[map[string]json.RawMessage]	`json:"config,omitzero"`
-	Cwd	Optional[string]	`json:"cwd,omitzero"`
-	DeveloperInstructions	Optional[string]	`json:"developerInstructions,omitzero"`
-	Ephemeral	Optional[bool]	`json:"ephemeral,omitzero"`
-	ExcludeTurns	Optional[bool]	`json:"excludeTurns,omitzero"`
-	LastTurnID	Optional[string]	`json:"lastTurnId,omitzero"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	ModelProvider	Optional[string]	`json:"modelProvider,omitzero"`
-	Sandbox	Optional[V2SandboxMode]	`json:"sandbox,omitzero"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	ThreadID	string	`json:"threadId"`
-	ThreadSource	Optional[V2ThreadSource]	`json:"threadSource,omitzero"`
+	ApprovalPolicy        Optional[V2AskForApproval]           `json:"approvalPolicy,omitzero"`
+	ApprovalsReviewer     Optional[V2ApprovalsReviewer]        `json:"approvalsReviewer,omitzero"`
+	BaseInstructions      Optional[string]                     `json:"baseInstructions,omitzero"`
+	Config                Optional[map[string]json.RawMessage] `json:"config,omitzero"`
+	Cwd                   Optional[string]                     `json:"cwd,omitzero"`
+	DeveloperInstructions Optional[string]                     `json:"developerInstructions,omitzero"`
+	Ephemeral             Optional[bool]                       `json:"ephemeral,omitzero"`
+	ExcludeTurns          Optional[bool]                       `json:"excludeTurns,omitzero"`
+	LastTurnID            Optional[string]                     `json:"lastTurnId,omitzero"`
+	Model                 Optional[string]                     `json:"model,omitzero"`
+	ModelProvider         Optional[string]                     `json:"modelProvider,omitzero"`
+	Sandbox               Optional[V2SandboxMode]              `json:"sandbox,omitzero"`
+	ServiceTier           Optional[string]                     `json:"serviceTier,omitzero"`
+	ThreadID              string                               `json:"threadId"`
+	ThreadSource          Optional[V2ThreadSource]             `json:"threadSource,omitzero"`
 }
 
 type V2ThreadForkResponse struct {
-	ApprovalPolicy	V2AskForApproval	`json:"approvalPolicy"`
-	ApprovalsReviewer	V2ApprovalsReviewer	`json:"approvalsReviewer"`
-	Cwd	V2AbsolutePathBuf	`json:"cwd"`
-	InstructionSources	Optional[[]V2LegacyAppPathString]	`json:"instructionSources,omitzero"`
-	Model	string	`json:"model"`
-	ModelProvider	string	`json:"modelProvider"`
-	ReasoningEffort	Optional[V2ReasoningEffort]	`json:"reasoningEffort,omitzero"`
-	Sandbox	V2SandboxPolicy	`json:"sandbox"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	Thread	*V2Thread	`json:"thread"`
+	ApprovalPolicy     V2AskForApproval                  `json:"approvalPolicy"`
+	ApprovalsReviewer  V2ApprovalsReviewer               `json:"approvalsReviewer"`
+	Cwd                V2AbsolutePathBuf                 `json:"cwd"`
+	InstructionSources Optional[[]V2LegacyAppPathString] `json:"instructionSources,omitzero"`
+	Model              string                            `json:"model"`
+	ModelProvider      string                            `json:"modelProvider"`
+	ReasoningEffort    Optional[V2ReasoningEffort]       `json:"reasoningEffort,omitzero"`
+	Sandbox            V2SandboxPolicy                   `json:"sandbox"`
+	ServiceTier        Optional[string]                  `json:"serviceTier,omitzero"`
+	Thread             *V2Thread                         `json:"thread"`
 }
 
 type V2ThreadHistoryMode string
@@ -423,106 +423,106 @@ type V2ThreadHistoryMode string
 type V2ThreadItem = json.RawMessage
 
 type V2ThreadItemEntry struct {
-	Item	V2ThreadItem	`json:"item"`
-	TurnID	string	`json:"turnId"`
+	Item   V2ThreadItem `json:"item"`
+	TurnID string       `json:"turnId"`
 }
 
 type V2ThreadItemsListParams struct {
-	Cursor	Optional[string]	`json:"cursor,omitzero"`
-	Limit	Optional[uint32]	`json:"limit,omitzero"`
-	SortDirection	Optional[V2SortDirection]	`json:"sortDirection,omitzero"`
-	ThreadID	string	`json:"threadId"`
-	TurnID	Optional[string]	`json:"turnId,omitzero"`
+	Cursor        Optional[string]          `json:"cursor,omitzero"`
+	Limit         Optional[uint32]          `json:"limit,omitzero"`
+	SortDirection Optional[V2SortDirection] `json:"sortDirection,omitzero"`
+	ThreadID      string                    `json:"threadId"`
+	TurnID        Optional[string]          `json:"turnId,omitzero"`
 }
 
 type V2ThreadItemsListResponse struct {
-	BackwardsCursor	Optional[string]	`json:"backwardsCursor,omitzero"`
-	Data	[]*V2ThreadItemEntry	`json:"data"`
-	NextCursor	Optional[string]	`json:"nextCursor,omitzero"`
+	BackwardsCursor Optional[string]     `json:"backwardsCursor,omitzero"`
+	Data            []*V2ThreadItemEntry `json:"data"`
+	NextCursor      Optional[string]     `json:"nextCursor,omitzero"`
 }
 
 type V2ThreadReadParams struct {
-	IncludeTurns	Optional[bool]	`json:"includeTurns,omitzero"`
-	ThreadID	string	`json:"threadId"`
+	IncludeTurns Optional[bool] `json:"includeTurns,omitzero"`
+	ThreadID     string         `json:"threadId"`
 }
 
 type V2ThreadReadResponse struct {
-	Thread	*V2Thread	`json:"thread"`
+	Thread *V2Thread `json:"thread"`
 }
 
 type V2ThreadResumeParams struct {
-	ApprovalPolicy	Optional[V2AskForApproval]	`json:"approvalPolicy,omitzero"`
-	ApprovalsReviewer	Optional[V2ApprovalsReviewer]	`json:"approvalsReviewer,omitzero"`
-	BaseInstructions	Optional[string]	`json:"baseInstructions,omitzero"`
-	Config	Optional[map[string]json.RawMessage]	`json:"config,omitzero"`
-	Cwd	Optional[string]	`json:"cwd,omitzero"`
-	DeveloperInstructions	Optional[string]	`json:"developerInstructions,omitzero"`
-	ExcludeTurns	Optional[bool]	`json:"excludeTurns,omitzero"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	ModelProvider	Optional[string]	`json:"modelProvider,omitzero"`
-	Personality	Optional[V2Personality]	`json:"personality,omitzero"`
-	Sandbox	Optional[V2SandboxMode]	`json:"sandbox,omitzero"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	ThreadID	string	`json:"threadId"`
+	ApprovalPolicy        Optional[V2AskForApproval]           `json:"approvalPolicy,omitzero"`
+	ApprovalsReviewer     Optional[V2ApprovalsReviewer]        `json:"approvalsReviewer,omitzero"`
+	BaseInstructions      Optional[string]                     `json:"baseInstructions,omitzero"`
+	Config                Optional[map[string]json.RawMessage] `json:"config,omitzero"`
+	Cwd                   Optional[string]                     `json:"cwd,omitzero"`
+	DeveloperInstructions Optional[string]                     `json:"developerInstructions,omitzero"`
+	ExcludeTurns          Optional[bool]                       `json:"excludeTurns,omitzero"`
+	Model                 Optional[string]                     `json:"model,omitzero"`
+	ModelProvider         Optional[string]                     `json:"modelProvider,omitzero"`
+	Personality           Optional[V2Personality]              `json:"personality,omitzero"`
+	Sandbox               Optional[V2SandboxMode]              `json:"sandbox,omitzero"`
+	ServiceTier           Optional[string]                     `json:"serviceTier,omitzero"`
+	ThreadID              string                               `json:"threadId"`
 }
 
 type V2ThreadResumeResponse struct {
-	ApprovalPolicy	V2AskForApproval	`json:"approvalPolicy"`
-	ApprovalsReviewer	V2ApprovalsReviewer	`json:"approvalsReviewer"`
-	Cwd	V2AbsolutePathBuf	`json:"cwd"`
-	InstructionSources	Optional[[]V2LegacyAppPathString]	`json:"instructionSources,omitzero"`
-	ItemsBackwardsCursor	Optional[string]	`json:"itemsBackwardsCursor,omitzero"`
-	Model	string	`json:"model"`
-	ModelProvider	string	`json:"modelProvider"`
-	ReasoningEffort	Optional[V2ReasoningEffort]	`json:"reasoningEffort,omitzero"`
-	Sandbox	V2SandboxPolicy	`json:"sandbox"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	Thread	*V2Thread	`json:"thread"`
-	TurnsBackwardsCursor	Optional[string]	`json:"turnsBackwardsCursor,omitzero"`
+	ApprovalPolicy       V2AskForApproval                  `json:"approvalPolicy"`
+	ApprovalsReviewer    V2ApprovalsReviewer               `json:"approvalsReviewer"`
+	Cwd                  V2AbsolutePathBuf                 `json:"cwd"`
+	InstructionSources   Optional[[]V2LegacyAppPathString] `json:"instructionSources,omitzero"`
+	ItemsBackwardsCursor Optional[string]                  `json:"itemsBackwardsCursor,omitzero"`
+	Model                string                            `json:"model"`
+	ModelProvider        string                            `json:"modelProvider"`
+	ReasoningEffort      Optional[V2ReasoningEffort]       `json:"reasoningEffort,omitzero"`
+	Sandbox              V2SandboxPolicy                   `json:"sandbox"`
+	ServiceTier          Optional[string]                  `json:"serviceTier,omitzero"`
+	Thread               *V2Thread                         `json:"thread"`
+	TurnsBackwardsCursor Optional[string]                  `json:"turnsBackwardsCursor,omitzero"`
 }
 
 type V2ThreadSection struct {
-	Appearance	Optional[*V2ThreadSectionAppearance]	`json:"appearance,omitzero"`
-	ID	string	`json:"id"`
-	Name	string	`json:"name"`
+	Appearance Optional[*V2ThreadSectionAppearance] `json:"appearance,omitzero"`
+	ID         string                               `json:"id"`
+	Name       string                               `json:"name"`
 }
 
 type V2ThreadSectionAppearance struct {
-	Color	Optional[string]	`json:"color,omitzero"`
-	Icon	Optional[string]	`json:"icon,omitzero"`
+	Color Optional[string] `json:"color,omitzero"`
+	Icon  Optional[string] `json:"icon,omitzero"`
 }
 
 type V2ThreadSource string
 
 type V2ThreadStartParams struct {
-	ApprovalPolicy	Optional[V2AskForApproval]	`json:"approvalPolicy,omitzero"`
-	ApprovalsReviewer	Optional[V2ApprovalsReviewer]	`json:"approvalsReviewer,omitzero"`
-	BaseInstructions	Optional[string]	`json:"baseInstructions,omitzero"`
-	Config	Optional[map[string]json.RawMessage]	`json:"config,omitzero"`
-	Cwd	Optional[string]	`json:"cwd,omitzero"`
-	DeveloperInstructions	Optional[string]	`json:"developerInstructions,omitzero"`
-	Ephemeral	Optional[bool]	`json:"ephemeral,omitzero"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	ModelProvider	Optional[string]	`json:"modelProvider,omitzero"`
-	Personality	Optional[V2Personality]	`json:"personality,omitzero"`
-	Sandbox	Optional[V2SandboxMode]	`json:"sandbox,omitzero"`
-	ServiceName	Optional[string]	`json:"serviceName,omitzero"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	SessionStartSource	Optional[V2ThreadStartSource]	`json:"sessionStartSource,omitzero"`
-	ThreadSource	Optional[V2ThreadSource]	`json:"threadSource,omitzero"`
+	ApprovalPolicy        Optional[V2AskForApproval]           `json:"approvalPolicy,omitzero"`
+	ApprovalsReviewer     Optional[V2ApprovalsReviewer]        `json:"approvalsReviewer,omitzero"`
+	BaseInstructions      Optional[string]                     `json:"baseInstructions,omitzero"`
+	Config                Optional[map[string]json.RawMessage] `json:"config,omitzero"`
+	Cwd                   Optional[string]                     `json:"cwd,omitzero"`
+	DeveloperInstructions Optional[string]                     `json:"developerInstructions,omitzero"`
+	Ephemeral             Optional[bool]                       `json:"ephemeral,omitzero"`
+	Model                 Optional[string]                     `json:"model,omitzero"`
+	ModelProvider         Optional[string]                     `json:"modelProvider,omitzero"`
+	Personality           Optional[V2Personality]              `json:"personality,omitzero"`
+	Sandbox               Optional[V2SandboxMode]              `json:"sandbox,omitzero"`
+	ServiceName           Optional[string]                     `json:"serviceName,omitzero"`
+	ServiceTier           Optional[string]                     `json:"serviceTier,omitzero"`
+	SessionStartSource    Optional[V2ThreadStartSource]        `json:"sessionStartSource,omitzero"`
+	ThreadSource          Optional[V2ThreadSource]             `json:"threadSource,omitzero"`
 }
 
 type V2ThreadStartResponse struct {
-	ApprovalPolicy	V2AskForApproval	`json:"approvalPolicy"`
-	ApprovalsReviewer	V2ApprovalsReviewer	`json:"approvalsReviewer"`
-	Cwd	V2AbsolutePathBuf	`json:"cwd"`
-	InstructionSources	Optional[[]V2LegacyAppPathString]	`json:"instructionSources,omitzero"`
-	Model	string	`json:"model"`
-	ModelProvider	string	`json:"modelProvider"`
-	ReasoningEffort	Optional[V2ReasoningEffort]	`json:"reasoningEffort,omitzero"`
-	Sandbox	V2SandboxPolicy	`json:"sandbox"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	Thread	*V2Thread	`json:"thread"`
+	ApprovalPolicy     V2AskForApproval                  `json:"approvalPolicy"`
+	ApprovalsReviewer  V2ApprovalsReviewer               `json:"approvalsReviewer"`
+	Cwd                V2AbsolutePathBuf                 `json:"cwd"`
+	InstructionSources Optional[[]V2LegacyAppPathString] `json:"instructionSources,omitzero"`
+	Model              string                            `json:"model"`
+	ModelProvider      string                            `json:"modelProvider"`
+	ReasoningEffort    Optional[V2ReasoningEffort]       `json:"reasoningEffort,omitzero"`
+	Sandbox            V2SandboxPolicy                   `json:"sandbox"`
+	ServiceTier        Optional[string]                  `json:"serviceTier,omitzero"`
+	Thread             *V2Thread                         `json:"thread"`
 }
 
 type V2ThreadStartSource string
@@ -530,60 +530,60 @@ type V2ThreadStartSource string
 type V2ThreadStatus = json.RawMessage
 
 type V2ThreadTurnsListParams struct {
-	Cursor	Optional[string]	`json:"cursor,omitzero"`
-	ItemsView	Optional[V2TurnItemsView]	`json:"itemsView,omitzero"`
-	Limit	Optional[uint32]	`json:"limit,omitzero"`
-	SortDirection	Optional[V2SortDirection]	`json:"sortDirection,omitzero"`
-	ThreadID	string	`json:"threadId"`
+	Cursor        Optional[string]          `json:"cursor,omitzero"`
+	ItemsView     Optional[V2TurnItemsView] `json:"itemsView,omitzero"`
+	Limit         Optional[uint32]          `json:"limit,omitzero"`
+	SortDirection Optional[V2SortDirection] `json:"sortDirection,omitzero"`
+	ThreadID      string                    `json:"threadId"`
 }
 
 type V2ThreadTurnsListResponse struct {
-	BackwardsCursor	Optional[string]	`json:"backwardsCursor,omitzero"`
-	Data	[]*V2Turn	`json:"data"`
-	NextCursor	Optional[string]	`json:"nextCursor,omitzero"`
+	BackwardsCursor Optional[string] `json:"backwardsCursor,omitzero"`
+	Data            []*V2Turn        `json:"data"`
+	NextCursor      Optional[string] `json:"nextCursor,omitzero"`
 }
 
 type V2Tool struct {
-	Meta	Optional[json.RawMessage]	`json:"_meta,omitzero"`
-	Annotations	Optional[json.RawMessage]	`json:"annotations,omitzero"`
-	Description	Optional[string]	`json:"description,omitzero"`
-	Icons	Optional[[]json.RawMessage]	`json:"icons,omitzero"`
-	InputSchema	json.RawMessage	`json:"inputSchema"`
-	Name	string	`json:"name"`
-	OutputSchema	Optional[json.RawMessage]	`json:"outputSchema,omitzero"`
-	Title	Optional[string]	`json:"title,omitzero"`
+	Meta         Optional[json.RawMessage]   `json:"_meta,omitzero"`
+	Annotations  Optional[json.RawMessage]   `json:"annotations,omitzero"`
+	Description  Optional[string]            `json:"description,omitzero"`
+	Icons        Optional[[]json.RawMessage] `json:"icons,omitzero"`
+	InputSchema  json.RawMessage             `json:"inputSchema"`
+	Name         string                      `json:"name"`
+	OutputSchema Optional[json.RawMessage]   `json:"outputSchema,omitzero"`
+	Title        Optional[string]            `json:"title,omitzero"`
 }
 
 type V2ToolsV2 struct {
-	WebSearch	Optional[*V2WebSearchToolConfig]	`json:"web_search,omitzero"`
+	WebSearch Optional[*V2WebSearchToolConfig] `json:"web_search,omitzero"`
 }
 
 type V2Turn struct {
-	CompletedAt	Optional[int64]	`json:"completedAt,omitzero"`
-	DurationMs	Optional[int64]	`json:"durationMs,omitzero"`
-	Error	Optional[*V2TurnError]	`json:"error,omitzero"`
-	ID	string	`json:"id"`
-	Items	[]V2ThreadItem	`json:"items"`
-	ItemsView	Optional[V2TurnItemsView]	`json:"itemsView,omitzero"`
-	StartedAt	Optional[int64]	`json:"startedAt,omitzero"`
-	Status	V2TurnStatus	`json:"status"`
+	CompletedAt Optional[int64]           `json:"completedAt,omitzero"`
+	DurationMs  Optional[int64]           `json:"durationMs,omitzero"`
+	Error       Optional[*V2TurnError]    `json:"error,omitzero"`
+	ID          string                    `json:"id"`
+	Items       []V2ThreadItem            `json:"items"`
+	ItemsView   Optional[V2TurnItemsView] `json:"itemsView,omitzero"`
+	StartedAt   Optional[int64]           `json:"startedAt,omitzero"`
+	Status      V2TurnStatus              `json:"status"`
 }
 
 type V2TurnCompletedNotification struct {
-	ThreadID	string	`json:"threadId"`
-	Turn	*V2Turn	`json:"turn"`
+	ThreadID string  `json:"threadId"`
+	Turn     *V2Turn `json:"turn"`
 }
 
 type V2TurnError struct {
-	AdditionalDetails	Optional[string]	`json:"additionalDetails,omitzero"`
-	CodexErrorInfo	Optional[V2CodexErrorInfo]	`json:"codexErrorInfo,omitzero"`
-	Message	string	`json:"message"`
-	Misalignment	Optional[*V2MisalignmentErrorDetails]	`json:"misalignment,omitzero"`
+	AdditionalDetails Optional[string]                      `json:"additionalDetails,omitzero"`
+	CodexErrorInfo    Optional[V2CodexErrorInfo]            `json:"codexErrorInfo,omitzero"`
+	Message           string                                `json:"message"`
+	Misalignment      Optional[*V2MisalignmentErrorDetails] `json:"misalignment,omitzero"`
 }
 
 type V2TurnInterruptParams struct {
-	ThreadID	string	`json:"threadId"`
-	TurnID	string	`json:"turnId"`
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
 }
 
 type V2TurnInterruptResponse map[string]json.RawMessage
@@ -591,50 +591,50 @@ type V2TurnInterruptResponse map[string]json.RawMessage
 type V2TurnItemsView = json.RawMessage
 
 type V2TurnStartParams struct {
-	ApprovalPolicy	Optional[V2AskForApproval]	`json:"approvalPolicy,omitzero"`
-	ApprovalsReviewer	Optional[V2ApprovalsReviewer]	`json:"approvalsReviewer,omitzero"`
-	ClientUserMessageID	Optional[string]	`json:"clientUserMessageId,omitzero"`
-	Cwd	Optional[string]	`json:"cwd,omitzero"`
-	Effort	Optional[V2ReasoningEffort]	`json:"effort,omitzero"`
-	Input	[]V2UserInput	`json:"input"`
-	Model	Optional[string]	`json:"model,omitzero"`
-	OutputSchema	Optional[json.RawMessage]	`json:"outputSchema,omitzero"`
-	Personality	Optional[V2Personality]	`json:"personality,omitzero"`
-	SandboxPolicy	Optional[V2SandboxPolicy]	`json:"sandboxPolicy,omitzero"`
-	ServiceTier	Optional[string]	`json:"serviceTier,omitzero"`
-	ServiceTierForTurn	Optional[string]	`json:"serviceTierForTurn,omitzero"`
-	Summary	Optional[V2ReasoningSummary]	`json:"summary,omitzero"`
-	ThreadID	string	`json:"threadId"`
-	ToolOutput	Optional[*V2TurnToolOutput]	`json:"toolOutput,omitzero"`
-	TurnTrigger	Optional[string]	`json:"turnTrigger,omitzero"`
+	ApprovalPolicy      Optional[V2AskForApproval]    `json:"approvalPolicy,omitzero"`
+	ApprovalsReviewer   Optional[V2ApprovalsReviewer] `json:"approvalsReviewer,omitzero"`
+	ClientUserMessageID Optional[string]              `json:"clientUserMessageId,omitzero"`
+	Cwd                 Optional[string]              `json:"cwd,omitzero"`
+	Effort              Optional[V2ReasoningEffort]   `json:"effort,omitzero"`
+	Input               []V2UserInput                 `json:"input"`
+	Model               Optional[string]              `json:"model,omitzero"`
+	OutputSchema        Optional[json.RawMessage]     `json:"outputSchema,omitzero"`
+	Personality         Optional[V2Personality]       `json:"personality,omitzero"`
+	SandboxPolicy       Optional[V2SandboxPolicy]     `json:"sandboxPolicy,omitzero"`
+	ServiceTier         Optional[string]              `json:"serviceTier,omitzero"`
+	ServiceTierForTurn  Optional[string]              `json:"serviceTierForTurn,omitzero"`
+	Summary             Optional[V2ReasoningSummary]  `json:"summary,omitzero"`
+	ThreadID            string                        `json:"threadId"`
+	ToolOutput          Optional[*V2TurnToolOutput]   `json:"toolOutput,omitzero"`
+	TurnTrigger         Optional[string]              `json:"turnTrigger,omitzero"`
 }
 
 type V2TurnStartResponse struct {
-	Turn	*V2Turn	`json:"turn"`
+	Turn *V2Turn `json:"turn"`
 }
 
 type V2TurnStartedNotification struct {
-	ThreadID	string	`json:"threadId"`
-	Turn	*V2Turn	`json:"turn"`
+	ThreadID string  `json:"threadId"`
+	Turn     *V2Turn `json:"turn"`
 }
 
 type V2TurnStatus string
 
 type V2TurnSteerParams struct {
-	ClientUserMessageID	Optional[string]	`json:"clientUserMessageId,omitzero"`
-	ExpectedTurnID	string	`json:"expectedTurnId"`
-	Input	[]V2UserInput	`json:"input"`
-	ThreadID	string	`json:"threadId"`
+	ClientUserMessageID Optional[string] `json:"clientUserMessageId,omitzero"`
+	ExpectedTurnID      string           `json:"expectedTurnId"`
+	Input               []V2UserInput    `json:"input"`
+	ThreadID            string           `json:"threadId"`
 }
 
 type V2TurnSteerResponse struct {
-	TurnID	string	`json:"turnId"`
+	TurnID string `json:"turnId"`
 }
 
 type V2TurnToolOutput struct {
-	Name	string	`json:"name"`
-	Namespace	Optional[string]	`json:"namespace,omitzero"`
-	Output	V2FunctionCallOutputBody	`json:"output"`
+	Name      string                   `json:"name"`
+	Namespace Optional[string]         `json:"namespace,omitzero"`
+	Output    V2FunctionCallOutputBody `json:"output"`
 }
 
 type V2UserInput = json.RawMessage
@@ -644,18 +644,18 @@ type V2Verbosity string
 type V2WebSearchContextSize string
 
 type V2WebSearchLocation struct {
-	City	Optional[string]	`json:"city,omitzero"`
-	Country	Optional[string]	`json:"country,omitzero"`
-	Region	Optional[string]	`json:"region,omitzero"`
-	Timezone	Optional[string]	`json:"timezone,omitzero"`
+	City     Optional[string] `json:"city,omitzero"`
+	Country  Optional[string] `json:"country,omitzero"`
+	Region   Optional[string] `json:"region,omitzero"`
+	Timezone Optional[string] `json:"timezone,omitzero"`
 }
 
 type V2WebSearchMode string
 
 type V2WebSearchToolConfig struct {
-	AllowedDomains	Optional[[]string]	`json:"allowed_domains,omitzero"`
-	ContextSize	Optional[V2WebSearchContextSize]	`json:"context_size,omitzero"`
-	Location	Optional[*V2WebSearchLocation]	`json:"location,omitzero"`
+	AllowedDomains Optional[[]string]               `json:"allowed_domains,omitzero"`
+	ContextSize    Optional[V2WebSearchContextSize] `json:"context_size,omitzero"`
+	Location       Optional[*V2WebSearchLocation]   `json:"location,omitzero"`
 }
 
 type V2WriteStatus string

@@ -79,12 +79,12 @@ func newTransportFixture(t *testing.T, configure func(*codex.Options, *transport
 	f := &transportFixture{
 		input: providerInput, output: providerOutput,
 		requests: make(chan map[string]json.RawMessage, 512),
-		events: make(chan codex.Notification, 512), closed: make(chan error, 4),
+		events:   make(chan codex.Notification, 512), closed: make(chan error, 4),
 	}
 	options := codex.Options{
 		Protocol: testProtocol{}, RequestTimeout: 5 * time.Second,
 		OnNotification: func(value codex.Notification) { f.events <- value },
-		OnDisconnect: func(err error) { f.closed <- err },
+		OnDisconnect:   func(err error) { f.closed <- err },
 	}
 	if configure != nil {
 		configure(&options, f)

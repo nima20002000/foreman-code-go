@@ -65,8 +65,8 @@ type Error struct {
 	cause   error
 }
 
-func (e *Error) Error() string { return e.Message }
-func (e *Error) Unwrap() error { return e.cause }
+func (e *Error) Error() string       { return e.Message }
+func (e *Error) Unwrap() error       { return e.cause }
 func (e *Error) FailureCode() string { return e.Code }
 
 // RPCError distinguishes a native rejection from a submitted command whose outcome
@@ -79,8 +79,8 @@ type RPCError struct {
 	NativeMessage string
 }
 
-func (e *RPCError) Error() string { return e.Failure.Error() }
-func (e *RPCError) Unwrap() error { return e.Failure }
+func (e *RPCError) Error() string       { return e.Failure.Error() }
+func (e *RPCError) Unwrap() error       { return e.Failure }
 func (e *RPCError) FailureCode() string { return e.Failure.Code }
 
 func rpcError(method string, id json.RawMessage, uncertain bool, code, version string, cause error) *RPCError {
@@ -96,7 +96,7 @@ func rpcError(method string, id json.RawMessage, uncertain bool, code, version s
 	}
 	return &RPCError{
 		Failure: &Error{Code: code, Message: message, cause: cause},
-		Method: method, OperationID: append(json.RawMessage(nil), id...), Uncertain: uncertain,
+		Method:  method, OperationID: append(json.RawMessage(nil), id...), Uncertain: uncertain,
 	}
 }
 

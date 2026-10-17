@@ -15,14 +15,14 @@ import (
 // gatedInput is an owned stdio endpoint. It lets tests observe a write attempt
 // and hold that attempt without requiring a native installation or real process.
 type gatedInput struct {
-	input io.WriteCloser
-	match func(map[string]json.RawMessage) bool
-	entered chan struct{}
-	release chan struct{}
-	closed chan struct{}
-	enterOnce sync.Once
+	input       io.WriteCloser
+	match       func(map[string]json.RawMessage) bool
+	entered     chan struct{}
+	release     chan struct{}
+	closed      chan struct{}
+	enterOnce   sync.Once
 	releaseOnce sync.Once
-	closeOnce sync.Once
+	closeOnce   sync.Once
 }
 
 func newGatedInput(input io.WriteCloser, match func(map[string]json.RawMessage) bool) *gatedInput {

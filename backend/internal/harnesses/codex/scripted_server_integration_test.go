@@ -76,7 +76,7 @@ func TestScriptedAppServerSessionAndTurn(t *testing.T) {
 	}
 	started, err := transport.StartThread(ctx, protocol.V2ThreadStartParams{
 		Model: protocol.Some("test-model"), Cwd: protocol.Some(directory), Ephemeral: protocol.Some(true),
-		Sandbox: protocol.Some(protocol.V2SandboxMode("read-only")),
+		Sandbox:        protocol.Some(protocol.V2SandboxMode("read-only")),
 		ApprovalPolicy: protocol.Some(json.RawMessage(`"never"`)),
 	})
 	if err != nil || started.Thread == nil || started.Thread.ID == "" {
@@ -88,7 +88,7 @@ func TestScriptedAppServerSessionAndTurn(t *testing.T) {
 	}
 	turn, err := transport.StartTurn(ctx, protocol.V2TurnStartParams{
 		ThreadID: started.Thread.ID,
-		Input: []protocol.V2UserInput{json.RawMessage(`{"type":"text","text":"hello","text_elements":[]}`)},
+		Input:    []protocol.V2UserInput{json.RawMessage(`{"type":"text","text":"hello","text_elements":[]}`)},
 	})
 	if err != nil || turn.Turn == nil || turn.Turn.ID == "" {
 		t.Fatalf("native turn did not start: %v", err)

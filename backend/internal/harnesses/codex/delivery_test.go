@@ -30,7 +30,7 @@ func TestTransportRejectsUnsupportedCallbackWithoutEchoingPayload(t *testing.T) 
 	f.send(t, map[string]any{"id": "native-string-id", "method": "test/unsupported", "params": map[string]string{"text": "private native payload"}})
 	response := f.request(t)
 	var detail struct {
-		Code int `json:"code"`
+		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(response["error"], &detail) != nil || detail.Code != -32602 || detail.Message != "Invalid or unsupported native interaction." {
@@ -76,7 +76,7 @@ func TestTransportRedactsKeysValuesAndEmbeddedJSONStringLiterals(t *testing.T) {
 	})
 	f.send(t, map[string]any{"method": "test/event", "params": map[string]string{
 		"test-secret-long": "test-secret-long",
-		"embedded": `{"value":"test-\u0073ecret-long"}`,
+		"embedded":         `{"value":"test-\u0073ecret-long"}`,
 	}})
 	value := event(t, f.events)
 	var params map[string]string
