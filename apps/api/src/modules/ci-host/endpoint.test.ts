@@ -1,6 +1,7 @@
 import type pg from 'pg'
-import { CiHostRequestSchema, CiRunRecordSchema, type CiHostRequest } from '@foreman-code/contracts'
+import { CI_HOST_NAMESPACE, CiHostRequestSchema, CiRunRecordSchema, type CiHostRequest } from '@foreman-code/contracts'
 import { expect, it, vi } from 'vitest'
+import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { DeviceApplicationAdmissionError } from '../devices/deviceApplicationError.js'
 import { ProductionHostCiEndpoint } from './endpoint.js'
@@ -235,4 +236,54 @@ it('fetches another retention page after sending the first and keeps the five-mi
   expect(query).toHaveBeenCalledTimes(2)
   await endpoint.request(computer, { operation: 'status' })
   expect(query).toHaveBeenCalledTimes(2)
+})
+
+function remoteExecutionFixture(enabled: boolean) {
+  const mainId = '11111111-1111-4111-8111-111111111111'
+  const registration = { mainId, deviceId: '22222222-2222-4222-8222-222222222222',
+    workerInstallationId: '33333333-3333-4333-8333-333333333333', status: 'paired',
+    keyRevision: 1, authorizationRevision: 1, scopes: ['connect', 'heartbeat'], publicKeyFingerprint: 'a'.repeat(64) }
+  const target = { hostRef: { kind: 'device' as const, mainId, deviceId: registration.deviceId },
+    applicationInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1 }
+  const row = { host_key: 'fixture:worker', target, build_enabled: true, build_priority: 50, build_allowance_percent: 75 }
+  const pool = { query: async (sql: string) => {
+    if (sql.includes('from application_installation')) return { rows: [{ id: mainId }] }
+    if (sql.includes('from device_registrations')) return { rows: [{ record: registration }] }
+    return { rows: [row] }
+  } } as unknown as pg.Pool
+  const policy = new WorkerExecutionPolicy({ enabled, managedBy: 'startup' })
+  const status = { operation: 'status' as const, ready: true, reasons: [], cpuCount: 8,
+    memoryBytes: 16 * 2 ** 30, runs: [], startProtocolVersion: 3 }
+  const request = vi.fn(async (_device: string, _namespace: string, payload: CiHostRequest) => ({ payload:
+    payload.operation === 'cancel' ? { operation: 'cancel', runId: payload.runId, cancelled: true } : status }))
+  const devices = { capabilities: () => [{ namespace: CI_HOST_NAMESPACE, mainCanRequest: true }], request }
+  const endpoint = new ProductionHostCiEndpoint(pool, mainId, () => devices,
+    { handle: async () => status }, [], undefined, policy)
+  const computer: HostCiComputer = { key: row.host_key, hostRef: target.hostRef, label: 'Worker', priority: 50 }
+  const start = CiHostRequestSchema.parse({ operation: 'start', runId: '44444444-4444-4444-8444-444444444444',
+    repository: 'example/project', commit: 'a'.repeat(40), suite: 'unit' })
+  return { endpoint, policy, request, computer, start, status }
+}
+
+it('excludes Workers from selection and refuses new starts while remote execution is disabled', async () => {
+  const f = remoteExecutionFixture(false)
+  expect(await f.endpoint.computers()).toEqual([])
+  await expect(f.endpoint.request(f.computer, f.start)).rejects.toMatchObject({
+    cause: { code: 'WORKER_EXECUTION_DISABLED' },
+  })
+  expect(f.request).not.toHaveBeenCalled()
+  expect(await f.endpoint.request(f.computer, { operation: 'status' })).toMatchObject({ operation: 'status' })
+})
+
+it('rechecks remote execution after a status probe and before delivering Start', async () => {
+  const f = remoteExecutionFixture(true)
+  f.request.mockImplementation(async () => {
+    f.policy.apply({ enabled: false, managedBy: 'startup' })
+    return { payload: f.status }
+  })
+  await expect(f.endpoint.request(f.computer, f.start)).rejects.toMatchObject({
+    cause: { code: 'WORKER_EXECUTION_DISABLED' },
+  })
+  expect(f.request).toHaveBeenCalledTimes(1)
+  expect(f.request.mock.calls[0]?.[2].operation).toBe('status')
 })

@@ -44,7 +44,7 @@ describe('build computer readiness', () => {
       state: ready ? 'ready' : 'setup-required', reasons: ready ? [] : ['Connect GitHub on this computer.'],
       remoteExecutionEnabled: true,
     })
-    expect(request).toHaveBeenCalledWith({ operation: 'status' }, { timeoutMs: 30_000 })
+    expect(request).toHaveBeenCalledWith({ operation: 'status', buildAllowancePercent: 100 }, { timeoutMs: 30_000 })
     expect(f.input.profiles.readiness).not.toHaveBeenCalled()
   })
   it('reports an untrusted Worker clock before considering runtime or capacity', async () => {
@@ -67,7 +67,7 @@ describe('build computer readiness', () => {
         build_enabled: true, build_priority: 50, build_allowance_percent: 10 }] }
       return f.sql.query(text)
     }
-    const pool = { connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
+    const pool = { query, connect: async () => ({ query, release() {} }) } as unknown as pg.Pool
     const service = new BuildComputerSettings(pool, {} as PostgresCommandCoordinator, buildComputerReadiness(f.input))
     expect(await service.read(principal, { target: f.target })).toMatchObject({
       preference: { buildAllowancePercent: 10 }, state: 'setup-required',
@@ -106,4 +106,24 @@ describe('build computer readiness', () => {
       state: 'setup-required', reasons: ['The build allowance is too small for this runtime. Increase the allowance.'],
     })
   })
+})
+
+it.each([
+  [10, 0, 0, 1, 'setup-required', 'allowance is too small'],
+  [100, 2, 2, 16, 'busy', 'capacity is reserved'],
+  [100, 0, 0, 0, 'busy', 'available memory'],
+] as const)('observes Host CI capacity with saved allowance %s', async (allowance, slotsTotal, slotsUsed, availableGiB, state, reason) => {
+  const f = fixture('device')
+  const endpoint = f.input.endpoint()
+  endpoint.capabilities = () => [{ namespace: CI_HOST_NAMESPACE, version: 1,
+    mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 1_048_576, maxBinaryBytes: 0 }]
+  endpoint.captureRequest = () => ({ binding: endpoint.currentBinding('')!, request: async (payload: unknown) => {
+    const percent = (payload as { buildAllowancePercent?: number }).buildAllowancePercent ?? 100
+    return { payload: { operation: 'status', ready: true, reasons: [], cpuCount: Math.max(1, Math.floor(16 * percent / 100)),
+      memoryBytes: Math.floor(16 * 2 ** 30 * percent / 100), availableMemoryBytes: availableGiB * 2 ** 30,
+      buildAllowancePercent: percent, slotsTotal: percent === allowance ? slotsTotal : 2, slotsUsed, runs: [] } }
+  } }) as ReturnType<DeviceEndpoint['captureRequest']>
+  const result = await buildComputerReadiness(f.input)(f.sql, f.target, allowance)
+  expect(result.state).toBe(state)
+  expect(result.reasons.join(' ')).toContain(reason)
 })

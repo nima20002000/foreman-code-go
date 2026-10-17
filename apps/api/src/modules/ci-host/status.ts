@@ -24,7 +24,7 @@ export async function retainCiHostStatus(hostRef: object,
 }
 
 export async function readHostCiStatus(endpoint: DeviceEndpoint,
-  target: DeviceProvisioningTarget): Promise<CiHostStatus | null> {
+  target: DeviceProvisioningTarget, buildAllowancePercent?: number): Promise<CiHostStatus | null> {
   if (target.hostRef.kind !== 'device') return null
   const deviceId = target.hostRef.deviceId
   const channel = endpoint.captureRequest(deviceId, CI_HOST_NAMESPACE)
@@ -34,8 +34,9 @@ export async function readHostCiStatus(endpoint: DeviceEndpoint,
     && channel.binding.authorizationRevision === target.authorizationRevision
     && canonicalJson(channel.binding) === canonicalJson(endpoint.currentBinding(deviceId))
   if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)
-  return retainCiHostStatus(target.hostRef, async () => {
-    const result = await channel.request({ operation: 'status' }, { timeoutMs: 30_000 })
+  return retainCiHostStatus({ ...target.hostRef, buildAllowancePercent }, async () => {
+    const result = await channel.request({ operation: 'status',
+      ...(buildAllowancePercent === undefined ? {} : { buildAllowancePercent }) }, { timeoutMs: 30_000 })
     if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)
     return CiHostStatusSchema.parse(result.payload)
   })

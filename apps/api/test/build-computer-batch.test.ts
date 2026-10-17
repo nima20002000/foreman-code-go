@@ -9,6 +9,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { BuildComputerSettings, buildComputerKey } from '../src/modules/settings/buildComputers.js'
+import { deferred } from './helpers/deferred.js'
 import { DomainError } from '../src/modules/errors.js'
 
 const mainId = '11111111-1111-4111-8111-111111111111'
@@ -38,6 +39,8 @@ async function fixture() {
   const pool = new pg.Pool()
   let preferences = new Map<string, PreferenceRow>()
   let receipts = new Map<string, ReceiptRow>()
+  const buildLocks = new Set<object>()
+  let failReceipt = false
   const audits: { principal: unknown; source: unknown; action: unknown; outcome: string }[] = []
   const readExternal = async (text: string, values: unknown[]) => {
     if (text.includes('management_audit')) {
@@ -50,6 +53,7 @@ async function fixture() {
   }
   vi.spyOn(pool, 'query').mockImplementation(readExternal as unknown as typeof pool.query)
   vi.spyOn(pool, 'connect').mockImplementation((async () => {
+    const session = {}
     let transactionPreferences = preferences
     let transactionReceipts = receipts
     const query = async (text: string, values: unknown[] = []) => {
@@ -58,6 +62,10 @@ async function fixture() {
         transactionReceipts = new Map(receipts)
       }
       if (text === 'commit') { preferences = transactionPreferences; receipts = transactionReceipts }
+      if (text === 'commit' || text === 'rollback') buildLocks.delete(session)
+      if (text.includes('pg_advisory_xact_lock') && String(values[0]).startsWith('build-order:')) {
+        buildLocks.add(session)
+      }
       if (text.includes('from management_principals')) {
         const principal = principals.get(String(values[0]))!
         return { rows: [{ ...principal, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] }
@@ -80,6 +88,7 @@ async function fixture() {
         return { rows: row ? [row] : [] }
       }
       if (text.includes('insert into management_command_receipts')) {
+        if (failReceipt) { failReceipt = false; throw new Error('Receipt write failed') }
         transactionReceipts.set(values.slice(0, 3).join(':'), { target_key: values[3], input_hash: values[4],
           result: JSON.parse(String(values[5])) })
       }
@@ -88,7 +97,7 @@ async function fixture() {
     return { query, release() {} }
   }) as unknown as typeof pool.connect)
   const changed = vi.fn()
-  const readiness = vi.fn(async () => ({ state: 'ready' as const, reasons: [], remoteExecutionEnabled: true }))
+  const readiness = vi.fn<ConstructorParameters<typeof BuildComputerSettings>[2]>(async () => ({ state: 'ready' as const, reasons: [], remoteExecutionEnabled: true }))
   const commands = new PostgresCommandCoordinator(pool)
   const settings = new BuildComputerSettings(pool, commands, readiness, changed)
   const access = new PostgresAccessService(pool)
@@ -112,6 +121,9 @@ async function fixture() {
   const updates: BuildComputerChange[] = targets.map((target, index) => ({ target, expectedRevision: 0,
     buildEnabled: true, buildPriority: 100 - index * 20, buildAllowancePercent: 60 }))
   return { app, settings, connect, changed, readiness, audits, updates,
+    failReceipt: () => { failReceipt = true },
+    committed: () => [...preferences.values()],
+    canChangeBuildOrder: () => buildLocks.size === 0,
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -168,8 +180,8 @@ it('rolls back the whole transaction after a failure following the writes and pe
   try {
     const before = await Promise.all(targets.map(target => f.settings.read(owner, { target })))
     const command = { commandId: 'interrupted-order', updates: f.updates }
-    f.readiness.mockRejectedValueOnce(new Error('Readiness unavailable'))
-    await expect(f.settings.updateBatch(owner, 'http', command)).rejects.toThrow('Readiness unavailable')
+    f.failReceipt()
+    await expect(f.settings.updateBatch(owner, 'http', command)).rejects.toThrow('Receipt write failed')
     expect(await Promise.all(targets.map(target => f.settings.read(owner, { target })))).toEqual(before)
     expect(f.changed).not.toHaveBeenCalled()
     const saved = await f.settings.updateBatch(owner, 'http', command)
@@ -177,4 +189,47 @@ it('rolls back the whole transaction after a failure following the writes and pe
     expect(new Set(saved.computers.map(status => buildComputerKey(status.preference.target))).size).toBe(4)
     expect(f.changed).toHaveBeenCalledTimes(1)
   } finally { await f.close() }
+})
+
+it('returns a readiness observation after releasing the build-order read lock', async () => {
+  const f = await fixture()
+  try {
+    await f.settings.updateBatch(owner, 'http', { updates: f.updates })
+    f.readiness.mockImplementation(async () => ({ state: f.canChangeBuildOrder() ? 'ready' : 'busy',
+      reasons: [], remoteExecutionEnabled: true }))
+    expect(await f.settings.read(owner, { target: targets[1] })).toMatchObject({ state: 'ready' })
+  } finally { await f.close() }
+})
+
+it('commits the batch and retry receipt before a remote readiness observation can fail', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let pending: ReturnType<typeof f.settings.updateBatch> | undefined
+  try {
+    f.readiness.mockImplementation(async () => {
+      entered.resolve()
+      await release.promise
+      throw new Error('Computer disconnected during readiness')
+    })
+    const command = { commandId: 'save-with-disconnected-observation', updates: f.updates }
+    pending = f.settings.updateBatch(owner, 'mcp', command)
+    const outcome = pending.catch(error => error)
+    await entered.promise
+    expect(f.committed().map(row => row.revision)).toEqual(['1', '1', '1', '1'])
+    expect(f.canChangeBuildOrder()).toBe(true)
+    release.resolve()
+    expect(await outcome).toMatchObject({ message: 'Computer disconnected during readiness' })
+    f.readiness.mockResolvedValue({ state: 'ready', reasons: [], remoteExecutionEnabled: true })
+    const replay = await f.settings.updateBatch(owner, 'mcp', command)
+    expect(replay.computers.map(computer => computer.preference.revision)).toEqual([1, 1, 1, 1])
+    expect(f.changed).toHaveBeenCalledTimes(1)
+    for (const computer of replay.computers) {
+      expect(await f.settings.read(reader, { target: computer.preference.target })).toEqual(computer)
+    }
+  } finally {
+    release.resolve()
+    await pending?.catch(error => expect(error.message).toBe('Computer disconnected during readiness'))
+    await f.close()
+  }
 })
