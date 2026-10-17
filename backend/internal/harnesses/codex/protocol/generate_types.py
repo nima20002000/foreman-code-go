@@ -11,7 +11,8 @@ import re
 from pathlib import Path
 
 
-SCHEMA_SHA256 = "2fb24785fd4fb2860d2949ddc082895c471a100a1321720e8a6a2d2b5d37ac72"
+# The frozen Git blob ends at '}' without a trailing newline. Preserve its bytes.
+SCHEMA_SHA256 = "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a"
 METHODS_SHA256 = "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4"
 REFERENCE = "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
 

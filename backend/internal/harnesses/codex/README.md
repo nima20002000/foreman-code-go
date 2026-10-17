@@ -48,13 +48,22 @@ identifies `codex-cli 0.154.0`. Native unions retain their JSON payloads, and
 `Optional[T]` preserves omitted, null, false, and zero values on the wire.
 These are native protocol types, not copied Foreman domain contracts.
 
-Source generation accepts explicit retained inputs:
+The exact frozen schema is Git blob
+`7de4646ea2657038e164609d9473c76c1be7c843`, 688,845 bytes, SHA-256
+`d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a`.
+It has no trailing newline. `protocol/native-inputs.json` records the capture
+metadata and both input identities. Preserve these bytes when materializing the
+fixture; adding a newline changes the input identity even though its JSON parses
+to the same value.
+
+Source generation runs only through terminal Foreman CI with explicit retained
+inputs. Use an owned temporary output for reproduction:
 
 ```text
 python backend/internal/harnesses/codex/protocol/generate_types.py \
   --schema <frozen-reference>/apps/api/test/fixtures/codex-protocol.schemas.json \
   --method-source <frozen-reference>/scripts/generate-codex-method-types.mjs \
-  --output backend/internal/harnesses/codex/protocol/types.gen.go
+  --output <owned-temporary-output>/types.gen.go
 ```
 
 The generator checks the captured input digests before writing source. Those
@@ -63,17 +72,47 @@ qualification, schema validation, or a substitute for the actual installation's
 emitted schema. Production admission must supply that validation through
 `Protocol`; the injected validator in the tests is only a fixture.
 
-## Affected verification — terminal Foreman CI only
+## Current H-CODEX-002 generator verification — terminal Foreman CI only
 
-The author has not run formatting, builds, vet, lint, type checks, unit tests,
-integration tests, or conformance. The retained ZIP contains a pre-fix candidate
-and unchanged public cancellation regression tests for terminal red evidence.
-No result is a CI pass until the controller records its actual ticket and output.
-
-Request only these affected packages and named tests in an isolated CI checkout:
+The current generator repair request consists only of the two named public CLI
+regressions below, followed on the corrected candidate by exact frozen-input
+generation to an owned temporary output and comparison with checked-in
+`protocol/types.gen.go`. Run the two cases on tests-only pre-fix candidate
+`557d759decb4cdf6accdcac4c800a22cf6c95e12` and on the corrected candidate identified
+by the repair ZIP's manifest. All execution is terminal-dispatched Foreman CI,
+from the repository root:
 
 ```text
-# From backend, through terminal-dispatched Foreman CI:
+python backend/internal/harnesses/codex/protocol/generate_types_test.py -v GeneratorCLITests.test_frozen_native_inputs_generate_reproducibly GeneratorCLITests.test_added_newline_is_rejected_without_touching_output
+```
+
+They exercise exact-input acceptance, deterministic generation, rejection of an
+added newline, and preservation of existing output on rejection. They do not
+inspect generator source. The provenance repair changes only the generated
+file's schema-digest comment; its generated declarations are retained. Terminal
+CI must regenerate from the exact frozen inputs into an owned temporary output
+and compare that artifact to `protocol/types.gen.go` before reporting
+reproducibility. No generator or verification was run locally for the repair.
+
+## Original c62/0ace transport verification — separate outstanding gates
+
+This section retains the original H-CODEX-001 transport verification request for
+candidate `c62fb50521c798969e7cb434b856841641297bee` and cancellation witness
+`0ace55b2dc96fe898b82ce87c8fb2ba49b4d90d2`. These remain separate outstanding
+original gates. They are not part of the current H-CODEX-002 generator repair
+dispatch above.
+
+The original `foreman-h-codex-c62fb505-reviewed.zip` contains that cancellation
+witness and its unchanged public regression tests. The author has not run the
+original formatting, build, vet, lint, typecheck, unit, integration or conformance
+checks. No result is a CI pass until the controller records its actual ticket
+and output.
+
+For a separate original-transport CI dispatch, the retained affected commands
+are limited to these original packages and named tests in an isolated checkout:
+
+```text
+# Original H-CODEX-001 transport gates only, from backend through terminal Foreman CI:
 go build ./internal/harnesses/codex ./internal/harnesses/codex/protocol
 go vet ./internal/harnesses/codex ./internal/harnesses/codex/protocol
 staticcheck ./internal/harnesses/codex ./internal/harnesses/codex/protocol
@@ -82,12 +121,13 @@ go test -race -count=1 -run '^TestTransport(CorrelatesOutOfOrderResponses|Cancel
 go test -tags=integration -count=1 -run '^TestScriptedAppServerSessionAndTurn$' ./internal/harnesses/codex
 ```
 
-Formatting selection is the explicit changed Go-file manifest, including the
-generated native types. The generator is source production, not a formatting
-wrapper. The Node integration test copies the pinned repository fake app-server
+The original transport formatting selection is its explicit changed Go-file
+manifest, including the generated native types. The original Node integration
+test copies the pinned repository fake app-server
 to an owned temporary directory and uses isolated HOME, CODEX_HOME, state, and
 temporary paths. It needs Node from the CI environment. No DB, port, worker
-pairing, installed provider, or credentials are required for this increment.
+pairing, installed provider, or credentials are required for that transport
+increment.
 
 The exact existing Q-CONF scenario for subsequent Codex facade integration is
 `harness.codex-configuration-check`. This standalone package does not wire its
