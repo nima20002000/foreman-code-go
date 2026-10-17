@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 
@@ -71,6 +72,30 @@ func read[T any](reader *queue.Reader[T]) <-chan readResult[T] {
 		result <- readResult[T]{value: value, ok: ok, err: err}
 	}()
 	return result
+}
+
+// pausedDoneContext pauses a producer while it subscribes to cancellation. The
+// underlying context still records its real cause before another queue action.
+type pausedDoneContext struct {
+	context.Context
+	reached chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (c *pausedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.reached) })
+	<-c.resume
+	return c.Context.Done()
+}
+
+func pauseCancellationObservation(ctx context.Context) (*pausedDoneContext, func()) {
+	paused := &pausedDoneContext{
+		Context: ctx,
+		reached: make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+	return paused, sync.OnceFunc(func() { close(paused.resume) })
 }
 
 func TestCapacityMustBePositive(t *testing.T) {
@@ -223,6 +248,114 @@ func TestAcceptedOfferStaysAcceptedAfterCancellation(t *testing.T) {
 		cancel()
 		requireOffer(t, pending, nil)
 		requireNext(t, reader, "accepted")
+	})
+}
+
+func TestCanceledOfferKeepsCauseWhenQueueDiscards(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		q := newQueue[string](t, 1, nil)
+		defer q.Close(nil, true)
+		if err := q.Offer(context.Background(), "retained"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		paused, resume := pauseCancellationObservation(ctx)
+		defer resume()
+		pending := offer(q, paused, "withdrawn")
+		<-paused.reached
+		reason := errors.New("withdraw before discard")
+		cancel(reason)
+		q.Discard()
+		resume()
+		requireOffer(t, pending, reason)
+		if err := q.Offer(context.Background(), "fresh"); err != nil {
+			t.Fatal(err)
+		}
+		q.Close(nil, false)
+		reader := q.Reader()
+		requireNext(t, reader, "fresh")
+		requireEnd(t, reader, nil)
+	})
+}
+
+func TestCanceledOfferKeepsCauseWhenQueueCloses(t *testing.T) {
+	failure := errors.New("native stream failed")
+	cases := []struct {
+		name    string
+		failure error
+		discard bool
+	}{
+		{name: "drain"},
+		{name: "failed drain", failure: failure},
+		{name: "discard", discard: true},
+		{name: "failed discard", failure: failure, discard: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				q := newQueue[string](t, 1, nil)
+				defer q.Close(nil, true)
+				if err := q.Offer(context.Background(), "retained"); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancelCause(context.Background())
+				defer cancel(nil)
+				paused, resume := pauseCancellationObservation(ctx)
+				defer resume()
+				pending := offer(q, paused, "withdrawn")
+				<-paused.reached
+				reason := errors.New("withdraw before close")
+				cancel(reason)
+				q.Close(tc.failure, tc.discard)
+				resume()
+				requireOffer(t, pending, reason)
+				reader := q.Reader()
+				if !tc.discard {
+					requireNext(t, reader, "retained")
+				}
+				requireEnd(t, reader, tc.failure)
+			})
+		})
+	}
+}
+
+func TestCanceledOfferNoLongerBlocksCoalescing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		q := newQueue[string](t, 1, func(prior, next string) (string, bool) {
+			if !strings.HasPrefix(prior, "text:") || !strings.HasPrefix(next, "text:") {
+				return "", false
+			}
+			return prior + "+" + strings.TrimPrefix(next, "text:"), true
+		})
+		defer q.Close(nil, true)
+		if err := q.Offer(context.Background(), "text:a"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		paused, resume := pauseCancellationObservation(ctx)
+		defer resume()
+		withdrawn := offer(q, paused, "permission")
+		<-paused.reached
+		reason := errors.New("withdraw before coalescing")
+		cancel(reason)
+		merged := offer(q, context.Background(), "text:b")
+		synctest.Wait()
+		select {
+		case err := <-merged:
+			if err != nil {
+				t.Fatalf("coalescible offer = %v", err)
+			}
+		default:
+			t.Fatal("canceled producer still prevents coalescing")
+		}
+		resume()
+		requireOffer(t, withdrawn, reason)
+		q.Close(nil, false)
+		reader := q.Reader()
+		requireNext(t, reader, "text:a+b")
+		requireEnd(t, reader, nil)
 	})
 }
 
