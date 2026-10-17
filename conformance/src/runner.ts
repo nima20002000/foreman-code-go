@@ -10,6 +10,15 @@ export interface RunnerOptions {
   launch(scenario: Scenario): Promise<TargetSession>
   timeoutMs?: number
   onOutcome?(outcome: ScenarioOutcome): Promise<void> | void
+  onProgress?(event: ScenarioProgress): void
+}
+
+export interface ScenarioProgress {
+  type: 'start' | 'finish'
+  phase: 'setup' | 'scenario'
+  scenario: Pick<Scenario, 'id' | 'title' | 'lane'>
+  executed: boolean
+  status?: 'passed' | 'failed'
 }
 
 function scenarioDeadline(milliseconds: number, abort: AbortController): {
@@ -36,6 +45,8 @@ async function executeScenario(scenario: Scenario, options: RunnerOptions): Prom
   let phase: ScenarioOutcome['phase'] = 'setup'
   let failed = false
   let failure: unknown
+  let setupFinished = false
+  options.onProgress?.({ type: 'start', phase: 'setup', scenario, executed: false })
   try {
     target = await options.launch(scenario)
     const scenarioDirectory = join(target.directory, 'scenario')
@@ -47,9 +58,12 @@ async function executeScenario(scenario: Scenario, options: RunnerOptions): Prom
       http: new PublicHttpClient({ baseUrl: target.baseUrl, browserOrigin: target.browserOrigin, signal: abort.signal }),
     }
     const deadline = scenarioDeadline(scenario.timeoutMs ?? options.timeoutMs ?? 30_000, abort)
+    setupFinished = true
+    options.onProgress?.({ type: 'finish', phase: 'setup', scenario, executed: false, status: 'passed' })
     try {
       phase = 'scenario'
       executed = true
+      options.onProgress?.({ type: 'start', phase: 'scenario', scenario, executed })
       await Promise.race([Promise.resolve().then(() => scenario.run(context)), deadline.expired])
     } finally {
       deadline.close()
@@ -59,6 +73,9 @@ async function executeScenario(scenario: Scenario, options: RunnerOptions): Prom
     failure = error
   } finally {
     abort.abort(new Error('Scenario finished'))
+    if (!setupFinished) {
+      options.onProgress?.({ type: 'finish', phase: 'setup', scenario, executed: false, status: 'failed' })
+    }
     try { await target?.close() }
     catch (error) {
       if (!failed) {
@@ -80,6 +97,9 @@ async function executeScenario(scenario: Scenario, options: RunnerOptions): Prom
     durationMs: Math.max(0, performance.now() - startedAt),
   }
   if (failed) outcome.error = describeFailure(failure)
+  if (executed) {
+    options.onProgress?.({ type: 'finish', phase: 'scenario', scenario, executed, status: outcome.status })
+  }
   return outcome
 }
 

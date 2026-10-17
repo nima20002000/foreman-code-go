@@ -19,12 +19,17 @@ the CI configuration; this package does not modify them. The controller alone
 publishes/configures the sanitized `nima20002000/foreman-code-go-ci` mirror.
 
 The CI job needs the repository's pinned `pnpm@11.27.0`, the retained Node runtime,
-built contracts, installed workspace dependencies, `git`, `openssl`, `ss` and
+built contracts, installed workspace dependencies, `git`, `openssl`, `ss`, Python 3 and
 Linux `/proc`, and PostgreSQL server/client binaries available to an unprivileged
 job user. The package keeps the repository's strict 48-hour dependency age policy.
 It does not install software, change users, elevate permissions, or connect to
-an existing PostgreSQL server. Set `CONFORMANCE_POSTGRES_BIN_DIR` when
-`pg_config --bindir` does not select the intended CI PostgreSQL installation.
+an existing PostgreSQL server. Q-CI supplies `CONFORMANCE_POSTGRES_BIN_DIR` as an
+absolute directory containing `initdb`, `postgres`, `pg_isready`, `psql` and
+`createdb`, all executable by the unprivileged job user. Without that setting,
+`pg_config --bindir` selects the binaries. The setting selects binaries only;
+the runner always creates its own cluster and database. Python's standard ZIP/XML
+readers provide an independent DOCX output oracle; retained pinned `sharp` and
+`unpdf` decode returned image/PDF bytes without importing server internals.
 
 Use these commands inside the controller-dispatched CI job after its normal
 dependency preparation:
@@ -40,15 +45,29 @@ CONFORMANCE_TARGET=go corepack pnpm --filter @foreman-code/conformance conforman
 ```
 
 The first smoke command is an incremental signal. It cannot establish full
-coverage or satisfy acceptance. Full TS conformance is required when expectations
-change. The Go command uses `backend/bin/foreman serve` by default;
+coverage or satisfy the complete conformance issue. Full TS conformance is
+required when expectations change. The Go command uses `backend/bin/foreman serve` by default;
 `CONFORMANCE_GO_BINARY` may select the integrator's built binary. A missing binary
 is reported as an unexecuted setup failure for every selected scenario.
 
 CLI filters `--lane E,A1`, `--scenario workspace.create-replay-read`, `--smoke`,
 and `--target ts|go` select a diagnostic run. `--list` emits the authored selection
-without launching anything. Filters and empty selections never establish full
-acceptance. `--output PATH` or `CONFORMANCE_RESULTS_FILE` selects the result path.
+without launching anything. Filters never establish full-suite acceptance, and
+empty selections always fail. `--output PATH` or `CONFORMANCE_RESULTS_FILE`
+selects the result path.
+
+The first-skeleton gate is separate from P1-ACCEPT: it requires full green Go CI
+with nonzero actual test counts, plus a real passing Go SKEL selection:
+
+```sh
+CONFORMANCE_TARGET=go corepack pnpm --filter @foreman-code/conformance conformance --lane SKEL
+```
+
+Keep that result and the broader Go conformance result as separate CI artifacts.
+Unimplemented/failed cases in other lanes remain failures in the full raw result;
+they are not removed, skipped, or relabeled to satisfy the skeleton gate. 100% Go
+conformance is the later P1-ACCEPT gate. A draft or authored inventory satisfies
+neither gate; expectation reliance still requires the complete TS-target pass.
 
 ## Isolation and public setup
 
@@ -99,7 +118,8 @@ cannot pass, and duplicate scenario IDs fail instead of inflating counts.
 
 `scope.completeSelection` distinguishes a full unfiltered run. `coverage.http`,
 `coverage.mcp`, and `coverage.behaviors` include missing/unexpected requirements
-and coverage totals; `coverage.complete` must be true for acceptance. Live MCP
+and coverage totals; `coverage.complete` must be true for complete conformance/P1
+acceptance. Live MCP
 discovery reads every `tools/list` cursor page from a fresh running target. An
 unavailable live catalog is reported as unavailable, never replaced with a
 source-derived or invented catalog. `coverage.mcp.status` is `not-run` for a
@@ -111,6 +131,28 @@ provenance explicitly. Without it, the actual checked-out Git SHA is recorded.
 `CONFORMANCE_BASELINE_SHA` cannot change the pinned baseline. Q-CI must retain
 the actual CI tickets and this result JSON; authored scenario totals must never
 be reported as pass counts.
+
+### Watchdog progress
+
+When Q-CI sets `CI_PROGRESS_FILE`, the runner appends JSONL through the existing
+`scripts/ci-progress-reporter.mjs` writer. It preserves the watchdog convention:
+`type: start|finish`, `kind: module|test`, `id`, repository-relative `file`, and
+`name`. The shared writer prefixes each ID with its file. Extra fields identify
+`target`, `phase`, and, for scenario work, the current `scenarioId` and `lane`.
+
+Suite, setup, live MCP discovery and cleanup use module events. An actual
+scenario uses test events and starts only after target setup succeeds. Its finish
+event follows cleanup and contains the final status, including cleanup failures.
+Cleanup finish reports `cleanupCompleted: true` only after owned processes stop
+and the owned root is removed; a cleanup error reports false. If resource creation
+fails before a cleanup observer exists, no cleanup completion is claimed.
+
+This progress stream supplements the unchanged `schemaVersion: 1` result
+contract and `CONFORMANCE_RESULTS_FILE`; it cannot substitute for complete raw
+outcomes, coverage, lane totals or provenance. A progress-write error is retained
+as optional `progressError`, fails the run, and leaves every scenario outcome in
+the raw result. Progress output never changes an unimplemented failure into a
+passing or skipped case.
 
 ## Expectations and required scope
 
@@ -141,9 +183,10 @@ baseline's exact existing resolutions; the controller must verify a frozen insta
 
 Route remaining cross-owner work through the terminal controller:
 
-- I/H: expose the existing Claude `sdkEntrypoint` through production discovery,
-  qualification, metadata and query construction, without removing qualification
-  or changing the prototype permission model.
+- I/H: expose the existing Claude `sdkEntrypoint` through Main production
+  discovery, qualification, metadata and query construction, without removing
+  qualification or changing the prototype permission model. The installed worker
+  inspection/qualification path already forwards its selected entrypoint.
 - I: agree and provide Go administrative credential issuance corresponding to
   the TS `credential issue --audience operator --access manage|read-only` behavior.
   The launcher currently expects `foreman credential issue` and reports a real

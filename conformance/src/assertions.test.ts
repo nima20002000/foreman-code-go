@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assertResponse } from './assertions.js'
+import { assertJson, assertResponse } from './assertions.js'
 
 describe('full response comparison', () => {
   it('normalizes one named timestamp and still rejects an extra response property', () => {
@@ -26,5 +26,15 @@ describe('full response comparison', () => {
     expect(() => assertResponse({ status: 403, headers: new Headers(), body: {
       error: { code: 'AUTH_REQUIRED', message: 'Denied' },
     } }, expected)).toThrow()
+  })
+
+  it('compares public JSON tool results with the same individually named normalization rules', () => {
+    const actual = { fileId: 'file-123', revision: 2, content: { text: 'Retained result' } }
+    const expected = { fileId: '<id>', revision: 2, content: { text: 'Retained result' } }
+    const rules = [{ pointer: '/body/fileId', kind: 'id' as const }]
+    expect(() => assertJson(actual, expected, rules)).not.toThrow()
+    expect(() => assertJson({ ...actual, extra: true }, expected, rules)).toThrow()
+    expect(() => assertJson({ ...actual, content: { text: 'Changed result' } }, expected, rules)).toThrow()
+    expect(actual.fileId).toBe('file-123')
   })
 })

@@ -1,3 +1,5 @@
+import { boundedBodyText } from './streams.js'
+
 export interface PublicResponse {
   status: number
   headers: Headers
@@ -54,7 +56,7 @@ export class PublicHttpClient {
       init.body = JSON.stringify(options.body)
     }
     const response = await fetch(url, init)
-    const text = await response.text()
+    const text = await boundedBodyText(response)
     let body: unknown = text
     if (text.length === 0) body = null
     else if (response.headers.get('content-type')?.includes('json')) body = JSON.parse(text)

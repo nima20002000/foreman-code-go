@@ -31,13 +31,8 @@ function parentAtPointer(root: unknown, pointer: string): { parent: Record<strin
   return { parent: parent as Record<string, unknown>, key }
 }
 
-/** Full body and status comparison; no object stripping, wildcard paths, or snapshot recording. */
-export function assertResponse(
-  actual: PublicResponse,
-  expected: ExpectedResponse,
-  rules: readonly NormalizationRule[] = [],
-): void {
-  const comparable: ExpectedResponse = structuredClone({ status: actual.status, body: actual.body })
+function compareNormalized(actual: unknown, expected: unknown, rules: readonly NormalizationRule[]): void {
+  const comparable: unknown = structuredClone(actual)
   const seen = new Set<string>()
   for (const rule of rules) {
     assert.ok(!seen.has(rule.pointer), `Duplicate normalization rule: ${rule.pointer}`)
@@ -51,4 +46,18 @@ export function assertResponse(
     actualLeaf.parent[actualLeaf.key] = marker
   }
   assert.deepStrictEqual(comparable, expected)
+}
+
+/** Full body and status comparison; no object stripping, wildcard paths, or snapshot recording. */
+export function assertResponse(
+  actual: PublicResponse,
+  expected: ExpectedResponse,
+  rules: readonly NormalizationRule[] = [],
+): void {
+  compareNormalized({ status: actual.status, body: actual.body }, expected, rules)
+}
+
+/** Compare a complete public JSON result without inventing an HTTP envelope or status. */
+export function assertJson(actual: unknown, expected: unknown, rules: readonly NormalizationRule[] = []): void {
+  compareNormalized({ body: actual }, { body: expected }, rules)
 }

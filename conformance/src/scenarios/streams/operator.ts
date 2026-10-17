@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { GetOperatorConversationResponseSchema, type OperatorConversationState } from '@foreman-code/contracts'
 import { assertResponse } from '../../assertions.js'
-import { openBrowserStream, type BrowserStream, type SseFrame } from '../../clients/streams.js'
+import { openBrowserStream, StreamHttpError, type BrowserStream, type SseFrame } from '../../clients/streams.js'
 import type { Scenario, ScenarioContext } from '../../scenario.js'
 import { createConversation } from '../smoke/conversations.js'
 import { assertEmptyOperatorState } from '../mcp/conversations.js'
+
+const eventsPath = '/api/operator/conversations/:conversationId/events'
 
 async function readState(context: ScenarioContext, conversationId: string): Promise<OperatorConversationState> {
   const response = await context.http.request('GET', `/api/operator/conversations/${conversationId}`)
@@ -38,7 +40,8 @@ export async function assertOperatorSnapshot(stream: BrowserStream, state: Opera
 export const operatorStreamScenarios: Scenario[] = [
   {
     id: 'streams.operator.snapshot-framing', title: 'Operator SSE begins with its exact durable snapshot and a comment heartbeat',
-    lane: 'A1', covers: [{ surface: 'stream', name: 'operator-chat', case: 'framing' }],
+    lane: 'A1', covers: [{ surface: 'stream', name: eventsPath, case: 'framing' },
+      { surface: 'http', method: 'GET', path: eventsPath, transport: 'sse', case: 'success' }],
     async run(context) {
       const { conversation } = await createConversation(context, 'Operator stream framing')
       const state = await readState(context, conversation.id)
@@ -57,7 +60,7 @@ export const operatorStreamScenarios: Scenario[] = [
   },
   {
     id: 'streams.operator.reconnect-snapshot', title: 'Operator SSE reconnect reads the restored durable revision instead of replaying stale events',
-    lane: 'A1', covers: [{ surface: 'stream', name: 'operator-chat', case: 'reconnect' }],
+    lane: 'A1', covers: [{ surface: 'stream', name: eventsPath, case: 'reconnect' }],
     async run(context) {
       const { conversation } = await createConversation(context, 'Operator stream reconnect')
       const path = `/api/operator/conversations/${conversation.id}`
@@ -80,6 +83,23 @@ export const operatorStreamScenarios: Scenario[] = [
         headers: context.http.requestHeaders(), signal: context.signal, lastEventId: String(before.revision) })
       try { await assertOperatorSnapshot(reconnected, restored) }
       finally { await reconnected.close() }
+    },
+  },
+  {
+    id: 'streams.operator.invalid-caller', title: 'Operator SSE denies an invalid credential before opening an event stream',
+    lane: 'A1', covers: [{ surface: 'http', method: 'GET', path: eventsPath, transport: 'sse', case: 'error' }],
+    async run(context) {
+      const { conversation } = await createConversation(context, 'Operator stream denied caller')
+      await assert.rejects(() => openBrowserStream({ baseUrl: context.target.baseUrl,
+        path: `/api/operator/conversations/${conversation.id}/events`, signal: context.signal,
+        headers: context.http.requestHeaders({ token: 'conformance-invalid-credential' }),
+      }), error => {
+        assert.ok(error instanceof StreamHttpError)
+        assertResponse({ status: error.status, body: error.body, headers: new Headers() }, {
+          status: 401, body: { error: { code: 'AUTH_INVALID', message: 'The supplied credential is invalid.', requestId: '<uuid>' } },
+        }, [{ pointer: '/body/error/requestId', kind: 'uuid' }])
+        return true
+      })
     },
   },
 ]

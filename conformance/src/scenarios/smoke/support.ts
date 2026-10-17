@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { realpath } from 'node:fs/promises'
+import { join } from 'node:path'
 import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import {
   ManagedWorkspaceCommandResultSchema,
@@ -13,9 +15,10 @@ export function httpCoverage(method: string, path: string, outcome: 'success' | 
   return { surface: 'http', method, path, case: outcome }
 }
 
-export async function createWorkspace(ctx: ScenarioContext, name: string) {
+export async function createWorkspace(ctx: ScenarioContext, name: string, parentPath?: string) {
   const input = WorkspaceCreateInputSchema.parse({
     commandId: randomUUID(), name, description: 'Isolated conformance workspace.',
+    ...(parentPath === undefined ? {} : { parentPath }),
   })
   const response = await ctx.http.request('POST', '/api/management/workspaces', { body: input })
   const created = ManagedWorkspaceCommandResultSchema.parse(response.body)
@@ -27,8 +30,13 @@ export async function createWorkspace(ctx: ScenarioContext, name: string) {
           id: '<id>', name, description: input.description,
           createdAt: '<timestamp>', updatedAt: '<timestamp>',
         },
-        revision: 1, archivedAt: null, executionLocation: null, locationRevision: 0,
-        locationValidation: { status: 'restricted' },
+        revision: 1, archivedAt: null,
+        executionLocation: parentPath === undefined ? null : {
+          runnerId: 'runner-local', rootPath: join(await realpath(parentPath), name),
+        },
+        locationRevision: parentPath === undefined ? 0 : 1,
+        locationValidation: parentPath === undefined ? { status: 'restricted' }
+          : { status: 'ready', checkedAt: '<timestamp>' },
       },
       replayed: false,
     },
@@ -36,6 +44,7 @@ export async function createWorkspace(ctx: ScenarioContext, name: string) {
     { pointer: '/body/value/workspace/id', kind: 'id' },
     { pointer: '/body/value/workspace/createdAt', kind: 'timestamp' },
     { pointer: '/body/value/workspace/updatedAt', kind: 'timestamp' },
+    ...(parentPath === undefined ? [] : [{ pointer: '/body/value/locationValidation/checkedAt', kind: 'timestamp' as const }]),
   ])
   assert.equal(created.value.workspace.createdAt, created.value.workspace.updatedAt)
   assert.match(created.value.workspace.id, /^workspace-[0-9a-f-]{36}$/)

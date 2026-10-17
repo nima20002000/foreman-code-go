@@ -48,4 +48,5 @@ export interface RunReport extends RunIdentity {
   scenarios: ScenarioOutcome[]
   setupError?: ScenarioFailure
   cleanupError?: ScenarioFailure
+  progressError?: ScenarioFailure
 }

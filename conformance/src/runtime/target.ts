@@ -60,7 +60,10 @@ export interface TargetOptions {
   startupTimeoutMs?: number
   fixtures?: TargetFixtureInstaller
   operatorCredentials?: boolean
+  onCleanup?(event: TargetCleanupEvent): void
 }
+
+export type TargetCleanupEvent = { type: 'start' } | { type: 'finish'; status: 'passed' | 'failed' }
 
 export function readTarget(environment: NodeJS.ProcessEnv = process.env): Target {
   const target = environment.CONFORMANCE_TARGET ?? 'ts'
@@ -127,6 +130,16 @@ export async function startTarget(options: TargetOptions): Promise<TargetSession
     await server.stop(mode)
     server = undefined
   }
+  const closeResources = async () => {
+    options.onCleanup?.({ type: 'start' })
+    let status: 'passed' | 'failed' = 'failed'
+    try {
+      await cleanup(resources, database, fixtures, stop)
+      status = 'passed'
+    } finally {
+      options.onCleanup?.({ type: 'finish', status })
+    }
+  }
   try {
     // Worker enrollment needs the app's version as configuration, not an assertion about source files.
     const packageMetadata = JSON.parse(await readFile(join(options.repoRoot, 'package.json'), 'utf8')) as { version?: unknown }
@@ -192,12 +205,12 @@ export async function startTarget(options: TargetOptions): Promise<TargetSession
       },
       close: async () => {
         if (closed) return
-        await cleanup(resources, database, fixtures, stop)
+        await closeResources()
         closed = true
       },
     }
   } catch (error) {
-    try { await cleanup(resources, database, fixtures, stop) }
+    try { await closeResources() }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Target setup and cleanup failed') }
     throw error
   }

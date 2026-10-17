@@ -7,6 +7,7 @@ import { parseOptions } from './options.js'
 import { allScenarios, smokeScenarios } from './registry.js'
 import { createReport, describeFailure, writeReport } from './reporting/report.js'
 import { readRunIdentity } from './reporting/revision.js'
+import { CiProgress } from './reporting/progress.js'
 import { runScenarios } from './runner.js'
 import { startTarget } from './runtime/target.js'
 
@@ -24,9 +25,13 @@ async function main(): Promise<void> {
   }
   const identity = await readRunIdentity(repoRoot)
   const startedAt = new Date()
+  const progress = new CiProgress(options.target)
+  progress.suite('start')
   const outcomes = await runScenarios(scenarios, {
     launch: scenario => startTarget({ target: options.target, repoRoot, fixtures: setupFixtures,
-      operatorCredentials: scenario.authentication === 'operator' }),
+      operatorCredentials: scenario.authentication === 'operator',
+      onCleanup: event => progress.cleanup(scenario, event) }),
+    onProgress: event => progress.scenario(event),
     onOutcome: outcome => { process.stdout.write(`${JSON.stringify({ kind: 'conformance-scenario', ...outcome })}\n`) },
   })
   const http = checkHttpCoverage([...httpRoutes, ...runtimeHttpRoutes], allScenarios)
@@ -34,11 +39,20 @@ async function main(): Promise<void> {
   let mcp: LiveCoverageResult = { status: 'not-run', reason: 'A smoke or filtered run cannot establish complete coverage.' }
   const completeSelection = !options.smoke && options.lanes.length === 0 && options.scenarioIds.length === 0
   if (completeSelection) {
-    mcp = await checkLiveMcpCoverage({ target: options.target, repoRoot, environment: process.env, scenarios: allScenarios })
+    progress.coverage('start')
+    mcp = await checkLiveMcpCoverage({ target: options.target, repoRoot, environment: process.env,
+      scenarios: allScenarios, onCleanup: event => progress.cleanup(undefined, event) })
+    progress.coverage('finish', mcp.status === 'passed' ? 'passed' : 'failed')
   }
   const report = createReport({ identity, target: options.target, startedAt, finishedAt: new Date(), scenarios: outcomes })
   const coverageComplete = http.status === 'passed' && behaviors.status === 'passed' && mcp.status === 'passed'
   if (completeSelection && !coverageComplete) report.status = 'failed'
+  if (progress.error) report.status = 'failed'
+  progress.suite('finish', report.status)
+  if (progress.error) {
+    report.status = 'failed'
+    report.progressError = progress.error
+  }
   const result = { ...report,
     scope: { kind: options.smoke ? 'smoke' : 'full', lanes: options.lanes, scenarioIds: options.scenarioIds, completeSelection },
     coverage: { http, mcp, behaviors, complete: coverageComplete },
