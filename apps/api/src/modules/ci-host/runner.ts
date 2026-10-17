@@ -340,9 +340,11 @@ export class HostCiRunner {
 
   private async readMeta(runId: string): Promise<RunMeta> {
     try {
-      const meta = JSON.parse(await readFile(join(this.runDirectory(runId), 'meta.json'), 'utf8')) as RunMeta
+      const directory = this.runDirectory(runId)
+      const meta = JSON.parse(await readFile(join(directory, 'meta.json'), 'utf8')) as RunMeta
+      const state = meta.state === 'starting' && existsSync(join(directory, 'service-started')) ? 'running' : meta.state
       // Cancellation survives concurrent launch metadata writes and Worker restarts.
-      return { ...meta, cancellationRequested: existsSync(join(this.runDirectory(runId), 'cancel-requested')) }
+      return { ...meta, state, cancellationRequested: existsSync(join(directory, 'cancel-requested')) }
     }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -691,13 +693,18 @@ export class HostCiRunner {
     if (!ready) return this.refresh(meta.runId)
     const preparing = this.launch(meta).catch(async error => {
       this.invalidateReadiness()
-      const current = await this.readMeta(meta.runId)
-      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
-      if (current.serviceUnit) {
-        // A command failure can occur after native entry; status must reconcile the persisted unit first.
-        await this.writeMeta({ ...current, message })
-      } else {
-        await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null, message)
+      try {
+        const current = await this.readMeta(meta.runId)
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
+        if (current.serviceUnit) {
+          // A command failure can occur after native entry; status must reconcile the persisted unit first.
+          await this.writeMeta({ ...current, message })
+        } else {
+          await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null, message)
+        }
+      } catch (recordError) {
+        log.error({ err: recordError, error, runId: meta.runId, operation: 'record CI launch failure' },
+          'Could not record a background CI launch failure')
       }
     }).finally(() => {
       this.preparing.delete(meta.runId)
@@ -787,7 +794,9 @@ export class HostCiRunner {
     { env: this.environment, timeoutMs: 30_000, signal })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
     const launched = await this.readMeta(meta.runId)
-    if (launched.state === 'starting') await this.writeMeta({ ...launched, state: 'running' })
+    if (launched.state === 'starting' || launched.state === 'running') {
+      await this.writeMeta({ ...launched, state: 'running' })
+    }
   }
 
   private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit' | 'scope' | 'files'>,
@@ -1244,8 +1253,9 @@ export class HostCiRunner {
     }, { nonBlocking: true })
     if (!settled) meta = await this.readMeta(runId)
     if (!reconciled && meta.state === 'starting' && meta.serviceUnit && await this.unitState(meta, unitStates) === 'active') {
-      // A live launcher can still be writing metadata after systemd accepted the service.
-      meta = { ...meta, state: 'running' }
+      // Launch holds the metadata lock while systemd can already expose an active service.
+      await writeFile(join(directory, 'service-started'), '', { mode: 0o600 })
+      meta = await this.readMeta(runId)
     }
     if (!['starting', 'running'].includes(meta.state)) this.trackCacheWriter(runId)
     if (!['queued', 'starting', 'running'].includes(meta.state) && !preparing && !this.preparing.has(runId)) {
