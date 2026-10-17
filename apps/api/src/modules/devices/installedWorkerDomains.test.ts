@@ -36,7 +36,8 @@ afterEach(async () => {
 })
 
 describe('actual installed worker mount availability, no physical acceptance', () => {
-  it('refreshes selections on authenticated discovery and denies stale bindings before refresh', async () => {
+  it.each(['absent', 'missing-sdk', 'invalid-lock'] as const)(
+    'refreshes authenticated discovery and isolates Claude inspection when %s', async claudeState => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-discovery-refresh-'))
     roots.push(stateDirectory)
     const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(),
@@ -47,9 +48,19 @@ describe('actual installed worker mount availability, no physical acceptance', (
       workerInstallationId: pairing.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
       bootId: bootIdentity(), connectionEpoch: randomUUID(), connectionGeneration: 1 }
     const location = { path: join(stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid!() }
+    const sdk = join(stateDirectory, 'sdk')
+    await mkdir(sdk)
+    await writeFile(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk',
+      version: '0.3.284' }))
+    await writeFile(join(sdk, 'sdk.mjs'), 'export {};')
+    const lock = join(stateDirectory, 'claude-lock.yaml')
+    await writeFile(lock, 'packages: {}')
+    const claude = { binary: process.execPath, installedLockPath: lock,
+      sdkEntrypoint: join(sdk, claudeState === 'missing-sdk' ? 'missing.mjs' : 'sdk.mjs') }
     const refresh = vi.fn(async (): Promise<typeof location | null> => {
       await writeFile(location.path, JSON.stringify({ schemaVersion: 1, codexBinary: process.execPath,
-        expectedVersion: 'codex-cli 0.162.0', payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs' }),
+        expectedVersion: 'codex-cli 0.162.0', payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs',
+        ...(claudeState === 'absent' ? {} : { claude }) }),
       { mode: 0o600 })
       return location
     })
@@ -65,8 +76,15 @@ describe('actual installed worker mount availability, no physical acceptance', (
         .rejects.toMatchObject({ code: 'HARNESS_INVENTORY_STALE' })
       expect(refresh).not.toHaveBeenCalled()
       const result = await discovery.handle!(request, context)
-      expect(result.payload).toMatchObject({ installations: [{ driverId: 'codex', installed: true,
-        hostRef: { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId } }] })
+      const inventory = HarnessRegistryReadbackSchema.parse(result.payload)
+      expect(inventory.installations).toHaveLength(claudeState === 'absent' ? 1 : 2)
+      expect(inventory.installations[0]).toMatchObject({ driverId: 'codex', installed: true,
+        hostRef: { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId } })
+      if (claudeState !== 'absent') {
+        expect(inventory.installations[1]).toMatchObject({ driverId: 'claude', installed: false,
+          qualified: false, installationFingerprint: null, launcher: { status: 'unreadable',
+            requested: process.execPath, diagnostics: [expect.any(String)] } })
+      }
       expect(refresh).toHaveBeenCalledOnce()
       const principal: ManagementPrincipal = { id: 'worker-inventory-reader', name: 'Reader', audience: 'operator',
         expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,

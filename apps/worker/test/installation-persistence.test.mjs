@@ -275,3 +275,22 @@ test('supervised updates prune after readiness and leave staged releases intact 
   assert.equal((await readInstalledRelease(f)).manifest.version, '1.2.0');
   assert.equal((await readRetainedRelease(f.root)).manifest.version, '1.1.0');
 });
+
+
+test('pruning keeps the selected SDK release until startup moves its selection to the running release', async t => {
+  const f = await fixture(t);
+  const [first] = await installSequence(f, ['1.0.0', '1.1.0']);
+  const path = join(f.stateDirectory, 'workflow-runtime.json');
+  const selection = release => ({ schemaVersion: 1,
+    appMcpLauncher: join(release.directory, 'artifacts/graphql-mcp.mjs'),
+    claude: { binary: '/selected/claude',
+      sdkEntrypoint: join(release.directory, 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'),
+      installedLockPath: join(release.directory, 'artifacts/claude-sdk-lock.yaml') } });
+  await writeFile(path, JSON.stringify(selection(first)), { mode: 0o600 });
+  const [third] = await installSequence(f, ['1.2.0']);
+  assert.equal(await readFile(join(first.directory, entryFile), 'utf8'), `1.0.0: ${entryFile}\n`);
+  await writeFile(path, JSON.stringify(selection(third)), { mode: 0o600 });
+  await installSequence(f, ['1.3.0']);
+  await assert.rejects(readFile(join(first.directory, entryFile)), { code: 'ENOENT' });
+  assert.equal((await readdir(join(f.root, 'versions'))).length, 2);
+});
