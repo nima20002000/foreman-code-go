@@ -1,0 +1,29 @@
+{
+  "source": "3ab1909884b78e23c4a024b11ef3a2fe28c744c3",
+  "ownerDeclaredSource": "3ab1909884b78e23c4a024b11ef3a2fe28c744c3",
+  "sourceTree": "a28daf97c90d2a8b239efa4f3a841bb513936edf",
+  "package": "./internal/runs/kernel",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/runs/kernel/limiter.go",
+    "internal/runs/kernel/limiter_test.go"
+  ],
+  "unitFlags": [
+    "-race"
+  ],
+  "unitRoots": [
+    "TestExecutionLimiterRejectsInvalidCapacity",
+    "TestExecutionLimiterSharesCapacityAcrossWorkKinds",
+    "TestExecutionLimiterAdmitsFIFOIncludingNewArrivals",
+    "TestExecutionLimiterReservesTransferredSlotUntilWaiterStarts",
+    "TestExecutionLimiterCanceledWaitReleasesQueueCapacity",
+    "TestExecutionLimiterCancellationAfterTransferDoesNotLaunchWork",
+    "TestExecutionLimiterRejectsOverflowWithoutPublishingWait",
+    "TestExecutionLimiterZeroWaitingCapacityStillAllowsAvailableWork",
+    "TestExecutionLimiterRejectsInitialCancellationWithoutSideEffects",
+    "TestExecutionLimiterRemovesWaitObservationBeforeWork",
+    "TestExecutionLimiterKeepsRunningCapacityUntilCallbackReturns",
+    "TestExecutionLimiterPanicReleasesCapacity"
+  ],
+  "unitPattern": "^TestExecutionLimiter"
+}
