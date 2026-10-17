@@ -2,12 +2,10 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 import { conformanceFixture } from './test-support/conformance-report-fixture.mjs'
 
-const rootEntry = fileURLToPath(new URL('./ci-root-suite.mjs', import.meta.url))
 const goCalls = fixture => fixture.calls().filter(call => call.tool === 'go' && call.args[0] !== 'env')
 const conformanceCalls = fixture => fixture.calls().filter(call => call.tool === 'corepack'
   && call.args.includes('run') && call.args[call.args.indexOf('run') + 1] === 'conformance')
@@ -350,7 +348,9 @@ test('cleanup without a runtime needs no module or installed toolchains and crea
 
 test('host root integration ignores legacy TS file arguments and publishes the legacy result aliases', t => {
   const fixture = goCiFixture(t, { TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '' })
-  assert.equal(fixture.run('integration', 'prepare').status, 0)
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const rootEntry = join(fixture.directory, 'scripts/ci-root-suite.mjs')
   const output = join(fixture.directory, 'host-results.json')
   const durations = join(fixture.directory, 'host-durations.json')
   const result = spawnSync(process.execPath, [rootEntry, 'integration', '--', 'node', 'scripts/test-integration.mjs',
