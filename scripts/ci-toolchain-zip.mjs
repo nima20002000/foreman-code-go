@@ -1,69 +1,44 @@
-import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 
-const version = 'go1.27.2'
-const moduleVersion = 'v0.0.1-go1.27.2.linux-amd64'
+const expectedBytes = 75779124
+const expectedSha256 = '3a467ed067f27cd55bf3a702f8e2bf12479f53c9d8ae0de548f48ebcb3c67796'
 const moduleH1 = 'h1:N6Xv/1OLzI0jVVkUwkrxHRZc/GCTARUo6idcngKwlDE='
+const moduleVersion = 'v0.0.1-go1.27.2.linux-amd64'
 const sourceUrl = `https://proxy.golang.org/golang.org/toolchain/@v/${moduleVersion}.zip`
 const parent = join(await realpath(homedir()), '.cache', 'foreman-go-zip')
 await mkdir(parent, { recursive: true, mode: 0o700 })
 const root = await mkdtemp(join(parent, 'z-'))
-const env = {
-  PATH: '/usr/bin:/bin', HOME: root, GOENV: 'off', GOWORK: 'off',
-  GOPATH: join(root, 'gopath'), GOCACHE: join(root, 'build'), GOMODCACHE: join(root, 'modules'),
-  GOTOOLCHAIN: version, GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org',
-}
-
 function record(value) {
   console.log('[go-zip] ' + JSON.stringify(value))
 }
-
-async function go(args, toolchain = version) {
-  return new Promise((resolve, reject) => {
-    let output = ''
-    const child = spawn('/usr/bin/go', args, { env: { ...env, GOTOOLCHAIN: toolchain }, cwd: root })
-    const progress = setInterval(() => record({ stage: 'sdk-running', command: args[0] }), 15000)
-    child.stdout.on('data', chunk => { output += chunk })
-    child.stderr.on('data', () => { /* SDK output can contain local paths; report status only. */ })
-    child.once('error', error => { clearInterval(progress); reject(error) })
-    child.once('close', code => { clearInterval(progress); resolve({ code, output: output.trim() }) })
-  })
-}
-
-let failed = false
+const progress = setInterval(() => record({ stage: 'official-module-download-running' }), 15000)
 try {
-  const bootstrap = await go(['version'], 'local')
-  if (bootstrap.code !== 0 || !/^go version go1\.(2[1-9]|[3-9]\d)\./.test(bootstrap.output)) {
-    throw new Error('Installed bootstrap Go >=1.21 is required')
-  }
-  record({ stage: 'bootstrap', version: bootstrap.output, inheritedGorootCleared: true })
-  const selected = await go(['version'])
-  if (selected.code !== 0 || selected.output !== 'go version go1.27.2 linux/amd64') {
-    throw new Error('SDK did not return the pinned Go version')
-  }
-  const zip = join(env.GOMODCACHE, 'cache/download/golang.org/toolchain/@v', moduleVersion + '.zip')
-  const h1 = (await readFile(zip + 'hash', 'utf8')).trim()
-  if (h1 !== moduleH1) throw new Error('SDK-verified toolchain module h1 does not match the pinned value')
+  const response = await fetch(sourceUrl, { signal: AbortSignal.timeout(120000) })
+  record({ stage: 'official-module-response', sourceUrl, status: response.status })
+  if (!response.ok || !response.body) throw new Error('Official module ZIP download failed')
   const hash = createHash('sha256')
-  for await (const chunk of createReadStream(zip)) hash.update(chunk)
-  record({ stage: 'verified-sdk-module-zip', version, moduleVersion, moduleH1: h1, sourceUrl,
-    zipBytes: (await stat(zip)).size, zipSha256: hash.digest('hex'), sdkVersion: selected.output,
-    sourceBaseline: '65194efa709d581b84d57de8309a16c7cc0a6e7c', sumdb: env.GOSUMDB })
+  let bytes = 0
+  const stream = Readable.fromWeb(response.body)
+  stream.on('data', chunk => { bytes += chunk.length; hash.update(chunk) })
+  await pipeline(stream, createWriteStream(join(root, 'toolchain.zip'), { flags: 'wx', mode: 0o600 }))
+  const sha256 = hash.digest('hex')
+  if (bytes !== expectedBytes || sha256 !== expectedSha256) throw new Error('Verified ZIP digest or size mismatch')
+  record({ stage: 'verified-download', version: 'go1.27.2', moduleVersion, moduleH1,
+    sourceUrl, zipBytes: bytes, zipSha256: sha256, executed: false,
+    digestSourceCommit: '2c2380b23ed16b11fbcdd737fd7e23fac4df72b5',
+    digestSourceTicket: 'af0b04c8-4351-42e3-aafa-9e600111a067',
+    sourceBaseline: '65194efa709d581b84d57de8309a16c7cc0a6e7c' })
 } catch (error) {
-  failed = true
+  process.exitCode = 1
   record({ stage: 'failed', message: error.message })
 } finally {
-  const cleaned = await go(['clean', '-modcache'], 'local')
-  if (cleaned.code !== 0) {
-    failed = true
-    record({ stage: 'cleanup-failed', exitCode: cleaned.code })
-  } else {
-    await rm(root, { recursive: true, force: true })
-    record({ stage: 'cleanup', ownedCacheRemoved: true })
-  }
+  clearInterval(progress)
+  await rm(root, { recursive: true, force: true })
+  record({ stage: 'cleanup', ownedCacheRemoved: true })
 }
-process.exitCode = failed ? 1 : 0
