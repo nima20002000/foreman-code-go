@@ -276,6 +276,22 @@ it.each(observationRequests)('keeps all short-request slots available while $met
   } finally { await f.close() }
 })
 
+it.each(['main', 'worker'] as const)('starts short requests across namespaces in FIFO order from %s', async side => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    void f.request(side, 'execution-v1', { id: 'held-history', method: 'history' })
+    await vi.advanceTimersByTimeAsync(0)
+    const namespaces = ['ci-host-v1', 'worker-mcp-v2', 'execution-v1']
+    const ids = Array.from({ length: DEVICE_APPLICATION_IN_FLIGHT }, (_, index) => `short-${index}`)
+    const requests = ids.map((id, index) => f.request(side, namespaces[index % namespaces.length]!, { id }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.started).toEqual(['held-history', ...ids])
+    for (const id of ids) f.release(id)
+    expect(await Promise.all(requests)).toEqual(ids.map(id => ({ payload: id })))
+  } finally { await f.close() }
+})
+
 it.each(['main', 'worker'] as const)('bounds observations separately in the %s direction and preserves chunked replies', async side => {
   vi.useFakeTimers()
   const f = fixture()

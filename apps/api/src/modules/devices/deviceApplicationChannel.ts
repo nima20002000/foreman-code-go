@@ -446,7 +446,9 @@ export class DeviceApplicationChannel {
           && this.negotiated(namespace, true).observationAdmission === true
           ? { admission: 'observation' as const } : {}) })
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
-      const window = namespace === WORKER_MCP_EXTENSION.namespace ? WORKER_MCP_CHUNK_WINDOW : DEVICE_APPLICATION_CHUNK_WINDOW
+      // Short calls share one window so a later MCP request cannot bypass waiting short requests.
+      const binaryMcp = bytes !== undefined && namespace === WORKER_MCP_EXTENSION.namespace
+      const window = binaryMcp ? WORKER_MCP_CHUNK_WINDOW : DEVICE_APPLICATION_CHUNK_WINDOW
       const windowBytes = DEVICE_APPLICATION_CHUNK_BYTES * window
       for (let start = 0; start < packet.byteLength; start += windowBytes) {
         const chunks: Promise<void>[] = []
