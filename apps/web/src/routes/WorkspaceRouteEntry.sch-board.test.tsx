@@ -1,7 +1,7 @@
 import { installBrowserLocks } from '../test/browserLocks'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, type QueryKey } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, getConfig, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { delay, http, HttpResponse } from 'msw'
@@ -12,6 +12,7 @@ import { useGraphDraftStore } from '../features/graph/store'
 import { nextDraftKey } from '../features/graph/nextDraft/state'
 import { nextDraftApi } from '../features/graph/nextDraft/transport'
 import { boardDraftContextKey } from '../features/workflow-board/keys'
+import { runInspectionQueryKey } from '../features/workflow-board/inspect/queries'
 import { pinnedRunHandlers, reply, runsUrl, versionReply } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
@@ -43,10 +44,11 @@ async function mount(entry = runsUrl(null, scope)) {
     <QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider></>)
   return { ...result, router, client }
 }
-async function waitForBoardContext(client: QueryClient) {
-  await new Promise<void>((resolve, reject) => {
+async function waitForQuery(client: QueryClient, queryKey: QueryKey) {
+  // Use RTL's async boundary for cache notifications as well as DOM waits.
+  await getConfig().asyncWrapper(() => new Promise<void>((resolve, reject) => {
     const check = () => {
-      const state = client.getQueryState(boardDraftContextKey(scope.workspaceId, scope.workflowId))
+      const state = client.getQueryState(queryKey)
       if (state?.status === 'success' || state?.status === 'error') {
         unsubscribe()
         if (state.status === 'error') reject(state.error)
@@ -55,7 +57,10 @@ async function waitForBoardContext(client: QueryClient) {
     }
     const unsubscribe = client.getQueryCache().subscribe(check)
     check()
-  })
+  }))
+}
+function waitForBoardContext(client: QueryClient) {
+  return waitForQuery(client, boardDraftContextKey(scope.workspaceId, scope.workflowId))
 }
 async function authoring() {
   const editor = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 3000 })
@@ -80,8 +85,13 @@ async function choose(runId: string | null) {
 const savedY = () => screen.findByRole('button', { name: 'Inspect Run node Y' })
 const pinnedUrl = (runId: string) => `${runsUrl(null, scope)}&runId=${runId}&workflowVersionId=version-${runId.slice(4)}&executionSemanticsVersion=3`
 async function openActivities() {
-  await userEvent.click(screen.getByRole('button', { name: 'Activities' }))
-  return screen.findByRole('dialog', { name: 'Activities' })
+  const trigger = screen.getByLabelText('Activities', { selector: 'button' })
+  expect(trigger).toBeVisible()
+  await userEvent.click(trigger)
+  const dialog = screen.getByLabelText('Activities', { selector: 'dialog' })
+  await waitFor(() => expect(dialog).toHaveAttribute('open'))
+  expect(dialog).toHaveRole('dialog')
+  return dialog
 }
 
 function installNodeInspection() {
@@ -174,6 +184,7 @@ afterEach(() => {
   server.events.removeListener('request:start', recordWrite)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); setMockScenario('normal')
+  vi.useRealTimers()
   vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs()
 })
 
@@ -251,30 +262,56 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     expect(writes).toEqual([])
   })
 
-  it('opens separate saved Agent panels and toolbar Activities at 320px', async () => {
+  it.each([0, 1_100])('opens separate saved Agent panels and toolbar Activities at 320px with %s ms context reads', async contextDelay => {
+    if (contextDelay) server.use(http.get('/api/management/workspaces/:workspaceId/agents', async () => {
+      await delay(contextDelay)
+    }))
+    // Keep background polling on a controlled clock; timed refreshes are covered below.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const user = userEvent.setup()
     vi.stubGlobal('innerWidth', 320)
     installFlowLayout(320, 800)
-    const { router } = await mount(runsUrl('run-a', scope))
-    await savedY()
-    const canvas = screen.getByRole('region', { name: 'Selected Run pinned topology' })
+    const { router, client } = await mount(runsUrl('run-a', scope))
+    await waitForBoardContext(client)
+    await waitForQuery(client, [...runInspectionQueryKey({ ...scope, runId: 'run-a',
+      workflowVersionId: 'version-a', executionSemanticsVersion: 3 }), 'version'])
+    const canvas = await screen.findByLabelText('Selected Run pinned topology')
+    expect(canvas).toHaveRole('region')
+    expect(canvas).toBeVisible()
+    const savedNode = await within(canvas).findByLabelText('Inspect Run node Y')
+    expect(savedNode).toHaveRole('button')
+    expect(savedNode).toBeVisible()
     expect(canvas.getBoundingClientRect().width).toBe(320)
-    const node = within(canvas).getByRole('button', { name: 'Inspect Run node X before rename' })
+    const node = within(canvas).getByLabelText('Inspect Run node X before rename')
+    expect(node).toHaveRole('button')
+    expect(node).toBeVisible()
+    const actionGroup = within(canvas).getByLabelText('X before rename actions')
+    expect(actionGroup).toHaveRole('group')
+    const actions = within(actionGroup)
     node.focus()
-    await userEvent.keyboard('{Enter}')
-    expect(screen.queryByRole('dialog', { name: 'X before rename information' })).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: 'Open X before rename information' }))
-    const info = await screen.findByRole('dialog', { name: 'X before rename information' })
+    expect(actionGroup).toBeVisible()
+    await user.keyboard('{Enter}')
+    expect(screen.queryByLabelText('X before rename information')).toBeNull()
+    await user.click(actions.getByLabelText('Open X before rename information', { selector: 'button' }))
+    const info = await screen.findByLabelText('X before rename information')
+    expect(info).toHaveRole('dialog')
     expect(within(info).getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
-    await userEvent.click(within(info).getByRole('tab', { name: 'Activity' }))
+    await user.click(within(info).getByRole('tab', { name: 'Activity' }))
     expect(await within(info).findByRole('region', { name: 'Activities' })).toBeVisible()
-    await userEvent.keyboard('{Escape}')
-    await userEvent.click(screen.getByRole('button', { name: 'Open X before rename settings' }))
-    const settings = await screen.findByRole('dialog', { name: 'X before rename settings' })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(info).not.toBeInTheDocument())
+    await user.click(actions.getByLabelText('Open X before rename settings', { selector: 'button' }))
+    const settings = await screen.findByLabelText('X before rename settings')
+    expect(settings).toHaveRole('dialog')
     expect(within(settings).getByText(/This is a saved Run Agent/)).toBeVisible()
-    await userEvent.keyboard('{Escape}')
-    await userEvent.click(screen.getByRole('button', { name: 'Open X before rename chat' }))
-    expect(await screen.findByRole('dialog', { name: 'X before rename chat' })).toBeVisible()
-    await userEvent.keyboard('{Escape}')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(settings).not.toBeInTheDocument())
+    await user.click(actions.getByLabelText('Open X before rename chat', { selector: 'button' }))
+    const chat = await screen.findByLabelText('X before rename chat')
+    expect(chat).toHaveRole('dialog')
+    expect(chat).toBeVisible()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(chat).not.toBeInTheDocument())
     const activities = await openActivities()
     expect(await within(activities).findByText('History for run-a')).toBeVisible()
     expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
