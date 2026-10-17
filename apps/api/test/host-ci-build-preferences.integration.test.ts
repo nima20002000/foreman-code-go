@@ -14,6 +14,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { ProductionHostCiEndpoint } from '../src/modules/ci-host/endpoint.js'
 import { HostCiService } from '../src/modules/ci-host/service.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { WorkerExecutionPolicy } from '../src/modules/settings/workerExecution.js'
 import { BuildComputerSettings } from '../src/modules/settings/buildComputers.js'
 import { buildComputerFixture } from './helpers/buildComputerFixture.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
@@ -68,7 +69,8 @@ it('honors persisted MCP build participation and priority while retaining assign
     const endpoint = new ProductionHostCiEndpoint(db.pool, mainId, () => ({
       capabilities: () => [{ namespace: CI_HOST_NAMESPACE, mainCanRequest: true }],
       request: async (deviceId, _namespace, payload) => ({ payload: await request(deviceId, CiHostRequestSchema.parse(payload)) }),
-    }), { handle: input => request('main', CiHostRequestSchema.parse(input)) })
+    }), { handle: input => request('main', CiHostRequestSchema.parse(input)) }, [], undefined,
+    new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
     const commands = new PostgresCommandCoordinator(db.pool)
     const settings = new BuildComputerSettings(db.pool, commands, async () => ({
       state: 'ready', reasons: [], remoteExecutionEnabled: true,

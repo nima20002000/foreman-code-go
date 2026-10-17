@@ -16,11 +16,11 @@ const reader: ManagementPrincipal = {
 }
 
 describe('Worker execution deployment setting', () => {
-  it('defaults to permitting Main and paired Worker execution', () => {
+  it('defaults off and leaves Main permitted', () => {
     const policy = new WorkerExecutionPolicy()
-    expect(policy.read(reader)).toEqual({ enabled: true, managedBy: 'settings' })
+    expect(policy.read(reader)).toEqual({ enabled: false, managedBy: 'settings' })
     expect(() => policy.requireEnabled({ kind: 'main' })).not.toThrow()
-    expect(() => policy.requireEnabled({ kind: 'device' })).not.toThrow()
+    expect(() => policy.requireEnabled({ kind: 'device' })).toThrow('Execution on connected computers is disabled')
   })
 
   it('permits Worker execution with explicit startup opt-in', () => {
@@ -48,7 +48,7 @@ describe('Worker execution deployment setting', () => {
 
   it('parses only explicit deployment flag values', () => {
     const environment = { DATABASE_URL: 'postgresql://example:example@127.0.0.1/test' }
-    expect(loadConfig(environment).workerExecution).toEqual({ enabled: true, managedBy: 'settings' })
+    expect(loadConfig(environment).workerExecution).toEqual({ enabled: false, managedBy: 'settings' })
     expect(loadConfig({ ...environment, FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: '0' }).workerExecution)
       .toEqual({ enabled: false, managedBy: 'startup' })
     expect(loadConfig({ ...environment, GRAPHQL_LAPTOP_EXECUTION_ENABLED: '1' }).workerExecution?.enabled).toBe(true)
@@ -81,13 +81,17 @@ describe('Worker execution deployment setting', () => {
   })
 })
 
-it('enables remote execution for missing settings while preserving an explicit saved disablement', async () => {
+it('defaults missing remote execution settings off while preserving explicit saved values', async () => {
   const query = vi.fn().mockResolvedValue({ rows: [] })
   const settings = new PostgresFoundationSettingsRepository({ query } as never)
-  expect((await settings.getRemoteExecutionSettings()).value.enabled).toBe(true)
+  expect((await settings.getRemoteExecutionSettings()).value.enabled).toBe(false)
   query.mockResolvedValue({ rows: [{ record: { enabled: false, listener: {
     enabled: false, host: null, port: null, certificateFile: null, privateKeyFile: null,
     advertisedEndpoint: null, trustCertificateFile: null,
   } }, revision: '1', current_version_id: 'saved' }] })
   expect(await settings.getRemoteExecutionSettings()).toMatchObject({ value: { enabled: false }, revision: 1 })
+  const disabled = await settings.getRemoteExecutionSettings()
+  query.mockResolvedValue({ rows: [{ record: { ...disabled.value, enabled: true },
+    revision: '2', current_version_id: 'enabled' }] })
+  expect(await settings.getRemoteExecutionSettings()).toMatchObject({ value: { enabled: true }, revision: 2 })
 })

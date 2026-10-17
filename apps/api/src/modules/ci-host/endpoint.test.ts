@@ -288,7 +288,7 @@ it('rechecks remote execution after a status probe and before delivering Start',
   expect(f.request.mock.calls[0]?.[2].operation).toBe('status')
 })
 
-it('selects paired computers by default without an execution opt-in', async () => {
+it('requires execution opt-in before selecting paired computers', async () => {
   const f = remoteExecutionFixture()
-  expect((await f.endpoint.computers()).map(computer => computer.key)).toEqual([f.computer.key])
+  expect(await f.endpoint.computers()).toEqual([])
 })
