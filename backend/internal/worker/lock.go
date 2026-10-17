@@ -116,4 +116,3 @@ func (lock *WorkerLock) Close() error {
 	})
 	return lock.closeErr
 }
-
