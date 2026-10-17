@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: worker at immutable source a8291c6040af818d1033897af5ab9ff0b7036303.

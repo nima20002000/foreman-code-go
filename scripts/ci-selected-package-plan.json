@@ -1,0 +1,51 @@
+{
+  "source": "a8291c6040af818d1033897af5ab9ff0b7036303",
+  "sourceTree": "b924cddf0b7776fbc75ed365fd4e55755957e73d",
+  "package": "./internal/worker",
+  "goFiles": [
+    "internal/worker/arguments.go",
+    "internal/worker/arguments_test.go",
+    "internal/worker/command.go",
+    "internal/worker/command_test.go",
+    "internal/worker/error.go",
+    "internal/worker/error_test.go",
+    "internal/worker/lock.go",
+    "internal/worker/lock_linux_test.go",
+    "internal/worker/lock_process_linux_integration_test.go",
+    "internal/worker/platform_linux.go",
+    "internal/worker/platform_other.go",
+    "internal/worker/platform_other_test.go",
+    "internal/worker/state.go",
+    "internal/worker/state_linux_test.go",
+    "internal/worker/status.go",
+    "internal/worker/status_linux_test.go"
+  ],
+  "unitTests": [
+    "TestWorkerArgumentsPreserveExplicitStateAndInput",
+    "TestWorkerArgumentsRejectImplicitStateAndMalformedOptions",
+    "TestWorkerArgumentsHelpTakesPrecedence",
+    "TestWorkerCommandRegistersWithoutStartingOrCreatingState",
+    "TestWorkerCommandPassesValidatedInvocationAndFailure",
+    "TestWorkerCommandUnavailableAndCancelledHaveNoEffects",
+    "TestWorkerCommandHelpReportsOutputFailure",
+    "TestWorkerLockExcludesCanonicalStateAliasesAndReleases",
+    "TestWorkerLockSeparateStatesCanRunIndependently",
+    "TestWorkerLockRejectsUnacquiredOwnership",
+    "TestWorkerStatusReturnsCurrentPublicPayloadAndDoesNotCreateState",
+    "TestWorkerStatusRejectsInvalidAndOversizedRepliesWithoutLosingLock",
+    "TestWorkerStatusAcceptsExactByteLimit",
+    "TestWorkerStatusHonorsCancelledCaller",
+    "TestWorkerStatusRequiresExplicitAbsoluteState",
+    "TestPrivateStateDirectoryCreatesOnlyExplicitPrivateState",
+    "TestPrivateStateDirectoryRejectsSymlinkFileAndSharedMode",
+    "TestWorkerStatusRenewsIdleTimeoutOnEachChunk",
+    "TestWorkerStatusTimesOutAnInactivePeer",
+    "TestWorkerStatusCancelsAnActiveRead"
+  ],
+  "integrationTests": [
+    "TestWorkerLockExcludesAnotherProcessAndRecoversAfterExit"
+  ],
+  "testTimeout": "30s",
+  "integrationRequiresDatabase": false,
+  "mode": "package"
+}
