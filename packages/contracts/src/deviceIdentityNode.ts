@@ -84,9 +84,11 @@ export async function persistWorkerPairing(directory: string, configuration: imp
       if (JSON.stringify(previous) !== JSON.stringify(parsed)) {
         if (previous.mainId !== parsed.mainId || previous.deviceId !== parsed.deviceId
           || previous.workerInstallationId !== parsed.workerInstallationId || previous.keyRevision !== parsed.keyRevision
-          || previous.mainPublicKeyFingerprint !== parsed.mainPublicKeyFingerprint
-          || parsed.authorizationRevision <= previous.authorizationRevision) {
-          throw new Error('Worker re-enrollment must retain its identity and advance authorization.', { cause: error })
+          || previous.mainPublicKeyFingerprint !== parsed.mainPublicKeyFingerprint) {
+          throw new Error('Worker is already paired; explicit unpairing is required.', { cause: error })
+        }
+        if (parsed.authorizationRevision <= previous.authorizationRevision) {
+          throw new Error('Worker re-enrollment must advance authorization.', { cause: error })
         }
         await rename(temporary, file)
         replaced = true
