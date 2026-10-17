@@ -25,6 +25,15 @@ let containerStarted = false
 let sourceCreated = false
 let server
 let serverMessages = []
+let serverErrors = []
+
+function safeErrorMessage(message) {
+  return message.replaceAll(disposablePassword, '[disposable-password]')
+    .replace(/(?:https?|postgresql):\/\/\S+/g, '[URL]')
+    .replace(/Bearer\s+\S+/g, 'Bearer [redacted]')
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[opaque]')
+    .slice(0, 800)
+}
 
 function command(label, program, args, options = {}) {
   console.log(`[capture] ${label}`)
@@ -112,6 +121,7 @@ async function waitUntilReady(url) {
   for (let attempt = 0; attempt < 360; attempt++) {
     if (server.exitCode !== null || server.signalCode !== null) {
       console.log(`[capture] server message labels: ${JSON.stringify(serverMessages)}`)
+      console.log(`[capture] server error diagnostics: ${JSON.stringify(serverErrors)}`)
       throw new Error('The TypeScript baseline server exited before readiness.')
     }
     try {
@@ -187,6 +197,10 @@ async function captureSchema(environment) {
           const message = JSON.parse(line)
           if (typeof message.msg === 'string' && /^[a-zA-Z0-9 .:;()_-]{1,180}$/.test(message.msg)) {
             serverMessages = [...serverMessages.slice(-9), message.msg]
+          }
+          if (typeof message.err?.message === 'string') {
+            serverErrors = [...serverErrors.slice(-4), { message: safeErrorMessage(message.err.message),
+              code: /^[A-Z0-9_]{1,40}$/.test(message.err.code ?? '') ? message.err.code : undefined }]
           }
         } catch { /* ignore: only bounded structured message labels are safe diagnostics. */ }
       }
