@@ -99,7 +99,8 @@ async function lockTransfer(file: FileHandle, options: { nonBlocking?: boolean }
     return await lockOpenFile(file, options)
   } catch (error) {
     if (error instanceof SourceError && error.code === 'SOURCE_CLAIM_LOCK_FAILED') {
-      throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer ownership locking failed.', 409)
+      throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer ownership locking failed.', 409, undefined,
+        { cause: error })
     }
     throw error
   }
