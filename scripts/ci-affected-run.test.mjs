@@ -23,6 +23,8 @@ const result = spawnSync(process.execPath, command, { env: process.env, stdio: '
 if (result.error) throw result.error
 process.exitCode = result.status ?? 1
 `)
+  const prepared = fixture.run('unit', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
   return fixture
 }
 
@@ -117,7 +119,7 @@ test('passes', () => assert.equal(1, 1))
     'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const results = JSON.parse(readFileSync(output, 'utf8'))
-  assert.deepEqual(results.summary, { passed: 5, failed: 0, skipped: 0 })
+  assert.deepEqual(results.summary, { passed: 6, failed: 0, skipped: 0 })
   const nodeResult = results.files.find(result => result.file === file)
   assert.ok(nodeResult, JSON.stringify(results.files))
   assert.equal(nodeResult.status, 'passed')
