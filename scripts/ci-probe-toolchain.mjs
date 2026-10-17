@@ -4,8 +4,9 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 if (!['true', '1'].includes(process.env.CI)) throw new Error('This probe runs only inside Foreman CI.')
-const parent = join(homedir(), '.cache', 'foreman-capture')
-mkdirSync(parent, { recursive: true, mode: 0o700 })
+const parentPath = join(homedir(), '.cache', 'foreman-capture')
+mkdirSync(parentPath, { recursive: true, mode: 0o700 })
+const parent = realpathSync(parentPath)
 const root = mkdtempSync(join(parent, 'go-probe-'))
 const report = value => console.log(`[go-probe] ${JSON.stringify(value)}`)
 let bootstrap
@@ -13,6 +14,9 @@ let bootstrap
 async function removeOwnedProbe(directory) {
   if (!existsSync(directory)) return
   const stat = lstatSync(directory)
+  report({ cleanupOwnership: { insideProbeParent: directory.startsWith(`${parent}/go-probe-`),
+    directory: stat.isDirectory(), symlink: stat.isSymbolicLink(), canonical: realpathSync(directory) === directory,
+    sameUser: stat.uid === process.getuid(), mode: (stat.mode & 0o777).toString(8) } })
   if (!directory.startsWith(`${parent}/go-probe-`) || !stat.isDirectory() || stat.isSymbolicLink()
     || realpathSync(directory) !== directory || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
     throw new Error('Probe cleanup ownership is not confirmed.')
