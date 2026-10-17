@@ -241,3 +241,20 @@ it('keeps polling and update actions locked while the restarting Worker reconnec
   expect(within(device).getByRole('status')).toHaveTextContent('Up to date')
   expect(update).toBeEnabled()
 })
+
+it.each([
+  ['WORKER_VERSION_SKEW', 'current', 'Worker update required'],
+  ['WORKER_BUNDLE_UNPUBLISHED', 'current', 'Worker bundle unavailable'],
+  ['WORKER_UPDATING', 'downloading', 'Downloading update'],
+] as const)('shows %s readiness alongside updater progress', async (code, state, message) => {
+  computersFixture(<ComputerCards mainId={mainId} devices={[registration]} />, [
+    computerReadHandler('maintenance', { computers: [{ target: deviceTarget, status: status({ ...worker, state }),
+      workerReadiness: { ready: false, code, expected: null, running: null,
+        updatePhase: state, publicationError: null },
+    }] }),
+  ])
+  const device = await screen.findByRole('article', { name: deviceName })
+  await within(device).findByText('Current 0.0.56')
+  expect(within(device).getByRole('status')).toHaveTextContent(message)
+  expect(within(device).getByRole('status')).not.toHaveTextContent('Up to date')
+})

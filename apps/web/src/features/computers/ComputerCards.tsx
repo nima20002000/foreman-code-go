@@ -12,7 +12,7 @@ import { useDeviceMcp } from '../../shared/api/deviceMcp'
 import type { HarnessMcpList } from '@foreman-code/contracts/management'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { useComputerMaintenance, useStartMaintenance } from '../../shared/api/computerMaintenance'
-import type { ComputerMaintenanceStartInput, MaintenanceStatus, WorkerReleasePublication } from '@foreman-code/contracts/computer-maintenance'
+import type { ComputerMaintenanceStartInput, MaintenanceStatus, WorkerBundleReadiness, WorkerReleasePublication } from '@foreman-code/contracts/computer-maintenance'
 import { Badge, Button, IconButton } from '../../shared/ui/nocturne'
 import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { askOperator } from '../operator-chat/operatorChatStore'
@@ -89,6 +89,7 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
             claudeMcp={mcp[index * 2 + 1]?.isError ? undefined : mcp[index * 2 + 1]?.data}
             accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data?.status}
             workerPublication={maintenanceRead.data?.workerPublication}
+            workerReadiness={maintenanceRead.data?.workerReadiness}
             maintenanceObservation={maintenanceRead.data?.observation}
             tasksOmitted={maintenanceRead.data?.tasksOmitted ?? 0}
             maintenanceError={maintenanceRead.isError || maintenanceRead.data?.observation?.status === 'unavailable'}
@@ -115,13 +116,14 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
 }
 
 type Task = ComputerMaintenanceStartInput['task']
-function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, workerPublication, maintenanceObservation, maintenanceError, tasksOmitted,
+function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, workerPublication, workerReadiness, maintenanceObservation, maintenanceError, tasksOmitted,
   onRetryMaintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   codexMcp: HarnessMcpList | undefined; claudeMcp: HarnessMcpList | undefined
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
   activityComplete: boolean; maintenanceError: boolean; onRetryMaintenance(): void
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
   workerPublication: WorkerReleasePublication | undefined
+  workerReadiness: WorkerBundleReadiness | undefined
   maintenanceObservation: ReadObservation | undefined
   tasksOmitted: number
   buildPosition: number | undefined; buildCount: number; onOpen: (() => void) | undefined
@@ -146,7 +148,7 @@ function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claud
           onInstall={() => onMaintain({ kind: 'update-harnesses', harnesses: [tool] })} />)}
       </dd></div>
       {card.target.hostRef.kind === 'device' ? <div><dt>Worker</dt><dd>
-        <WorkerState worker={maintenance?.worker} busy={maintaining || maintenanceError
+        <WorkerState worker={maintenance?.worker} readiness={workerReadiness} busy={maintaining || maintenanceError
           || Boolean(workerPublication && workerPublication.state !== 'published')}
           onUpdate={() => onMaintain({ kind: 'update-worker' })} />
       </dd></div> : null}
@@ -240,16 +242,22 @@ const WORKER_STATE_LABELS: Record<WorkerStatus['state'], string> = {
   failed: 'Update failed',
 }
 
-function WorkerState({ worker, busy, onUpdate }: {
-  worker: MaintenanceStatus['worker']; busy: boolean; onUpdate(): void
+function WorkerState({ worker, readiness, busy, onUpdate }: {
+  worker: MaintenanceStatus['worker']; readiness: WorkerBundleReadiness | undefined; busy: boolean; onUpdate(): void
 }) {
   const retry = worker?.state === 'failed' || worker?.state === 'rolled-back'
   const updating = worker !== undefined && worker.state !== 'current' && !retry
+  let label = worker ? WORKER_STATE_LABELS[worker.state] : 'Status unavailable'
+  if (worker?.state === 'current' && readiness?.ready === false) {
+    if (readiness.code === 'WORKER_VERSION_SKEW') label = 'Worker update required'
+    if (readiness.code === 'WORKER_BUNDLE_UNPUBLISHED') label = 'Worker bundle unavailable'
+    if (readiness.code === 'WORKER_UPDATING') label = 'Worker update in progress'
+  }
   return <span className="computer-card-worker">
     {worker ? <>
       <span>Current {worker.currentVersion}</span>
       <span>Target {worker.targetVersion ?? 'not reported'}</span>
-      <span role="status"><Badge tone={retry ? 'warning' : 'neutral'}>{WORKER_STATE_LABELS[worker.state]}</Badge></span>
+      <span role="status"><Badge tone={retry || readiness?.ready === false ? 'warning' : 'neutral'}>{label}</Badge></span>
       {worker.lastError ? <small className="computer-card-worker-error">Last error: {worker.lastError}</small> : null}
     </> : <span>Status unavailable</span>}
     <Button size="sm" variant="ghost" disabled={busy || !worker || updating} onClick={onUpdate}>

@@ -1,5 +1,6 @@
 import { deferred } from '../../test/deferred'
 import { afterEach, expect, it, vi } from 'vitest'
+import { ApiError } from './client'
 import { subscribeOperatorChat } from './operatorChatStream'
 class Source extends EventTarget {
   static OPEN = 1
@@ -40,7 +41,7 @@ it('projects consecutive conversation-local events without resetting the live co
 })
 
 
-it('bounds terminal recovery attempts and backs off failed authorized readback', async () => {
+it('caps terminal recovery backoff and stops recovery on disposal', async () => {
   vi.useFakeTimers()
   vi.stubGlobal('EventSource', Source)
   const callbacks = { snapshot: vi.fn(), event: vi.fn(), reconnect: vi.fn(), connection: vi.fn(),
@@ -54,9 +55,11 @@ it('bounds terminal recovery attempts and backs off failed authorized readback',
     await vi.advanceTimersByTimeAsync(1)
     expect(callbacks.recover).toHaveBeenCalledTimes(index + 1)
   }
-  await vi.advanceTimersByTimeAsync(60_000)
-  expect(callbacks.recover).toHaveBeenCalledTimes(6)
+  await vi.advanceTimersByTimeAsync(10_000)
+  expect(callbacks.recover).toHaveBeenCalledTimes(7)
   close()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(callbacks.recover).toHaveBeenCalledTimes(7)
   expect(Source.current.close).toHaveBeenCalledOnce()
 })
 
@@ -98,5 +101,23 @@ it('coalesces connectivity notifications while terminal readback is still pendin
   expect(callbacks.recover).toHaveBeenCalledOnce()
   pending.resolve()
   await vi.advanceTimersByTimeAsync(0)
+  close()
+})
+
+it.each([401, 403, 404])('stops terminal recovery after a definitive HTTP %s response', async status => {
+  vi.useFakeTimers()
+  vi.stubGlobal('EventSource', Source)
+  const callbacks = { snapshot: vi.fn(), event: vi.fn(), reconnect: vi.fn(), connection: vi.fn(),
+    recover: vi.fn().mockRejectedValue(new ApiError({ code: 'UNAVAILABLE', message: 'Conversation unavailable' }, status)) }
+  const close = subscribeOperatorChat('chat', callbacks)
+  Source.current.readyState = Source.CLOSED
+  Source.current.dispatchEvent(new Event('error'))
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(callbacks.recover).toHaveBeenCalledOnce()
+  expect(callbacks.connection).toHaveBeenLastCalledWith('unavailable')
+  window.dispatchEvent(new Event('online'))
+  await vi.advanceTimersByTimeAsync(60000)
+  expect(callbacks.recover).toHaveBeenCalledOnce()
+  expect(Source.current.close).toHaveBeenCalledOnce()
   close()
 })
