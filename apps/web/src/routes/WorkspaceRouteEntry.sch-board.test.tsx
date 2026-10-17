@@ -251,7 +251,10 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     expect(writes).toEqual([])
   })
 
-  it('opens separate saved Agent panels and toolbar Activities at 320px', async () => {
+  it.each([0, 1_100])('opens separate saved Agent panels and toolbar Activities at 320px with %s ms context reads', async contextDelay => {
+    if (contextDelay) server.use(http.get('/api/management/workspaces/:workspaceId/agents', async () => {
+      await delay(contextDelay)
+    }))
     vi.stubGlobal('innerWidth', 320)
     installFlowLayout(320, 800)
     const { router } = await mount(runsUrl('run-a', scope))
