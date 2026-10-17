@@ -10,7 +10,9 @@ import { remoteNativeManager } from './workerCarrier.js'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { input } from '../../../test/fixtures/codex-test-helpers.js'
 
-it('retains authentication for overlapping identical receipts while an observation commit is in flight', async () => {
+it.each(['shared', 'distinct'] as const)(
+  'retains authentication for overlapping identical receipts while an observation commit is in flight (%s payload)',
+  async payloadIdentity => {
   const source = input('/project')
   delete source.environment
   const { request } = source
@@ -72,7 +74,7 @@ it('retains authentication for overlapping identical receipts while an observati
     carrier: { capture: () => ({ identity: connection, request: async (_namespace, raw) => {
       const frame = RemoteExecutionRpcRequestSchema.parse(raw)
       if (frame.method === 'prepare') return { payload: { session, status } }
-      if (frame.method === 'status') return { payload: status }
+      if (frame.method === 'status') return { payload: payloadIdentity === 'shared' ? status : structuredClone(status) }
       if (frame.method === 'pending') return { payload: undefined }
       throw new Error(`Unexpected request: ${frame.method}`)
     } }) },
@@ -106,4 +108,5 @@ it('retains authentication for overlapping identical receipts while an observati
     releaseCommit.resolve()
     await Promise.allSettled([observing, ...overlapping])
   }
-})
+  },
+)

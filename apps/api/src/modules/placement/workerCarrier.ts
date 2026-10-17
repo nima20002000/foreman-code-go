@@ -123,8 +123,11 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       // History continuations supply bytes for the first page's observation, not another receipt observation.
       if (receipt && !(request.method === 'history' && request.metadata)) {
         if (pendingSources >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
-        sources.set(response, { connection: connection.identity, response })
+        // Each request owns an envelope even when its carrier reuses a payload object.
+        const observation = { ...response as Record<string, unknown> }
+        sources.set(observation, { connection: connection.identity, response })
         pendingSources++
+        return observation
       }
       return response
     },
