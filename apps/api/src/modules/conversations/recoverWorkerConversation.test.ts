@@ -366,3 +366,14 @@ it('retains a matching completed Claude journal result for account-bound recover
     expect(saved?.binding.accountBinding).toEqual(f.binding.accountBinding)
   } finally { await f.cleanup() }
 })
+
+it('attaches a cold scoped Operator as an observer when no management credential can be issued', async () => {
+  const f = await fixture('codex', 'operator', { appMcpAccess: 'scoped' })
+  try {
+    expect(await f.recover()).toBe(f.allocation)
+    expect(f.attach).toHaveBeenCalledWith(f.session, expect.objectContaining({
+      kind: 'operator', observationOnly: true,
+    }), expect.any(AbortSignal))
+    expect((await f.journal.conversations.read(f.binding))?.session).toEqual(f.session)
+  } finally { await f.cleanup() }
+})
