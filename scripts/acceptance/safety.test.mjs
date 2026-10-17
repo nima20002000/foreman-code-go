@@ -4,6 +4,7 @@ import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { BASE, assertOwned, environment, freePort, options, publicError, verificationToolEnvironment } from './safety.mjs'
@@ -24,8 +25,11 @@ test('verification identity and build tools use only the fixed read-only Job Git
     /Unknown verification environment/)
 })
 
+const temporaryRoot = join(homedir(), '.cache', 'foreman-tmp')
+await mkdir(temporaryRoot, { recursive: true })
+
 async function fixture(work) {
-  const state = await mkdtemp(join(await realpath('/tmp'), 'eng07-'))
+  const state = await mkdtemp(join(await realpath(temporaryRoot), 'eng07-'))
   const owner = randomUUID()
   await chmod(state, 0o700)
   await writeFile(join(state, 'owner.json'), JSON.stringify({ owner, base: BASE }), { mode: 0o600 })
@@ -57,8 +61,13 @@ test('allowlist excludes ambient database, code injection, web secrets and rollo
   const result = environment(input)
   assert.deepEqual(result, { PATH: '/bin', HOME: '/home/local', OPENAI_API_KEY: 'test-only-provider-sentinel' })
 })
-test('acceptance resources reject app URLs and socket overrides and own their native homes', async () => {
-  const { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl, testEnvironment } = await import('../test-resources.mjs')
+function checkAcceptanceResources(sourceEnvironment = process.env) {
+  return spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    import { join } from 'node:path'
+    import { environment } from ${JSON.stringify(new URL('./safety.mjs', import.meta.url).href)}
+    import { createTestRoot, removeTestRoot, requireTestServerUrl, testAdminUrl, testEnvironment }
+      from ${JSON.stringify(new URL('../test-resources.mjs', import.meta.url).href)}
   const resource = createTestRoot()
   try {
     const url = new URL('/graphql_test_acceptance', testAdminUrl)
@@ -74,10 +83,25 @@ test('acceptance resources reject app URLs and socket overrides and own their na
     assert.equal(safe.CODEX_HOME, join(resource.directory, 'home/.codex'))
     assert.equal(safe.TEST_DATABASE_URL, url.href)
   } finally { removeTestRoot(resource) }
+  `], { encoding: 'utf8', env: { ...sourceEnvironment } })
+}
+
+test('acceptance resources reject app URLs and socket overrides and own their native homes', () => {
+  const result = checkAcceptanceResources()
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('acceptance resource assertions are independent of the runner database port', () => {
+  const result = checkAcceptanceResources({ ...process.env,
+    FOREMAN_CODE_CI_HOST_RUN_ID: '12345678-1234-1234-1234-123456789abc',
+    FOREMAN_CODE_CI_TEST_ADMIN_URL:
+      'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:32768/postgres',
+  })
+  assert.equal(result.status, 0, result.stderr)
 })
 test('explicit Claude login is copied into disposable storage and refreshes leave the host login unchanged', async () => {
   const { copyTestAuthenticationFile, createTestRoot, removeTestRoot, testAdminUrl, testEnvironment } = await import('../test-resources.mjs')
-  const sourceDirectory = await mkdtemp(join(await realpath('/tmp'), 'claude-auth-source-'))
+  const sourceDirectory = await mkdtemp(join(await realpath(temporaryRoot), 'claude-auth-source-'))
   const source = join(sourceDirectory, '.credentials.json')
   const resource = createTestRoot()
   const owned = { ...resource, databaseUrl: new URL('/graphql_test_acceptance', testAdminUrl).href }
@@ -106,7 +130,7 @@ test('explicit Claude login is copied into disposable storage and refreshes leav
 })
 test('authentication copies reject symlinks, public destinations and paths outside their fixture', async () => {
   const { copyTestAuthenticationFile, createTestRoot, removeTestRoot } = await import('../test-resources.mjs')
-  const sourceDirectory = await mkdtemp(join(await realpath('/tmp'), 'claude-auth-source-'))
+  const sourceDirectory = await mkdtemp(join(await realpath(temporaryRoot), 'claude-auth-source-'))
   const source = join(sourceDirectory, '.credentials.json')
   const resource = createTestRoot()
   try {

@@ -51,7 +51,7 @@ if (args.includes('port')) console.log('127.0.0.1:' + process.env.FIXTURE_PORT)
 })
 
 function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, selection = undefined,
-  hostRunner = false) {
+  hostRunner = false, sourceEnvironment = process.env) {
   const cache = join(homedir(), '.cache', 'foreman-tmp')
   mkdirSync(cache, { recursive: true })
   const directory = mkdtempSync(join(cache, 'ci-suite-'))
@@ -123,7 +123,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
   const result = spawnSync('bash', [script, action], {
     encoding: 'utf8',
     ...(selection ? { cwd: directory } : {}),
-    env: { ...process.env, SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
+    env: { ...sourceEnvironment, SUITE: suite, SCOPE: selection?.omitScope ? undefined : scope,
       SELECTED_FILES: selection ? '' : 's:1', DEFAULT_BRANCH: 'release/stable', CI_STATE: join(directory, 'state'),
       RUNNER_SELECTION: JSON.stringify(selection),
       BASE_COMMIT: selection?.baseCommit ?? '',
@@ -139,6 +139,19 @@ if (process.argv[2] === 'rev-parse') console.log('false')
 }
 
 const contractsBuild = ['--filter', '@foreman-code/contracts', 'build']
+test('suite command assertions are independent of runner typecheck cache and shell startup', t => {
+  const directory = mkdtempSync(join(homedir(), '.cache', 'foreman-tmp', 'ci-suite-environment-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const shellEnvironment = join(directory, 'shell-environment')
+  writeFileSync(shellEnvironment, 'export FOREMAN_CODE_CI_TYPECHECK_CACHE="$RUNNER_CACHE"\n')
+  const { result, calls } = runSuite(t, 'typecheck-api', '', 'full', '', true, undefined, false, {
+    ...process.env, FOREMAN_CODE_CI_TYPECHECK_CACHE: directory, FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE: '',
+    BASH_ENV: shellEnvironment, RUNNER_CACHE: directory,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(calls, [contractsBuild, ['--filter', '@foreman-code/api', 'typecheck']])
+})
+
 test('cloud suites forward an explicit base to selection without fetching the default branch', t => {
   const baseCommit = 'a'.repeat(40)
   const { result, calls } = runSuite(t, 'typecheck-api', '', 'affected', '', true,
