@@ -141,10 +141,8 @@ export class HarnessInstallationMonitor {
     const selected = new Map(hosts.map(host => [harnessHostKey(host), host]))
     const tasks = [...selected].map(([key, host]) => {
       const existing = this.hostRefreshes.get(key)
-      const task = existing ? existing.then(refreshed => {
-        if (refreshed || priority === 'background') return refreshed
-        return this.collectHost(host, priority)
-      }) : this.collectHost(host, priority)
+      if (existing) return existing
+      const task = this.collectHost(host, priority)
       this.hostRefreshes.set(key, task)
       const cleanup = () => { if (this.hostRefreshes.get(key) === task) this.hostRefreshes.delete(key) }
       void task.then(cleanup, cleanup)
