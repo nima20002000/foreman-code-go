@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { WorkerUpdater, downloadWorkerArtifact, fetchGitHubAsset } from '../src/update.mjs';
 import { installVersion, readInstalledRelease, readRetainedRelease } from '../src/installation.mjs';
-import { startWorker, acquireWorkerLock } from '../src/runtime.mjs';
+import { startWorker, acquireWorkerLock, readWorkerStatus } from '../src/runtime.mjs';
 import { WorkerError } from '../src/diagnostics.mjs';
 import { readUpdateRecord, superviseWorkerUpdate, waitForWorkerReady, locateWorkerLaunch,
   launchUpdateSupervisor } from '../src/updateSupervisor.mjs';
@@ -145,6 +145,27 @@ async function until(predicate) {
   throw new Error('Worker update did not reach the expected state.');
 }
 
+async function waitForFile(path) {
+  await until(async () => {
+    try {
+      await readFile(path);
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  });
+}
+
+function waitForStartupWithClock(t, options) {
+  return waitForWorkerReady({ ...options, timeoutMs: 15, pollMs: 1,
+    readStatus: async directory => {
+      const status = await readWorkerStatus(directory);
+      if (status?.phase === 'authenticating') t.mock.timers.tick(15);
+      return status;
+    } });
+}
+
 async function assertStalledUpdateRetry(t, { beforeDownload = async () => {} } = {}) {
   const f = await fixture(t);
   const drainEntered = Promise.withResolvers();
@@ -269,20 +290,29 @@ test('a stalled GitHub asset fails visibly without draining or requesting Main b
   const f = await fixture(t);
   const binaries = join(f.base, 'bin');
   await mkdir(binaries);
+  const started = join(f.base, 'github-started');
   await writeFile(join(binaries, 'gh'),
-    `#!/bin/sh\nexec node -e 'process.stderr.write("fixture GitHub stalled\\n"); setInterval(() => {}, 1000);'\n`,
+    `#!/bin/sh\nexec node -e 'require("node:fs").writeFileSync(process.argv[1], "started"); process.stderr.write("fixture GitHub stalled\\n"); setInterval(() => {}, 1000);' '${started}'\n`,
     { mode: 0o700 });
   const originalPath = process.env.PATH;
   process.env.PATH = `${binaries}:${originalPath}`;
   t.after(() => { process.env.PATH = originalPath; });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const scheduleTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
-    scheduleTimeout(callback, delay >= 5000 && delay <= 60000 ? 100 : delay, ...args));
+    scheduleTimeout(callback, delay === 60000 ? 100 : delay, ...args));
+  let retryLogged = false;
   let drained = false;
   const updater = await new WorkerUpdater({ ...f.options, fetchAsset: fetchGitHubAsset,
-    downloadTimeoutMs: 1000, drain: async () => { drained = true; } }).initialize();
+    downloadTimeoutMs: 1000, drain: async () => { drained = true; },
+    log: (_msg, fields) => { if (fields.retryMs) retryLogged = true; } }).initialize();
   t.after(() => updater.close());
-  await assert.rejects(updater.start(), { code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' });
+  const rejected = assert.rejects(updater.start(), { code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' });
+  await waitForFile(started);
+  t.mock.timers.tick(100);
+  await until(() => retryLogged);
+  t.mock.timers.tick(900);
+  await rejected;
   assert.deepEqual(f.requests.map(payload => payload.operation), ['release']);
   const status = await updater.status();
   assert.equal(status.state, 'failed');
@@ -315,24 +345,21 @@ if (existsSync(gate)) { watcher.close(); console.error('release not found'); pro
   t.after(() => { process.env.PATH = originalPath; });
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const scheduleTimeout = globalThis.setTimeout;
-  // Keep production retry spacing while letting the fixture observe several retries quickly.
+  // Advance retry spacing independently of the subprocess no-bytes watchdog.
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
-    scheduleTimeout(callback, delay >= 5_000 && delay <= 60_000 ? 20 : delay, ...args));
+    scheduleTimeout(callback, delay === 5000 ? 20 : delay, ...args));
   const logged = [];
   const updater = await new WorkerUpdater({ ...f.options, fetchAsset: fetchGitHubAsset, downloadTimeoutMs: 3000,
     log: (msg, fields = {}) => logged.push({ msg, ...fields }) }).initialize();
   t.after(() => updater.close());
 
   const update = updater.start();
-  await until(async () => {
-    try { return (await readFile(attempts, 'utf8')).includes('attempt'); }
-    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  });
+  await waitForFile(attempts);
   t.mock.timers.tick(20);
   await writeFile(releaseLookup, 'available');
   await until(() => logged.some(entry => entry.retryMs));
   assert.ok(logged.some(entry => /GitHub/.test(entry.msg) && /release not found/.test(entry.error ?? '')));
-  t.mock.timers.tick(5000);
+  t.mock.timers.tick(20);
   assert.equal(await update, 'Worker 1.1.0 restart is scheduled.');
   const record = await readUpdateRecord(f.stateDirectory);
   assert.equal(record.status.state, 'restarting');
@@ -353,15 +380,19 @@ test('GitHub recovery still rejects a file that does not match its announced che
   await writeFile(join(f.incoming.directory, 'src/cli.mjs'), 'corrupted bytes');
   let completed = false;
   let attempts = 0;
-  const scheduleTimeout = globalThis.setTimeout;
-  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
-    scheduleTimeout(callback, delay === 5000 ? 1 : delay, ...args));
-  await assert.rejects(downloadWorkerArtifact({ release: f.incoming.release, facts,
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let retryLogged = false;
+  const download = downloadWorkerArtifact({ release: f.incoming.release, facts,
     directory: join(f.base, 'corrupt-github'), fetchAsset: async options => {
       if (++attempts === 1) throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable');
       await f.options.fetchAsset(options);
     }, onDownloadComplete: async () => { completed = true; },
-  }), { code: 'artifact_file_size_mismatch' });
+    log: (_msg, fields) => { if (fields.retryMs) retryLogged = true; },
+  });
+  const rejected = assert.rejects(download, { code: 'artifact_file_size_mismatch' });
+  await until(() => retryLogged);
+  t.mock.timers.tick(5000);
+  await rejected;
   assert.equal(attempts, 2);
   assert.equal(completed, false);
   assert.deepEqual(f.requests, []);
@@ -369,23 +400,29 @@ test('GitHub recovery still rejects a file that does not match its announced che
 
 test('GitHub retries use the original download deadline after a failed attempt', async t => {
   const f = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const scheduleTimeout = globalThis.setTimeout;
   let deadlineTimers = 0;
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
     if (delay === 100) deadlineTimers++;
     return scheduleTimeout(callback, delay, ...args);
   });
-  await assert.rejects(downloadWorkerArtifact({ release: f.incoming.release, facts,
+  let retryLogged = false;
+  const download = downloadWorkerArtifact({ release: f.incoming.release, facts,
     directory: join(f.base, 'bounded-github'), timeoutMs: 100,
     fetchAsset: async () => {
-      await wait(20);
       throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable');
     },
-  }), error => {
+    log: (_msg, fields) => { if (fields.retryMs) retryLogged = true; },
+  });
+  const rejected = assert.rejects(download, error => {
     assert.equal(error.code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
     assert.match(error.message, /GitHub unavailable/);
     return true;
   });
+  await until(() => retryLogged);
+  t.mock.timers.tick(100);
+  await rejected;
   assert.equal(deadlineTimers, 1);
   assert.deepEqual(f.requests, []);
 });
@@ -516,12 +553,13 @@ for (const path of ['manifest.json', 'src/cli.mjs']) {
 
 test('failed new startup restores the previous pointer and persists rollback across Worker restart', async t => {
   const f = await fixture(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   let restarts = 0;
   const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
     await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
       prepareService: f.prepareService,
       restart: async () => { await f.restart(++restarts === 1 ? 'authenticating' : 'ready'); },
-      ready: options => waitForWorkerReady({ ...options, timeoutMs: 15, pollMs: 1 }),
+      ready: options => waitForStartupWithClock(t, options),
     });
   } }).initialize();
   t.after(() => updater.close());
@@ -701,13 +739,20 @@ test('terminal supervisor failure cannot resume an ambiguous release pointer', a
 
 test('the next Worker retries an update cut short by a Worker stop, but not an update that failed', async t => {
   const f = await fixture(t);
-  let stageEntered = false;
+  const stageEntered = Promise.withResolvers();
+  const finishStage = Promise.withResolvers();
   const stopped = await new WorkerUpdater({ ...f.options,
-    stage: async () => { stageEntered = true; await wait(50); return { directory: f.incoming.directory }; },
+    stage: async () => {
+      stageEntered.resolve();
+      await finishStage.promise;
+      return { directory: f.incoming.directory };
+    },
   }).initialize();
   const update = stopped.start();
-  await until(() => stageEntered);
-  await stopped.close();
+  await stageEntered.promise;
+  const closing = stopped.close();
+  finishStage.resolve();
+  await closing;
   await assert.rejects(update, { code: 'worker_updater_stopped' });
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.state, 'failed');
   let launched = 0;
@@ -932,10 +977,14 @@ test('shutdown waits for an active staging operation and prevents a restart afte
     launchSupervisor: async () => { launched = true; } }).initialize();
   const update = updater.start();
   await until(() => stageEntered);
-  f.setBeforeUnlock(() => updater.close());
+  const shutdownEntered = Promise.withResolvers();
+  f.setBeforeUnlock(() => {
+    shutdownEntered.resolve();
+    return updater.close();
+  });
   let stopped = false;
   const closing = f.stopRuntime().then(() => { stopped = true; });
-  await wait(10);
+  await shutdownEntered.promise;
   assert.equal(stopped, false);
   await assert.rejects(acquireWorkerLock(f.stateDirectory), { code: 'worker_already_running' });
   finishStage();
@@ -1009,17 +1058,18 @@ test('consecutive releases retain the first terminal maintenance outcome without
 
 test('a later successful retry of the same target preserves the earlier task rollback outcome', async t => {
   const f = await fixture(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   let restarts = 0;
   const firstStartedAt = new Date().toISOString();
   const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
     await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
       prepareService: f.prepareService, restart: () => f.restart(++restarts === 1 ? 'authenticating' : 'ready'),
-      ready: options => waitForWorkerReady({ ...options, timeoutMs: 15, pollMs: 1 }),
+      ready: options => waitForStartupWithClock(t, options),
     });
   } }).initialize();
   t.after(() => updater.close());
   await updater.start();
-  await wait(2);
+  t.mock.timers.tick(2);
   const retryStartedAt = new Date().toISOString();
   await updater.start({ retry: true });
   assert.equal((await updater.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt: firstStartedAt })).state,
@@ -1090,6 +1140,7 @@ test('update failure retains the failed phase and child stderr in persisted stat
 
 test('a stalled GitHub download times out, cancels its request and retries on the next check', async t => {
   const f = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   let downloadSignal;
   let stalled = true;
   const options = { ...f.options, downloadTimeoutMs: 50,
@@ -1103,7 +1154,9 @@ test('a stalled GitHub download times out, cancels its request and retries on th
   const updater = await new WorkerUpdater(options).initialize();
   t.after(() => updater.close());
   const outcome = updater.start().then(() => 'completed', error => error);
-  const failure = await Promise.race([outcome, wait(1000).then(() => 'still downloading')]);
+  await until(() => downloadSignal !== undefined);
+  t.mock.timers.tick(50);
+  const failure = await outcome;
   assert.equal(failure.code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
   assert.equal(downloadSignal.aborted, true);
   assert.match((await updater.status()).lastError, /download.*timed out/i);
@@ -1116,17 +1169,31 @@ test('a stalled GitHub download times out, cancels its request and retries on th
 
 test('GitHub download keeps its overall deadline when an attempt takes too long', async t => {
   const f = await fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const downloadEntered = Promise.withResolvers();
+  const finishDownload = Promise.withResolvers();
   const outcome = downloadWorkerArtifact({ release: f.incoming.release, facts,
     directory: join(f.base, 'bounded-download'), timeoutMs: 15,
-    fetchAsset: async options => { await wait(25); await f.options.fetchAsset(options); },
+    fetchAsset: async options => {
+      downloadEntered.resolve();
+      await finishDownload.promise;
+      await f.options.fetchAsset(options);
+    },
   }).then(() => 'completed', error => error);
+  await downloadEntered.promise;
+  t.mock.timers.tick(15);
+  finishDownload.resolve();
   assert.equal((await outcome).code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
 });
 
-test('startup timeout retains the last observed readiness phase and failure', async () => {
+test('startup timeout retains the last observed readiness phase and failure', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   await assert.rejects(waitForWorkerReady({ stateDirectory: '/fixture/state', version: '1.1.0',
     workerInstallationId: randomUUID(), timeoutMs: 5, pollMs: 1,
-    readStatus: async () => ({ active: true, phase: 'backoff', failure: 'authentication', appVersion: '1.1.0' }),
+    readStatus: async () => {
+      t.mock.timers.tick(5);
+      return { active: true, phase: 'backoff', failure: 'authentication', appVersion: '1.1.0' };
+    },
   }), error => {
     assert.equal(error.code, 'worker_update_startup_timeout');
     assert.match(error.message, /backoff/);
