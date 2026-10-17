@@ -26,21 +26,32 @@ it('keeps the API ready after PostgreSQL terminates idle application and checkpo
     }
     for (const application of ['graphql-api', 'graphql-checkpoints']) {
       const backend = await readUntil(async () => {
-        const result = await admin.query<{ pid: number }>(`select pid from pg_stat_activity
+        // Select and terminate in one statement: a separate round trip can kill a newly borrowed client.
+        const result = await admin.query<{ pid: number; terminated: boolean }>(`
+          select pid, pg_terminate_backend(pid) as terminated from pg_stat_activity
           where datname=current_database() and application_name=$1 and state='idle' limit 1`, [application])
         return result.rows[0]
       }, value => value !== undefined, { timeoutMs: 5_000, description: `an idle ${application} connection` })
-      expect((await admin.query('select pg_terminate_backend($1) as terminated', [backend!.pid]))
-        .rows[0].terminated).toBe(true)
-      await readUntil(async () => output, value => value.includes('idle PostgreSQL connection failed')
-        && value.includes(`"pool":"${application}"`),
-      { timeoutMs: 5_000, description: `the handled ${application} connection loss` })
+      expect(backend!.terminated).toBe(true)
+      await readUntil(async () => output, value => value.split('\n').some(line =>
+        line.includes('idle PostgreSQL connection failed') && line.includes(`"pool":"${application}"`)),
+      { timeoutMs: 5_000, description: `the handled ${application} connection loss`,
+        subscribe: changed => {
+          child.stdout?.on('data', changed)
+          child.stderr?.on('data', changed)
+          return () => {
+            child.stdout?.off('data', changed)
+            child.stderr?.off('data', changed)
+          }
+        } })
       expect(child.exitCode).toBeNull()
       expect(child.signalCode).toBeNull()
       const response = await fetch(`http://127.0.0.1:${port}/health/ready`, { signal: AbortSignal.timeout(5_000) })
       expect(response.status).toBe(200)
     }
     expect(output).not.toContain('api stopped')
+  } catch (error) {
+    throw new Error(`Idle termination failed; API output:\n${output}`, { cause: error })
   } finally {
     await stopGroup(child.pid, { signal: 'SIGTERM' })
     await admin.end()

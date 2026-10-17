@@ -54,6 +54,15 @@ export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, str
       if (claims.get(p[0]) === p[1]) claims.delete(p[0])
       return { rows: [], rowCount: 1 }
     }
+    if (text.startsWith("update ci_runs set state='canceled', host_key=null")) {
+      const row = rows.get(p[0] as string)
+      const run = row ? CiRunRecordSchema.parse(row.record) : undefined
+      const matches = run?.state === 'queued' && (run.supersededBy ?? null) === p[2]
+      return changed(matches ? row : undefined, { state: 'canceled', hostKey: null, record: p[1] })
+    }
+    if (text.startsWith('select record from ci_runs where state in')) {
+      return { rows: listed(run => ['queued', 'starting', 'running'].includes(run.state) && !!run.supersededBy) }
+    }
     if (text.startsWith('update ci_runs set record=$2::jsonb')) {
       return changed(matches(p[0], p[2]), { record: p[1] })
     }
@@ -84,7 +93,7 @@ export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, str
       return { rows: listed(run => ['starting', 'running'].includes(run.state) || run.deadlineExceeded?.executor === 'retained') }
     }
     if (text.startsWith('select record,durations from ci_runs where state=\'queued\'')) {
-      return { rows: listed(run => run.state === 'queued') }
+      return { rows: listed(run => run.state === 'queued' && !run.supersededBy) }
     }
     return { rows: [], rowCount: 0 }
   }
