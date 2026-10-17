@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -148,7 +148,7 @@ describe('disposable test resources', () => {
         'WORKSPACE_STORAGE_ROOT', 'FOREMAN_CODE_APP_MCP_DIRECTORY']) {
         expect(environment[key]).toMatch(resource.directory + '/')
       }
-      expect(await readFile(join(environment.HOME!, '.local/share/graphql/mcp/launcher.mjs'), 'utf8')).toBeTruthy()
+      expect((await stat(join(environment.HOME!, '.local/share/graphql/mcp/launcher.mjs'))).size).toBeGreaterThan(0)
       expect(environment.PGHOST).toBeUndefined()
       expect(environment.FOREMAN_CODE_MCP_TOKEN).toBeUndefined()
       expect(environment.LOG_FILE).toBeUndefined()
