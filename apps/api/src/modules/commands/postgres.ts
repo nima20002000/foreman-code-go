@@ -141,14 +141,16 @@ export class PostgresCommandCoordinator {
         await input.prepare!(this.pool)
         prepared = true
       } catch (error) {
-        await this.recordAudit(input.principal.id, input.source, input.operation, input.targetKey, 'failed',
-          { commandId: input.commandId, code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR' })
-        throw error
+        // An identical retry may commit while preparation runs without command ownership.
+        return this.executeAttempt(input, { prepared: false, preparationFailure: { error } })
       }
     }
   }
 
-  private async executeAttempt<T>(input: CommandInput<T>, options: { prepared: boolean }): Promise<{ value: T; replayed: boolean }> {
+  private async executeAttempt<T>(input: CommandInput<T>, options: {
+    prepared: boolean
+    preparationFailure?: { error: unknown }
+  }): Promise<{ value: T; replayed: boolean }> {
     const commandId = input.commandId ?? randomUUID()
     const inputHash = commandInputHash(input.payload)
     const dedicatedConnection = input.dedicatedConnection || input.prepare !== undefined
@@ -213,6 +215,7 @@ export class PostgresCommandCoordinator {
         [principals, input.operation, commandId])
         if (expired.rows.length) throw expiredCommandResult()
       }
+      if (options.preparationFailure) throw options.preparationFailure.error
 
       // A lifecycle callback can wait for runtime cleanup and database work.
       // Keep its command identity serialized by the session advisory lock, but
