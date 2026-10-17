@@ -238,6 +238,6 @@ it('stops retrying a CircleCI dispatch push that GitHub keeps failing', async ()
 
   await expect(f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
     repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })).rejects.toThrow('(failed)')
-  expect(pushes).toBe(3)
+  expect(pushes).toBe(4)
   expect(f.circle.triggered).toHaveLength(0)
 })

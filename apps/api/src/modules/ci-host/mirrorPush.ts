@@ -9,7 +9,7 @@ const rejected = (error: unknown, reason: RegExp) => error instanceof DomainErro
 // GitHub fails ref updates on its side when many CI parts push their refs at once; the same push succeeds shortly after.
 const GITHUB_REF_FAILURE = /\[remote rejected\][^\r\n]*\((?:failed|failure)\)|fatal error in commit_refs/
 const MISSING_OBJECTS = /\[remote rejected\][^\r\n]*\(missing necessary objects\)/
-const ATTEMPTS = 3
+const ATTEMPTS = 4
 
 export async function pushMirror(push: () => Promise<string>, context: { mirror: string; commit: string }): Promise<void> {
   for (let attempt = 1; ; attempt++) {
@@ -28,7 +28,8 @@ export async function pushMirror(push: () => Promise<string>, context: { mirror:
       if (!rejected(error, GITHUB_REF_FAILURE)) throw error
       log.warn({ operation: 'retry CI mirror push', err: error, ...context, attempt },
         'GitHub failed the CI mirror ref update; retrying the push')
-      await delay(250 * attempt + Math.floor(Math.random() * 250))
+      // Spread a burst of parts over a few seconds instead of retrying them together.
+      await delay(500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 1000))
     }
   }
 }
