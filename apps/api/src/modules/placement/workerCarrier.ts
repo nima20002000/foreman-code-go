@@ -137,9 +137,8 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       await options.carrier.reconnect(hostRef.deviceId, reached, error, signal)
       return true
     } },
-    discardReceipt: (_receipt, response) => {
-      takeSource(response)
-      pendingSources--
+    discardReceipt: response => {
+      if (sources.delete(response)) pendingSources--
     },
     observeReceipt: async (receipt, response) => {
       const original = takeSource(response)
