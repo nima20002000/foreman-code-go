@@ -151,9 +151,11 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     }
     return receipt
   }
-  private status(raw: unknown, intent = this.intent): Promise<RemoteOperationReceipt> {
+  private status(raw: unknown, intent = this.intent,
+    minimumSequence = this.receipt?.sequence ?? 0): Promise<RemoteOperationReceipt> {
     const task = this.receiptUpdates.then(async () => {
       const receipt = this.readReceipt(raw, intent, this.receipt)
+      if (receipt.sequence < minimumSequence) throw new Error('Original remote receipt changed')
       if (this.receipt && receipt.sequence < this.receipt.sequence) return this.receipt
       await this.options.observeReceipt(receipt)
       this.receipt = receipt
@@ -169,8 +171,9 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     for (let attempt = 0; ; attempt++) {
       signal?.throwIfAborted()
       try {
+        const minimumSequence = this.receipt?.sequence ?? 0
         const value = await this.historyResponse(await this.request('history', payload, signal), signal)
-        const receipt = await this.status(value.status)
+        const receipt = await this.status(value.status, this.intent, minimumSequence)
         if (!isDeepStrictEqual(value.status, { status: 'known', receipt })) {
           throw new RemoteHistorySnapshotChangedError('Remote history response was overtaken')
         }
