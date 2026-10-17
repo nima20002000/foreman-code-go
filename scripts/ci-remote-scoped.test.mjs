@@ -6,7 +6,7 @@ import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { inheritedAgentEnvironment } from '../apps/api/src/modules/harnesses/secrets.ts'
+import { appMcpTokenEnvironment, inheritedAgentEnvironment } from '../apps/api/src/modules/harnesses/secrets.ts'
 
 const script = new URL('./ci-remote.mjs', import.meta.url).pathname
 
@@ -201,11 +201,13 @@ for (const directoryName of ['FOREMAN_CODE_APP_MCP_DIRECTORY', 'GRAPHQL_APP_MCP_
       FOREMAN_CODE_APP_PRIVATE_KEY: 'controller-private-key' }
     for (const key of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_APP_MCP_DIRECTORY', 'GRAPHQL_APP_MCP_DIRECTORY']) delete source[key]
     source[directoryName] = bridge
-    const env = inheritedAgentEnvironment(source)
+    const stripped = inheritedAgentEnvironment(source)
+    assert.equal(stripped.FOREMAN_CODE_APP_MCP_DIRECTORY, undefined)
+    assert.equal(stripped.GRAPHQL_APP_MCP_DIRECTORY, undefined)
+    const env = appMcpTokenEnvironment({ ...stripped, FOREMAN_CODE_MCP_TOKEN: token }, source)
     assert.equal(env.FOREMAN_CODE_APP_MCP_DIRECTORY, bridge)
     assert.equal(env.GRAPHQL_APP_MCP_DIRECTORY, undefined)
     for (const key of ['FOREMAN_CODE_OPERATOR_TOKEN', 'DATABASE_URL', 'FOREMAN_CODE_APP_PRIVATE_KEY']) assert.equal(env[key], undefined)
-    env.FOREMAN_CODE_MCP_TOKEN = token
     const result = await runCli(fixture.cwd, env)
     assert.equal(result.code, 1, result.stderr)
     assert.match(result.stderr, /unit FAILED/, result.stderr)

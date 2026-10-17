@@ -128,7 +128,7 @@ async function runOwnedProcess<T>(
     }
     options.signal?.throwIfAborted()
     child = spawnNativeProcess(options.binary, options.args, {
-      cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment), purpose: 'command',
+      cwd: options.cwd, env: appMcpTokenEnvironment(childEnvironment, options.environment ?? process.env), purpose: 'command',
       ...(recovery ? { recovery } : {}),
     })
   } catch (error) {
