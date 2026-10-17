@@ -33,7 +33,7 @@ it('keeps the application Operator consistent after overlapping defaults saves w
   try {
     const operators = new PostgresOperatorRepository(f.pool)
     await operators.ensure()
-    const original = await f.services.settings.getAgentDefaults(f.owner.principal)
+    const original = await f.services.settings!.getAgentDefaults(f.owner.principal)
     const a = structuredClone(original.value)
     a.operator.harness.model = 'operator-edited'
     const b = structuredClone(original.value)
