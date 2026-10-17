@@ -33,13 +33,13 @@ type MCPAccess = mcpserver.Access
 
 // Options supplies infrastructure; lane Register functions own their domain services.
 type Options struct {
-	Config              config.Config
-	Database            *database.DB
-	Logger              *slog.Logger
-	Readiness           Readiness
-	ReadinessTimeout    time.Duration
-	MCPAccess           MCPAccess
-	MCPMaxRequestBytes  int64
+	Config             config.Config
+	Database           *database.DB
+	Logger             *slog.Logger
+	Readiness          Readiness
+	ReadinessTimeout   time.Duration
+	MCPAccess          MCPAccess
+	MCPMaxRequestBytes int64
 }
 
 // App is composed before serving. Lanes add HTTP, MCP, streams and background services here.

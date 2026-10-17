@@ -69,7 +69,7 @@ func (timing *transactionTiming) finish(outcome string) {
 	timing.logger.Warn("Slow database transaction", "component", "db", "caller", timing.caller,
 		"totalMs", total.Round(time.Millisecond).Milliseconds(),
 		"queryMs", queryTime.Round(time.Millisecond).Milliseconds(),
-		"betweenQueriesMs", (total-queryTime).Round(time.Millisecond).Milliseconds(),
+		"betweenQueriesMs", (total - queryTime).Round(time.Millisecond).Milliseconds(),
 		"queries", timing.statements,
 		"largestGapMs", max(timing.largestGap, finished.Sub(timing.lastEnd)).Round(time.Millisecond).Milliseconds())
 }

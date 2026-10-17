@@ -81,7 +81,7 @@ func TestStartupAllowsOnlyMissingEnvironmentFiles(t *testing.T) {
 func TestMissingEnvironmentFileDoesNotHideOtherAliasConflicts(t *testing.T) {
 	_, err := config.LoadEnvironment(config.Environment{
 		"FOREMAN_CODE_API_ENV_FILE": filepath.Join(t.TempDir(), "missing.env"),
-		"FOREMAN_CODE_WEB_PORT": "5198", "GRAPHQL_WEB_PORT": "5199",
+		"FOREMAN_CODE_WEB_PORT":     "5198", "GRAPHQL_WEB_PORT": "5199",
 	})
 	if err == nil || !strings.Contains(err.Error(), "FOREMAN_CODE_WEB_PORT conflicts with GRAPHQL_WEB_PORT") {
 		t.Fatalf("A missing optional file hid conflicting process settings: %v", err)

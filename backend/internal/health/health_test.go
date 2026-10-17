@@ -71,7 +71,7 @@ func TestReadinessReportsEachDependency(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			application := newHealth(t, app.Readiness{
-				Database: pingFunc(func(context.Context) error { return test.database }),
+				Database:    pingFunc(func(context.Context) error { return test.database }),
 				Checkpoints: pingFunc(func(context.Context) error { return test.checkpoint }),
 			}, 0)
 			status, body := probe(t, application, "/health/ready")
@@ -145,7 +145,7 @@ func TestReadinessDoesNotReportSuccessAfterTheDeadline(t *testing.T) {
 		return nil
 	})
 	application := newHealth(t, app.Readiness{
-		Database: lateSuccess,
+		Database:    lateSuccess,
 		Checkpoints: pingFunc(func(context.Context) error { return nil }),
 	}, 2*time.Millisecond)
 	for range 8 {
