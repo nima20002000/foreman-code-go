@@ -37,6 +37,7 @@ import type { AcceptedProviderAccountBindings } from '../provider-accounts/accep
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 import { requireRunStartAvailable } from './maintenance.js'
+import { withRunSourceUse } from '../sources/runSourceUse.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -335,66 +336,68 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     if (!publication || typeof publication.initializeLocked !== 'function') {
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
     }
-    const sourceTransport = source === 'http' ? 'http' : 'mcp'
-    const preparationStarted = performance.now()
-    const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, sourceTransport, publication,
-      options.schedule)
-    // Preparation has its own deadline; keep the remaining shared lock-wait budget.
-    lockWait.deadline += performance.now() - preparationStarted
-    options.schedule?.signal?.throwIfAborted()
-    return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+    return await withRunSourceUse(pool, input.workspaceId, async () => {
+      const sourceTransport = source === 'http' ? 'http' : 'mcp'
+      const preparationStarted = performance.now()
+      const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, sourceTransport, publication,
+        options.schedule)
+      // Preparation has its own deadline; keep the remaining shared lock-wait budget.
+      lockWait.deadline += performance.now() - preparationStarted
       options.schedule?.signal?.throwIfAborted()
-      if (options.schedule?.signal) beforeGraphCommit(sql, async () => options.schedule!.signal!.throwIfAborted())
-      await commandLock(sql, lockWait)
-      const replayed = await readStartReceipt(sql, principal.id, input, hash, target)
-      if (replayed && 'status' in replayed) return conflict('RUN_START_CANCELED', 'This Start was canceled. Review current settings and explicitly start again.')
-      if (replayed) return { value: replayed, replayed: true }
-      await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
-      await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)
-      await assertWorkflowRecovered(sql, input.workspaceId, input.workflowId)
-      const live = await sql.query<{ count: string }>(`select count(*)::text as count from runs r where r.runner_id=$1
-        and (r.execution_state in ('queued','running','waiting') or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`,
-      [prepared.location.runnerId])
-      const count = live.rows[0]?.count
-      if (!count || !/^[0-9]+$/.test(count)) return conflict('RUNNER_ADMISSION_UNCERTAIN', 'Runner capacity could not be established.')
-      if (BigInt(count) >= BigInt(maximumResidentRuns)) return conflict('RUNNER_ADMISSION_FULL', 'The runner has reached its bounded active-Run capacity.')
-      const authority = await acceptRunAuthority(sql, principal)
-      authorize(authority.principal)
-      await options.schedule?.beforeAcceptance(sql)
-      // acceptRunAuthority creates a NEW tokenless principal. Pass that exact
-      // principal to the helper; patching the caller snapshot's ID is not a proof.
-      const snapshot = await readLockedRepeatStartSnapshot(sql, authority.principal, input, prepared)
-      const version = snapshot.executable.version
-      const workerExecution = publication.workerExecution ?? new WorkerExecutionPolicy()
-      for (const node of version.definition.nodes) {
-        if (node.kind !== 'job' && node.placement) workerExecution.requireEnabled(node.placement.hostRef)
-      }
-      const run = AcceptedWorkflowRunV3Schema.parse({ id: `run-${randomUUID()}`, workspaceId: input.workspaceId,
-        workflowId: input.workflowId, workflowVersionId: version.id, executionSemanticsVersion: 3,
-        agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionLocation: snapshot.workspace.location,
-        authorizationPrincipalId: authority.principal.id, approval: version.approval,
-        executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
-        input: input.input, createdAt: new Date().toISOString() })
-      admissionBegan = true
-      await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), {
-        ...publication, ...(prepared.accountBindings ? { preparedAccountBindings: prepared.accountBindings } : {}),
-      },
-        source === 'schedule' ? 'schedule' : 'manual', preparedPlacements)
-      await bindRunAuthority(sql, run.id, authority)
-      await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
-        values($1,'run.start',$2,$3,$4,$5::jsonb)`, [principal.id, input.commandId, target, hash, canonicalGraphJson(run)])
-      await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-        values($1,$2,'run.start',$3,'succeeded',$4::jsonb)`, [principal.id, source, target, JSON.stringify({ commandId: input.commandId })])
-      beforeGraphCommit(sql, async () => {
-        await liveAuthority(sql)
-        const accepted = await readLiveManagementPrincipal(sql, authority.principal.id)
-        authorize(accepted)
-        const valid = await sql.query('select 1 where clock_timestamp() < $1::timestamptz', [accepted.expiresAt])
-        if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Accepted Run authority expired before commit.', 403)
-      })
-      await options.schedule?.afterAcceptance(sql, run)
-      return { value: run, replayed: false }
-    }))
+      return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+        options.schedule?.signal?.throwIfAborted()
+        if (options.schedule?.signal) beforeGraphCommit(sql, async () => options.schedule!.signal!.throwIfAborted())
+        await commandLock(sql, lockWait)
+        const replayed = await readStartReceipt(sql, principal.id, input, hash, target)
+        if (replayed && 'status' in replayed) return conflict('RUN_START_CANCELED', 'This Start was canceled. Review current settings and explicitly start again.')
+        if (replayed) return { value: replayed, replayed: true }
+        await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
+        await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)
+        await assertWorkflowRecovered(sql, input.workspaceId, input.workflowId)
+        const live = await sql.query<{ count: string }>(`select count(*)::text as count from runs r where r.runner_id=$1
+          and (r.execution_state in ('queued','running','waiting') or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`,
+        [prepared.location.runnerId])
+        const count = live.rows[0]?.count
+        if (!count || !/^[0-9]+$/.test(count)) return conflict('RUNNER_ADMISSION_UNCERTAIN', 'Runner capacity could not be established.')
+        if (BigInt(count) >= BigInt(maximumResidentRuns)) return conflict('RUNNER_ADMISSION_FULL', 'The runner has reached its bounded active-Run capacity.')
+        const authority = await acceptRunAuthority(sql, principal)
+        authorize(authority.principal)
+        await options.schedule?.beforeAcceptance(sql)
+        // acceptRunAuthority creates a NEW tokenless principal. Pass that exact
+        // principal to the helper; patching the caller snapshot's ID is not a proof.
+        const snapshot = await readLockedRepeatStartSnapshot(sql, authority.principal, input, prepared)
+        const version = snapshot.executable.version
+        const workerExecution = publication.workerExecution ?? new WorkerExecutionPolicy()
+        for (const node of version.definition.nodes) {
+          if (node.kind !== 'job' && node.placement) workerExecution.requireEnabled(node.placement.hostRef)
+        }
+        const run = AcceptedWorkflowRunV3Schema.parse({ id: `run-${randomUUID()}`, workspaceId: input.workspaceId,
+          workflowId: input.workflowId, workflowVersionId: version.id, executionSemanticsVersion: 3,
+          agentConfigurationVersionIds: version.agentConfigurationVersionIds, executionLocation: snapshot.workspace.location,
+          authorizationPrincipalId: authority.principal.id, approval: version.approval,
+          executionCondition: version.definition.executionCondition, executionState: 'queued', outcome: 'pending',
+          input: input.input, createdAt: new Date().toISOString() })
+        admissionBegan = true
+        await insertRepeatRun(sql, AcceptedRepeatStartV1Schema.parse({ snapshot, run }), {
+          ...publication, ...(prepared.accountBindings ? { preparedAccountBindings: prepared.accountBindings } : {}),
+        },
+          source === 'schedule' ? 'schedule' : 'manual', preparedPlacements)
+        await bindRunAuthority(sql, run.id, authority)
+        await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
+          values($1,'run.start',$2,$3,$4,$5::jsonb)`, [principal.id, input.commandId, target, hash, canonicalGraphJson(run)])
+        await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+          values($1,$2,'run.start',$3,'succeeded',$4::jsonb)`, [principal.id, source, target, JSON.stringify({ commandId: input.commandId })])
+        beforeGraphCommit(sql, async () => {
+          await liveAuthority(sql)
+          const accepted = await readLiveManagementPrincipal(sql, authority.principal.id)
+          authorize(accepted)
+          const valid = await sql.query('select 1 where clock_timestamp() < $1::timestamptz', [accepted.expiresAt])
+          if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Accepted Run authority expired before commit.', 403)
+        })
+        await options.schedule?.afterAcceptance(sql, run)
+        return { value: run, replayed: false }
+      }))
+    })
   } catch (error) {
     // Audit is diagnostic, not an admission/negative-submission receipt. An
     // exception after staging may be a lost COMMIT reply; retain that uncertainty.

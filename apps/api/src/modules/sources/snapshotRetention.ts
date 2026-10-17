@@ -3,6 +3,7 @@ import { withClientTransaction } from '../../infrastructure/transaction.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
+import { runSourceUseKey } from './runSourceUse.js'
 
 export const SOURCE_RETENTION_SECONDS = 3600
 type SnapshotStore = Pick<PrivateSourceSnapshotStore, 'remove' | 'withCaptureLock'>
@@ -143,6 +144,10 @@ async function lockSnapshot(sql: pg.PoolClient, candidate: Candidate, scopeId: s
   const snapshot = (await sql.query<{ availability: string; workspace_id: string }>(`select availability,workspace_id
     from source_snapshots where snapshot_id=$1 for update skip locked`, [candidate.snapshot_id])).rows[0]
   if (!snapshot) return null
+  const use = (await sql.query<{ locked: boolean }>(
+    'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
+    [runSourceUseKey(candidate.snapshot_id)])).rows[0]
+  if (!use?.locked) return null
   const reservation = (await sql.query<{ record: SourceReservation }>(`select record
     from source_storage_reservations where scope_id=$1 and owner_kind='capture' and owner_id=$2
       and state='retained' for update`, [scopeId, candidate.snapshot_id])).rows[0]
