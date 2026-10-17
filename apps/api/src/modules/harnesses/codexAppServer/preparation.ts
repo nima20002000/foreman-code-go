@@ -164,8 +164,11 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
     signal.throwIfAborted()
     const input = structuredClone(this.startupPreferences && !source.sessionPreferences
       ? { ...source, sessionPreferences: this.startupPreferences } : source)
+    const observationOnly = input.kind === 'operator' && input.observationOnly === true
+    const appMcpDisabled = this.appMcpAccess === 'none' || observationOnly
     validateEnvironmentOwner(input)
     validateEnvironmentVariables(input.environment)
+    if (observationOnly) delete input.environment
     if (this.chatFiles && this.appMcpAccess === 'scoped' && input.kind !== 'operator') {
       throw new HarnessExecutionError('CODEX_FILE_CHAT_ISOLATION_REQUIRED',
         'Only Operator chat can combine file tools with application management credentials.')
@@ -187,7 +190,7 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
     let approvedAppMcpServerName: string | undefined
     const nativeTools = accepted(input).nativeTools
     const nativeApps = nativeMcpServerAllowed('codex_apps', nativeTools) ? nativeTools?.apps : false
-    if (this.appMcpAccess === 'none' || nativeTools?.mcpServers !== undefined || nativeTools?.apps === false) {
+    if (appMcpDisabled || nativeTools?.mcpServers !== undefined || nativeTools?.apps === false) {
       const listed = await io.runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
       let entries: unknown
       try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
@@ -196,7 +199,7 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
         throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
       }
       const configuredNames = entries.map((entry: JsonObject) => String(entry.name))
-      const chatExcluded = this.appMcpAccess === 'none' ? chatExcludedAppMcpServerNames(this.appMcpServerName) : []
+      const chatExcluded = appMcpDisabled ? chatExcludedAppMcpServerNames(this.appMcpServerName) : []
       disabledMcpServerNames = configuredNames.filter(name => chatExcluded.includes(name)
         || !nativeMcpServerAllowed(name, nativeTools))
       mcpTransportOverrides = codexDisabledMcpTransports(entries, disabledMcpServerNames)
@@ -204,7 +207,7 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal, io)
       excludedCredentialVariable = mcp.configured.bearerTokenEnvironmentVariable ?? undefined
-      if (this.appMcpAccess !== 'none' && mcp.configured.enabled) {
+      if (!appMcpDisabled && mcp.configured.enabled) {
         scopedCredentialVariable = excludedCredentialVariable
         if (isWorkflowStart(input)) approvedAppMcpServerName = mcp.serverName
       }
@@ -212,7 +215,7 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
       if (!(error instanceof HarnessExecutionError) || error.result.error?.code !== 'CODEX_MCP_NOT_CONFIGURED') throw error
     }
     validateEnvironmentOwner(input, scopedCredentialVariable)
-    const strippedCredentialVariable = this.appMcpAccess === 'none' ? excludedCredentialVariable : scopedCredentialVariable
+    const strippedCredentialVariable = appMcpDisabled ? excludedCredentialVariable : scopedCredentialVariable
     const scopedEnvironment = this.dependencies.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : [])
     const modelFacts = await io.qualifyModel(harnessConfiguration, qualified.binary, workingDirectory,
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,

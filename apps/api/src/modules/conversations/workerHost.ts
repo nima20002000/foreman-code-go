@@ -22,9 +22,11 @@ import { isDefiniteCompactionRejection, NativeDeliveryError } from '../harnesses
 import { recoverPersistedClaudeCompaction } from '../harnesses/claudeSdk/recoverCompaction.js'
 import { unavailableNativeResponse } from '../harnesses/responseAvailability.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { readWorkerConversationResults } from './workerConversationResults.js'
 import { validRunChatSkillsTransition } from './workerRunChatBinding.js'
 
 export interface WorkerConversationAllocation {
+  observationOnly?: true
   manager: NativeHarnessSessionManager
   inspector?: NativeMcpInspector
   start(input: { correlationId: string; instructionsDelivered: boolean;
@@ -100,6 +102,7 @@ export class WorkerConversationHost {
   private readonly allocating = new Map<string, Promise<Resident>>()
   private readonly tasks = new Set<Promise<void>>()
   private readonly running = new Map<string, Readonly<DeviceSessionBinding>>()
+  private readonly runningCompactions = new Set<string>()
   private readonly lifetime = new AbortController()
   private readonly log = componentLogger('harness')
   private closing = false
@@ -128,10 +131,12 @@ export class WorkerConversationHost {
     validateConfiguration(request.binding, request.configuration)
     const id = request.binding.owner.conversationId
     const original = this.residents.get(id)
+    const upgradingObservation = original?.allocation.observationOnly && request.method === 'conversation.open'
+      && request.mode === 'attach' && request.applicationAccess
     if (original) {
       if (!isDeepStrictEqual(original.binding, request.binding)
         || !isDeepStrictEqual(original.configuration, request.configuration)) unavailable('The native chat owner changed.')
-      return original
+      if (!upgradingObservation) return original
     }
     const opening = this.allocating.get(id)
     if (opening) {
@@ -139,6 +144,11 @@ export class WorkerConversationHost {
       return this.allocate(request, connection, signal)
     }
     const task = (async () => {
+      if (upgradingObservation) {
+        if (this.hasRunningOperation(id)) unavailable('The native conversation is busy.')
+        await original.allocation.close()
+        this.residents.delete(id)
+      }
       const record = await this.ports.journal.read(request.binding)
       if (record?.closed || record?.closing) unavailable('The native chat is closing or closed.')
       if (record?.applicationAccessChange?.state === 'reserved') unavailable('The native App MCP access change needs recovery.')
@@ -247,6 +257,7 @@ export class WorkerConversationHost {
 
   private async resident(request: WorkerConversationRpcRequest & { session: NativeSessionReference }) {
     let record = await this.ports.journal.read(request.binding)
+    if (this.allocating.has(request.binding.owner.conversationId)) unavailable('The native conversation is busy.')
     const resident = this.residents.get(request.binding.owner.conversationId)
     if (!record || !isDeepStrictEqual(record.session, request.session) || !resident
       || record.applicationAccessChange?.state === 'reserved'
@@ -327,8 +338,25 @@ export class WorkerConversationHost {
     return { receipt: await this.ports.journal.read(request.binding) }
   }
 
-  private hasRunningTurn(conversationId: string) {
-    return [...this.running.keys()].some(key => key.startsWith(`${conversationId}:`))
+  private hasRunningOperation(conversationId: string) {
+    return [...this.running.keys(), ...this.runningCompactions].some(key => key.startsWith(`${conversationId}:`))
+  }
+
+  private async settleResident(resident: Resident, record: WorkerConversationReceipt,
+    request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
+    if (!record.session || !isDeepStrictEqual(resident.binding, record.binding)
+      || !isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(record.session)))) {
+      unavailable('The original native chat owner changed.')
+    }
+    const manager = resident.allocation.manager
+    const { recoveredTurns, recoveredCompactions } = await readWorkerConversationResults(record, manager, signal,
+      manager.reconcileCompaction ? state => manager.reconcileCompaction!(record.session!, state, signal) : undefined)
+    await this.authorize(request, connection, signal)
+    if (!isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(record.session)))) {
+      unavailable('The original native chat owner changed.')
+    }
+    for (const turn of recoveredTurns) await this.ports.journal.finishTurn(record.binding, turn.correlationId, turn.result)
+    for (const state of recoveredCompactions) await this.ports.journal.compactProgress(record.binding, state)
   }
 
   private async changeNodeSkills(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
@@ -339,16 +367,18 @@ export class WorkerConversationHost {
       unavailable('A Run chat skills change keeps the original configuration, profile and session.')
     }
     const id = request.binding.owner.conversationId
-    if (this.allocating.has(id) || this.hasRunningTurn(id)) unavailable('The native conversation is busy.')
+    if (this.allocating.has(id) || this.hasRunningOperation(id)) unavailable('The native conversation is busy.')
     const task = (async () => {
-      const record = await this.ports.journal.inspectSkillsTransition(previous, request.binding,
+      let record = await this.ports.journal.inspectSkillsTransition(previous, request.binding,
         request.previousConfiguration!, request.configuration)
       if (!record?.session || !isDeepStrictEqual(record.session, request.source)
         || record.closed || record.closing) unavailable('The original Run chat session is unavailable.')
       const unfinished = record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
         || record.compactions.some(control => compactionBlocksSend(control.state))
-      if (this.residents.has(id) && unfinished) {
-        unavailable('The native conversation has unfinished work.')
+      const existing = this.residents.get(id)
+      if (existing && unfinished) {
+        await this.settleResident(existing, record, request, connection, signal)
+        record = (await this.ports.journal.read(record.binding))!
       }
       if (isDeepStrictEqual(record.binding, request.binding)) {
         const resident = this.residents.get(id)
@@ -392,7 +422,7 @@ export class WorkerConversationHost {
       unavailable('App MCP access changes keep the original Operator owner, profile and session.')
     }
     const id = request.binding.owner.conversationId
-    if (this.allocating.has(id) || this.hasRunningTurn(id)) unavailable('The native conversation is busy.')
+    if (this.allocating.has(id) || this.hasRunningOperation(id)) unavailable('The native conversation is busy.')
     const task = (async (): Promise<Resident> => {
       const reserved = await this.ports.journal.reserveApplicationAccess(previous, request.binding, request.operationId, request.source!)
       if (reserved.applied) {
@@ -551,6 +581,9 @@ export class WorkerConversationHost {
         this.log.error({ err: error, conversationId: request.binding.owner.conversationId }, 'Worker compaction needs recovery')
       }
     })()
+    const key = `${request.binding.owner.conversationId}:${request.requestId}`
+    this.runningCompactions.add(key)
+    void task.then(() => this.runningCompactions.delete(key), () => this.runningCompactions.delete(key))
     void this.track(task)
     return { compaction: reserved.state }
   }

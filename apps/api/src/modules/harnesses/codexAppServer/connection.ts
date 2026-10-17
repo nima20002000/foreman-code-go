@@ -54,7 +54,7 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     this.ownTransport(transport)
     try {
       await transport.start(signal)
-      if (this.appMcpAccess === 'none') {
+      if (this.appMcpAccess === 'none' || prepared.input.kind === 'operator' && prepared.input.observationOnly) {
         // Read the launched process, not the unmodified on-disk CLI configuration.
         const response = object(await transport.request('config/read', { includeLayers: false, cwd: prepared.workingDirectory }, signal))
         const config = object(response.config, 'CODEX_APP_MCP_UNAVAILABLE')

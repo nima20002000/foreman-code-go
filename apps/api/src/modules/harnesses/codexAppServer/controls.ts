@@ -75,6 +75,9 @@ export abstract class CodexManagerControls extends CodexManagerConnection {
   async compactSession(session: NativeSessionReference, input: NativeCompactInput, signal?: AbortSignal): Promise<CompactionState> {
     return this.exclusive(session.nativeSessionId, async () => {
       const runtime = this.requireRuntime(session)
+      if (runtime.input.kind === 'operator' && runtime.input.observationOnly) {
+        throw new HarnessExecutionError('CODEX_OBSERVATION_ONLY', 'Refresh the scoped environment before compacting.')
+      }
       this.assertIdle(runtime)
       if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconnect before compacting.')
       const before = await codexRequest(runtime.transport, 'thread/read', { threadId: session.nativeSessionId, includeTurns: true }, signal)
@@ -194,6 +197,7 @@ export abstract class CodexManagerControls extends CodexManagerConnection {
       this.assertIdle(runtime)
       const before = { generation: runtime.generation, transport: runtime.transport, closed: runtime.closed }
       const nextInput = { ...structuredClone(runtime.input), environment: structuredClone(environment) }
+      if (nextInput.kind === 'operator') delete nextInput.observationOnly
       // Validate through separately owned diagnostics while the idle process remains usable.
       const prepared = await this.prepareIdleInput(runtime, nextInput, signal)
       this.assertIdleAfterDiagnostics(runtime, before, signal)
