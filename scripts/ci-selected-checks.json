@@ -1,0 +1,34 @@
+{
+  "source": "7dac7b069c45b789663b6c64bf1b525759ba08c5",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "corrected-go-installer-file-lint",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-go-toolchain.test.mjs"
+        ]
+      },
+      {
+        "name": "corrected-go-installer-regressions",
+        "cwd": ".",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-go-toolchain.test.mjs"
+        ],
+        "reportKind": "node"
+      }
+    ]
+  }
+}
