@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { normalizedString } from './goContractRules.js'
 
 /** A non-empty identifier. IDs are intentionally unbranded at the API boundary. */
-export const IdSchema = z.string().trim().min(1);
+export const IdSchema = normalizedString([{ kind: 'trim' }], schema => schema.min(1));
 export type Id = z.infer<typeof IdSchema>;
 
 export const TimestampSchema = z.string().datetime({ offset: true });
