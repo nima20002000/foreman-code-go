@@ -127,12 +127,12 @@ export class AgentReferenceAccess {
       throw new DomainError('FILE_RANGE_INVALID', 'The offset is outside this immutable revision.', 416)
     }
     let stream: Readable
-    try { stream = await this.dependencies.bytes.download(stored.storageKey, revision) }
+    try { stream = await this.dependencies.bytes.download(stored.storageKey, revision, input) }
     catch (error) {
       if (error instanceof DomainError && error.code === 'FILE_BYTES_UNAVAILABLE') return unavailable('not_found')
       throw error
     }
-    const content = await readReferenceRange(stream, input.offset, input.length, revision.byteSize)
+    const content = await readReferenceRange(stream, 0, input.length, revision.byteSize - input.offset)
     const readAt = this.now()
     if (Date.parse(readAt) < Date.parse(revision.createdAt)) throw new Error('Read time predates the immutable revision.')
     // Only successful bounded reads reach this transaction. The file-row lock serializes removal;

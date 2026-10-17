@@ -37,6 +37,7 @@ export interface FileUploadCandidate { storageKey: string; attemptId: string }
 export class FileByteStorage {
   readonly root: string
   private initialization: Promise<void> | undefined
+  private readonly verifiedRanges = new Map<string, string>()
   constructor(root: string, private readonly maxBytes: number, private readonly excludedRoots: readonly string[] = []) {
     if (!isAbsolute(root) || !Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('File storage requires an absolute directory and a positive byte limit.')
     this.root = resolve(root)
@@ -242,14 +243,41 @@ export class FileByteStorage {
     } catch (error) { await handle.close(); throw error }
   }
 
-  /** Rehash the same open descriptor that is streamed, detecting missing/corrupted backing bytes. */
-  async download(storageKey: string, expected: ExpectedFileBytes): Promise<ReadStream> {
+  /** Ranges reuse verification while the immutable object's identity, metadata and byte pins match. */
+  async download(storageKey: string, expected: ExpectedFileBytes,
+    range?: { offset: number; length: number }): Promise<ReadStream> {
     await this.initialize()
     let handle: FileHandle
     try { handle = await this.openRegular(this.object(storageKey)) }
     catch (error) { if (!missing(error)) throw error; throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410, undefined, { cause: error }) }
-    try { await this.verify(handle, expected, false); return handle.createReadStream({ start: 0, autoClose: true }) }
-    catch (error) { await handle.close(); throw error }
+    try {
+      if (!range) {
+        await this.verify(handle, expected, false)
+        return handle.createReadStream({ start: 0, autoClose: true })
+      }
+      this.checkSize(expected)
+      if (!Number.isSafeInteger(range.offset) || range.offset < 0 || range.offset > expected.byteSize
+        || !Number.isSafeInteger(range.length) || range.length < 1) {
+        throw new DomainError('FILE_RANGE_INVALID', 'The range is outside the pinned file.', 416)
+      }
+      const stamp = async () => {
+        const stat = await handle.stat({ bigint: true })
+        return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, expected.byteSize, expected.sha256].join(':')
+      }
+      const before = await stamp()
+      if (this.verifiedRanges.get(storageKey) !== before) {
+        await this.verify(handle, expected, false)
+        if (await stamp() !== before) {
+          throw new DomainError('FILE_HASH_MISMATCH', 'The pinned file changed during verification.', 410)
+        }
+        // Keep only verification metadata, with a fixed bound and no retained descriptors or file buffers.
+        if (this.verifiedRanges.size >= 128) this.verifiedRanges.delete(this.verifiedRanges.keys().next().value!)
+        this.verifiedRanges.set(storageKey, before)
+      }
+      const length = Math.min(range.length, expected.byteSize - range.offset)
+      return handle.createReadStream({ start: range.offset,
+        ...(length > 0 ? { end: range.offset + length - 1 } : {}), autoClose: true })
+    } catch (error) { await handle.close(); throw error }
   }
   /** Only call after canceling a pending allocation, never for an accepted ready file. */
   async removeUnsent(storageKey: string): Promise<void> {

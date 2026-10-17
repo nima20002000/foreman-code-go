@@ -76,11 +76,12 @@ function fixture() {
         return { items: clone(items), pageInfo: { nextCursor: offset + items.length < all.length ? `at:${offset + items.length}` : null } }
       },
     },
-    bytes: { async download(storageKey) {
+    bytes: { async download(storageKey, _expected, range) {
       calls.download++; downloadHook?.()
       const bytes = content.get(storageKey)
       if (!bytes) throw new DomainError('FILE_BYTES_UNAVAILABLE', 'Missing bytes', 410)
-      const stream = Readable.from([bytes.subarray(0, 3), bytes.subarray(3)])
+      const selected = range ? bytes.subarray(range.offset, range.offset + range.length) : bytes
+      const stream = Readable.from([selected.subarray(0, 3), selected.subarray(3)])
       streams.push(stream)
       return stream as unknown as ReadStream
     } },
