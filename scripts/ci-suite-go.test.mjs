@@ -6,7 +6,8 @@ import { test } from 'node:test'
 import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 import { conformanceFixture } from './test-support/conformance-report-fixture.mjs'
 
-const goCalls = fixture => fixture.calls().filter(call => call.tool === 'go' && call.args[0] !== 'env')
+const goCalls = fixture => fixture.calls().filter(call => call.tool === 'go' && call.args[0] !== 'env'
+  && call.args.join(' ') !== 'telemetry off')
 const conformanceCalls = fixture => fixture.calls().filter(call => call.tool === 'corepack'
   && call.args.includes('run') && call.args[call.args.indexOf('run') + 1] === 'conformance')
 const conformanceLaunches = fixture => conformanceCalls(fixture).filter(call => !call.args.includes('--list'))
@@ -158,11 +159,16 @@ test('a short private runtime executes CommonJS HOME tools and binds Unix socket
   assert.equal(execution.homeMode, 0o700)
   assert.equal(execution.socket, join(runtime, 'tmp', 's'.repeat(70)))
   const calls = fixture.calls()
-  const probes = calls.filter(call => call.tool === 'go' && call.args.join(' ') === 'env GOVERSION')
+  const probes = calls.filter(call => call.tool === 'go'
+    && ['telemetry off', 'env GOVERSION'].includes(call.args.join(' ')))
   const operations = calls.filter(call => !probes.includes(call))
   assert.ok(operations.length > 0)
   assert.ok(operations.every(call => call.home === join(runtime, 'home')))
   assert.ok(probes.length > 0)
+  for (const home of new Set(probes.map(probe => probe.home))) {
+    assert.deepEqual(probes.filter(probe => probe.home === home).map(probe => probe.args.join(' ')),
+      ['telemetry off', 'env GOVERSION'])
+  }
   for (const probe of probes) {
     assert.equal(probe.home.startsWith(`${fixture.cache}/toolchain-probe.`), true)
     assert.equal(probe.configDirectory, join(probe.home, '..', 'config'))

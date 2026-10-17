@@ -52,20 +52,32 @@ NODE
   export GOOS=linux GOARCH="${platform#linux-}" CGO_ENABLED=1
 }
 
+ci_go_probe_cleanup() {
+  local status="$1" invocation="$2"
+  if ! rm -rf -- "$invocation"; then
+    echo "Failed to remove the owned Go probe directory: $invocation." >&2
+    if [ "$status" = 0 ]; then status=1; fi
+  fi
+  exit "$status"
+}
+
 ci_go_verify() (
   local root="${1:-$GOROOT}" version invocation
   [ -x "$root/bin/go" ] || { echo 'Pinned Go is missing; run ci-suite.sh start or prepare.' >&2; return 1; }
   umask 077
   invocation="$(mktemp -d "$FOREMAN_CODE_CI_GO_CACHE/toolchain-probe.XXXXXX")" || return $?
-  trap 'rm -rf "$invocation"' EXIT
+  trap 'ci_go_probe_cleanup "$?" "$invocation"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   mkdir -p "$invocation/home" "$invocation/config" "$invocation/cache" "$invocation/state" "$invocation/tmp" || return $?
-  # Even `go env` opens telemetry counters. GOENV=off alone does not isolate user configuration or telemetry state.
+  export HOME="$invocation/home" XDG_CONFIG_HOME="$invocation/config" XDG_CACHE_HOME="$invocation/cache"
+  export XDG_STATE_HOME="$invocation/state" TMPDIR="$invocation/tmp" GOTMPDIR="$invocation/tmp"
+  export GOROOT="$root" GOTOOLCHAIN=local
   unset TEST_TELEMETRY_DIR
-  version="$(HOME="$invocation/home" XDG_CONFIG_HOME="$invocation/config" XDG_CACHE_HOME="$invocation/cache" \
-    XDG_STATE_HOME="$invocation/state" TMPDIR="$invocation/tmp" GOTMPDIR="$invocation/tmp" \
-    GOROOT="$root" GOTOOLCHAIN=local "$root/bin/go" env GOVERSION)" || return $?
+  # The pinned Go skips telemetry startup for this command. Its private off mode also prevents
+  # the following env probe from leaving a telemetry sidecar writing after the compiler exits.
+  "$root/bin/go" telemetry off || return $?
+  version="$("$root/bin/go" env GOVERSION)" || return $?
   [ "$version" = "go$ci_go_version" ] || { echo "Expected Go $ci_go_version; compiler reports $version." >&2; return 1; }
 )
 
@@ -204,7 +216,9 @@ ci_go_install() (
   local temporary
   temporary="$(mktemp -d "$FOREMAN_CODE_CI_GO_CACHE/install.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
-  if ! ci_go_verify; then
+  # A present compiler must pass verification. Probe/cleanup failures cannot become
+  # cache misses followed by a replacement that hides the failed invocation.
+  if [ ! -x "$GOROOT/bin/go" ]; then
     local archive="$temporary/go.tar.gz"
     if curl --fail --location --retry 3 --output "$archive" "https://go.dev/dl/go$ci_go_version.$ci_go_platform.tar.gz"; then
       printf '%s  %s\n' "$ci_go_checksum" "$archive" | sha256sum --check --status -

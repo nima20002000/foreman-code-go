@@ -27,6 +27,7 @@ function record(tool) {
 `
 const compilerProgram = recordProgram + String.raw`
 record('compiler')
+if (args.join(' ') === 'telemetry off') process.exit(0)
 if (args.join(' ') !== 'env GOVERSION') throw new Error('Unexpected fixture compiler command')
 if (process.env.FIXTURE_PROBE_STATE === '1') {
   const directories = [path.join(process.env.HOME, '.cache/go'),
@@ -41,10 +42,11 @@ console.log(process.env.FIXTURE_RESULT_VERSION || 'go' + process.env.FIXTURE_PIN
 const bootstrapProgram = recordProgram + String.raw`
 record('bootstrap')
 const bundledRoot = path.dirname(path.dirname(process.argv[1]))
-if (args.join(' ') === 'env GOVERSION') {
+if (args.join(' ') === 'env GOVERSION' || args.join(' ') === 'telemetry off') {
   if (process.env.GOTOOLCHAIN !== 'local' || (process.env.GOROOT && process.env.GOROOT !== bundledRoot)) {
     throw new Error('Bootstrap inherited an unrelated target compiler')
   }
+  if (args.join(' ') === 'telemetry off') process.exit(0)
   const versions = JSON.parse(process.env.FIXTURE_BOOTSTRAP_VERSIONS || '{}')
   let version = versions[path.basename(process.argv[1])] || process.env.FIXTURE_BOOTSTRAP_VERSION || 'go1.26.8'
   if (process.env.FIXTURE_STAGED_VERSION && process.env.GOROOT && bundledRoot !== process.env.FIXTURE_INSTALLED_ROOT) {
