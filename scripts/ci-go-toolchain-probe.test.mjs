@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: e-reviewed at immutable source 0a317ca07f36f37646d5ff3dd86444bf2be98586.
