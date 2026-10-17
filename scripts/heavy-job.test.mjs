@@ -658,7 +658,7 @@ test('Vitest setup uses the private admission queue in a host CI worktree', { ti
   }
 })
 
-test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 20000 }, async () => {
+test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 6000 }, async () => {
   const f = fixture()
   try {
     const env = { ...jobEnv(f.second), CI_HOST_RUNNER: '1' }
@@ -668,8 +668,10 @@ test('host CI worktrees remove abandoned temporary directories after a crashed j
     assert.equal(crash.signal, 'SIGKILL', crash.stderr)
     const abandoned = crash.stdout.split('\n').find(line => line.startsWith('temporary=')).slice('temporary='.length)
     utimesSync(abandoned, new Date(0), new Date(0))
-    // Stale running reservations have a ten-second recovery delay.
-    await new Promise(resolve => setTimeout(resolve, 10100))
+    const state = join(git(f.second, 'rev-parse', '--path-format=absolute', '--git-dir'), 'graphql-heavy-jobs')
+    const reservations = readdirSync(join(state, 'running'))
+    assert.equal(reservations.length, 1)
+    assert.equal(JSON.parse(readFileSync(join(state, 'running', reservations[0]), 'utf8')).phase, 'running')
     const idleNamespace = join(f.home, 'idle-namespace.mjs')
     writeFileSync(idleNamespace, `import fs from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
@@ -681,6 +683,8 @@ test('host CI worktrees remove abandoned temporary directories after a crashed j
       { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
     assert.equal(next.status, 0, next.stdout + next.stderr)
     assert.equal(existsSync(abandoned), false)
+    assert.deepEqual(readdirSync(join(state, 'running')), [])
+    assert.deepEqual(readdirSync(join(state, 'queue')), [])
   } finally {
     rmSync(f.home, { recursive: true, force: true })
   }
