@@ -22,6 +22,13 @@ function commandIndex(args: string[]): number {
   return index
 }
 
+function fetchDestinationRefs(args: string[], index: number): string[] {
+  return args.slice(index + 1).flatMap(arg => {
+    const match = /^\+?[^\s:-][^\s:]*:(refs\/[^\s:*?]+)$/u.exec(arg)
+    return match ? [match[1]!] : []
+  })
+}
+
 function inside(root: string, path: string): boolean {
   const suffix = relative(root, path)
   return suffix === '' || !suffix.startsWith('..') && !isAbsolute(suffix)
@@ -249,12 +256,18 @@ async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLoc
   }, { signal: options.signal })
   let completedStaging: string | undefined
   let result: GitProcessResult | undefined
+  let fetchHead = false
   try {
     const fetchDepth: string[] = []
     if (command === 'fetch' && inside(cacheRoot, common)) {
       const shallow = await run(['rev-parse', '--is-shallow-repository'], options)
       if (shallow.code !== 0) return shallow
       if (shallow.stdout.trim() === 'true') fetchDepth.push('--depth=1')
+      if (!args.includes('--no-write-fetch-head')) {
+        const directory = await run(['rev-parse', '--path-format=absolute', '--git-dir'], options)
+        if (directory.code !== 0) return directory
+        fetchHead = directory.stdout.trim() === common
+      }
     }
     result = await run(boundedArgs(args, index, fetchDepth), { ...options,
       maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, transferLockFd: reservation.guard.fd,
@@ -267,8 +280,10 @@ async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLoc
     try {
       const failed = !result || result.code !== 0
       // Writers have ended and the repository flock is still held; clean this interrupted fetch's locks now.
+      const interrupted = result?.interrupted && { ...result.interrupted,
+        destinationRefs: fetchDestinationRefs(args, index), fetchHead }
       const recovery = command === 'fetch' && failed
-        && (await removeAbandonedFetchArtifacts(common, result?.interrupted?.startedAt)).length > 0
+        && (await removeAbandonedFetchArtifacts(common, interrupted)).length > 0
       if (command === 'clone' && createdTarget && failed) await rm(target, { recursive: true, force: true })
       // A kept fetch record (never staging) reserves nothing once its writers are gone.
       if (recovery) await closed.close()

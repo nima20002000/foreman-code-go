@@ -149,15 +149,16 @@ async function recoveryFixture() {
 }
 
 /** Locks and partial packs a killed fetch leaves in the common directory; Git closed each before it died. */
-const fetchArtifacts = { 'shallow.lock': 41, 'FETCH_HEAD.lock': 41, 'packed-refs.lock': 0,
-  'refs/remotes/origin/main.lock': 41, 'refs/foreman/ci/fetch/interrupted.lock': 41,
+const mainFetchArtifacts = { 'FETCH_HEAD.lock': 41, 'refs/foreman/ci/fetch/interrupted.lock': 41,
   'objects/pack/tmp_pack_interrupted': 4096, 'objects/pack/tmp_idx_interrupted': 1024 }
+const fetchArtifacts = { ...mainFetchArtifacts, 'shallow.lock': 41, 'packed-refs.lock': 0,
+  'refs/remotes/origin/main.lock': 41 }
 
 async function expectRemoved(common: string, names: string[]) {
   for (const name of names) await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
 }
 
-it('recovers a cancelled fetch’s locks and packs once stale on the next acquisition and preserves published data',
+it('removes a cancelled fetch’s own locks, recovers its stale packs, and preserves published data',
   async () => {
   const f = await recoveryFixture()
   let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
@@ -167,9 +168,10 @@ it('recovers a cancelled fetch’s locks and packs once stale on the next acquis
     const successor = await f.commit('successor')
     const common = join(clone, '.git')
     const before = await readFile(join(common, 'shallow'))
-    writer = await interruptedFetchWriter(f.root, common, fetchArtifacts)
+    writer = await interruptedFetchWriter(f.root, common, mainFetchArtifacts)
     const controller = new AbortController()
-    const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor],
+    const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin',
+      `${successor}:refs/foreman/ci/fetch/interrupted`],
       { cwd: clone, signal: controller.signal },
       (args, options) => runGitProcess(args.includes('fetch') ? writer!.args : args, options, f.environment))
     await (await writer.started()).write()
@@ -178,10 +180,11 @@ it('recovers a cancelled fetch’s locks and packs once stale on the next acquis
     expect(await readFile(join(common, 'shallow'))).toEqual(before)
     expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
 
-    await makeStale(common, Object.keys(fetchArtifacts))
+    await expectRemoved(common, ['FETCH_HEAD.lock', 'refs/foreman/ci/fetch/interrupted.lock'])
+    await makeStale(common, Object.keys(mainFetchArtifacts).filter(name => name.startsWith('objects/pack/')))
     await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
     expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
-    await expectRemoved(common, Object.keys(fetchArtifacts))
+    await expectRemoved(common, Object.keys(mainFetchArtifacts))
   } finally {
     writer?.close()
     await rm(f.root, { recursive: true, force: true })

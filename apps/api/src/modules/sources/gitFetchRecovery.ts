@@ -1,6 +1,6 @@
 import { lstat, readdir, unlink } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
-import { basename, join } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import { componentLogger } from '../diagnostics/logger.js'
 
 /** What an interrupted fetch can leave in the common directory. Other writers' state (refs/heads, HEAD, index and
@@ -27,21 +27,23 @@ async function entries(directory: string, recursive = false): Promise<string[]> 
 
 /** The caller holds the repository lock, which every Main fetch writer inherits for its whole life, so none of them
  * is alive. Other Git processes (Agents, people) may still write here, so an artifact is abandoned only once it has
- * stayed unchanged past the staleness bound. After Main observes its own interrupted fetch end, its start time also
- * permits removing fetch locks written during that transfer. Returns the fresh artifacts, which are left alone. */
+ * stayed unchanged past the staleness bound. An observed interruption also permits cleaning that fetch's explicit
+ * destination locks and its per-worktree FETCH_HEAD lock. Returns the fresh artifacts, which are left alone. */
 export async function removeAbandonedFetchArtifacts(common: string,
-  interruptedFetchStartedAt?: number): Promise<string[]> {
+  interruptedFetch?: { startedAt: number; destinationRefs: string[]; fetchHead: boolean }): Promise<string[]> {
   const refLocks = (await Promise.all(FETCH_REF_NAMESPACES.map(namespace => entries(join(common, namespace), true))))
     .flat().filter(path => path.endsWith('.lock'))
   const packs = (await entries(join(common, 'objects', 'pack'))).filter(path => TEMPORARY_PACK.test(basename(path)))
   const locks = new Set([...FETCH_LOCKS.map(name => join(common, name)), ...refLocks])
+  const ownLocks = new Set(interruptedFetch?.destinationRefs.map(ref => `${ref}.lock`))
+  if (interruptedFetch?.fetchHead) ownLocks.add('FETCH_HEAD.lock')
   const fresh: string[] = []
   for (const path of [...locks, ...packs]) {
     try {
       const stat = await lstat(path)
       if (!stat.isFile()) continue
-      const interruptedLock = interruptedFetchStartedAt !== undefined && locks.has(path)
-        && stat.mtimeMs >= interruptedFetchStartedAt
+      const interruptedLock = interruptedFetch !== undefined && ownLocks.has(relative(common, path))
+        && stat.mtimeMs >= interruptedFetch.startedAt
       if (!interruptedLock && Date.now() - stat.mtimeMs < STALE_MS) fresh.push(path)
       else await unlink(path)
     } catch (error) {
