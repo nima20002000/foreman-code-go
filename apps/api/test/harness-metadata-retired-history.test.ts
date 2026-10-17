@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeRegistryProjection } from '../src/modules/harnesses/recovery/registryObservation.js'
 import { bootIdentity, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
+import { storageBatch } from '../src/modules/harnesses/recovery/storage.js'
 
 const execute = promisify(execFile)
 const ownerKey = (owner: string) => createHash('sha256').update(owner).digest('hex')
@@ -32,7 +33,7 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       // Positive format-2 closure fixtures use the real retirement/receipt/GC path.
       // No native provider or guardian is launched by this storage regression.
       await nativeRegistryProjection(root).retirementBatch(async () => {
-        for (let index = 0; index < 10_001; index++) {
+        await storageBatch(Array.from({ length: 10_001 }, (_, index) => index), async index => {
           const owner = `retired-owner-${index}`, row = seed(root, owner, true)
           const retirement = registry.closeOwner(owner)
           retirements.push(retirement)
@@ -41,7 +42,7 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
           receipts.push({ path, value: JSON.stringify({ format: 2, owner, id: row.id, observation: { owner, launchId: row.id,
             bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: 'native_not_started' } }) })
           expect(readdirSync(row.ownerDirectory)).toEqual([`closed-${row.id}.json`, 'retired.json'])
-        }
+        })
       })
       expect((await Promise.all(retirements)).every(Boolean)).toBe(true)
       const unresolved = seed(root, 'unresolved-owner')
