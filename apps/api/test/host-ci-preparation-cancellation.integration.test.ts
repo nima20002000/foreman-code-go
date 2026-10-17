@@ -13,8 +13,10 @@ it('persists pending MCP cancellation during host preparation and confirms clean
   let entered!: () => void
   const preparing = new Promise<void>(resolve => { entered = resolve })
   const request = f.endpoint.request.bind(f.endpoint)
+  const canceledTargets: string[] = []
   f.endpoint.request = async (computer, input) => {
     if (input.operation === 'start') { entered(); await gate }
+    if (input.operation === 'cancel') canceledTargets.push(input.runId)
     return request(computer, input)
   }
   let dispatch: Promise<void> | undefined
@@ -37,6 +39,7 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     const cancellationResult = await cancellation
     expect(cancellationResult.isError).toBe(true)
     expect(decodeMcpToolResult(cancellationResult)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    expect(canceledTargets).toEqual([result.ticketId])
     const pending = await reader.callTool({ name: 'ci_get',
       arguments: { workspaceId: f.workspaceId, ticketId: result.ticketId } })
     expect(pending.isError).not.toBe(true)
@@ -55,7 +58,8 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     expect(read.run.cancellation).toBeUndefined()
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [result.ticketId])).rows[0])
       .toEqual({ record: read.run, host_key: null })
-    expect(f.started).toHaveLength(1)
+    // Stop reaches the host before admission, so the delayed Start must never launch.
+    expect(f.started).toHaveLength(0)
     for (const computer of f.computers) {
       const reply = await f.endpoint.request(computer, { operation: 'status' })
       expect(reply.operation === 'status' && reply.runs.some(run => ['starting', 'running'].includes(run.state))).toBe(false)
