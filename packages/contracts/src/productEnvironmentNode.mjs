@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import process from 'node:process'
-import { userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { readProductEnvironment, resolveProductEnvironment } from './productEnvironment.mjs'
@@ -14,7 +14,7 @@ export function appMcpDirectory(environment = process.env) {
   if (configured !== undefined && !isAbsolute(configured)) {
     throw new Error('FOREMAN_CODE_APP_MCP_DIRECTORY requires an absolute directory.')
   }
-  return configured ?? join(userInfo().homedir, '.local', 'share', 'graphql', 'mcp')
+  return configured ?? join(homedir(), '.local', 'share', 'graphql', 'mcp')
 }
 
 /**

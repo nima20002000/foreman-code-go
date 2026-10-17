@@ -3,8 +3,6 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { syncBuiltinESMExports } from 'node:module'
-import os from 'node:os'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -171,7 +169,7 @@ for (const tokenName of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN']) {
   })
 }
 
-test('finds the installed scoped bridge when an account changes HOME without a directory override', async t => {
+test('finds the delivered scoped bridge when an account changes HOME', async t => {
   const root = directory(t)
   const installed = join(root, 'service', '.local', 'share', 'graphql', 'mcp')
   mkdirSync(join(installed, 'routes'), { recursive: true })
@@ -184,15 +182,9 @@ test('finds the installed scoped bridge when an account changes HOME without a d
   writeFileSync(join(installed, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`),
     JSON.stringify({ endpoint: `${server.url}/mcp`, pid: process.pid,
       expiresAt: new Date(Date.now() + 60_000).toISOString(), toolTimeoutMs: 300_000 }))
-  const user = os.userInfo()
-  t.mock.method(os, 'userInfo', () => ({ ...user, homedir: join(root, 'service') }))
-  syncBuiltinESMExports()
-  t.after(() => {
-    t.mock.restoreAll()
-    syncBuiltinESMExports()
-  })
+  // Admitted Agents receive the bridge location with their credential; the account's HOME does not locate it.
   environment(t, { HOME: join(root, 'account'), FOREMAN_CODE_MCP_TOKEN: token, GRAPHQL_MCP_TOKEN: undefined,
-    FOREMAN_CODE_APP_MCP_DIRECTORY: undefined, GRAPHQL_APP_MCP_DIRECTORY: undefined,
+    FOREMAN_CODE_APP_MCP_DIRECTORY: installed, GRAPHQL_APP_MCP_DIRECTORY: undefined,
     FOREMAN_CODE_MAIN_URL: 'http://127.0.0.1:9' })
   const call = await mcpClient()
   assert.deepEqual(await call('ci_get', { ticketId: 'account-ticket' }),
