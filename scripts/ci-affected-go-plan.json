@@ -1,0 +1,12 @@
+{
+  "source": "f1cc0f39629c7dc3f2b87dd04857e17d4f5c8bd2",
+  "productionSource": "f82d367e172afa86eb724fa35f527ea9c2db19c1",
+  "package": "./internal/activity",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "unitRoots": [
+    "TestRunHistoryCursorRetainsEscapedHighSurrogate",
+    "TestRunHistoryCursorRetainsEscapedLowSurrogate"
+  ],
+  "unitPattern": "^TestRunHistoryCursorRetainsEscaped(High|Low)Surrogate$",
+  "unitFlags": []
+}
