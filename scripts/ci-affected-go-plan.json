@@ -1,0 +1,35 @@
+{
+  "source": "506d793c5ff884731b6a0abfa9cd406235efb34c",
+  "ownerDeclaredSource": "506d793c5ff884731b6a0abfa9cd406235efb34c",
+  "sourceTree": "d5c521e2e1795cb9284819981ca5a41c1bca4fb9",
+  "package": "./internal/runs/lifecycle",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/runs/lifecycle/coordinator.go",
+    "internal/runs/lifecycle/coordinator_test.go",
+    "internal/runs/lifecycle/stop.go",
+    "internal/runs/lifecycle/stop_test.go",
+    "internal/runs/lifecycle/task.go",
+    "internal/runs/lifecycle/test_helpers_test.go"
+  ],
+  "unitFlags": [
+    "-race"
+  ],
+  "unitRoots": [
+    "TestStartJoinsActiveDriveAndRetainsItsResult",
+    "TestActiveRunLimitReleasesCapacityAfterCompletion",
+    "TestResumesQueueAfterFailureAndStartJoinsLatestResume",
+    "TestCanceledTaskWaitDoesNotCancelOwnedDrive",
+    "TestClosingAdmissionRetainsTrackedResultsWithoutCancelingDrive",
+    "TestCoordinatorRequiresDriveAndStopPorts",
+    "TestStopFenceFailureLeavesActiveDriveUnchanged",
+    "TestStopCancelsOnlyItsNamedRun",
+    "TestStopCancelsBeforePreflightAndWaitsForDriveDrain",
+    "TestStopChecksEveryCallerBeforeJoiningCleanup",
+    "TestStopRejectsLaterUnfencedCallerWithoutDisturbingCleanup",
+    "TestStopFailuresStillReachAuthoritativeSettlement",
+    "TestCanceledStopWaitDoesNotAbandonCommittedCleanup",
+    "TestStopDrainsResumeAlreadyQueuedBehindActiveDrive"
+  ],
+  "unitPattern": "^(TestStart|TestActive|TestResumes|TestCanceled|TestClosing|TestCoordinator|TestStop)"
+}
