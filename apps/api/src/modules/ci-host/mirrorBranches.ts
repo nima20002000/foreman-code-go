@@ -61,6 +61,7 @@ export async function pruneMirrorBranches(options: {
   git: (args: string[]) => Promise<string>
   keep?: string[] | (() => string[] | ReadonlySet<string>)
   beforeRemove?: (branches: string[]) => void
+  withRemovalLock?: (remove: () => Promise<void>) => Promise<void>
   activeRuns?: ActiveCiRuns | undefined
 }) {
   const remote = `https://github.com/${options.mirror}.git`
@@ -98,16 +99,19 @@ export async function pruneMirrorBranches(options: {
   })
   const stale = refs.filter(({ ref }) => !keep.has(ref))
   const removed: string[] = []
+  const withRemovalLock = options.withRemovalLock ?? ((remove: () => Promise<void>) => remove())
   for (let offset = 0; offset < stale.length; offset += 50) {
-    const reserved = reservations()
-    const batch = stale.slice(offset, offset + 50).filter(({ ref }) => !reserved.has(ref.slice('refs/heads/'.length)))
-    if (!batch.length) continue
-    // Evict cached publications before deletion so a new start republishes rather than reusing a removed ref.
-    options.beforeRemove?.(batch.map(({ ref }) => ref.slice('refs/heads/'.length)))
-    // A concurrently replaced branch must survive a sweep that saw its previous value.
-    await options.git(['push', '--quiet', '--atomic', ...batch.map(({ sha, ref }) => `--force-with-lease=${ref}:${sha}`),
-      remote, ...batch.map(({ ref }) => `:${ref}`)])
-    removed.push(...batch.map(({ ref }) => ref.slice('refs/heads/'.length)))
+    await withRemovalLock(async () => {
+      const reserved = reservations()
+      const batch = stale.slice(offset, offset + 50).filter(({ ref }) => !reserved.has(ref.slice('refs/heads/'.length)))
+      if (!batch.length) return
+      // Evict cached publications before deletion so a new start republishes rather than reusing a removed ref.
+      options.beforeRemove?.(batch.map(({ ref }) => ref.slice('refs/heads/'.length)))
+      // A concurrently replaced branch must survive a sweep that saw its previous value.
+      await options.git(['push', '--quiet', '--atomic', ...batch.map(({ sha, ref }) => `--force-with-lease=${ref}:${sha}`),
+        remote, ...batch.map(({ ref }) => `:${ref}`)])
+      removed.push(...batch.map(({ ref }) => ref.slice('refs/heads/'.length)))
+    })
   }
   const removedRefs = new Set(removed.map(branch => `refs/heads/${branch}`))
   const retained = refs.filter(({ ref }) => !removedRefs.has(ref)).map(({ ref }) => ref.slice('refs/heads/'.length))
