@@ -3,7 +3,7 @@ import { RemoteOperationReceiptSchema, type RemoteOperationReceipt } from '@fore
 import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkspaceRootWorkerRequestSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
 import type { RootWorkerClient } from '../sources/rootHosts.js'
-import { sameWorkflowValue, canonicalGraphJson } from '@foreman-code/contracts/wave25'
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { RemoteNativeSessionManager, type RemoteNativeManagerOptions } from '../runs/remote/nativeManagerProxy.js'
 import { readRemoteReceiptResponse } from '../runs/remote/installedWorkflowResponsePages.js'
 import { VerifiedRemoteEvidence, type RemoteResultCommitPort } from '../runs/remote/resultBridge.js'
@@ -69,17 +69,14 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
     || binding.placement.payload.agentConfigurationVersionId !== context.configuration.id) {
     throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native manager allocation requires the accepted Agent configuration.', 409)
   }
-  const sources = new Map<string, Array<{ connection: DeviceConnectionIdentity; response: unknown }>>()
+  const sources = new Map<unknown, { connection: DeviceConnectionIdentity; response: unknown }>()
   let pendingSources = 0
   const workerExecution = options.workerExecution ?? new WorkerExecutionPolicy()
   // The Worker boot this manager last reached; only a reconnect of that boot may receive a replay.
   let reached: DeviceConnectionIdentity | undefined
-  const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
-  const takeSource = (receipt: RemoteOperationReceipt) => {
-    const key = receiptKey(receipt)
-    const pending = sources.get(key)
-    const original = pending?.shift()
-    if (pending?.length === 0) sources.delete(key)
+  const takeSource = (response: unknown) => {
+    const original = sources.get(response)
+    sources.delete(response)
     if (!original) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'The receipt did not originate in this authenticated native proxy.', 403)
     return original
   }
@@ -126,10 +123,7 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       // History continuations supply bytes for the first page's observation, not another receipt observation.
       if (receipt && !(request.method === 'history' && request.metadata)) {
         if (pendingSources >= 32) throw new DomainError('REMOTE_RESPONSE_BACKPRESSURE', 'Uncommitted native receipt responses exceeded the bounded window.', 503)
-        const key = receiptKey(receipt)
-        const pending = sources.get(key) ?? []
-        pending.push({ connection: connection.identity, response })
-        sources.set(key, pending)
+        sources.set(response, { connection: connection.identity, response })
         pendingSources++
       }
       return response
@@ -140,12 +134,12 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       await options.carrier.reconnect(hostRef.deviceId, reached, error, signal)
       return true
     } },
-    discardReceipt: receipt => {
-      takeSource(receipt)
+    discardReceipt: (_receipt, response) => {
+      takeSource(response)
       pendingSources--
     },
-    observeReceipt: async receipt => {
-      const original = takeSource(receipt)
+    observeReceipt: async (receipt, response) => {
+      const original = takeSource(response)
       try {
         const result = await VerifiedRemoteEvidence.commit(receipt, original.connection, await options.commit(receipt, original.connection, original.response))
         if (result === 'rejected') throw new DomainError('REMOTE_OBSERVATION_REJECTED', 'Main ownership rejected the original worker receipt.', 409)
