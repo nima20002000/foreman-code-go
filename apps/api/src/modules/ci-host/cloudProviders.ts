@@ -17,7 +17,8 @@ export interface CloudRun {
   transport?: CiHostRun['transport']
   testsStarted?: boolean
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
-  dispatch?: { input: CloudDispatchInput; attempts: number; at: string; uncertain?: boolean; cancelAccepted?: boolean }
+  dispatch?: { input: CloudDispatchInput; attempts: number; at: string; uncertain?: boolean; cancelAccepted?: boolean
+    notSent?: boolean }
   reconciliation?: { attempts: number; at: string; since?: string; previousMessage: string | null }
   publicationRequest?: Extract<CiHostRequest, { operation: 'start' }>
   mirrorPublication?: CiHostRun['mirrorPublication']
@@ -151,7 +152,12 @@ async function executeCommand(ports: HostCiPorts, label: string, file: string, a
         + result.stderr.trim().slice(0, 300), 502)
     }
 
-    throw new DomainError('CI_CLOUD_FAILED', `${label} did not accept ${file} ${args[0]} ${args[1]}: `
+    // gh resolves the workflow with a GET before it sends the dispatch POST.
+    const workflowLookupFailed = file === 'gh' && args[0] === 'workflow' && args[1] === 'run'
+      && result.stderr.trimStart().startsWith(
+        `Get "https://api.github.com/repos/${args[args.indexOf('-R') + 1]}/actions/workflows/${args[2]}":`)
+    const code = workflowLookupFailed ? 'CI_CLOUD_DISPATCH_NOT_SENT' : 'CI_CLOUD_FAILED'
+    throw new DomainError(code, `${label} did not accept ${file} ${args[0]} ${args[1]}: `
       + `${result.stderr.trim().slice(0, 300)}`, 502)
   }
   return result.stdout
