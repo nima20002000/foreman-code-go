@@ -5,6 +5,9 @@
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
 case "${SUITE:-}" in
+  unit|unit-*)
+    if [ -z "${1:-}" ]; then node scripts/ci-capture-foundations.mjs --schema-only; fi
+    exit 0 ;;
   build|build-api)
     source "$(dirname "$0")/ci-go-toolchain.sh"
     ci_go_environment
