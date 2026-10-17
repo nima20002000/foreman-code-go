@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
+import { setTimeout as wait } from 'node:timers/promises'
 import { affectedSnapshot } from './ci-affected.mjs'
 
 const environment = process.env
@@ -32,24 +34,104 @@ export function snapshot(cwd = process.cwd()) {
   } finally { rmSync(directory, { recursive: true, force: true }) }
 }
 
+/** Use the installed bridge so credential routes and Worker relay renewal stay owned by the app. */
+async function scopedRequest(message) {
+  const directory = environment.FOREMAN_CODE_APP_MCP_DIRECTORY ?? environment.GRAPHQL_APP_MCP_DIRECTORY
+    ?? join(homedir(), '.local', 'share', 'graphql', 'mcp')
+  const child = spawn(process.execPath, [join(directory, 'launcher.mjs')], { stdio: ['pipe', 'pipe', 'inherit'] })
+  const lines = createInterface({ input: child.stdout })
+  try {
+    return await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(Object.assign(new Error('The scoped MCP bridge timed out.'), { retryable: true }))
+      }, 300_000)
+      child.once('error', reject)
+      child.stdin.once('error', reject)
+      child.once('close', () => {
+        clearTimeout(timeout)
+        reject(new Error('The scoped MCP bridge closed without a response.'))
+      })
+      lines.on('line', line => {
+        try {
+          const reply = JSON.parse(line)
+          if (reply.id !== message.id) return
+          clearTimeout(timeout)
+          resolve(reply)
+        } catch (error) {
+          clearTimeout(timeout)
+          reject(error)
+        }
+      })
+      child.stdin.write(`${JSON.stringify(message)}\n`)
+    })
+  } finally {
+    lines.close()
+    child.stdin.end()
+    child.kill()
+  }
+}
+
 export async function mcpClient(clientName = 'ci-remote') {
+  const scoped = environment.FOREMAN_CODE_MCP_TOKEN !== undefined || environment.GRAPHQL_MCP_TOKEN !== undefined
   const base = environment.FOREMAN_CODE_MAIN_URL ?? 'http://127.0.0.1:3041'
   const tokenFile = environment.FOREMAN_CODE_OPERATOR_TOKEN_FILE
     ?? join(homedir(), '.local/share/foreman-code/production-operator.private.json')
-  const token = environment.FOREMAN_CODE_OPERATOR_TOKEN ?? JSON.parse(readFileSync(tokenFile, 'utf8')).token
+  const token = scoped ? undefined
+    : environment.FOREMAN_CODE_OPERATOR_TOKEN ?? JSON.parse(readFileSync(tokenFile, 'utf8')).token
   let session, version
-  const request = async (method, params) => {
-    const id = randomUUID()
-    const response = await fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(300_000),
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
-        ...(session ? { 'Mcp-Session-Id': session } : {}), ...(version ? { 'Mcp-Protocol-Version': version } : {}) },
-      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }) })
+  const send = async message => {
+    if (scoped) return scopedRequest(message)
+    let response
+    let body
+    try {
+      response = await fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(300_000),
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
+          ...(session ? { 'Mcp-Session-Id': session } : {}), ...(version ? { 'Mcp-Protocol-Version': version } : {}) },
+        body: JSON.stringify(message) })
+      body = await response.text()
+    } catch (error) {
+      error.retryable = true
+      throw error
+    }
+    if (!response.ok) throw Object.assign(new Error(`Main refused MCP: HTTP ${response.status}`),
+      { retryable: response.status === 429 || response.status >= 500 })
     session = response.headers.get('mcp-session-id') ?? session
-    const body = await response.text()
-    const envelope = response.headers.get('content-type')?.includes('application/json') ? JSON.parse(body)
-      : body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5))).find(value => value.id === id)
-    if (!envelope || envelope.error) throw new Error(`Main refused ${method}: ${JSON.stringify(envelope?.error ?? body).slice(0, 400)}`)
-    return envelope.result
+    try {
+      return response.headers.get('content-type')?.includes('application/json') ? JSON.parse(body)
+        : body.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)))
+          .find(value => value.id === message.id)
+    } catch (error) {
+      error.retryable = true
+      throw error
+    }
+  }
+  const request = async (method, params) => {
+    const message = { jsonrpc: '2.0', id: randomUUID(), method, params }
+    const retryableCall = method === 'initialize' || method === 'tools/call'
+      && (params.name === 'ci_get' || params.name === 'ci_run' && params.arguments.commandId)
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const envelope = await send(message)
+        if (!envelope) throw Object.assign(new Error(`Main returned no response for ${method}.`), { retryable: true })
+        if (envelope.error) {
+          const kind = envelope.error.data?.kind
+          const retryable = ['service_unavailable', 'transport', 'route_unavailable', 'timeout',
+            'indeterminate_delivery', 'invalid_response'].includes(kind)
+          throw Object.assign(new Error(`Main refused ${method}: ${JSON.stringify(envelope.error).slice(0, 400)}`),
+            { retryable })
+        }
+        return envelope.result
+      } catch (error) {
+        if (!retryableCall || !error.retryable || attempt === 3) {
+          if (params?.name === 'ci_run' && error.retryable) {
+            error.message += `; retry ci_run with the same arguments: ${JSON.stringify(params.arguments)}`
+          }
+          throw error
+        }
+        console.error(`[ci] MCP connection interrupted; retrying ${params?.name ?? method} with unchanged input.`)
+        await wait(1000 * 2 ** attempt)
+      }
+    }
   }
   version = (await request('initialize', { protocolVersion: '2025-11-25', capabilities: {},
     clientInfo: { name: clientName, version: '1' } })).protocolVersion
@@ -87,10 +169,15 @@ export async function workspaceFor(call) {
   const repository = /github\.com[:/]([^/]+\/[^/]+)$/.exec(origin)?.[1]
   if (!repository) throw new Error(`The origin remote is not a GitHub repository: ${origin}`)
   // The list omits repository details; read each workspace until one uses this repository.
-  for (const item of (await call('workspace_list', {})).items ?? []) {
-    const value = (await call('workspace_get', { workspaceId: item.workspace.id })).workspace?.repository
-    if (value && `${value.owner}/${value.name}`.toLowerCase() === repository.toLowerCase()) return item.workspace.id
-  }
+  let cursor
+  do {
+    const page = await call('workspace_list', cursor ? { cursor } : {})
+    for (const item of page.items ?? []) {
+      const value = (await call('workspace_get', { workspaceId: item.workspace.id })).workspace?.repository
+      if (value && `${value.owner}/${value.name}`.toLowerCase() === repository.toLowerCase()) return item.workspace.id
+    }
+    cursor = page.pageInfo?.nextCursor
+  } while (cursor)
   throw new Error(`No Foreman Code workspace uses ${repository}.`)
 }
 
