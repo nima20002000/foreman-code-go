@@ -65,6 +65,7 @@ jobs:
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
+      FOREMAN_CODE_CI_POSTGRES_CACHE: .logs/ci-postgres-cache
       CI_STATE: .logs/ci-state
       CGO_ENABLED: '1'
       SUITE: ${{ inputs.suite }}
@@ -97,6 +98,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
           node scripts/ci-go-prerequisites.mjs native
+      - name: PostgreSQL source-build and conformance prerequisites
+        if: inputs.suite == 'integration'
+        run: |
+          # Only this disposable cloud VM installs packages. Build computers use existing tools.
+          sudo apt-get install --yes --no-install-recommends perl git openssl iproute2
       - id: cache-inputs
         run: |
           echo "packages=$(node scripts/ci-packages.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
@@ -105,6 +111,9 @@ jobs:
           fi
           if [ "$GO_SUITE" = true ]; then
             echo "go=$(node scripts/ci-go-prerequisites.mjs cache-key)" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$SUITE" = integration ]; then
+            echo "postgres=$(bash scripts/ci-postgres-toolchain.sh cache-key)" >> "$GITHUB_OUTPUT"
           fi
           # A stable per-shard key, so each shard's warm cache is reused by the same shard of later runs.
           echo "shard=$(printf '%s|%s' "$SLICE" "$CI_PARTITION" | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
@@ -120,6 +129,12 @@ jobs:
         with:
           path: .logs/ci-go-cache/tools
           key: go-staticcheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci-go-versions.json') }}
+      - name: PostgreSQL toolchain cache
+        if: inputs.suite == 'integration'
+        uses: actions/cache@v4
+        with:
+          path: .logs/ci-postgres-cache/toolchains
+          key: postgres-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-inputs.outputs.postgres }}
       - id: go-cache
         if: env.GO_SUITE == 'true'
         uses: actions/cache/restore@v4
@@ -204,9 +219,9 @@ jobs:
           DURATIONS_OUTPUT: ${{ runner.temp }}/durations.json
           TEST_RESULTS_OUTPUT: ${{ runner.temp }}/test-results.json
           CI_WATCHDOG_MESSAGE_FILE: ${{ runner.temp }}/watchdog-message.json
-      - name: Remove disposable PostgreSQL
+      - name: Remove disposable CI resources
         if: always()
-        run: node scripts/ci-go-prerequisites.mjs database-stop
+        run: bash scripts/ci-suite.sh cleanup
       - name: Save Go module and build caches
         if: always() && steps.go-cache.conclusion == 'success' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -233,6 +248,14 @@ jobs:
         with:
           name: integration-logs
           path: .logs/test-integration/
+          retention-days: 2
+          if-no-files-found: ignore
+      # Reports, inventory, verdicts and execution logs contain no private runtime or database state.
+      - if: always() && inputs.suite == 'integration'
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: .logs/ci-state/conformance/
           retention-days: 2
           if-no-files-found: ignore
       # Measured durations and structured test results, which Main reads back with the ticket.

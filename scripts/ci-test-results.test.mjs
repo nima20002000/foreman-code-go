@@ -122,7 +122,7 @@ process.exit(3)
   assert.deepEqual(results.files[0].tests, [{ name: 'renders', status: 'failed', durationMs: 9, message: 'broken' }])
 })
 
-test('unit-other merges retained contracts and script results while preserving a failing exit status', t => {
+test('unit-other merges retained contracts, conformance, and script results while preserving a failing exit status', t => {
   const fixture = goCiFixture(t, { SCOPE: 'full' })
   const directory = fixture.directory
   writeFileSync(join(directory, 'corepack'), `#!${process.execPath}
@@ -133,20 +133,25 @@ const vitest = args.find(arg => arg.startsWith('--outputFile.json='))
 const destination = args.find(arg => arg.startsWith('--test-reporter-destination=') && !arg.endsWith('=stdout'))
 if (!vitest && !destination) process.exit(0)
 const report = (vitest ?? destination).slice((vitest ?? destination).indexOf('=') + 1)
-const file = vitest ? 'packages/contracts/src/value.test.ts' : 'scripts/value.test.mjs'
+let file = vitest ? 'packages/contracts/src/value.test.ts' : 'scripts/value.test.mjs'
+if (args.includes('conformance')) file = 'conformance/src/reporting/report.test.ts'
 const failed = file.startsWith('scripts/')
 writeFileSync(report, JSON.stringify({ testResults: [{ name: file, status: failed ? 'failed' : 'passed',
   assertionResults: [{ fullName: file + ' case', status: failed ? 'failed' : 'passed', duration: 1,
     failureMessages: failed ? ['script assertion failed'] : [] }] }] }))
 process.exit(failed ? 7 : 0)
 `, { mode: 0o755 })
-  const result = fixture.run('unit-other', '', { PATH: `${directory}${delimiter}${fixture.environment.PATH}` })
+  const environment = { PATH: `${directory}${delimiter}${fixture.environment.PATH}` }
+  const prepared = fixture.run('unit-other', 'prepare', environment)
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const result = fixture.run('unit-other', '', environment)
   assert.ifError(result.error)
   assert.equal(result.status, 7, result.stderr)
   const results = fixture.results()
-  assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 0 })
+  assert.deepEqual(results.summary, { passed: 2, failed: 1, skipped: 0 })
   assert.equal(results.files[0].file, 'scripts/value.test.mjs')
   assert.equal(results.files[0].tests[0].message, 'script assertion failed')
+  assert.ok(results.files.some(file => file.file === 'conformance/src/reporting/report.test.ts' && file.status === 'passed'))
 })
 
 test('the Node reporter records passing and failing tests with their file and failure detail', t => {
