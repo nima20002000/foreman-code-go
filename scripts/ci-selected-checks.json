@@ -1,0 +1,18 @@
+{
+  "source": "0f91bee362b039a548556048b8caf97e205a80a0",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "retained-selection-regressions",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-affected-retained.test.mjs"
+        ],
+        "reportKind": "node"
+      }
+    ]
+  },
+  "requiredExports": []
+}
