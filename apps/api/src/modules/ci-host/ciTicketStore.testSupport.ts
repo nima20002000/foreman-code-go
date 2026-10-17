@@ -3,7 +3,8 @@ import type pg from 'pg'
 import { CiRunRecordSchema, type CiRunRecord } from '@foreman-code/contracts'
 
 /** Persisted ci_runs rows; each write replaces only the exact record it read, like the real compare-and-set. */
-export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, string> = {}) {
+export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, string> = {},
+  stoppedRun?: { id: string; executionId: string; commandId: string }) {
   const rows = new Map(initial.map(run => [run.id, { state: run.state as string, hostKey: hostKeys[run.id] ?? null,
     record: run as unknown }]))
   const matches = (id: unknown, previous: unknown) => {
@@ -24,6 +25,23 @@ export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, str
   const claims = new Map<unknown, unknown>()
   const query = async (sql: string, p: unknown[] = []) => {
     const text = sql.replace(/\s+/gu, ' ').trim()
+    if (stoppedRun) {
+      if (text.startsWith('select workspace_id,record from workflow_stop_intents')) {
+        return { rows: [{ workspace_id: initial[0]!.workspaceId, record: {
+          principalId: 'operator', source: 'http', commandId: stoppedRun.commandId, runId: stoppedRun.id,
+        } }] }
+      }
+      if (text.startsWith('select id from harness_executions')) return { rows: [{ id: stoppedRun.executionId }] }
+      if (text.startsWith('select distinct c.group_id')) {
+        return { rows: initial.map(run => ({ group_id: run.groupId })) }
+      }
+      if (text.startsWith('select record from ci_runs where workspace_id=$1 and group_id=$2')) {
+        return { rows: listed(run => run.groupId === p[1]) }
+      }
+      if (text.startsWith('select id from ci_runs where workspace_id=$1 and group_id=any')) {
+        return { rows: listed(run => ['queued', 'starting', 'running'].includes(run.state)) }
+      }
+    }
     if (text.startsWith('insert into ci_dispatch_claims')) {
       if (claims.has(p[0])) return { rows: [], rowCount: 0 }
       claims.set(p[0], p[1])
