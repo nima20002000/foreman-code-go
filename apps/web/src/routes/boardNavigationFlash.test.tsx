@@ -45,6 +45,8 @@ it('opens the saved workflow for authoring before any departure', async () => {
   expect(await within(authoring).findByRole('button', {
     name: /^Researcher, .*starts the workflow.*Draft$/,
   }, { timeout: 8000 })).toBeVisible()
+  expect(within(authoring).getByLabelText('Editable workflow graph')).toBeVisible()
+  expect(router.state.location.pathname).toBe('/workspaces/workspace-1')
   expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
   expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
 })

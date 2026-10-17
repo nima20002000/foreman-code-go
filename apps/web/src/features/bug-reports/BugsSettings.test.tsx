@@ -336,6 +336,8 @@ it('hides cached reports after denied reads and keeps them hidden through a late
   serveReports()
   mount('/settings/bugs?reportId=bug-report-1')
   await screen.findByRole('dialog', { name: 'Workflow start fails' })
+  expect(await screen.findByRole('combobox', { name: 'Report status' })).toHaveValue('open')
+  expect(await screen.findByRole('button', { name: 'Read Workflow start fails' })).toBeVisible()
   const cache = caches.at(-1)!
   server.use(
     http.get('*/api/management/bug-reports', () => HttpResponse.json({
@@ -359,6 +361,10 @@ it('hides cached reports after denied reads and keeps them hidden through a late
   await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
   expect(screen.queryByRole('button', { name: 'Read Workflow start fails' })).not.toBeInTheDocument()
   expect(screen.queryByText('Start the saved Website workflow.')).not.toBeInTheDocument()
+  const reports = within(screen.getByRole('region', { name: 'Bug reports' }))
+  const details = within(screen.getByRole('dialog', { name: 'Bug report' }))
+  expect(reports.getAllByText('Updating — reconnecting…')).toHaveLength(1)
+  expect(details.getAllByText('Updating — reconnecting…')).toHaveLength(1)
   serveReports()
   await userEvent.click(screen.getByRole('button', { name: 'Refresh bug reports' }))
   await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
