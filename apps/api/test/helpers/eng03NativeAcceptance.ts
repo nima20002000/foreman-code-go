@@ -1,3 +1,4 @@
+import { workerToolServices } from './workerMcpServices.js'
 import { publicationSignal } from './publicationSignal.js'
 import { describeNativeFailure, nativeFailureSummary } from './nativeFailureEvidence.js'
 import { NativeHarnessFactories } from '../../src/modules/harnesses/runtimeFactory.js'
@@ -313,10 +314,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     const livePool = pool
     // These credentials belong to this schema, so their actual MCP endpoint
     // must authenticate against this database rather than another live app.
+    const mcpCommands = new PostgresCommandCoordinator(livePool)
     mcpApp = buildApp({ readiness: { database: { ping: async () => { await livePool.query('select 1') } },
-      checkpoints: { ping: async () => undefined } }, appMcp: { access: new PostgresAccessService(livePool),
-      interactions: new PostgresAppInteractionService(livePool, new PostgresInteractionRepository(livePool),
-        new PostgresCommandCoordinator(livePool)) } })
+      checkpoints: { ping: async () => undefined } }, appMcp: workerToolServices(livePool, mcpCommands).appMcp(new PostgresAccessService(livePool),
+      new PostgresAppInteractionService(livePool, new PostgresInteractionRepository(livePool), mcpCommands)) })
     const endpoint = `${await mcpApp.listen({ host: '127.0.0.1', port: 0 })}/mcp`
     restoreNativeMcp = await configureNativeWorkflowMcp({
       projectDirectory, runtimeDirectory, codexBinary,

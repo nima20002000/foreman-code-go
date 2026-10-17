@@ -16,13 +16,13 @@ it('reports an idle running execution after every CI ticket ends, without stoppi
   async () => {
     const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime()
     const commands = new PostgresCommandCoordinator(runtime.db.pool)
-    const { bugReports: bugs, ci, references } = workerToolServices(runtime.db.pool, commands)
+    const tools = workerToolServices(runtime.db.pool, commands)
+    const { bugReports: bugs, ci } = tools
     const app = buildApp({
       logger: false,
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access: runtime.access, services: { commands, ci, bugReports: bugs } as never },
-      appMcp: { references, access: runtime.access, commands, bugReports: bugs,
-        interactions: new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands) },
+      appMcp: tools.appMcp(runtime.access, new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands)),
     })
     const clients: Client[] = []
     let finished: Promise<unknown> | undefined

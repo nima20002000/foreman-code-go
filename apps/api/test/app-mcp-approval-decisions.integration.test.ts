@@ -11,10 +11,10 @@ const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 async function setup() {
   const f = await approvalDatabase(); closes.push(f.close)
-  const { bugReports, ci, references } = workerToolServices(f.pool, f.commands)
+  const tools = workerToolServices(f.pool, f.commands)
+  const { bugReports, ci } = tools
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { references, access: f.access, commands: f.commands, bugReports,
-      interactions: new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service) },
+    appMcp: tools.appMcp(f.access, new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)),
     operator: { access: f.access, services: { commands: f.commands, ci, bugReports } as never } })
   const origin = await app.listen({ host: '127.0.0.1', port: 0 }); closes.push(() => app.close())
   async function connect(path: string, token: string) {

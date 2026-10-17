@@ -1,3 +1,5 @@
+import type pg from 'pg'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -22,6 +24,7 @@ const interactions = (respond: boolean) => ({
 const clients: Client[] = []
 afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.close())); recordDenied.mockClear() })
 const context = (role: McpRole, tools?: string[]) => ({ role, principal: role === 'operator' ? operator : worker,
+  references: workerToolServices({} as pg.Pool, services.commands).references,
   operator: services, interactions: interactions(role === 'orchestrator'), ...(tools ? { tools } : {}) })
 async function connect(role: McpRole, tools?: string[], requestBody?: unknown) {
   const server = await createGraphqlMcpServer(context(role, tools), requestBody)
@@ -70,8 +73,8 @@ describe('one Foreman Code MCP server scoped by role', () => {
     expect(operatorNames).toContain('interaction_get')
     expect(operatorNames).not.toContain('context_get')
     expect(operatorNames).toContain('interaction_respond')
-    expect(await names(orchestrator)).toEqual(['context_get', 'interaction_get', 'interaction_list', 'interaction_respond'])
-    expect(await names(coder)).toEqual(['context_get', 'interaction_get', 'interaction_list'])
+    expect(await names(orchestrator)).toEqual(['context_get', 'files.reference_read', 'files.references_list', 'interaction_get', 'interaction_list', 'interaction_respond'])
+    expect(await names(coder)).toEqual(['context_get', 'files.reference_read', 'files.references_list', 'interaction_get', 'interaction_list'])
     expect(coder.getServerVersion()).toMatchObject({ name: 'foreman-code', title: 'Foreman Code MCP' })
     expect(coder.getInstructions()).toContain('Foreman Code')
     expect(coder.getInstructions()).toContain('Coder role')

@@ -51,9 +51,10 @@ describe.skipIf(!postgresEnabled)('reviewer assignment and authenticated decisio
   it('denies read-only and requester MCP decisions without changing the pending interaction', async () => {
     const f = await routedApprovalFixture()
     const commands = new PostgresCommandCoordinator(f.db.pool)
-    const { bugReports, ci, references } = workerToolServices(f.db.pool, commands)
+    const tools = workerToolServices(f.db.pool, commands)
+    const { bugReports, ci } = tools
     const app = buildApp({ readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
-      appMcp: { references, access: f.access, interactions: new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service), commands, bugReports },
+      appMcp: tools.appMcp(f.access, new PostgresAppInteractionService(f.db.pool, f.repository, commands, f.service)),
       operator: { access: f.access, services: { commands, ci, bugReports, interactions: new OperatorInteractionService(f.service) } as never } })
     const clients: Client[] = []
     try {

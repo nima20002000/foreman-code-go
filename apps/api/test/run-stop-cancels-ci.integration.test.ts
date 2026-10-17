@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
@@ -97,7 +98,7 @@ async function fixture() {
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { commands, ci, runs } as unknown as OperatorServices },
-    appMcp: { access, commands, interactions: new PostgresAppInteractionService(pool, f.repository, commands) } })
+    appMcp: workerToolServices(pool, commands).appMcp(access, new PostgresAppInteractionService(pool, f.repository, commands)) })
   const scope = { workspaceIds: [f.f.run.workspaceId] }
   const writer = await access.issue({ name: 'Run Stop operator', audience: 'operator',
     expiresAt: new Date(Date.now() + 600_000),

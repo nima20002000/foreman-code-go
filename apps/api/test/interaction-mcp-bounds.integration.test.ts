@@ -1,3 +1,4 @@
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AppInteractionGetOutputSchema, AppInteractionListOutputSchema } from '@foreman-code/contracts'
 import { buildApp } from '../src/app.js'
@@ -41,9 +42,7 @@ describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback th
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
     const app = buildApp({
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-      appMcp: { access: f.access, interactions: new PostgresAppInteractionService(
-        f.pool, f.repository, f.commands, f.service,
-      ) },
+      appMcp: workerToolServices(f.pool, f.commands).appMcp(f.access, new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)),
     })
     await app.listen({ host: '127.0.0.1', port: 0 })
     closes.push(() => app.close())
