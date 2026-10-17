@@ -48,17 +48,17 @@ it.each(['inventory', 'capture'] as const)(
     try {
       await pool.query(`insert into workspaces(id,record,location_revision) values($1,$2::jsonb,1)`,
         [workspaceId, JSON.stringify({ id: workspaceId, name: 'Source fixture', repository: fixtureRepository })])
-      const pause = async () => { entered.release(); await blocked.pending }
+      const waitForRelease = async () => { entered.release(); await blocked.pending }
       if (stage === 'inventory') {
         const readCapacity = store.storageCapacity.bind(store)
         vi.spyOn(store, 'storageCapacity').mockImplementation(async () => {
-          await pause()
+          await waitForRelease()
           return readCapacity()
         })
       } else {
         const write = store.write.bind(store)
         vi.spyOn(store, 'write').mockImplementation(async (...args) => {
-          await pause()
+          await waitForRelease()
           return write(...args)
         })
       }

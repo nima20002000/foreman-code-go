@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type pg from 'pg'
 import { onTestFinished, test } from 'vitest'
 import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, testAdminPool }
   from '../../../scripts/test-resources.mjs'
@@ -16,19 +15,20 @@ async function database() {
   mkdirSync(parent, { recursive: true })
   const root = createTestRoot(parent)
   const admin = await testAdminPool()
-  let resource: Awaited<ReturnType<typeof createTestDatabase>> | undefined
-  let pool: pg.Pool | undefined
+  const cleanup: { resource?: Awaited<ReturnType<typeof createTestDatabase>>; pool?: ReturnType<typeof createTestPool> } = {}
   onTestFinished(async () => {
     try {
-      await pool?.end()
-      if (resource) await dropTestDatabase(admin, resource)
+      await cleanup.pool?.end()
+      if (cleanup.resource) await dropTestDatabase(admin, cleanup.resource)
     } finally {
       await admin.end()
       removeTestRoot(root)
     }
   })
-  resource = await createTestDatabase(admin, root)
-  pool = createTestPool({ connectionString: resource.databaseUrl, max: 8 })
+  const resource = await createTestDatabase(admin, root)
+  cleanup.resource = resource
+  const pool = createTestPool({ connectionString: resource.databaseUrl, max: 8 })
+  cleanup.pool = pool
   return pool
 }
 

@@ -19,7 +19,7 @@ describe('Operator native cancellation after restart', () => {
     const managers: CodexAppServerSessionManager[] = []
     const manager = () => {
       const result = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
-        undefined, 'management', undefined, provider.infrastructure().codex)
+        undefined, 'scoped', undefined, provider.infrastructure().codex)
       managers.push(result)
       return result
     }

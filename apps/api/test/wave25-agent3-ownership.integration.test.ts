@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { readUntil } from './helpers/observableCondition.js'
 import { deferred } from './helpers/deferred.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 
@@ -102,6 +103,7 @@ describe.skipIf(!postgresEnabled)('Agent 3 dedicated PostgreSQL publication owne
     expect(owner).toBeDefined()
     try {
       const connection = owner!.oneShotConnection()
+      const fence = await connection.transaction(sql => owner!.readOneShotFence(sql))
       const table = `publication_${randomUUID().replaceAll('-', '')}`
       await pool.query(`create table ${table}(label text primary key)`)
       const entered = deferred()
@@ -118,7 +120,10 @@ describe.skipIf(!postgresEnabled)('Agent 3 dedicated PostgreSQL publication owne
       })
       try {
         // No SQL is pending in the transaction while the outside operation tries to run.
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await readUntil(async () => (await pool.query<{ state: string }>(
+          'select state from pg_stat_activity where pid=$1', [Number(fence.ownerId)],
+        )).rows[0]?.state, state => state === 'idle in transaction',
+        { timeoutMs: 100, description: 'publication transaction waiting for release' })
         expect(outsideFinished).toBe(false)
         expect((await pool.query(`select label from ${table}`)).rows).toEqual([])
       } finally {
