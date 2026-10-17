@@ -8,13 +8,16 @@ import { writeJsonReport } from './ci-report-io.mjs'
 
 // PostgreSQL 17.6 was released 2025-08-14. The image is a version tag, not an immutable digest.
 const postgresImage = 'postgres:17.6-alpine'
-const ownerLabel = 'foreman-code.go-ci-database'
-const databaseUser = 'foreman_ci'
-const databaseName = 'foreman_test'
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const script = fileURLToPath(import.meta.url)
+const databaseProfiles = {
+  go: { name: 'go', user: 'foreman_ci', database: 'foreman_test', urlDatabase: 'foreman_test' },
+  scripts: { name: 'scripts', user: 'graphql_test_admin', database: 'graphql_test_control', urlDatabase: 'postgres',
+    password: 'graphql_test_disposable_only' },
+}
 
-function command(program, args, environment = process.env) {
-  const result = spawnSync(program, args, { encoding: 'utf8', env: environment, timeout: 120_000 })
+function command(program, args, environment = process.env, input) {
+  const result = spawnSync(program, args, { encoding: 'utf8', env: environment, input, timeout: 120_000 })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(result.stderr.trim() || `${program} ${args[0]} failed`)
   return result.stdout.trim()
@@ -44,21 +47,23 @@ function cacheKey() {
   return hash.digest('hex')
 }
 
-function databasePaths() {
+function databasePaths(profile) {
   if (!process.env.CI_STATE) throw new Error('CI_STATE must identify this run before preparing PostgreSQL')
   const state = resolve(process.env.CI_STATE)
-  return { state, record: join(state, 'go-database.json'), cancelled: join(state, 'go-database-stop') }
+  return { state, record: join(state, `${profile.name}-database.json`),
+    cancelled: join(state, `${profile.name}-database-stop`), lock: join(state, `${profile.name}-database-cleanup.lock`) }
 }
 
-function databaseRecord(paths) {
+function databaseRecord(paths, profile) {
   const record = JSON.parse(readFileSync(paths.record, 'utf8'))
-  if (!/^[0-9a-f-]{36}$/.test(record.owner) || record.name !== `foreman-go-ci-${record.owner}`) {
-    throw new Error('The PostgreSQL state does not identify a disposable Go CI container')
+  if (!/^[0-9a-f-]{36}$/.test(record.owner) || record.name !== `foreman-${profile.name}-ci-${record.owner}`
+    || record.profile !== profile.name || profile.name === 'scripts' && !/^[0-9a-f-]{36}$/.test(record.hostRunId)) {
+    throw new Error('The PostgreSQL state does not identify this disposable CI container')
   }
   return record
 }
 
-function inspectDatabase(record) {
+function inspectDatabase(record, profile) {
   const result = spawnSync('docker', ['inspect', record.name], { encoding: 'utf8', timeout: 10_000 })
   if (result.error) throw result.error
   if (result.status !== 0) {
@@ -66,14 +71,14 @@ function inspectDatabase(record) {
     throw new Error(result.stderr.trim() || 'Unable to inspect the CI PostgreSQL container')
   }
   const [container] = JSON.parse(result.stdout)
-  if (container.Config?.Labels?.[ownerLabel] !== record.owner) {
+  if (container.Config?.Labels?.[`foreman-code.${profile.name}-ci-database`] !== record.owner) {
     throw new Error('Refusing to use or remove a PostgreSQL container owned by another run')
   }
   return container
 }
 
-function removeDatabase(record) {
-  const container = inspectDatabase(record)
+function removeDatabase(record, profile) {
+  const container = inspectDatabase(record, profile)
   if (!container) return
   const result = spawnSync('docker', ['rm', '--force', '--volumes', container.Id],
     { encoding: 'utf8', timeout: 30_000 })
@@ -83,27 +88,58 @@ function removeDatabase(record) {
   }
 }
 
-function stopDatabase() {
-  const paths = databasePaths()
-  // The starter checks this after docker run, so cancellation cannot race a late container creation.
-  mkdirSync(paths.state, { recursive: true, mode: 0o700 })
-  writeFileSync(paths.cancelled, '', { mode: 0o600 })
+function removeDatabaseState(profile, finished) {
+  const paths = databasePaths(profile)
+  // Called only inside flock. Read again after acquiring it so concurrent cleanups cannot both remove a container.
   if (!existsSync(paths.record)) return
   let record
-  try { record = databaseRecord(paths) }
+  try { record = databaseRecord(paths, profile) }
   catch (error) {
     if (error.code === 'ENOENT') return // A concurrent cleanup already removed this run's record.
     throw error
   }
-  removeDatabase(record)
-  if (record.ready) rmSync(paths.record, { force: true })
+  removeDatabase(record, profile)
+  // A pending docker run may still create the container. Its starter retains the record until it reconciles that RPC.
+  if (record.ready || finished) rmSync(paths.record, { force: true })
 }
 
-async function waitForDatabase(record, paths) {
+function reconcileDatabase(profile, finished = false) {
+  const paths = databasePaths(profile)
+  if (!existsSync(paths.record)) return
+  command('flock', ['--exclusive', '--wait', '60', paths.lock,
+    process.execPath, script, 'database-remove', profile.name, finished ? 'finished' : 'pending'])
+}
+
+function cancelDatabase(profile) {
+  const paths = databasePaths(profile)
+  // Write before taking the cleanup lock so a blocked starter can observe cancellation promptly.
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 })
+  writeFileSync(paths.cancelled, '', { mode: 0o600 })
+}
+
+function stopDatabase(profile) {
+  cancelDatabase(profile)
+  reconcileDatabase(profile)
+}
+
+function stopDatabases() {
+  const errors = []
+  // The host and provider fallback mark every pending starter before waiting for either cleanup lock.
+  for (const operation of [cancelDatabase, reconcileDatabase]) {
+    for (const profile of Object.values(databaseProfiles)) {
+      try { operation(profile) }
+      catch (error) { errors.push(error) }
+    }
+  }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length) throw new AggregateError(errors, 'CI PostgreSQL cleanup failed')
+}
+
+async function waitForDatabase(record, paths, profile) {
   const deadline = Date.now() + 90_000
   while (Date.now() < deadline) {
     if (existsSync(paths.cancelled)) throw new Error('CI PostgreSQL startup was cancelled')
-    const container = inspectDatabase(record)
+    const container = inspectDatabase(record, profile)
     if (!container || !container.State.Running) throw new Error('CI PostgreSQL exited before becoming ready')
     if (container.State.Health?.Status === 'healthy') return container
     if (container.State.Health?.Status === 'unhealthy') throw new Error('CI PostgreSQL failed its readiness check')
@@ -112,13 +148,13 @@ async function waitForDatabase(record, paths) {
   throw new Error('CI PostgreSQL did not become ready within 90 seconds')
 }
 
-function databaseUrl(record, container) {
+function databaseUrl(record, container, profile) {
   const bindings = container.NetworkSettings?.Ports?.['5432/tcp'] ?? []
   const binding = bindings.find(value => value.HostIp === '127.0.0.1')
   if (!binding || !/^[1-9][0-9]*$/.test(binding.HostPort) || bindings.length !== 1) {
     throw new Error('CI PostgreSQL must publish one random port on loopback only')
   }
-  return `postgresql://${databaseUser}:${record.password}@127.0.0.1:${binding.HostPort}/${databaseName}`
+  return `postgresql://${profile.user}:${record.password}@127.0.0.1:${binding.HostPort}/${profile.urlDatabase}`
 }
 
 function databaseLimits() {
@@ -137,49 +173,75 @@ function databaseLimits() {
   return args
 }
 
-async function startDatabase() {
-  const paths = databasePaths()
+function initializeScriptDatabase(record, profile) {
+  if (profile.name !== 'scripts') return
+  command('docker', ['exec', '--interactive', '--env', 'PGPASSWORD', record.name,
+    'psql', '-h', '127.0.0.1', '-U', profile.user, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q'],
+  { ...process.env, PGPASSWORD: record.password }, readFileSync(join(repository, 'scripts/test-postgres-init.sql'), 'utf8'))
+}
+
+function databaseHostRunId(profile, owner) {
+  if (profile.name !== 'scripts') return undefined
+  const value = process.env.FOREMAN_CODE_CI_HOST_RUN_ID || owner
+  if (!/^[0-9a-f-]{36}$/.test(value)) throw new Error('Invalid host CI disposable database owner')
+  return value
+}
+
+async function startDatabase(profile) {
+  const paths = databasePaths(profile)
   mkdirSync(paths.state, { recursive: true, mode: 0o700 })
   if (existsSync(paths.record) || existsSync(paths.cancelled)) {
     throw new Error('CI_STATE already contains PostgreSQL state; use a fresh directory for this run')
   }
+  try { command('flock', ['--version']) }
+  catch (error) { throw new Error('CI PostgreSQL requires existing flock for serialized container cleanup.', { cause: error }) }
   const limits = databaseLimits()
   const owner = randomUUID()
-  const record = { owner, name: `foreman-go-ci-${owner}`, password: randomBytes(24).toString('hex'), ready: false }
+  const record = { owner, profile: profile.name, name: `foreman-${profile.name}-ci-${owner}`,
+    password: profile.password ?? randomBytes(24).toString('hex'),
+    hostRunId: databaseHostRunId(profile, owner), ready: false }
   writeFileSync(paths.record, JSON.stringify(record), { mode: 0o600, flag: 'wx' })
-  const environment = { ...process.env, POSTGRES_USER: databaseUser, POSTGRES_DB: databaseName,
+  const environment = { ...process.env, POSTGRES_USER: profile.user, POSTGRES_DB: profile.database,
     POSTGRES_PASSWORD: record.password }
   try {
     command('docker', ['run', '--detach', '--rm', ...limits, '--name', record.name,
-      '--label', `${ownerLabel}=${owner}`, '--publish', '127.0.0.1::5432',
+      '--label', `foreman-code.${profile.name}-ci-database=${owner}`, '--publish', '127.0.0.1::5432',
       '--env', 'POSTGRES_USER', '--env', 'POSTGRES_DB', '--env', 'POSTGRES_PASSWORD',
-      '--health-cmd', `pg_isready -h 127.0.0.1 -U ${databaseUser} -d ${databaseName}`,
+      '--health-cmd', `pg_isready -h 127.0.0.1 -U ${profile.user} -d ${profile.database}`,
       '--health-interval', '1s', '--health-timeout', '3s', '--health-retries', '60',
       postgresImage, 'postgres', '-c', 'max_connections=300', '-c', 'max_locks_per_transaction=512'], environment)
-    const container = await waitForDatabase(record, paths)
-    record.url = databaseUrl(record, container)
+    const container = await waitForDatabase(record, paths, profile)
+    initializeScriptDatabase(record, profile)
+    record.url = databaseUrl(record, container, profile)
     record.ready = true
     writeJsonReport(paths.record, record)
     if (existsSync(paths.cancelled)) throw new Error('CI PostgreSQL startup was cancelled')
-    process.stdout.write('[ci-setup] Fresh Go PostgreSQL is ready on an isolated loopback port\n')
+    process.stdout.write(`[ci-setup] Fresh ${profile.name} PostgreSQL is ready on an isolated loopback port\n`)
   } catch (error) {
-    try { removeDatabase(record) }
+    try { reconcileDatabase(profile, true) }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], 'PostgreSQL startup and cleanup failed') }
-    rmSync(paths.record, { force: true })
     throw error
   }
 }
 
-function databaseEnvironment() {
-  const paths = databasePaths()
-  const record = databaseRecord(paths)
+function databaseEnvironment(profile) {
+  const paths = databasePaths(profile)
+  const record = databaseRecord(paths, profile)
   if (!record.ready || existsSync(paths.cancelled)) throw new Error('The CI PostgreSQL server is not ready')
-  const container = inspectDatabase(record)
+  const container = inspectDatabase(record, profile)
   if (!container?.State.Running) throw new Error('The CI PostgreSQL server is no longer running')
-  const url = databaseUrl(record, container)
+  const url = databaseUrl(record, container, profile)
   // This is generated disposable state, never an inherited application DATABASE_URL.
   const quoted = `'${url.replaceAll("'", "'\\''")}'`
-  process.stdout.write('unset GRAPHQL_DATABASE_URL GRAPHQL_TEST_DATABASE_URL GRAPHQL_CI_TEST_ADMIN_URL\n')
+  process.stdout.write('unset DATABASE_URL TEST_DATABASE_URL FOREMAN_CODE_DATABASE_URL FOREMAN_CODE_TEST_DATABASE_URL '
+    + 'GRAPHQL_DATABASE_URL GRAPHQL_TEST_DATABASE_URL GRAPHQL_CI_TEST_ADMIN_URL GRAPHQL_CI_HOST_RUN_ID\n')
+  const postgresVariables = Object.keys(process.env).filter(name => /^PG[A-Z_0-9]*$/.test(name))
+  if (postgresVariables.length) process.stdout.write(`unset ${postgresVariables.join(' ')}\n`)
+  if (profile.name === 'scripts') {
+    process.stdout.write(`export FOREMAN_CODE_CI_HOST_RUN_ID='${record.hostRunId}'\n`)
+    process.stdout.write(`export FOREMAN_CODE_CI_TEST_ADMIN_URL=${quoted}\n`)
+    return
+  }
   for (const variable of ['DATABASE_URL', 'TEST_DATABASE_URL', 'FOREMAN_CODE_CI_TEST_ADMIN_URL']) {
     process.stdout.write(`export ${variable}=${quoted}\n`)
   }
@@ -192,16 +254,27 @@ async function main() {
       process.stdout.write('[ci-setup] C compiler, pkg-config and libvips are available\n')
       return
     case 'cache-key': process.stdout.write(`${cacheKey()}\n`); return
-    case 'database-start': await startDatabase(); return
-    case 'database-env': databaseEnvironment(); return
-    case 'database-stop': stopDatabase(); return
-    default: throw new Error('Usage: ci-go-prerequisites.mjs native|cache-key|database-start|database-env|database-stop')
+    case 'database-start': await startDatabase(databaseProfiles.go); return
+    case 'database-env': databaseEnvironment(databaseProfiles.go); return
+    case 'database-stop': stopDatabase(databaseProfiles.go); return
+    case 'scripts-database-start': await startDatabase(databaseProfiles.scripts); return
+    case 'scripts-database-env': databaseEnvironment(databaseProfiles.scripts); return
+    case 'scripts-database-stop': stopDatabase(databaseProfiles.scripts); return
+    case 'databases-stop': stopDatabases(); return
+    case 'database-remove': {
+      const profile = databaseProfiles[process.argv[3]]
+      if (!['go', 'scripts'].includes(process.argv[3]) || !['finished', 'pending'].includes(process.argv[4])) {
+        throw new Error('Invalid PostgreSQL cleanup request')
+      }
+      removeDatabaseState(profile, process.argv[4] === 'finished')
+      return
+    }
+    default: throw new Error('Usage: ci-go-prerequisites.mjs native|cache-key|[scripts-]database-start|[scripts-]database-env|[scripts-]database-stop|databases-stop')
   }
 }
 
 try { await main() }
 catch (error) {
-  process.stderr.write(`${error.stack ?? error}\n`)
-  if (error.cause) process.stderr.write(`Cause: ${error.cause.message}\n`)
+  console.error(error)
   process.exitCode = 1
 }

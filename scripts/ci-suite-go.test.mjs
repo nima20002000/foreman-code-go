@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { goCiFixture } from './test-support/go-ci-fixture.mjs'
+import { conformanceFixture } from './test-support/conformance-report-fixture.mjs'
 
 const rootEntry = fileURLToPath(new URL('./ci-root-suite.mjs', import.meta.url))
 const goCalls = fixture => fixture.calls().filter(call => call.tool === 'go' && call.args[0] !== 'env')
+const conformanceCalls = fixture => fixture.calls().filter(call => call.tool === 'corepack'
+  && call.args.includes('run') && call.args[call.args.indexOf('run') + 1] === 'conformance')
+const conformanceLaunches = fixture => conformanceCalls(fixture).filter(call => !call.args.includes('--list'))
+const conformanceReport = (fixture, name) => JSON.parse(readFileSync(join(fixture.state, 'conformance', name), 'utf8'))
 
 for (const scope of ['full', 'affected', '']) {
   test(`backend typecheck runs full Go build and vet with ${scope || 'omitted'} scope`, t => {
@@ -41,6 +46,19 @@ test('root typecheck combines Go and retained TS including conformance without A
   ])
 })
 
+test('retained lint includes conformance and still runs it after a package lint failure', t => {
+  const passing = goCiFixture(t)
+  const pass = passing.run('lint-other')
+  assert.equal(pass.status, 0, pass.stderr)
+  assert.ok(passing.calls().some(call => call.tool === 'corepack'
+    && call.args.join(' ') === 'pnpm --dir conformance lint'))
+  const failing = goCiFixture(t, { FAIL_PNPM_COMMAND: 'lint' })
+  const failure = failing.run('lint-other')
+  assert.equal(failure.status, 9, failure.stderr)
+  assert.ok(failing.calls().some(call => call.tool === 'corepack'
+    && call.args.join(' ') === 'pnpm --dir conformance lint'))
+})
+
 test('Go lint rejects formatting changes and preserves staticcheck failures', t => {
   const unformatted = goCiFixture(t, { UNFORMATTED_GO: './runtime/state.go' })
   const formatResult = unformatted.run('lint-api')
@@ -68,7 +86,8 @@ test('Go unit publishes per-test results and durations without PostgreSQL or inh
   assert.equal(tests.graphqlEnvironmentFile, undefined)
   assert.equal(tests.postgresServiceFile, undefined)
   assert.equal(tests.postgresPasswordFile, undefined)
-  assert.equal(tests.home, join(fixture.state, 'home'))
+  assert.equal(tests.home, fixture.runtimeHome())
+  assert.equal(tests.temporaryDirectory, join(fixture.runtimeRoot(), 'tmp'))
   assert.equal(tests.gopath, join(fixture.cache, 'gopath'))
   assert.equal(tests.goflags, '-mod=readonly')
   assert.equal(fixture.calls().some(call => call.tool === 'docker'), false)
@@ -96,19 +115,53 @@ test('a missing backend module fails before running a frozen TS suite', t => {
   assert.equal(fixture.calls().some(call => call.tool === 'corepack'), false)
 })
 
-test('retained unit parts run browser, contracts and recursive script tests with an isolated home', t => {
+test('retained unit parts run browser, contracts, conformance and recursive script tests with an isolated home', t => {
   for (const suite of ['unit-web', 'unit-web-heavy', 'unit-other']) {
     const fixture = goCiFixture(t)
+    if (suite === 'unit-other') {
+      const prepared = fixture.run(suite, 'prepare')
+      assert.equal(prepared.status, 0, prepared.stderr)
+    }
     const result = fixture.run(suite)
     assert.equal(result.status, 0, result.stderr)
     const calls = fixture.calls().filter(call => call.tool === 'corepack')
     assert.ok(calls.length > 0)
-    assert.ok(calls.every(call => call.home === join(fixture.state, 'home')))
+    assert.ok(calls.every(call => call.home === fixture.runtimeHome()))
     assert.equal(calls.some(call => call.args.includes('@foreman-code/api') || call.cwd.endsWith('/apps/worker')), false)
-    assert.equal(fixture.calls().some(call => call.tool === 'docker'), false)
-    if (suite === 'unit-other') assert.ok(calls.some(call => call.args.includes('scripts/**/*.test.mjs')))
+    assert.equal(fixture.calls().some(call => call.tool === 'docker'), suite === 'unit-other')
+    if (suite === 'unit-other') {
+      const scripts = calls.find(call => call.args.includes('scripts/**/*.test.mjs'))
+      assert.ok(scripts)
+      const admin = new URL(scripts.adminDatabase)
+      assert.equal(admin.hostname, '127.0.0.1')
+      assert.equal(admin.username, 'graphql_test_admin')
+      assert.equal(admin.password, 'graphql_test_disposable_only')
+      assert.equal(admin.pathname, '/postgres')
+      assert.match(scripts.hostRunId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+      assert.ok(calls.filter(call => call !== scripts).every(call => call.adminDatabase === undefined))
+      assert.ok(calls.some(call => call.args.includes('--dir') && call.args.includes('conformance') && call.args.includes('test')))
+      assert.deepEqual(fixture.results().summary, { passed: 3, failed: 0, skipped: 0 })
+      assert.ok(fixture.results().files.some(file => file.file === 'conformance/src/reporting/report.test.ts'))
+    }
     assert.equal(fixture.isolatedHomeExists(), false)
   }
+})
+
+test('a short private runtime executes CommonJS HOME tools and binds Unix sockets outside repository module scope', t => {
+  const fixture = goCiFixture(t, { FIXTURE_VERIFY_RUNTIME_NODE: '1' })
+  writeFileSync(join(fixture.directory, 'package.json'), JSON.stringify({ type: 'module' }))
+  const result = fixture.run('typecheck-api')
+  assert.equal(result.status, 0, result.stderr)
+  const runtime = fixture.runtimeRoot()
+  assert.match(runtime, /^\/tmp\/fci\.[A-Za-z0-9]{6}$/)
+  const execution = JSON.parse(readFileSync(join(fixture.state, 'node-runtime.json'), 'utf8'))
+  assert.equal(execution.commonjs, true)
+  assert.equal(execution.rootMode, 0o700)
+  assert.equal(execution.homeMode, 0o700)
+  assert.equal(execution.socket, join(runtime, 'tmp', 's'.repeat(70)))
+  assert.ok(fixture.calls().every(call => call.home === join(runtime, 'home')))
+  assert.equal(existsSync(runtime), false)
+  assert.equal(readFileSync(join(fixture.home, 'existing-state'), 'utf8'), 'untouched')
 })
 
 for (const changed of ['no', 'yes', 'unknown']) {
@@ -120,8 +173,29 @@ for (const changed of ['no', 'yes', 'unknown']) {
     assert.equal(result.status, 0, result.stderr)
     assert.deepEqual(goCalls(fixture).find(call => call.args[0] === 'test').args,
       ['test', '-json', '-count=1', '-tags', 'integration', './...'])
-    const targets = fixture.calls().filter(call => call.args.includes('test:ci')).map(call => call.target)
+    const targets = conformanceLaunches(fixture).map(call => call.target)
     assert.deepEqual(targets, changed === 'no' ? ['go'] : ['go', 'ts'])
+    assert.deepEqual(conformanceCalls(fixture).filter(call => call.args.includes('--list')).map(call => call.target), targets)
+    assert.deepEqual(goCalls(fixture).find(call => call.args[0] === 'build').args,
+      ['build', '-o', join(fixture.state, 'bin/foreman'), './cmd/foreman'])
+    const integration = goCalls(fixture).find(call => call.args[0] === 'test')
+    assert.equal(new URL(integration.database).hostname, '127.0.0.1')
+    for (const launch of conformanceLaunches(fixture)) {
+      assert.equal(launch.database, undefined)
+      assert.equal(launch.goBinary, join(fixture.state, 'bin/foreman'))
+      assert.equal(launch.postgresBinaryDirectory, join(fixture.postgresCache, 'bin'))
+      assert.equal(launch.conformanceResults, join(fixture.state, 'conformance', `${launch.target}.json`))
+      const raw = conformanceReport(fixture, `${launch.target}.json`)
+      assert.equal(raw.commitSha, fixture.environment.FIXTURE_COMMIT_SHA)
+      assert.equal(raw.commitSource, 'git')
+      assert.equal(raw.executed, 1)
+      assert.equal(conformanceReport(fixture, `${launch.target}.inventory.json`).scenarios.length, 1)
+      assert.equal(conformanceReport(fixture, `${launch.target}.full-verdict.json`).status, 'passed')
+      assert.equal(conformanceReport(fixture, `${launch.target}.gate.json`).status, 'passed')
+      const events = readFileSync(join(fixture.state, 'conformance', `${launch.target}.jsonl`), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line))
+      assert.deepEqual(events.map(event => event.kind), ['conformance-scenario', 'conformance-summary'])
+    }
     assert.equal(fixture.results().summary.passed, changed === 'no' ? 2 : 3)
     assert.equal(existsSync(join(fixture.state, 'fixture-docker.json')), false)
     assert.equal(fixture.isolatedHomeExists(), false)
@@ -135,8 +209,143 @@ test('failed Go tests and missing Go conformance output still run and publish th
   const result = fixture.run('integration')
   assert.notEqual(result.status, null)
   assert.notEqual(result.status, 0)
-  assert.deepEqual(fixture.calls().filter(call => call.args.includes('test:ci')).map(call => call.target), ['go', 'ts'])
+  assert.deepEqual(conformanceLaunches(fixture).map(call => call.target), ['go', 'ts'])
   assert.deepEqual(fixture.results().summary, { passed: 1, failed: 1, skipped: 0 })
+})
+
+for (const mode of ['partial', 'coverage']) {
+  test(`incremental conformance retains the failed full ${mode} verdict and complete mode rejects it`, t => {
+    for (const gate of ['incremental', 'complete']) {
+      const fixture = goCiFixture(t, { CONFORMANCE_GO_MODE: mode, CONFORMANCE_GATE: gate })
+      const prepared = fixture.run('integration', 'prepare')
+      assert.equal(prepared.status, 0, prepared.stderr)
+      const result = fixture.run('integration')
+      assert.equal(result.status, gate === 'incremental' ? 0 : 1, result.stderr)
+      assert.equal(conformanceReport(fixture, 'go.json').status, 'failed')
+      assert.equal(conformanceReport(fixture, 'go.full-verdict.json').status, 'failed')
+      assert.equal(conformanceReport(fixture, 'go.gate.json').status, gate === 'incremental' ? 'passed' : 'failed')
+      assert.equal(fixture.results().summary.failed, mode === 'partial' ? 1 : 0)
+    }
+  })
+}
+
+for (const mode of ['failed', 'zero', 'setup', 'truncated', 'malformed']) {
+  test(`conformance ${mode} evidence stays red and still allows the TS oracle to run`, t => {
+    const fixture = goCiFixture(t, { CONFORMANCE_GO_MODE: mode, CONFORMANCE_CHANGED: 'yes', TEST_RESULTS_OUTPUT: '' })
+    const prepared = fixture.run('integration', 'prepare')
+    assert.equal(prepared.status, 0, prepared.stderr)
+    const result = fixture.run('integration')
+    assert.notEqual(result.status, null)
+    assert.notEqual(result.status, 0)
+    assert.deepEqual(conformanceLaunches(fixture).map(call => call.target), ['go', 'ts'])
+    assert.equal(conformanceReport(fixture, 'ts.json').status, 'passed')
+    assert.equal(existsSync(join(fixture.state, 'conformance/go.json')), true)
+  })
+}
+
+test('an unsuccessful converter without validated outputs cannot be accepted as a full-conformance failure', t => {
+  const fixture = goCiFixture(t, { TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '' })
+  writeFileSync(join(fixture.directory, 'scripts/ci-conformance-results.mjs'), 'process.exitCode = 1\n')
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const result = fixture.run('integration')
+  assert.equal(result.status, 2, result.stderr)
+  assert.match(result.stderr, /complete validated outputs/)
+  assert.equal(conformanceReport(fixture, 'go.json').status, 'passed')
+})
+
+test('controller commit provenance and target-specific main evidence reach the separate gates', t => {
+  const commit = '2'.repeat(40)
+  const mainCommit = '3'.repeat(40)
+  const fixture = goCiFixture(t, { CONFORMANCE_COMMIT_SHA: commit, CONFORMANCE_CHANGED: 'yes' })
+  const mainFile = join(fixture.directory, 'main-go.json')
+  writeFileSync(mainFile, JSON.stringify(conformanceFixture({ commitSha: mainCommit }).report))
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const result = fixture.run('integration', '', { CONFORMANCE_MAIN_GO_RESULTS_FILE: mainFile,
+    CONFORMANCE_MAIN_COMMIT_SHA: mainCommit })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(conformanceReport(fixture, 'go.json').commitSha, commit)
+  assert.equal(conformanceReport(fixture, 'go.json').commitSource, 'environment')
+  assert.equal(conformanceReport(fixture, 'go.gate.json').nonRegression.status, 'passed')
+  assert.equal(conformanceReport(fixture, 'go.gate.json').nonRegression.mainCommitSha, mainCommit)
+  assert.equal(conformanceReport(fixture, 'ts.gate.json').nonRegression.status, 'not-available')
+})
+
+test('a failing Go executable build remains red even when conformance returns a passing report', t => {
+  const fixture = goCiFixture(t, { FAIL_GO_COMMAND: 'build', CONFORMANCE_CHANGED: 'yes' })
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const result = fixture.run('integration')
+  assert.equal(result.status, 9, result.stderr)
+  assert.deepEqual(conformanceLaunches(fixture).map(call => call.target), ['go', 'ts'])
+})
+
+test('PostgreSQL preparation forwards actual successful installer output once', t => {
+  const fixture = goCiFixture(t)
+  const started = fixture.run('integration', 'start')
+  assert.equal(started.status, 0, started.stderr)
+  const result = fixture.run('integration')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout.split('fixture cached PostgreSQL preparation complete').length - 1, 1)
+  assert.ok(fixture.calls().some(call => call.tool === 'postgres-tools' && call.args[0] === 'install'))
+  assert.ok(fixture.calls().some(call => call.tool === 'postgres-tools' && call.args[0] === 'verify'))
+})
+
+test('provider cleanup removes prepared resources and private runtime without running tests', t => {
+  const fixture = goCiFixture(t)
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const runtime = fixture.runtimeRoot()
+  assert.equal(statSync(runtime).mode & 0o777, 0o700)
+  const cleanup = fixture.run('integration', 'cleanup', { CI_PARTITION: `sha256:${'f'.repeat(64)}` })
+  assert.equal(cleanup.status, 0, cleanup.stderr)
+  assert.equal(goCalls(fixture).some(call => call.args[0] === 'test'), false)
+  assert.equal(existsSync(join(fixture.state, 'fixture-docker.json')), false)
+  assert.equal(existsSync(runtime), false)
+})
+
+test('overlapping cleanup calls release the runtime and remove the disposable database once', async t => {
+  const fixture = goCiFixture(t, { FIXTURE_DATABASE_REMOVE_DELAY_MS: '500' })
+  const prepared = fixture.run('integration', 'prepare')
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const runtime = fixture.runtimeRoot()
+  const cleanup = () => new Promise(resolve => {
+    const child = spawn('bash', [join(fixture.directory, 'scripts/ci-suite.sh'), 'cleanup'], {
+      cwd: fixture.directory, env: { ...fixture.environment, SUITE: 'integration' },
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000,
+    })
+    let error
+    let stderr = ''
+    child.stdout?.resume()
+    child.stderr?.setEncoding('utf8')
+    child.stderr?.on('data', chunk => { stderr += chunk })
+    child.once('error', failure => { error = failure })
+    child.once('close', (status, signal) => resolve({ status, signal, error, stderr }))
+  })
+  const results = await Promise.all([cleanup(), cleanup()])
+  for (const result of results) {
+    assert.equal(result.error, undefined, result.error?.message)
+    assert.equal(result.signal, null, result.stderr)
+    assert.equal(result.status, 0, result.stderr)
+  }
+  const removals = fixture.calls().filter(call => call.tool === 'docker' && call.args[0] === 'rm')
+  assert.equal(removals.length, 1)
+  assert.equal(goCalls(fixture).some(call => call.args[0] === 'test'), false)
+  assert.equal(existsSync(join(fixture.state, 'fixture-docker.json')), false)
+  assert.equal(existsSync(join(fixture.state, 'runtime-root')), false)
+  assert.equal(existsSync(runtime), false)
+})
+
+test('cleanup without a runtime needs no module or installed toolchains and creates no private HOME', t => {
+  const fixture = goCiFixture(t)
+  rmSync(join(fixture.directory, 'backend'), { recursive: true })
+  rmSync(join(fixture.directory, 'conformance'), { recursive: true })
+  rmSync(fixture.cache, { recursive: true })
+  const cleanup = fixture.run('integration', 'cleanup')
+  assert.equal(cleanup.status, 0, cleanup.stderr)
+  assert.deepEqual(fixture.calls(), [])
+  assert.equal(existsSync(join(fixture.state, 'runtime-root')), false)
 })
 
 test('host root integration ignores legacy TS file arguments and publishes the legacy result aliases', t => {
@@ -174,6 +383,7 @@ test('preparation reuses the pinned cache and never starts a database for Go uni
   const fixture = goCiFixture(t)
   const result = fixture.run('unit-api', 'prepare')
   assert.equal(result.status, 0, result.stderr)
+  assert.equal(fixture.isolatedHomeExists(), false)
   assert.equal(fixture.calls().some(call => call.tool === 'docker' || call.tool === 'corepack'), false)
   assert.equal(fixture.run('unit-api').status, 0)
   assert.equal(fixture.isolatedHomeExists(), false)
@@ -199,11 +409,13 @@ test('two host jobs keep separate disposable databases and clean up only their o
   }
   const record = fixture => JSON.parse(readFileSync(join(fixture.state, 'go-database.json'), 'utf8'))
   assert.notEqual(record(first).owner, record(second).owner)
+  assert.notEqual(first.runtimeRoot(), second.runtimeRoot())
   assert.equal(new URL(record(first).url).port, '55001')
   assert.equal(new URL(record(second).url).port, '55002')
   assert.equal(first.run('integration').status, 0)
   assert.equal(existsSync(join(first.state, 'fixture-docker.json')), false)
   assert.equal(existsSync(join(second.state, 'fixture-docker.json')), true)
+  assert.equal(second.isolatedHomeExists(), true)
   assert.equal(second.run('integration').status, 0)
   assert.equal(existsSync(join(second.state, 'fixture-docker.json')), false)
 })

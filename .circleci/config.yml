@@ -51,6 +51,7 @@ jobs:
       FOREMAN_CODE_CI_DEDICATED: '1'
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
+      FOREMAN_CODE_CI_POSTGRES_CACHE: .logs/ci-postgres-cache
       CI_STATE: .logs/ci-state
       CGO_ENABLED: '1'
       SUITE: << pipeline.parameters.suite >>
@@ -145,6 +146,19 @@ jobs:
                   - go-artifacts-v1-{{ arch }}-{{ checksum ".logs/ci-go-cache-key" }}-
       - when:
           condition:
+            equal: [integration, << pipeline.parameters.suite >>]
+          steps:
+            - run:
+                name: PostgreSQL source-build and conformance prerequisites
+                command: |
+                  # Only this disposable cloud VM installs packages. Build computers use existing tools.
+                  sudo apt-get install --yes --no-install-recommends perl git openssl iproute2
+                  bash scripts/ci-postgres-toolchain.sh cache-key > .logs/ci-postgres-cache-key
+            - restore_cache:
+                keys:
+                  - postgres-toolchain-v1-{{ arch }}-{{ checksum ".logs/ci-postgres-cache-key" }}
+      - when:
+          condition:
             matches:
               pattern: '^lint(-api)?$'
               value: << pipeline.parameters.suite >>
@@ -180,13 +194,17 @@ jobs:
             mkdir -p .logs/ci-durations
             scripts/ci-suite.sh 2>&1 | tee .logs/ci-durations/suite.log
       - run:
-          name: Remove disposable PostgreSQL
+          name: Remove disposable CI resources
           when: always
-          command: node scripts/ci-go-prerequisites.mjs database-stop
+          command: bash scripts/ci-suite.sh cleanup
       # Publish results before cache saves and any early halt.
       - store_artifacts:
           path: .logs/ci-durations
           destination: durations
+      # Q-CONF's complete reports survive the suite's private-HOME cleanup.
+      - store_artifacts:
+          path: .logs/ci-state/conformance
+          destination: conformance-results
       - when:
           condition:
             not:
@@ -220,6 +238,14 @@ jobs:
                 key: go-toolchain-v1-{{ arch }}-{{ checksum "scripts/ci-go-versions.json" }}
                 paths:
                   - .logs/ci-go-cache/toolchains
+      - when:
+          condition:
+            equal: [integration, << pipeline.parameters.suite >>]
+          steps:
+            - save_cache:
+                key: postgres-toolchain-v1-{{ arch }}-{{ checksum ".logs/ci-postgres-cache-key" }}
+                paths:
+                  - .logs/ci-postgres-cache/toolchains
       # Keep summaries and failing files' logs; the per-slot copies and the archive of them are successful-file noise.
       - run:
           name: Trim integration logs

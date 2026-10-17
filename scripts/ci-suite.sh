@@ -6,9 +6,11 @@
 set -euo pipefail
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
-case "${CI_PARTITION:-}" in
-  sha256:*) exec node "$script_directory/ci-selection.mjs" --dispatch-inputs "$0" "$@" ;;
-esac
+if [ "${1:-}" != cleanup ]; then
+  case "${CI_PARTITION:-}" in
+    sha256:*) exec node "$script_directory/ci-selection.mjs" --dispatch-inputs "$0" "$@" ;;
+  esac
+fi
 if [ "${CI_WATCHDOG_ACTIVE:-}" != 1 ] && [ -n "${CI_EXPECTED_DURATION_MS:-}" ] && [ -z "${1:-}" ]; then
   case "${SUITE:-}" in unit|unit-*|integration) exec node "$script_directory/ci-watchdog.mjs" -- bash "$0" ;; esac
 fi
@@ -25,14 +27,14 @@ chmod 700 "$state"
 
 # Keep only tool caches shared. Every check, including retained TS tests, gets this job's empty home.
 export FOREMAN_CODE_CI_GO_CACHE="$(realpath -m "${FOREMAN_CODE_CI_GO_CACHE:-$HOME/.cache/foreman-go}")"
+export FOREMAN_CODE_CI_POSTGRES_CACHE="$(realpath -m "${FOREMAN_CODE_CI_POSTGRES_CACHE:-$HOME/.cache/foreman-postgres}")"
 export COREPACK_HOME="$(realpath -m "${COREPACK_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/node/corepack}")"
-export HOME="$state/home"
-export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
-chmod 700 "$HOME"
-unset DATABASE_URL TEST_DATABASE_URL FOREMAN_CODE_CI_TEST_ADMIN_URL
+source "$script_directory/ci-runtime-state.sh"
+unset DATABASE_URL TEST_DATABASE_URL FOREMAN_CODE_DATABASE_URL FOREMAN_CODE_TEST_DATABASE_URL FOREMAN_CODE_CI_TEST_ADMIN_URL
 unset GRAPHQL_DATABASE_URL GRAPHQL_TEST_DATABASE_URL GRAPHQL_CI_TEST_ADMIN_URL PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD
 unset FOREMAN_CODE_API_ENV_FILE GRAPHQL_API_ENV_FILE PGSERVICE PGSERVICEFILE PGPASSFILE PGHOSTADDR
+unset GRAPHQL_CI_HOST_RUN_ID
+unset CONFORMANCE_GO_BINARY CONFORMANCE_POSTGRES_BIN_DIR
 pnpm() { corepack pnpm "$@"; }
 
 process_started_at() {
@@ -66,42 +68,65 @@ wait_preparation() {
   done
 }
 
-stop_go_preparation() {
-  preparation_running go || return 0
-  local process started
-  read -r process started < "$state/go.process" || return 1
+stop_tool_preparation() {
+  local name="$1" process started
+  preparation_running "$name" || return 0
+  read -r process started < "$state/$name.process" || return 1
   # The identity check includes start time, so it cannot target a reused PID.
   if ! kill -TERM -- "-$process"; then
-    preparation_running go || return 0
-    echo 'Unable to stop Go preparation.' >&2
+    preparation_running "$name" || return 0
+    echo "Unable to stop $name preparation." >&2
     return 1
   fi
-  wait_preparation go 5
+  wait_preparation "$name" 5
 }
 
 cleanup() {
-  local code=$? retain_home=0
+  local code=$? retain_home=0 descriptor
   trap - EXIT
-  # Successful preparation leaves its private state for the later suite invocation.
-  if [ "$code" = 0 ] && { [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; }; then return 0; fi
-  if [ "${SUITE:-}" = integration ]; then
-    # Cancel while the starter is alive. Its Docker RPC may finish after this first exact cleanup.
-    node "$script_directory/ci-go-prerequisites.mjs" database-stop || { if [ "$code" = 0 ]; then code=1; fi; }
-    wait_preparation db 170 || { retain_home=1; if [ "$code" = 0 ]; then code=1; fi; }
-    node "$script_directory/ci-go-prerequisites.mjs" database-stop || { if [ "$code" = 0 ]; then code=1; fi; }
+  if [ "$code" = 0 ] && [ "${1:-}" = start ]; then return 0; fi
+  if [ "$code" = 0 ] && [ "${1:-}" = prepare ]; then
+    case "${SUITE:-}" in integration|unit|unit-other) return 0 ;; esac
   fi
-  stop_go_preparation || { retain_home=1; if [ "$code" = 0 ]; then code=1; fi; }
-  if [ "$retain_home" = 0 ]; then rm -rf "$HOME" || { if [ "$code" = 0 ]; then code=1; fi; }; fi
+  # Suite, host and provider cleanup share one lock from loading the current record through removal.
+  # Synchronous non-database preparation also releases its runtime through this path.
+  exec {descriptor}> "$state/runtime-cleanup.lock" || { if [ "$code" = 0 ]; then code=1; fi; exit "$code"; }
+  flock --exclusive "$descriptor" || { if [ "$code" = 0 ]; then code=1; fi; exit "$code"; }
+  ci_runtime_load || { if [ "$code" = 0 ]; then code=1; fi; exit "$code"; }
+  if [ -n "$ci_runtime_root" ]; then ci_runtime_environment; fi
+  if [ "${1:-}" = cleanup ] || [ "${SUITE:-}" = integration ] || [ "${SUITE:-}" = unit ] || [ "${SUITE:-}" = unit-other ]; then
+    # Mark both profiles while starters are alive. A delayed Docker RPC can finish after the first cleanup.
+    node "$script_directory/ci-go-prerequisites.mjs" databases-stop || { if [ "$code" = 0 ]; then code=1; fi; }
+    local database
+    for database in db scripts-db; do
+      wait_preparation "$database" 170 || { retain_home=1; if [ "$code" = 0 ]; then code=1; fi; }
+    done
+    node "$script_directory/ci-go-prerequisites.mjs" databases-stop || { if [ "$code" = 0 ]; then code=1; fi; }
+  fi
+  local tool
+  for tool in go postgres; do
+    stop_tool_preparation "$tool" || { retain_home=1; if [ "$code" = 0 ]; then code=1; fi; }
+  done
+  if [ "$retain_home" = 0 ]; then ci_runtime_cleanup || { if [ "$code" = 0 ]; then code=1; fi; }; fi
   exit "$code"
 }
 trap 'cleanup "${1:-}"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+if [ "${1:-}" = cleanup ]; then
+  # Load only after the EXIT cleanup acquires the lifecycle lock.
+  exit 0
+fi
+ci_runtime_initialize
 
 if [ -z "${1:-}" ] && [ -n "${FOREMAN_CODE_CI_TYPECHECK_CACHE:-}" ] \
   && [ "${FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE:-}" != 1 ]; then
   case "${SUITE:-}" in
-    typecheck|typecheck-other) exec node "$script_directory/ci-typecheck-cache.mjs" -- bash "$0" ;;
+    typecheck|typecheck-other)
+      cache_code=0
+      node "$script_directory/ci-typecheck-cache.mjs" -- bash "$0" || cache_code=$?
+      # The child normally cleans the shared runtime. Retain our trap for failures before it starts.
+      exit "$cache_code" ;;
   esac
 fi
 
@@ -114,12 +139,16 @@ if [ "$go_part" = 1 ]; then
   ci_go_environment
   source "$script_directory/ci-go-suite.sh"
 fi
+if [ "${SUITE:-}" = integration ]; then
+  source "$script_directory/ci-postgres-toolchain.sh"
+  ci_postgres_environment
+  source "$script_directory/ci-conformance-suite.sh"
+fi
 
 prepare_one() {
   local name="$1" code=0
   shift
-  "$@" > "$state/$name.log" 2>&1 || code=$?
-  cat "$state/$name.log"
+  "$@" 2>&1 | tee "$state/$name.log" || code=$?
   printf '%s\n' "$code" > "$state/$name.exit"
   return "$code"
 }
@@ -128,6 +157,7 @@ background() {
   local name="$1"
   shift
   rm -f "$state/$name.exit" "$state/$name.process"
+  : > "$state/$name.log"
   # Positional arguments preserve spaces in cache/worktree paths and never become shell code.
   setsid nohup bash -c 'name="$1"; shift; "$@" > "$CI_STATE/$name.log" 2>&1; printf "%s\n" "$?" > "$CI_STATE/$name.exit"' \
     bash "$name" "$@" >/dev/null 2>&1 &
@@ -147,19 +177,36 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   fi
   if [ "$SUITE" = integration ]; then
     if [ "$1" = start ]; then
+      background postgres bash "$script_directory/ci-postgres-toolchain.sh" install
       background db node "$script_directory/ci-go-prerequisites.mjs" database-start
     else
+      prepare_one postgres bash "$script_directory/ci-postgres-toolchain.sh" install
       prepare_one db node "$script_directory/ci-go-prerequisites.mjs" database-start
+    fi
+  fi
+  if [ "$SUITE" = unit ] || [ "$SUITE" = unit-other ]; then
+    if [ "$1" = start ]; then
+      background scripts-db node "$script_directory/ci-go-prerequisites.mjs" scripts-database-start
+    else
+      prepare_one scripts-db node "$script_directory/ci-go-prerequisites.mjs" scripts-database-start
     fi
   fi
   exit 0
 fi
 
 ready() {
+  local name="$1" descriptor line='' complete=0
   [ "${CI_PREREQUISITES_UNTRACKED:-0}" != 1 ] || return 0
-  [ -f "$state/$1.log" ] || { echo "Prerequisite $1 startup status is missing" >&2; return 1; }
-  until [ -f "$state/$1.exit" ]; do sleep 0.5; done
-  [ "$(cat "$state/$1.exit")" = 0 ] || { cat "$state/$1.log"; echo "$1 failed to start" >&2; return 1; }
+  [ -f "$state/$name.log" ] || { echo "Prerequisite $name startup status is missing" >&2; return 1; }
+  exec {descriptor}< "$state/$name.log" || return $?
+  while [ "$complete" = 0 ]; do
+    if [ -f "$state/$name.exit" ]; then complete=1; fi
+    # The descriptor advances once through real output; a silent installer cannot reset the watchdog.
+    while IFS= read -r -u "$descriptor" line || [ -n "$line" ]; do printf '%s\n' "$line"; done
+    if [ "$complete" = 0 ]; then sleep 0.5; fi
+  done
+  exec {descriptor}<&-
+  [ "$(cat "$state/$name.exit")" = 0 ] || { echo "$name failed to start" >&2; return 1; }
 }
 
 # .go files and conformance are not understood by the frozen TS affected selector.
@@ -184,10 +231,15 @@ build_contracts() {
 }
 
 retained_check() {
-  local kind="$1"
+  local kind="$1" code=0 status
   build_contracts || return $?
-  pnpm -r --no-bail --filter @foreman-code/contracts --filter @foreman-code/web "$kind" || return $?
-  if [ "$kind" = typecheck ] && [ -f conformance/package.json ]; then pnpm --dir conformance typecheck; fi
+  pnpm -r --no-bail --filter @foreman-code/contracts --filter @foreman-code/web "$kind" || code=$?
+  if [ -f conformance/package.json ]; then
+    case "$kind" in typecheck|lint)
+      pnpm --dir conformance "$kind" || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; } ;;
+    esac
+  fi
+  return "$code"
 }
 
 unit_web() {
@@ -225,15 +277,29 @@ node_tests() {
     "--test-reporter=$script_directory/ci-node-test-reporter.mjs" "--test-reporter-destination=$report" "$@"
 }
 
+script_tests() (
+  local report="$1" database_environment
+  ready scripts-db || return $?
+  database_environment="$(node scripts/ci-go-prerequisites.mjs scripts-database-env)" || return $?
+  eval "$database_environment" || return $?
+  node_tests "$report" 'scripts/**/*.test.mjs'
+)
+
 unit_other() {
   local code=0 status directory="$state/unit-other"
   mkdir -p "$directory"
-  rm -f "$directory/contracts.json" "$directory/scripts.json"
+  rm -f "$directory/contracts.json" "$directory/scripts.json" "$directory/conformance.json"
   build_contracts || return $?
   reports+=("$directory/contracts.json" "$directory/scripts.json")
   pnpm --filter @foreman-code/contracts test --reporter=default --reporter=json \
     "--outputFile.json=$directory/contracts.json" || code=$?
-  node_tests "$directory/scripts.json" 'scripts/**/*.test.mjs' || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; }
+  if [ -f conformance/package.json ]; then
+    reports+=("$directory/conformance.json")
+    pnpm --dir conformance test --reporter=default --reporter=json \
+      "--reporter=$script_directory/ci-progress-reporter.mjs" "--outputFile.json=$directory/conformance.json" \
+      || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; }
+  fi
+  script_tests "$directory/scripts.json" || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; }
   return "$code"
 }
 
@@ -254,10 +320,11 @@ case "${SUITE:-}" in
   unit-other) run_check unit_other ;;
   unit) unset SLICE; run_check ci_go_test unit; run_check unit_web; run_check unit_web_heavy; run_check unit_other ;;
   integration)
-    ready db
-    database_environment="$(node scripts/ci-go-prerequisites.mjs database-env)"
-    eval "$database_environment"
-    run_check ci_go_test integration
+    run_check ci_go_integration_test
+    run_check build_contracts
+    run_check ci_go_conformance_binary
+    run_check ci_conformance_identity
+    run_check ci_conformance_postgres
     run_check ci_conformance_test go
     if ci_conformance_changed; then run_check ci_conformance_test ts; fi ;;
   *) echo "Unknown suite ${SUITE:-}" >&2; exit 2 ;;

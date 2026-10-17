@@ -256,13 +256,17 @@ function goCiDatabase(action) {
   const temporary = process.env.FOREMAN_CODE_CI_DATABASE_STATE ?? process.env.TMPDIR
   if (!process.env.CI_STATE && !temporary) throw new Error('Go CI database cleanup requires its private run directory')
   const state = process.env.CI_STATE ?? join(temporary, 'foreman-ci-state')
-  const command = action === 'up' ? 'database-start' : 'database-stop'
-  const script = fileURLToPath(new URL('./ci-go-prerequisites.mjs', import.meta.url))
-  const result = spawnSync(process.execPath, [script, command], {
+  let program = process.execPath
+  let args = [fileURLToPath(new URL('./ci-go-prerequisites.mjs', import.meta.url)), 'database-start']
+  if (action !== 'up') {
+    program = 'bash'
+    args = [fileURLToPath(new URL('./ci-suite.sh', import.meta.url)), 'cleanup']
+  }
+  const result = spawnSync(program, args, {
     env: { ...process.env, CI_STATE: state }, stdio: 'inherit',
   })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`Go CI PostgreSQL ${action} failed with status ${result.status}`)
+  if (result.status !== 0) throw new Error(`CI resource ${action} failed with status ${result.status}`)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

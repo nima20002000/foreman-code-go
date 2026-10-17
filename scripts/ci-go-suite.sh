@@ -48,31 +48,20 @@ ci_go_test() {
   return "$code"
 }
 
-ci_conformance_changed() {
-  local reference=refs/remotes/origin/main code=0
-  # BASE_COMMIT can be an arbitrary CI selection base; only fork main decides the TS oracle check.
-  if ! git fetch --quiet --no-tags --depth=1 origin "+refs/heads/main:$reference"; then
-    echo 'Fork main is unavailable; requiring the TS conformance target.' >&2
-    return 0
-  fi
-  git diff --quiet "$reference" HEAD -- conformance/ || code=$?
-  if [ "$code" = 0 ]; then return 1; fi
-  if [ "$code" != 1 ]; then echo 'Conformance comparison failed; requiring the TS target.' >&2; fi
-  return 0
+ci_go_integration_test() {
+  local database_environment
+  local DATABASE_URL TEST_DATABASE_URL FOREMAN_CODE_CI_TEST_ADMIN_URL
+  ready db || return $?
+  database_environment="$(node scripts/ci-go-prerequisites.mjs database-env)" || return $?
+  eval "$database_environment" || return $?
+  ci_go_test integration
 }
 
-ci_conformance_test() {
-  local target="$1" code=0
-  local input="$state/conformance-$target.json" report="$state/conformance-$target.vitest.json"
-  local durations="$state/conformance-$target.durations.json"
-  [ -f conformance/package.json ] || { echo 'The required conformance launcher is missing.' >&2; return 1; }
-  rm -f "$input" "$report" "$durations"
-  reports+=("$report")
-  # Proposed Q-CONF interface; its owner must supply this package script and report contract.
-  CONFORMANCE_TARGET="$target" CONFORMANCE_RESULTS_OUTPUT="$input" \
-    pnpm --dir conformance run test:ci || code=$?
-  node scripts/ci-conformance-results.mjs --input "$input" --output "$report" --target "$target" \
-    --durations "$durations" || { if [ "$code" = 0 ]; then code=1; fi; }
-  if [ -f "$durations" ]; then duration_reports+=("$durations"); fi
-  return "$code"
+ci_go_conformance_binary() {
+  export CONFORMANCE_GO_BINARY="$state/bin/foreman"
+  mkdir -p "$state/bin" || return $?
+  rm -f "$CONFORMANCE_GO_BINARY" || return $?
+  ci_go_check_module || return $?
+  printf 'Building the Go conformance target from backend/cmd/foreman\n'
+  (cd backend && go build -o "$CONFORMANCE_GO_BINARY" ./cmd/foreman)
 }
