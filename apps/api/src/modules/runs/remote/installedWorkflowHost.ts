@@ -436,8 +436,8 @@ class InstalledWorkflowHostRuntime {
           await log.renewReviewer(resident.intent.operationId, policy)
         } catch (error) {
           resident.reviewFailure = error
-          if (log.reviewerExpired(status.receipt.retainedReviewer.expiresAt)) {
-            await resident.host!.closeRetainedReviewer(resident.intent.operationId)
+          if (log.reviewerExpired(status.receipt.retainedReviewer.expiresAt)
+            && await resident.host!.closeRetainedReviewer(resident.intent.operationId, { sequence: status.receipt.sequence })) {
             delete resident.reviewFailure
             return
           }
