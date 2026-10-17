@@ -112,6 +112,18 @@ async function startBridge(endpoint: string, options: { clockScale?: number; cla
 const groupWait = (ticketId: string, waitSeconds: number) => ({ name: 'ci_get',
   arguments: { ticketId, waitUntil: 'group-terminal', waitSeconds, logTail: false } })
 
+it('reports a refused loopback connection as an unsent transport failure', async () => {
+  const server = createServer()
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Missing loopback listener')
+  await new Promise<void>(resolve => server.close(() => resolve()))
+  const bridge = await startBridge(`http://127.0.0.1:${address.port}/mcp`)
+  const reply = await bridge.request(32, 'tools/call', { name: 'reference_file_add', arguments: {} })
+  expect(reply.error.data).toEqual({ kind: 'transport' })
+  expect(bridge.lines.filter(line => line.id === 32)).toHaveLength(1)
+})
+
 it('allows a native reference call its queue, progressing upload and execution budgets', async () => {
   const budgetMs = deviceRequestTimeoutMs + deviceForegroundWaitMs + workerMcpUploadCeilingMs + 100_000
   const fake = await fakeEndpoint(() => ({ status: 200, delayMs: budgetMs / 100,

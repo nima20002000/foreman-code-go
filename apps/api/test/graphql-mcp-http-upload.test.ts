@@ -23,7 +23,7 @@ interface Reply {
   error?: { data: { code: string } }
 }
 
-async function uploadBridge() {
+async function uploadBridge(format: 'json' | 'sse' = 'json') {
   const cache = join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(cache, { recursive: true })
   const directory = await mkdtemp(join(cache, 'mcp-http-upload-'))
@@ -54,9 +54,10 @@ async function uploadBridge() {
         signal.throwIfAborted()
       }, controller.signal, { uploading: true })
       void pending.then(() => {
-        response.writeHead(200, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: 1,
-          result: { content: [], structuredContent: { stored: true } } }))
+        const body = JSON.stringify({ jsonrpc: '2.0', id: 1,
+          result: { content: [], structuredContent: { stored: true } } })
+        response.writeHead(200, { 'content-type': format === 'json' ? 'application/json' : 'text/event-stream' })
+        response.end(format === 'json' ? body : `data: ${body}\n\n`)
       }, (error: { code: string }) => {
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, data: { code: error.code } } }))
@@ -143,8 +144,9 @@ async function uploadBridge() {
     diagnostics: () => diagnostics }
 }
 
-it('delivers a progressing 25 MiB upload after queueing, 400 seconds of upload and execution', async () => {
-  const bridge = await uploadBridge()
+it.each(['json', 'sse'] as const)(
+  'delivers a progressing 25 MiB upload after queueing, 400 seconds of upload and execution (%s)', async format => {
+  const bridge = await uploadBridge(format)
   await bridge.advance(deviceRequestTimeoutMs + deviceForegroundWaitMs)
   bridge.begin()
   for (let seconds = 10; seconds <= 400; seconds += 10) {
