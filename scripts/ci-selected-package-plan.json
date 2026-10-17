@@ -1,0 +1,126 @@
+{
+  "source": "81bbcb80aaa4324d834b45b684d361e49cf62188",
+  "sourceTree": "7b2345a682b8829ef010818d44a7fcba4acbdf67",
+  "package": "./internal/harnesses/codex",
+  "goFiles": [
+    "internal/harnesses/codex/cancellation_test.go",
+    "internal/harnesses/codex/client.go",
+    "internal/harnesses/codex/delivery.go",
+    "internal/harnesses/codex/delivery_test.go",
+    "internal/harnesses/codex/framing.go",
+    "internal/harnesses/codex/protocol.go",
+    "internal/harnesses/codex/protocol/optional.go",
+    "internal/harnesses/codex/protocol/optional_test.go",
+    "internal/harnesses/codex/protocol/types.gen.go",
+    "internal/harnesses/codex/redaction.go",
+    "internal/harnesses/codex/scripted_server_integration_test.go",
+    "internal/harnesses/codex/transport.go",
+    "internal/harnesses/codex/transport_fixture_test.go",
+    "internal/harnesses/codex/transport_test.go"
+  ],
+  "unitTests": [
+    "TestTransportCancellationDuringValidationSendsNothing",
+    "TestTransportQueuedRequestCancellationSendsNothing",
+    "TestTransportCanceledResponseBeforeWriteIsDefinite",
+    "TestTransportResponseCancellationAfterWriteIsUncertain",
+    "TestTransportRespondsToNumericNativeCallback",
+    "TestTransportRejectsUnsupportedCallbackWithoutEchoingPayload",
+    "TestTransportResponseValidationPrecedesDelivery",
+    "TestTransportNullIDRemainsANotification",
+    "TestTransportRedactsKeysValuesAndEmbeddedJSONStringLiterals",
+    "TestTransportRejectsNonObjectNotificationParams",
+    "TestGeneratedNativeParametersPreserveOmissionNullAndFalse",
+    "TestGeneratedNativeTurnPreservesUnionPayload",
+    "TestTransportRequiresProtocolValidator",
+    "TestTransportCannotBeStartedTwice",
+    "TestTransportCorrelatesOutOfOrderResponses",
+    "TestTransportAcceptsFragmentedUnicodeAndCRLF",
+    "TestTransportMalformedFramesDoNotPoisonNextEvent",
+    "TestTransportCanceledBeforeSubmissionSendsNothing",
+    "TestTransportCancellationReconcilesLateResponseWithoutReplay",
+    "TestTransportTimeoutKeepsSubmissionUncertain",
+    "TestTransportNativeRejectionIsDefiniteAndRedacted",
+    "TestTransportInvalidResponseRetainsLateReconciliation",
+    "TestTransportRejectsOutboundByteLimitBeforeSubmission",
+    "TestTransportRejectsInvalidRequestThroughValidationPort",
+    "TestTransportUnknownResponseDoesNotStealCurrentRequest",
+    "TestTransportClosesIncompleteFrameAndPendingOperation"
+  ],
+  "integrationTests": [
+    "TestScriptedAppServerSessionAndTurn"
+  ],
+  "packages": [
+    "./internal/harnesses/codex",
+    "./internal/harnesses/codex/protocol"
+  ],
+  "integrationPackages": [
+    "./internal/harnesses/codex"
+  ],
+  "race": true,
+  "integrationRace": false,
+  "testTimeout": "30s",
+  "integrationTimeout": "60s",
+  "integrationRequiresDatabase": false,
+  "sourceProvenance": {
+    "old": "0ace55b2dc96fe898b82ce87c8fb2ba49b4d90d2",
+    "corrected": "81bbcb80aaa4324d834b45b684d361e49cf62188",
+    "originalGoCandidate": "c62fb50521c798969e7cb434b856841641297bee",
+    "fixturePin": {
+      "base_commit": "7fa547058109519a99c904493c916662fde6a474",
+      "path": "apps/api/test/fixtures/codex-app-server.cjs",
+      "git_blob": "4347cf3ea8dc40ac4b23b93fbe38cc5815c8975f",
+      "changed": false
+    },
+    "files": [
+      {
+        "path": "backend/internal/harnesses/codex/cancellation_test.go",
+        "old": {
+          "blob": "ff2f341a8a7ed5d1640a5cd815b7616d6a1a4079",
+          "sha256": "8923c2f2c5008a246ae5204e6aa1a92d58bff2bb840ae4c73bc71ae78a8559f1",
+          "bytes": 6911
+        },
+        "corrected": {
+          "blob": "ff2f341a8a7ed5d1640a5cd815b7616d6a1a4079",
+          "sha256": "8923c2f2c5008a246ae5204e6aa1a92d58bff2bb840ae4c73bc71ae78a8559f1",
+          "bytes": 6911
+        },
+        "original": {
+          "blob": "ff2f341a8a7ed5d1640a5cd815b7616d6a1a4079",
+          "sha256": "8923c2f2c5008a246ae5204e6aa1a92d58bff2bb840ae4c73bc71ae78a8559f1",
+          "bytes": 6911
+        }
+      },
+      {
+        "path": "apps/api/test/fixtures/codex-app-server.cjs",
+        "old": {
+          "blob": "4347cf3ea8dc40ac4b23b93fbe38cc5815c8975f",
+          "sha256": "54e9bd70b6734d50a8ed6a365ebaff9d23b6c1f9403eabab2b07f5495b52cbc7",
+          "bytes": 27266
+        },
+        "corrected": {
+          "blob": "4347cf3ea8dc40ac4b23b93fbe38cc5815c8975f",
+          "sha256": "54e9bd70b6734d50a8ed6a365ebaff9d23b6c1f9403eabab2b07f5495b52cbc7",
+          "bytes": 27266
+        },
+        "original": {
+          "blob": "4347cf3ea8dc40ac4b23b93fbe38cc5815c8975f",
+          "sha256": "54e9bd70b6734d50a8ed6a365ebaff9d23b6c1f9403eabab2b07f5495b52cbc7",
+          "bytes": 27266
+        },
+        "pinnedBase": {
+          "blob": "4347cf3ea8dc40ac4b23b93fbe38cc5815c8975f",
+          "sha256": "54e9bd70b6734d50a8ed6a365ebaff9d23b6c1f9403eabab2b07f5495b52cbc7",
+          "bytes": 27266
+        }
+      }
+    ],
+    "GoDeltaFromOriginal": {
+      "paths": [
+        "backend/internal/harnesses/codex/protocol/types.gen.go"
+      ],
+      "commentOnly": true,
+      "generatorNotRerun": true
+    }
+  },
+  "mode": "package"
+}
