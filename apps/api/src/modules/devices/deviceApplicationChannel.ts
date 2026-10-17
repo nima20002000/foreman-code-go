@@ -67,6 +67,8 @@ export function extensionDescriptors(registrations: DeviceExtensionRegistration[
     ...((registration.namespace === 'computer-maintenance-v2' && registration.version === 2
       || registration.namespace === 'execution-v1' && registration.version === 1)
       ? { observationAdmission: true as const } : {}),
+    ...(registration.namespace === CI_HOST_NAMESPACE && registration.version === 1
+      ? { ciStopAdmission: true as const } : {}),
   })))
 }
 export function deviceNegotiationHash(extensions: DeviceNegotiatedExtension[]) {
@@ -244,7 +246,8 @@ export class DeviceApplicationChannel {
     const extension = this.negotiated(namespace, true)
     this.current()
     const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
-    const stop = (namespace === stopNamespace || namespace === CI_HOST_NAMESPACE && this.options.side === 'main')
+    const stop = (namespace === stopNamespace || namespace === CI_HOST_NAMESPACE
+      && this.options.side === 'main' && extension.ciStopAdmission === true)
       && !options.bytes && this.stopRequest(namespace, payload)
     const priority = effectiveDeviceRequestPriority(namespace, payload, options.priority)
     const bulk = deviceRequestIsBulk(namespace, payload, options.bytes !== undefined)

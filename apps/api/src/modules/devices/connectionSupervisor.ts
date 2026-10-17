@@ -114,6 +114,7 @@ export class DeviceConnectionSupervisor {
               namespace: item.namespace, version: item.version, role,
               maxJsonBytes: item.maxJsonBytes, maxBinaryBytes: item.maxBinaryBytes,
               ...(item.observationAdmission !== undefined ? { observationAdmission: item.observationAdmission } : {}),
+              ...(item.ciStopAdmission !== undefined ? { ciStopAdmission: item.ciStopAdmission } : {}),
             }
           })), extensionDescriptors(this.options.extensions ?? []))
         } catch { throw new DeviceConnectionError('malformed-frame') }
