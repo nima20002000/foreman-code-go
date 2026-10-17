@@ -202,3 +202,21 @@ it('reports a missing binding without hiding its computer', async () => {
   })])
   expect(f.evidence).not.toHaveBeenCalled()
 })
+
+
+it('offers the current qualified installation for an unchanged saved profile revision', async () => {
+  const f = fixture({ host: 'device' })
+  f.configuration.harnessProfileSelection = { instanceId: f.profile.instanceId,
+    instanceRevision: f.profile.instanceRevision,
+    target: { ...f.profile.target, harnessInstallationId: 'previous', installationFingerprint: 'previous' } }
+  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({
+    availability: 'ready', placement: expect.objectContaining({
+      harnessInstallationId: f.profile.target.harnessInstallationId,
+      instanceRevision: f.profile.instanceRevision,
+    }),
+  })])
+  f.installations.mockReturnValue([])
+  expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({ availability: 'unavailable' })])
+  f.profile.instanceRevision = 'edited'
+  expect(await f.service.list(f.principal, f.input)).toEqual([])
+})

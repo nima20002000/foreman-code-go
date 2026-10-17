@@ -273,3 +273,25 @@ it('retries discovery for a connected Worker whose first inventory was unavailab
     expect(request).toHaveBeenCalledOnce()
   } finally { await monitor.close() }
 })
+
+
+it('refreshes a required host with foreground admission while background discovery is backing off', async () => {
+  const hostRef = { kind: 'device' as const, mainId: 'main', deviceId: 'worker' }
+  const request = vi.fn().mockRejectedValueOnce(new DeviceApplicationAdmissionError())
+    .mockResolvedValue({ payload: { installations: [] } })
+  const collected: unknown[] = []
+  const registry = { installations: { list: () => [{ hostRef }] }, observeInstallations: () => {} }
+  const monitor = new HarnessInstallationMonitor(registry as never, {} as never,
+    () => ({ captureRequest: () => ({ binding: {}, request, busy: false }) }) as never,
+    async (_binding, inventory) => { collected.push(inventory) }, async () => {}, vi.fn())
+  try {
+    await monitor.refresh()
+    await monitor.refresh()
+    expect(request).toHaveBeenCalledTimes(1)
+    await expect(monitor.refreshHosts([hostRef])).resolves.toBeUndefined()
+    expect(collected).toEqual([{ installations: [] }])
+    expect(request.mock.calls[1]![1]).toMatchObject({ priority: 'foreground' })
+    await monitor.refresh()
+    expect(request).toHaveBeenCalledTimes(2)
+  } finally { await monitor.close() }
+})

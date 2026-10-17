@@ -174,3 +174,59 @@ describe('explicit chat profile configuration producer', () => {
     expect(retry.harnessProfileSelection).toEqual(selection)
   })
 })
+
+
+it('retains a saved selection across qualified installation replacements on the same host and configuration', async () => {
+  const f = selectionService()
+  const client = {} as pg.PoolClient
+  const replacement = { ...f.value.target, harnessInstallationId: 'replacement', installationFingerprint: 'updated' }
+  f.value.target = replacement
+  let qualified = true
+  const service = new HostHarnessOverrideService(f.repository, {} as PostgresCommandCoordinator,
+    { authorize: f.authorize }, async value => ({ target: value.target,
+      configurationFingerprint: value.configurationFingerprint, qualified }))
+  await expect(service.validateSelection(principal, selection, configuration, client)).resolves.toBeUndefined()
+  qualified = false
+  await expect(service.validateSelection(principal, selection, configuration, client))
+    .rejects.toMatchObject({ code: 'HARNESS_PROFILE_SELECTION_CONFLICT' })
+  qualified = true
+  f.value.instanceRevision = '4'
+  await expect(service.validateSelection(principal, selection, configuration, client))
+    .rejects.toMatchObject({ code: 'HARNESS_PROFILE_SELECTION_CONFLICT' })
+})
+
+it('saves a changed role while retaining an unchanged default on a revoked computer', async () => {
+  const writer: ManagementPrincipal = { ...principal, grants: [{ actions: ['settings:update', 'settings:read',
+    'harnesses:read'], scope: {} }] }
+  const client = { query: async () => ({ rows: [principalRow(writer)] }) } as unknown as pg.PoolClient
+  let saved = { value: { ...DEFAULT_AGENT_DEFAULTS,
+    coder: { ...DEFAULT_AGENT_DEFAULTS.coder, harnessProfileSelection: selection } }, revision: 1 }
+  const settings = { getAgentDefaults: async () => structuredClone(saved),
+    updateManagedAgentDefaults: async (_client: pg.PoolClient, value: typeof saved.value) => {
+      saved = { value, revision: saved.revision + 1 }
+      return saved
+    } } as unknown as PostgresFoundationSettingsRepository
+  const commands = { execute: async (command: {
+    authorize(client: pg.PoolClient): Promise<void>; perform(client: pg.PoolClient): Promise<unknown>
+  }) => {
+    await command.authorize(client)
+    return { value: await command.perform(client), replayed: false }
+  } } as unknown as PostgresCommandCoordinator
+  const profiles = { validateSelection: async () => { throw new Error('Computer revoked') } }
+  const accounts = { resolve: async (harness: unknown, selected: unknown) => {
+    if (selected) throw new Error('Computer revoked')
+    return harness
+  } }
+  const service = new FoundationSettingsManagementService(settings, commands, undefined, undefined, profiles,
+    accounts as never)
+  const value = { ...saved.value, operator: { ...saved.value.operator, showThinking: true } }
+  await expect(service.updateAgentDefaults(writer, 'mcp', { commandId: 'thinking', value }))
+    .resolves.toMatchObject({ value: { value } })
+  expect(await service.getAgentDefaults(writer)).toEqual({ value, revision: 2 })
+  await expect(service.updateAgentDefaults(writer, 'mcp', { commandId: 'model',
+    value: { ...value, coder: { ...value.coder, harness: { ...value.coder.harness, model: 'changed' } } } }))
+    .rejects.toThrow('Computer revoked')
+  expect((await service.getAgentDefaults(writer)).revision).toBe(2)
+  await expect(async () => service.updateAgentDefaults({ ...writer, grants: [] }, 'mcp', { commandId: 'denied', value }))
+    .rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+})

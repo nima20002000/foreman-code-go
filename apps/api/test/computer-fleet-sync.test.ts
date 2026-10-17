@@ -424,3 +424,15 @@ describe('fleet source propagation', () => {
     expect([...computer.codexMcp]).toEqual(['docs'])
   })
 })
+
+
+it.each(['http://127.0.0.1:9000/mcp', 'http://127.9.8.7/mcp', 'http://localhost:9000/mcp',
+  'http://[::1]:9000/mcp', 'http://0.0.0.0:9000/mcp', 'http://[::]:9000/mcp',
+  'http://service.localhost:9000/mcp'])('keeps host-local MCP endpoint %s out of fleet copies', url => {
+  const skipped: string[] = []
+  expect(syncableServers({ local: { url }, shared: { url: 'https://shared.example/mcp' } },
+    name => { skipped.push(name) })).toEqual([
+    { transport: 'http', name: 'shared', url: 'https://shared.example/mcp', bearerTokenEnvVar: null },
+  ])
+  expect(skipped).toEqual(['local'])
+})
