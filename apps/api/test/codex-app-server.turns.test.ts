@@ -500,7 +500,7 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const stream = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'ordinary-cancel' }, controller.signal))
     await until(async () => (await manager.history(session)).events.some((event) => event.type === 'turn.started'))
     controller.abort(new Error('ordinary cancellation'))
-    await stream.catch(() => undefined)
+    await stream.catch(() => { /* ignore: the aborted stream rejects by design; the interrupt request is asserted below. */ })
     const requests = await until(async () => {
       const requests = await wire('turn/interrupt')
       return requests.length === 1 ? requests : false

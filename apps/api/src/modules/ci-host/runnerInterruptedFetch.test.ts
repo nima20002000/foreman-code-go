@@ -63,7 +63,11 @@ it('refetches a commit whose canceled warmup fetch left its files incomplete bef
     real = runner.handle({ ...request, runId, suite: 'lint' })
     await real
     await expect(warmup).resolves.toMatchObject({ run: { state: 'canceled' } })
-    const read = async () => (await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 10_000 })).run
+    const read = async () => {
+      const reply = await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 10_000 })
+      if (!('run' in reply)) throw new Error('Expected a run reply')
+      return reply.run
+    }
     await vi.waitFor(async () => expect((await read()).state).not.toBe('starting'), { timeout: 10_000 })
     expect(await read()).toMatchObject({ state: 'running', message: null })
     expect(launches).toEqual([`foreman-ci-${runId}`])
