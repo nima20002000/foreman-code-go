@@ -1,0 +1,33 @@
+{
+  "source": "d02f2efe46e017bff7eeec243658f3205f044840",
+  "ownerDeclaredSource": "d02f2efe46e017bff7eeec243658f3205f044840",
+  "sourceTree": "adda74afde167dadbdbafa04fa0fc857b1b31cfe",
+  "package": "./internal/transfer",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/transfer/integrity_linux.go",
+    "internal/transfer/integrity_linux_test.go",
+    "internal/transfer/staging_linux.go",
+    "internal/transfer/staging_linux_test.go"
+  ],
+  "unitFlags": [],
+  "unitRoots": [
+    "TestStagingBinaryChunksAndExactDuplicate",
+    "TestStagingInvalidChunksLeaveCommittedBytesUnchanged",
+    "TestStagingReconcileTruncatesOnlyUncommittedTail",
+    "TestStagingCorruptCommittedPrefixFailsWithoutTruncation",
+    "TestStagingFullVerificationRechecksBytesAndLength",
+    "TestStagingEmptyObjectRejectsAdditionalBytes",
+    "TestStagingDataSyncFailureReturnsNoPrefix",
+    "TestStagingCancellationDoesNotAcknowledgeData",
+    "TestStagingDirectorySyncPropagatesFailure",
+    "TestStagingCloseRetainsBytesAndRejectsFurtherUse",
+    "TestStagingCreatesPrivateDirectoriesAndFiles",
+    "TestStagingRejectsUnsafeRoots",
+    "TestStagingRejectsUnsafeNamesAndLimitsWithoutCreatingParts",
+    "TestStagingRejectsUnsafeExistingPartFiles",
+    "TestStagingDetectsPartHardlinkAddedAfterOpen",
+    "TestStagingWritesRemainPinnedAfterAncestorSwap"
+  ],
+  "unitPattern": "^TestStaging"
+}
