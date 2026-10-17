@@ -27,6 +27,7 @@ import { createInstalledConversationNativeReader } from './installedNativeProfil
 import { installedConversationDirectory } from './installedConversationDirectory.js'
 import { workerConversationCallbacks } from './workerCallbacks.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
+import { appLauncherPath } from '../harnesses/appMcpLauncher.js'
 import { WorkerConversationHost, type WorkerConversationAllocation } from './workerHost.js'
 import type { WorkerConversationChannel } from './workerBridge.js'
 import { allocateInstalledWorkerClaude } from './installedWorkerClaude.js'
@@ -56,7 +57,6 @@ interface InstalledWorkerConversationsInput {
 }
 
 function createInstalledConversationAllocator(input: InstalledWorkerConversationsInput,
-  selected: NonNullable<Awaited<ReturnType<typeof readInstalledWorkflowConfiguration>>>,
   conversationJournal: RemoteOperationJournal['conversations'], source: () => WorkerConversationRpcRequest,
   callbacks: ReturnType<typeof workerConversationCallbacks>, files: WorkerConversationFiles) {
   const payloadFingerprints = new PayloadFingerprintCache()
@@ -64,7 +64,7 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
     connection: Readonly<DeviceSessionBinding>, purpose: 'chat' | 'compaction-read' | 'preparation'): Promise<WorkerConversationAllocation> {
     const harness = binding.harness
     if (harness === 'claude') return allocateInstalledWorkerClaude({ binding, configuration, connection, purpose,
-      stateDirectory: input.stateDirectory, selection: input.configuration, launcher: selected.appMcpLauncher,
+      stateDirectory: input.stateDirectory, selection: input.configuration, launcher: appLauncherPath(),
       journal: conversationJournal,
       current: input.current, source, callbacks, approvedRoots: input.approvedRoots, registry: input.registry,
       request: input.request, signal: input.signal, ...(input.accounts ? { accounts: input.accounts } : {}) })
@@ -175,7 +175,7 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
         if (mcp) unavailable('The native chat already has a scoped MCP route.')
         const relay = await prepareWorkerConversationMcp({ source: source(), token: options.applicationAccess.token,
           request: input.request, signal: input.signal })
-        mcp = await createWorkerMcpEndpoint({ relay, launcher: selected.appMcpLauncher, signal: input.signal })
+        mcp = await createWorkerMcpEndpoint({ relay, launcher: appLauncherPath(), signal: input.signal })
         environment = relay.environment
         mcpEnvironment = relay.environment
       }
@@ -236,7 +236,7 @@ export async function createInstalledWorkerConversations(input: InstalledWorkerC
   }
   const callbacks = workerConversationCallbacks({ currentBinding: input.current, capture: input.capture })
   const files = new WorkerConversationFiles(callbacks)
-  const allocate = createInstalledConversationAllocator(input, selected, conversationJournal, source, callbacks, files)
+  const allocate = createInstalledConversationAllocator(input, conversationJournal, source, callbacks, files)
   const host = new WorkerConversationHost({ ...callbacks, currentBinding: input.current,
     journal: conversationJournal,
     allocate: (binding, configuration, connection) => allocate(binding, configuration, connection, 'chat'),

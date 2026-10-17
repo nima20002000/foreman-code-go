@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readFile, realpath, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { openPrivateRoot, anchored } from '../../../apps/api/src/modules/sources/privateFilesystem.ts';
@@ -122,11 +122,11 @@ async function claudeSdkSelection(binary, source, environment, release, signal) 
 
 function workerSdkNeedsUpgrade(claude, release) {
   if (!claude?.sdkEntrypoint) return false;
-  const versions = dirname(join(release));
+  const versions = dirname(release);
   const [version] = relative(versions, claude.sdkEntrypoint).split('/');
   if (!/^\d+\.\d+\.\d+-[a-f0-9]{64}$/u.test(version)) return false;
   const selectedRelease = join(versions, version);
-  if (selectedRelease === join(release)
+  if (selectedRelease === release
     || !claude.sdkEntrypoint.startsWith(`${selectedRelease}/node_modules/`)) return false;
   return [join(selectedRelease, 'artifacts/claude-sdk-lock.yaml'),
     join(selectedRelease, 'node_modules/.pnpm/lock.yaml')].includes(claude.installedLockPath);
@@ -134,7 +134,7 @@ function workerSdkNeedsUpgrade(claude, release) {
 
 async function upgradeClaudeSdk(claude, environment, release, signal) {
   const selection = await claudeSdkSelection(claude.binary, join(release, 'package.json'), environment, release, signal);
-  if (!selection || !selection.sdkEntrypoint.startsWith(`${join(release)}/node_modules/`)) {
+  if (!selection || !selection.sdkEntrypoint.startsWith(`${release}/node_modules/`)) {
     throw new WorkerError('installed_claude_sdk_unavailable');
   }
   return selection;
@@ -143,7 +143,7 @@ async function upgradeClaudeSdk(claude, environment, release, signal) {
 /** A launcher from one of this Worker's own releases follows the running release; an explicit one stays. */
 function currentLauncher(configuration, release) {
   const launcher = join(release, 'artifacts/graphql-mcp.mjs');
-  const releases = `${dirname(release.replace(/\/$/, ''))}/`;
+  const releases = `${dirname(release)}/`;
   return configuration.appMcpLauncher.startsWith(releases) ? { ...configuration, appMcpLauncher: launcher } : configuration;
 }
 
@@ -181,6 +181,7 @@ export async function refreshWorkflowSelection({ stateDirectory, release = relea
   environment = { ...process.env, PATH: workerPath(process.env.HOME ?? '', process.execPath) },
   assertStateOwnership, signal = AbortSignal.timeout(30_000),
   reportError = error => process.stderr.write(`Workflow harness selection: ${error.code ?? 'installation_unavailable'}\n`) }) {
+  release = resolve(release);
   assertStateOwnership();
   signal.throwIfAborted();
   const state = await openPrivateRoot(stateDirectory);
