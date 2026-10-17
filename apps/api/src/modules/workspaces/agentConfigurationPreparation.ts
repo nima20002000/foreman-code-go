@@ -12,7 +12,7 @@ interface ConfigurationInput {
   selection: HarnessProfileSelection | undefined
 }
 
-/** Native profile setup may borrow the application pool and must precede workspace ownership. */
+/** Native profile setup may run nested commands and must precede database ownership. */
 export function prepareAgentConfiguration(input: {
   pool: pg.Pool
   accounts: ProviderAccountConfigurationService
@@ -33,6 +33,7 @@ export function prepareAgentConfiguration(input: {
           principal: input.principal(), source: input.source, commandId: input.commandId })
       },
       preparedMutation: {
+        releaseDuringPreparation: true as const,
         resourceLock: `admission:workspace:${input.workspaceId}`,
         validate: async (client: pg.PoolClient) => {
           await lockActiveWorkspace(client, input.workspaceId)

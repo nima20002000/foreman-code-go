@@ -1,3 +1,5 @@
+import { errorMessage } from '../../shared/errorMessage.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type pg from 'pg'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import {
@@ -119,7 +121,12 @@ export class BuildComputerSettings {
     requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), action)
   }
   private async status(preference: BuildComputerPreference): Promise<BuildComputerStatus> {
-    const readiness = await this.readiness(this.pool, preference.target, preference.buildAllowancePercent)
+    const readiness = await this.readiness(this.pool, preference.target, preference.buildAllowancePercent).catch(error => {
+      logIgnoredError('jobs', 'observe build computer readiness', error, { target: preference.target })
+      return { state: 'offline' as const,
+        reasons: [`Readiness unavailable: ${errorMessage(error, 'Readiness probe failed.')}`],
+        remoteExecutionEnabled: false }
+    })
     return { preference, ...readiness,
       state: preference.buildEnabled ? readiness.state : 'disabled',
       reasons: preference.buildEnabled ? readiness.reasons : ['Enable builds to participate.'] }

@@ -201,25 +201,37 @@ it('returns a readiness observation after releasing the build-order read lock', 
   } finally { await f.close() }
 })
 
-it('commits the batch and retry receipt before a remote readiness observation can fail', async () => {
+it('returns committed preferences and per-computer unavailable readiness after a disconnected observation', async () => {
   const f = await fixture()
   const entered = deferred()
   const release = deferred()
   let pending: ReturnType<typeof f.settings.updateBatch> | undefined
   try {
-    f.readiness.mockImplementation(async () => {
+    f.readiness.mockImplementation(async (_sql, target) => {
+      if (buildComputerKey(target) !== buildComputerKey(targets[1]!)) {
+        return { state: 'ready', reasons: [], remoteExecutionEnabled: true }
+      }
       entered.resolve()
       await release.promise
       throw new Error('Computer disconnected during readiness')
     })
     const command = { commandId: 'save-with-disconnected-observation', updates: f.updates }
-    pending = f.settings.updateBatch(owner, 'mcp', command)
-    const outcome = pending.catch(error => error)
+    const client = await f.connect('owner')
+    pending = client.callTool({ name: 'build_computers_update', arguments: command })
+      .then(result => BuildComputerBatchResultSchema.parse(decodeMcpToolResult(result)))
+    const outcome = pending.then(value => ({ value }), error => ({ error }))
     await entered.promise
     expect(f.committed().map(row => row.revision)).toEqual(['1', '1', '1', '1'])
     expect(f.canChangeBuildOrder()).toBe(true)
     release.resolve()
-    expect(await outcome).toMatchObject({ message: 'Computer disconnected during readiness' })
+    const completed = await outcome
+    expect(completed).toMatchObject({ value: { computers: [
+      { preference: { revision: 1 }, state: 'ready' },
+      { preference: { revision: 1 }, state: 'offline', reasons: ['Readiness unavailable: Computer disconnected during readiness'] },
+      { preference: { revision: 1 }, state: 'ready' },
+      { preference: { revision: 1 }, state: 'ready' },
+    ] } })
+    expect(await f.settings.updateBatch(owner, 'mcp', command)).toEqual('value' in completed ? completed.value : undefined)
     f.readiness.mockResolvedValue({ state: 'ready', reasons: [], remoteExecutionEnabled: true })
     const replay = await f.settings.updateBatch(owner, 'mcp', command)
     expect(replay.computers.map(computer => computer.preference.revision)).toEqual([1, 1, 1, 1])
@@ -229,7 +241,21 @@ it('commits the batch and retry receipt before a remote readiness observation ca
     }
   } finally {
     release.resolve()
-    await pending?.catch(error => expect(error.message).toBe('Computer disconnected during readiness'))
+    if (pending) await Promise.allSettled([pending])
     await f.close()
   }
+})
+
+
+it('returns a committed single-computer disable when its readiness probe fails', async () => {
+  const f = await fixture()
+  try {
+    f.readiness.mockRejectedValue(new Error('Readiness transport unavailable'))
+    const command = { commandId: 'disable-disconnected-computer', ...f.updates[1]!, buildEnabled: false }
+    const saved = await f.settings.update(owner, 'http', command)
+    expect(saved).toMatchObject({ preference: { revision: 1, buildEnabled: false },
+      state: 'disabled', reasons: ['Enable builds to participate.'] })
+    expect(await f.settings.update(owner, 'http', command)).toEqual(saved)
+    expect(f.changed).toHaveBeenCalledTimes(1)
+  } finally { await f.close() }
 })
