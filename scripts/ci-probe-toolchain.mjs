@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -61,9 +61,16 @@ try {
   if (!bootstrap) {
     report({ feasible: false, reason: 'No existing Go >=1.21 found on PATH or standard installed locations.' })
   } else {
-    // The first verified probe left only its own read-only downloaded module cache.
-    await removeOwnedProbe(join(parent, 'go-probe-0vhvAR'))
+    // This task's completed probes left only their invocation roots. The current
+    // invocation remains live, and schema captures use a different directory prefix.
+    for (const name of readdirSync(parent).filter(name => /^go-probe-[A-Za-z0-9]+$/.test(name))) {
+      const previous = join(parent, name)
+      if (previous !== root) await removeOwnedProbe(previous)
+    }
     report({ previousOwnedProbeCache: 'removed with official go clean -modcache' })
+    if (process.argv[2] === '--cleanup-only') {
+      report({ cleanupOnly: true, officialToolchainResult: 'retained from verified first probe; no duplicate download' })
+    } else {
     report({ requested: 'go1.27.2', proxy: environment.GOPROXY, checksumDatabase: environment.GOSUMDB,
       cache: 'fresh private invocation cache; no existing cache or global Go configuration modified' })
     const result = await command(bootstrap, ['version'], { ...environment, GOTOOLCHAIN: 'go1.27.2' }, 180_000)
@@ -74,5 +81,6 @@ try {
     const diagnostics = result.stderr.split('\n').filter(line => /go1\.27\.2|golang\.org\/toolchain|proxy\.golang\.org|sum\.golang\.org|404|403|checksum|verification/.test(line)).slice(-8)
     report({ feasible: verified, status: result.status, version: verified ? result.stdout : undefined,
       verifiedModuleChecksum, diagnostics })
+    }
   }
 } finally { await removeOwnedProbe(root) }

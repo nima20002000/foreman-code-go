@@ -6,7 +6,7 @@
 set -euo pipefail
 case "${SUITE:-}" in
   unit|unit-*)
-    if [ -z "${1:-}" ]; then node scripts/ci-probe-toolchain.mjs; fi
+    if [ -z "${1:-}" ]; then node scripts/ci-probe-toolchain.mjs --cleanup-only; fi
     exit 0 ;;
 esac
 umask 077
