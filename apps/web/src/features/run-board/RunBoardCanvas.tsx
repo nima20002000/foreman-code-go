@@ -11,6 +11,7 @@ import '../workflow-board/inspect/inspection.css'
 import { ciNodePresentation } from './ciPresentation'
 import { SignalEdgeShape } from '../graph/SignalEdgeShape'
 import { useResponsiveGraphViewport } from '../graph/useResponsiveGraphViewport'
+import { isRunAccessError } from '../runs-selector/query'
 import { RunSubagentsOverlay } from '../run-subagents/RunSubagentsOverlay'
 import { savedEdgeCurve } from './curve'
 import { projectRunBoard, READ_ONLY_FLOW_PROPS, type AvailableRunBoardSnapshot, type SavedBoardEdge, type SavedBoardNode } from './model'
@@ -66,10 +67,15 @@ export function RunBoardCanvas({ snapshot, activitySnapshot, onInspectNode }: {
   }, [snapshot, activitySnapshot, onInspectNode])
   const scope = useMemo(() => ({ workspaceId: snapshot.workspaceId, workflowId: snapshot.workflowId,
     runId: snapshot.runId, workflowVersionId: snapshot.workflowVersionId, executionSemanticsVersion: 3 as const }), [snapshot])
+  const active = !activitySnapshot || activitySnapshot.active.length > 0
+    || activitySnapshot.queued.length > 0 || activitySnapshot.hasMoreActiveWork === true
   const ciList = useQuery({
     queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'],
     queryFn: ({ signal }) => runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal }),
-    retry: false, refetchInterval: (query) => !query.state.error && query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false,
+    retry: false, refetchInterval: (query) => {
+      if (isRunAccessError(query.state.error)) return false
+      return active || query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false
+    },
   })
   const names = useMemo(() => new Map(snapshot.nodes.map((node) => [node.id, node.name])), [snapshot.nodes])
   const towerNodes = useMemo(() => nodes.map((node) => ({ position: node.position, ...node.data.snapshot.size })), [nodes])

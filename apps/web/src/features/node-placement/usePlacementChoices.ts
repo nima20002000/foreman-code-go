@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { NodePlacementChoicesInput } from '@foreman-code/contracts/placement-readback'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
+import { isApiAccessError } from '../../shared/api/accessError'
 import { readPlacementChoices } from './client'
 import type { NodePlacementOption } from './NodePlacementField'
 
@@ -14,6 +15,8 @@ export function usePlacementChoices(scope: NodePlacementChoicesInput | undefined
       assertSession(session)
       return response
     },
+    // Pending qualification can omit a computer entirely, so ready choices also need refreshes.
+    refetchInterval: query => isApiAccessError(query.state.error) ? false : 5_000,
     enabled: !!scope && !sessionIsSwitching(), retry: false, staleTime: 0, gcTime: 0, placeholderData: () => undefined,
   })
   const current = session === sessionGeneration() && !sessionIsSwitching()

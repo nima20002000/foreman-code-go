@@ -110,7 +110,9 @@ export function CiJobsTable({ jobs, agent, selectedId, truncated, onShow, run }:
       <td>{label(job.scope)}</td>
       <td>{job.placement ? CI_PLACEMENT_LABELS[job.placement] : 'Waiting for a computer'}
         {job.ci.computer ? <small>{job.ci.computer.label}</small> : null}</td>
-      <td><Badge tone={stateTone[job.ci.state]} dot>{label(job.ci.state)}</Badge>
+      <td><Badge tone={job.message && isActiveCiJob(job) ? 'warning' : stateTone[job.ci.state]} dot>
+        {label(job.ci.state)}</Badge>
+        {job.message ? <small>{job.message}</small> : null}
         {job.ci.step ? <small>Step {job.ci.step}</small> : null}
         {job.tests ? <small>{job.tests.passed} passed · {job.tests.failed} failed · {job.tests.skipped} skipped</small> : null}</td>
       <td>{agent(job)}</td>
@@ -125,7 +127,9 @@ export function CiJobsTable({ jobs, agent, selectedId, truncated, onShow, run }:
 function CiJobHeader({ job, agent }: { job: CiRunJob; agent?: string }) {
   const duration = ciJobDuration(job)
   return <p className="ci-server-job">
-    <strong>{ciJobLabel(job.ci)}</strong> <Badge tone={stateTone[job.ci.state]} dot>{label(job.ci.state)}</Badge>
+    <strong>{ciJobLabel(job.ci)}</strong>
+    <Badge tone={job.message && isActiveCiJob(job) ? 'warning' : stateTone[job.ci.state]} dot>{label(job.ci.state)}</Badge>
+    {job.message ? <span>{job.message}</span> : null}
     {agent ? <span>Requested by {agent}</span> : null}
     <span>{ciComputerLabel(job.ci)}</span>
     {job.ci.startedAt ? <span>Started <time dateTime={job.ci.startedAt}>{formatClock(job.ci.startedAt)}</time></span> : null}
@@ -137,7 +141,7 @@ function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: 
   statuses: readonly CiTestStatus[]; onStatusesChange(statuses: CiTestStatus[]): void }) {
   const selected = STATUSES.filter((status) => statuses.includes(status))
   const query = useQuery({
-    queryKey: [...runInspectionQueryKey(scope), 'ci-tests', job.ticketId, selected.join(','), job.ci.state],
+    queryKey: [...runInspectionQueryKey(scope), 'ci-tests', job.ticketId, selected.join(','), job.ci.state, job.tests],
     queryFn: ({ signal }) => runCiApi.tests({ workspaceId: scope.workspaceId, ticketId: job.ticketId,
       ...(selected.length < STATUSES.length ? { status: selected } : {}) }, { signal }),
     enabled: selected.length > 0, retry: false,

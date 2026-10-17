@@ -71,10 +71,10 @@ export function subscribeOperatorChat(id: string, listeners: {
     }
   }
   function schedule() {
-    if (!valid() || timer || source || recovering || retries >= 6) return
+    if (!valid() || timer || source || recovering) return
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return
     const delay = Math.min(1_000 * 2 ** retries, 10_000)
-    retries++
+    retries = Math.min(retries + 1, 4)
     timer = setTimeout(() => { timer = undefined; void recover() }, delay)
   }
   const refresh = () => {
