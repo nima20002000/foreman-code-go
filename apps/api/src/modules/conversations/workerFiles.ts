@@ -49,7 +49,9 @@ export class WorkerConversationFiles {
   }): CodexChatFiles {
     return { prepare: async turn => {
       const source = input.source()
-      if (!source.admissionId || source.binding.harness !== 'codex' || source.binding.appMcpAccess !== 'none'
+      const missingFileInputs = source.binding.appMcpAccess === 'scoped'
+        && !(source.method === 'conversation.start-turn' && source.fileInputs)
+      if (!source.admissionId || source.binding.harness !== 'codex' || missingFileInputs
         || !['conversation.initial-turn', 'conversation.start-turn'].includes(source.method)
         || !('correlationId' in source) || source.correlationId !== turn.clientCorrelationId
         || this.deliveries.has(source.admissionId)) this.denied()

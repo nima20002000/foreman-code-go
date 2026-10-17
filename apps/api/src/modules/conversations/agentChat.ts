@@ -1093,8 +1093,8 @@ export class AgentChatService {
           await this.repository.markStartupDelivered(row.id)
         } else {
           // Keep the durable creation fence; this provider cannot expose SID before its first admitted input.
-          if (runtime.manager.startInitialTurn) return runtime
           runtime.creationInput = this.startInput(row, configuration, correlationId, false)
+          if (runtime.manager.startInitialTurn) return runtime
           creationRequested = true
           runtime.session = await runtime.manager.createSession(runtime.creationInput, signal)
           await this.repository.bindSession(row.id, runtime.session.providerVersion, runtime.session.nativeSessionId)
@@ -1474,11 +1474,16 @@ export class AgentChatService {
     let runtime = this.runtimes.get(row.id)
     if (!runtime) {
       const configuration = await this.conversationConfiguration(row)
-      if (configuration?.harnessProfileSelection?.target.hostRef.kind !== 'device') return false
+      if (!configuration) return false
       const accountSource = row.record.origin.kind === 'run_execution'
         ? { executionId: row.record.origin.executionId } : undefined
-      runtime = { manager: await this.managers(row.id, configuration, row.record.workingDirectory, accountSource),
-        configuration, creationInput: this.startInput(row, configuration, agentChatCorrelation(row.id, requestId),
+      const manager = await this.managers(row.id, configuration, row.record.workingDirectory, accountSource)
+      if (!manager.reconcileSessionCreation) {
+        await manager.dispose?.()
+        this.managers.release?.(row.id)
+        return false
+      }
+      runtime = { manager, configuration, creationInput: this.startInput(row, configuration, agentChatCorrelation(row.id, requestId),
           row.record.origin.kind === 'run_execution') }
       this.runtimes.set(row.id, runtime)
       const preferences = await this.sessionControls.preferences(row.id)
@@ -1509,6 +1514,11 @@ export class AgentChatService {
     this.lifetime.signal.throwIfAborted()
     if (this.runtimes.get(row.id) !== runtime || runtime.retiring || runtime.disposal) return false
     runtime.session = session
+    if (row.harness === 'claude' && row.record.origin.kind === 'fresh') {
+      await this.repository.bindSession(row.id, session.providerVersion, session.nativeSessionId)
+      await this.observe(row.id, requestId, runtime, agentChatCorrelation(row.id, requestId), true)
+      return true
+    }
     const result = failure(new Error('The original session was recovered before the message was sent. Send the message again.'))
     await this.repository.bindCreatedSession(row.id, requestId, row.agent_configuration_version_id, session, result)
     const current = await this.repository.get(row.id)

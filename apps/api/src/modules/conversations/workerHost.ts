@@ -316,6 +316,10 @@ export class WorkerConversationHost {
     return { receipt: await this.ports.journal.read(request.binding) }
   }
 
+  private hasRunningTurn(conversationId: string) {
+    return [...this.running.keys()].some(key => key.startsWith(`${conversationId}:`))
+  }
+
   private async changeNodeSkills(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
     connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
     const previous = request.previousBinding
@@ -324,12 +328,16 @@ export class WorkerConversationHost {
       unavailable('A Run chat skills change keeps the original configuration, profile and session.')
     }
     const id = request.binding.owner.conversationId
-    if (this.allocating.has(id) || this.running.has(id)) unavailable('The native conversation is busy.')
+    if (this.allocating.has(id) || this.hasRunningTurn(id)) unavailable('The native conversation is busy.')
     const task = (async () => {
       const record = await this.ports.journal.inspectSkillsTransition(previous, request.binding,
         request.previousConfiguration!, request.configuration)
       if (!record?.session || !isDeepStrictEqual(record.session, request.source)
         || record.closed || record.closing) unavailable('The original Run chat session is unavailable.')
+      if (record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
+        || record.compactions.some(control => compactionBlocksSend(control.state))) {
+        unavailable('The native conversation has unfinished work.')
+      }
       if (isDeepStrictEqual(record.binding, request.binding)) {
         const resident = this.residents.get(id)
         if (resident && isDeepStrictEqual(resident.binding, request.binding)) return resident
@@ -372,7 +380,7 @@ export class WorkerConversationHost {
       unavailable('App MCP access changes keep the original Operator owner, profile and session.')
     }
     const id = request.binding.owner.conversationId
-    if (this.allocating.has(id) || this.running.has(id)) unavailable('The native conversation is busy.')
+    if (this.allocating.has(id) || this.hasRunningTurn(id)) unavailable('The native conversation is busy.')
     const task = (async (): Promise<Resident> => {
       const reserved = await this.ports.journal.reserveApplicationAccess(previous, request.binding, request.operationId, request.source!)
       if (reserved.applied) {
