@@ -353,7 +353,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           const elapsedMs = Math.round(performance.now() - began)
           stats.count++; stats.totalMs += elapsedMs; stats.maxMs = Math.max(stats.maxMs, elapsedMs)
           if (stats.count % 64 === 0) await writeFile(artifactPath.replace('.json', '-persistence.json'),
-            JSON.stringify({ scenario, ...stats })).catch(() => undefined)
+            JSON.stringify({ scenario, ...stats })).catch(() => {
+              // ignore: Persistence timing is optional telemetry; a failed snapshot must not fail the observed operation.
+              return undefined
+            })
         }
       }
       const appendNativeEvents = runs.appendNativeEvents.bind(runs)
@@ -507,7 +510,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     })
     const restartRuntime = async (kind: 'waiting' | 'terminal_unaccepted'): Promise<Eng03NativeRuntime> => {
       if (kind === 'waiting') await startTask
-      else await startTask.catch(() => undefined)
+      else await startTask.catch(() => {
+        // ignore: The failed startup is retained in evidence while recovery starts a replacement runtime.
+        return undefined
+      })
       if (!activeRuntime || !checkpoints) throw new Error('Native runtime is unavailable for restart.')
       const current = await activeRuntime.runs.get(run.id)
       if (kind === 'waiting') {
@@ -572,7 +578,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
         ? options.control({ pool, runId: run.id, nodeIds: nodes.map((node) => node.id), projectDirectory,
           runtimeDirectory, artifactPath, ...activeRuntime, startTask, publicationChanged: publicationChanges.next, stop: () => engine!.cancel(run.id, authorizeStop),
           restartWaitingRuntime, restartRecoverableRuntime })
-          .then(() => startTask.catch(() => undefined))
+          .then(() => startTask.catch(() => {
+            // ignore: The control callback handles the startup outcome, which is also retained in evidence.
+            return undefined
+          }))
         : startTask
       await Promise.race([work, new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error('ENG03_NATIVE_TIMEOUT')), 180_000)
@@ -655,7 +664,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
     evidence.failureStartTaskState = evidence.startTaskState
     try {
       if (runId && pool) {
-        evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => undefined)
+        evidence.failureRun = await activeRuntime?.runs.get(runId).catch(() => {
+          // ignore: The run may be unreadable after the scenario failure; continue collecting other diagnostics.
+          return undefined
+        })
         try {
           const checkpoint = await checkpoints?.saver.getTuple({ configurable: { thread_id: runId } })
           evidence.failureCheckpoint = nativePersistenceRedactor([]).value({
@@ -673,9 +685,15 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           }>
           evidence.failureNativeHistories = await Promise.all([...owned].map(async ([executionId, value]) => {
             if (!value.session) return { executionId }
-            const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => undefined)
+            const history = await value.manager.history(value.session, AbortSignal.timeout(5_000)).catch(() => {
+              // ignore: The failed native session may no longer serve history; retain the other session diagnostics.
+              return undefined
+            })
             const lane = await activeRuntime!.interactions.coordination.getLane(value.session.harness,
-              value.session.nativeSessionId).catch(() => undefined)
+              value.session.nativeSessionId).catch(() => {
+                // ignore: Coordination may be unavailable after the scenario failure; retain the native history.
+                return undefined
+              })
             return { executionId, nativeTurnId: history?.nativeTurnId, terminalOutcome: history?.terminalResult?.outcome,
               pending: history?.pendingInteractions.map(item => ({ nativeRequestId: item.turn.nativeRequestId,
                 nativeTurnId: item.turn.nativeTurnId, nativeRequestType: item.nativeRequestType })),
@@ -687,14 +705,20 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           }))
         }
         const requests = await pool.query<{ record: unknown }>(
-          'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => undefined)
+          'select record from durable_interactions where run_id=$1 order by created_at', [runId]).catch(() => {
+            // ignore: Interaction reads may fail after the scenario failure; continue collecting execution diagnostics.
+            return undefined
+          })
         evidence.failureInteractions = requests?.rows.map(({ record }) => {
           const interaction = DurableInteractionSchema.parse(record)
           return { id: interaction.id, executionId: interaction.executionId, nativeRequestId: interaction.nativeRequestId,
             nativeRequestType: interaction.nativeRequestType, graphInterruptId: interaction.graphInterruptId,
             status: interaction.status, deliveryState: interaction.deliveryState }
         })
-        const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => undefined)
+        const rows = await pool.query<{ record: unknown }>('select record from harness_executions where run_id=$1', [runId]).catch(() => {
+          // ignore: Execution reads may fail after the scenario failure; continue collecting event diagnostics.
+          return undefined
+        })
         evidence.failureExecutions = rows?.rows.map((row) => {
           const execution = HarnessExecutionSchema.parse(row.record)
           return { id: execution.id, nodeId: execution.workflowNodeId, state: execution.state,
@@ -704,7 +728,10 @@ export async function runEng03NativeScenario(scenario: Scenario, first: Harness,
           `select execution_id, record->>'type' as type, record->>'occurredAt' as occurred_at,
              record#>>'{payload,item,type}' as item_type
            from harness_native_events where execution_id in (select id from harness_executions where run_id=$1)
-           order by execution_id,sequence`, [runId]).catch(() => undefined)
+           order by execution_id,sequence`, [runId]).catch(() => {
+            // ignore: Event reads may fail after the scenario failure; preserve the original failure and collected diagnostics.
+            return undefined
+          })
         evidence.failureNativeEvents = events?.rows
       }
     } catch (diagnosticError) {

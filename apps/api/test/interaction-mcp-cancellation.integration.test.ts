@@ -5,6 +5,7 @@ import { PostgresAppInteractionService } from '../src/modules/interactions/app.j
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { rejectableDeferred } from './helpers/deferred.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 
 const closes: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -52,17 +53,22 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
     const f = await setup()
     const outsider = await f.credentials.issueForReviewer(f.reviewer.id)
     const outsiderToken = outsider.environment.variables.GRAPHQL_MCP_TOKEN!
-    const lock = await f.pool.connect()
-    await lock.query('begin')
-    await lock.query('select id from management_principals where id=$1 for update', [f.principal.id])
+    const locked = rejectableDeferred<void>()
+    const release = rejectableDeferred<void>()
+    const locking = withTransaction(f.pool, async lock => {
+      await lock.query('select id from management_principals where id=$1 for update', [f.principal.id])
+      locked.resolve()
+      await release.promise
+    })
     const entered = rejectableDeferred<AbortSignal>()
     const decide = f.repository.decide.bind(f.repository)
     vi.spyOn(f.repository, 'decide').mockImplementation(async (input) => {
       entered.resolve(input.signal!)
       return decide(input)
     })
-    const pending = f.call(71, 'interaction_respond', f.args)
     try {
+      await Promise.race([locked.promise, locking])
+      const pending = f.call(71, 'interaction_respond', f.args)
       const signal = await entered.promise
       expect((await f.cancel(71, outsiderToken)).status).toBe(202)
       expect(signal.aborted).toBe(false)
@@ -70,7 +76,8 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
       expect(concurrent.result.isError).not.toBe(true)
       expect((await f.cancel(71)).status).toBe(202)
       expect(signal.aborted).toBe(true)
-      await lock.query('commit')
+      release.resolve()
+      await locking
       const cancelled = await result(await pending)
       expect(cancelled.id).toBe(71)
       expect(cancelled.result.isError).toBe(true)
@@ -80,8 +87,8 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
       })
       expect(f.counts().responses).toBe(0)
     } finally {
-      await lock.query('rollback')
-      lock.release()
+      release.resolve()
+      await locking
     }
   }, 60_000)
 
