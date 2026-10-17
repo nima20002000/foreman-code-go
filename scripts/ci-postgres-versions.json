@@ -11,13 +11,39 @@
     "version": "1.4.20",
     "released": "2025-05-10",
     "url": "https://ftp.gnu.org/gnu/m4/m4-1.4.20.tar.gz",
+    "fallbackUrls": [
+      "https://ftpmirror.gnu.org/m4/m4-1.4.20.tar.gz"
+    ],
     "sha256": "6ac4fc31ce440debe63987c2ebbf9d7b6634e67a7c3279257dc7361de8bdb3ef",
-    "source": "https://lists.gnu.org/archive/html/info-gnu/2025-05/msg00001.html"
+    "source": "https://lists.gnu.org/archive/html/info-gnu/2025-05/msg00001.html",
+    "patches": [
+      {
+        "file": "ci-postgres-patches/m4-1.4.20/0001-string-h-wchar-h-Fix-some-g-Wsystem-headers-warnings.patch",
+        "sha256": "4bfcb6af5e6b3259fe0c97ee4d684ddd7fa286addbe2f5f6ba7fdf27c6e1dbd0",
+        "source": "https://github.com/openembedded/openembedded-core/blob/8751ec83421192fc0f8495fb95798f9eb7be77a0/meta/recipes-devtools/m4/m4/0001-string-h-wchar-h-Fix-some-g-Wsystem-headers-warnings.patch",
+        "upstream": "https://cgit.git.savannah.gnu.org/cgit/gnulib.git/commit/?id=0614c2db34f65c595d85be4adc5628778905855a"
+      },
+      {
+        "file": "ci-postgres-patches/m4-1.4.20/0002-string-h-Fix-compilation-error-on-macOS-with-fortify.patch",
+        "sha256": "c89346b467e06143539b6ce749afb7f28f6978139a3c0375e1b1dc53d80c7e9b",
+        "source": "https://github.com/openembedded/openembedded-core/blob/8751ec83421192fc0f8495fb95798f9eb7be77a0/meta/recipes-devtools/m4/m4/0002-string-h-Fix-compilation-error-on-macOS-with-fortify.patch",
+        "upstream": "https://cgit.git.savannah.gnu.org/cgit/gnulib.git/commit/?id=c44fe03b72687c9e913727724c29bdb49c1f86e3"
+      },
+      {
+        "file": "ci-postgres-patches/m4-1.4.20/0003-Port-to-C23-qualifier-generic-fns-like-strchr.patch",
+        "sha256": "b53d7bfbb134a9b078fe166774ca089aabff7bc2eb0f7921fadfdb6a5e76bfd9",
+        "source": "https://github.com/openembedded/openembedded-core/blob/8751ec83421192fc0f8495fb95798f9eb7be77a0/meta/recipes-devtools/m4/m4/0003-Port-to-C23-qualifier-generic-fns-like-strchr.patch",
+        "upstream": "https://cgit.git.savannah.gnu.org/cgit/gnulib.git/commit/?id=df17f4f37ed3ca373d23ad42eae51122bdb96626"
+      }
+    ]
   },
   "bison": {
     "version": "3.8.2",
     "released": "2021-09-25",
     "url": "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.gz",
+    "fallbackUrls": [
+      "https://ftpmirror.gnu.org/bison/bison-3.8.2.tar.gz"
+    ],
     "sha256": "06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb",
     "source": "https://lists.gnu.org/archive/html/bug-bison/2021-09/msg00056.html"
   },

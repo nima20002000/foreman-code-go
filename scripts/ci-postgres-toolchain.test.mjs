@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -64,6 +65,87 @@ function cachedToolFixtures(env, { version = '17.6', omitted } = {}) {
     if (tool === omitted) continue
     installWrapper(directory, tool, `console.log(${JSON.stringify(`${tool} (PostgreSQL) ${version}`)})`)
   }
+}
+
+function downloadFixture(t, { primary = 'unavailable', fallback = 'valid', patchRequired = false } = {}) {
+  const fixture = temporaryFixture(t)
+  const { directory, commands, env } = fixture
+  const fixtureScript = join(directory, 'scripts/ci-postgres-toolchain.sh')
+  const pins = {}
+  const downloads = {}
+  const calls = join(directory, 'downloads.jsonl')
+  mkdirSync(dirname(fixtureScript))
+  copyFileSync(script, fixtureScript)
+  copyFileSync(wrapper, join(dirname(fixtureScript), 'ci-postgres-tool-wrapper.sh'))
+  writeFileSync(calls, '')
+  for (const [name, version] of Object.entries({ m4: '1.4.20', bison: '3.8.2', flex: '2.6.4', postgresql: '17.6' })) {
+    const source = join(directory, `${name}-fixture`)
+    const archive = `${source}.tar.gz`
+    executable(join(source, 'configure'), `
+      const { readFileSync, writeFileSync } = require('node:fs')
+      if (${name === 'm4' && patchRequired}
+        && JSON.parse(readFileSync(require('node:path').join(__dirname, 'feature.json'), 'utf8')).enabled !== true) {
+        throw new Error('Fixture source compatibility patch is required')
+      }
+      const prefix = process.argv.slice(2).find(value => value.startsWith('--prefix=')).slice(9)
+      writeFileSync('.fixture-build.json', JSON.stringify({ name: ${JSON.stringify(name)}, prefix }))
+    `)
+    writeFileSync(join(source, 'feature.json'), '{"enabled":false}\n')
+    const packed = run('tar', ['--create', '--gzip', '--file', archive, '--directory', directory, `${name}-fixture`], env)
+    assert.equal(packed.status, 0, packed.stderr)
+    const url = `https://primary.example.invalid/${name}-${version}.tar.gz`
+    const mirror = `https://mirror.example.invalid/${name}-${version}.tar.gz`
+    const content = readFileSync(archive)
+    pins[name] = { version, released: '2025-01-01', url,
+      fallbackUrls: [mirror], sha256: createHash('sha256').update(content).digest('hex') }
+    if (name === 'flex') pins[name].sha1 = createHash('sha1').update(content).digest('hex')
+    downloads[url] = { archive, outcome: name === 'm4' ? primary : 'valid' }
+    downloads[mirror] = { archive, outcome: name === 'm4' ? fallback : 'valid' }
+  }
+  writeFileSync(join(dirname(fixtureScript), 'ci-postgres-versions.json'), JSON.stringify(pins))
+  executable(join(commands, 'curl'), `
+    const { appendFileSync, copyFileSync, writeFileSync } = require('node:fs')
+    const args = process.argv.slice(2)
+    const url = args.at(-1)
+    const output = args[args.indexOf('--output') + 1]
+    appendFileSync(${JSON.stringify(calls)}, JSON.stringify(url) + '\\n')
+    const download = ${JSON.stringify(downloads)}[url]
+    if (!download) throw new Error('Unexpected download: ' + url)
+    if (download.outcome === 'unavailable') {
+      writeFileSync(output, 'partial failed transfer')
+      process.exit(7)
+    }
+    if (download.outcome === 'corrupt') writeFileSync(output, 'corrupt completed transfer')
+    else copyFileSync(download.archive, output)
+  `)
+  executable(join(commands, 'make'), `
+    const { readFileSync, mkdirSync, writeFileSync } = require('node:fs')
+    const { join } = require('node:path')
+    if (!process.argv.includes('install')) process.exit(0)
+    const { name, prefix } = JSON.parse(readFileSync('.fixture-build.json', 'utf8'))
+    mkdirSync(join(prefix, 'bin'), { recursive: true })
+    const tools = name === 'postgresql' ? ${JSON.stringify(requiredTools)} : [name]
+    for (const tool of tools) {
+      const body = '#!' + ${JSON.stringify(process.execPath)} + '\\nconsole.log('
+        + JSON.stringify(tool + ' (PostgreSQL) 17.6') + ')\\n'
+      writeFileSync(join(prefix, 'bin', tool), body, { mode: 0o755 })
+    }
+  `)
+  return { ...fixture, script: fixtureScript, pins,
+    downloads: () => readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
+    temporaryInstalls: () => existsSync(env.FOREMAN_CODE_CI_POSTGRES_CACHE)
+      ? readdirSync(env.FOREMAN_CODE_CI_POSTGRES_CACHE).filter(name => name.startsWith('install.')) : [],
+  }
+}
+
+function fixtureSourcePatch(fixture, { result = 'true', preimage = 'false', declaredDigest } = {}) {
+  const contents = `--- a/feature.json\n+++ b/feature.json\n@@ -1 +1 @@\n-{"enabled":${preimage}}\n+{"enabled":${result}}\n`
+  const file = 'ci-postgres-patches/fixture.patch'
+  const destination = join(dirname(fixture.script), file)
+  mkdirSync(dirname(destination), { recursive: true })
+  writeFileSync(destination, contents)
+  fixture.pins.m4.patches = [{ file, sha256: declaredDigest ?? createHash('sha256').update(contents).digest('hex') }]
+  writeFileSync(join(dirname(fixture.script), 'ci-postgres-versions.json'), JSON.stringify(fixture.pins))
 }
 
 test('a cached PostgreSQL wrapper executes the relocated program with its own library environment', t => {
@@ -170,4 +252,83 @@ test('a mismatched PostgreSQL build archive fails before compilation and publish
   const verify = run('/bin/bash', [script, 'verify'], env)
   assert.notEqual(verify.status, 0)
   assert.match(verify.stderr, /Pinned PostgreSQL initdb is missing/)
+})
+
+test('PostgreSQL installation uses a checksum-verified source mirror after a failed primary transfer', t => {
+  const fixture = downloadFixture(t)
+  const installed = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.equal(installed.status, 0, installed.stderr)
+  assert.deepEqual(fixture.downloads(), [fixture.pins.m4.url, ...fixture.pins.m4.fallbackUrls,
+    fixture.pins.bison.url, fixture.pins.flex.url, fixture.pins.postgresql.url])
+  const verified = run('/bin/bash', [fixture.script, 'verify'], fixture.env)
+  assert.equal(verified.status, 0, verified.stderr)
+  assert.deepEqual(fixture.temporaryInstalls(), [])
+})
+
+test('PostgreSQL installation stops and cleans temporary state when every source location is unreachable', t => {
+  const fixture = downloadFixture(t, { fallback: 'unavailable' })
+  const installed = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.notEqual(installed.status, 0)
+  assert.match(installed.stderr, /All pinned download locations failed.*m4/)
+  assert.deepEqual(fixture.downloads(), [fixture.pins.m4.url, ...fixture.pins.m4.fallbackUrls])
+  assert.deepEqual(fixture.temporaryInstalls(), [])
+  assert.notEqual(run('/bin/bash', [fixture.script, 'verify'], fixture.env).status, 0)
+})
+
+for (const primary of ['unavailable', 'corrupt']) {
+  test(`PostgreSQL installation rejects a corrupt completed transfer after a ${primary} primary response`, t => {
+    const fixture = downloadFixture(t, { primary, fallback: 'corrupt' })
+    const installed = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+    assert.notEqual(installed.status, 0)
+    assert.match(installed.stderr, /SHA-256 mismatch/)
+    assert.deepEqual(fixture.downloads(), primary === 'corrupt'
+      ? [fixture.pins.m4.url] : [fixture.pins.m4.url, ...fixture.pins.m4.fallbackUrls])
+    assert.deepEqual(fixture.temporaryInstalls(), [])
+    assert.notEqual(run('/bin/bash', [fixture.script, 'verify'], fixture.env).status, 0)
+  })
+}
+
+test('PostgreSQL installation applies a verified source backport before configuring the pinned archive', t => {
+  const fixture = downloadFixture(t, { patchRequired: true })
+  const original = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.notEqual(original.status, 0)
+  assert.match(original.stderr, /Fixture source compatibility patch is required/)
+  fixtureSourcePatch(fixture)
+  const patched = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.equal(patched.status, 0, patched.stderr)
+  assert.equal(run('/bin/bash', [fixture.script, 'verify'], fixture.env).status, 0)
+  assert.deepEqual(fixture.temporaryInstalls(), [])
+})
+
+test('PostgreSQL installation rejects a source backport whose digest differs before any download', t => {
+  const fixture = downloadFixture(t, { patchRequired: true })
+  fixtureSourcePatch(fixture, { declaredDigest: '0'.repeat(64) })
+  const result = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /SHA-256 mismatch for PostgreSQL build source patch/)
+  assert.deepEqual(fixture.downloads(), [])
+  assert.deepEqual(fixture.temporaryInstalls(), [])
+})
+
+test('PostgreSQL installation rejects a source backport that does not apply and cleans the failed extraction', t => {
+  const fixture = downloadFixture(t, { patchRequired: true })
+  fixtureSourcePatch(fixture, { preimage: '"different source"' })
+  const result = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /Could not apply pinned PostgreSQL build source patch/)
+  assert.deepEqual(fixture.temporaryInstalls(), [])
+  assert.notEqual(run('/bin/bash', [fixture.script, 'verify'], fixture.env).status, 0)
+})
+
+test('PostgreSQL installation does not reuse a toolchain compiled with another source backport', t => {
+  const fixture = downloadFixture(t, { patchRequired: true })
+  fixtureSourcePatch(fixture)
+  const original = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.equal(original.status, 0, original.stderr)
+  fixtureSourcePatch(fixture, { result: '"incompatible"' })
+  const changed = run('/bin/bash', [fixture.script, 'install'], fixture.env)
+  assert.notEqual(changed.status, 0)
+  assert.match(changed.stderr, /Fixture source compatibility patch is required/)
+  assert.notEqual(run('/bin/bash', [fixture.script, 'verify'], fixture.env).status, 0)
+  assert.deepEqual(fixture.temporaryInstalls(), [])
 })
