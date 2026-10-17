@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.102] - 2026-10-17
+
+Multi-computer reliability: the cross-computer Agent scenario (Main + two laptops, two repositories, Foreman CI on every computer + CircleCI + GitHub) passed two consecutive rounds, the second on the first round's leftover state.
+- Remote execution: a Run no longer hangs after a link drop during session start; an expired laptop reply is re-read instead of being treated as a lost Agent process; queued device requests honor caller deadlines.
+- Sources: finished Runs' retained worktrees are reclaimed oldest first when a computer's source budget is full; transient capacity pressure retries; capacity diagnostics are persisted and readable.
+- CI: mirror pushes retry once on "missing necessary objects" at both push sites; dispatch delivery stays isolated from shared-pool saturation; Run activity is ordered at commit time, removing long advisory-lock waits.
+- Tests: fixtures isolated from runner environments; flaky lock and carrier tests fixed.
+
 ## [0.0.101] - 2026-10-16
 
 Multi-computer reliability round: the cross-computer CI scenario (Agents on Main and two laptops, two repositories, Foreman CI on every computer) passes end to end.
