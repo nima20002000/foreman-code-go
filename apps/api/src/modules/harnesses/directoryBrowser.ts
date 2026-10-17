@@ -10,6 +10,7 @@ import { DomainError } from '../errors.js'
 import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../workspaces/projectFolderCleanup.js'
+import { pathsOverlap } from '../workspaces/filesystem.js'
 
 export function isInside(root: string, path: string): boolean {
   const rel = relative(root, path)
@@ -19,6 +20,25 @@ export function isInside(root: string, path: string): boolean {
 /** Selection follows filesystem access; deletion stays inside configured storage roots. */
 export class HarnessDirectoryBrowser {
   constructor(private readonly configuredRoots: readonly string[], private readonly pool: pg.Pool) {}
+
+  private async assertFolderUnused(client: pg.PoolClient, path: string) {
+    const references = await client.query("select id from workspaces where execution_location->>'rootPath'=$1", [path])
+    const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [path])
+    if (references.rowCount || defaults.rowCount) {
+      throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
+    }
+    await this.assertNoUnfinishedImport(client, path)
+  }
+
+  private async assertNoUnfinishedImport(client: pg.PoolClient, path: string) {
+    const imports = await client.query<{ path: string }>(`
+      select (preparation->>'basePath') || '/' || (preparation->>'directoryName') as path
+      from workspace_repository_imports where finished_at is null`)
+    if (imports.rows.some(item => pathsOverlap(path, item.path))) {
+      throw new DomainError('DIRECTORY_IN_USE', 'This folder is used by an unfinished repository import.', 409)
+    }
+  }
+
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceFolderCreateInput) {
     requireAuthorization(principal, 'workspace_locations:provision')
     requireAuthorization(principal, 'workspace_locations:read')
@@ -26,7 +46,8 @@ export class HarnessDirectoryBrowser {
     const result = await new PostgresCommandCoordinator(this.pool).execute({
       principal, source, operation: 'workspace.folder.create', commandId: accepted.commandId,
       targetKey: 'workspace-folders', payload: accepted,
-      perform: async () => {
+      perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         let parent: string
         try { parent = await realpath(accepted.parentPath) } catch {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The parent folder is unavailable.', 404)
@@ -37,6 +58,7 @@ export class HarnessDirectoryBrowser {
         for (let index = 1; index <= 10_000; index++) {
           const name = accepted.name ?? (index === 1 ? 'New folder' : `New folder (${index})`)
           const path = resolve(parent, name)
+          await this.assertNoUnfinishedImport(client, path)
           try {
             await mkdir(path)
             const identity = await lstat(path, { bigint: true })
@@ -86,10 +108,8 @@ export class HarnessDirectoryBrowser {
         const target = resolve(dirname(current), accepted.name)
         if (target === current) return { path: current, name: accepted.name, creationCommandId: accepted.creationCommandId }
         if ((await readdir(current)).length) throw new DomainError('DIRECTORY_NOT_EMPTY', 'Only an empty folder can be renamed here.', 409)
-        // Assignment and folder mutation share lifecycle ownership through their commits.
-        const references = await client.query("select id from workspaces where execution_location->>'rootPath'=$1", [current])
-        const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [current])
-        if (references.rowCount || defaults.rowCount) throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
+        await this.assertFolderUnused(client, current)
+        await this.assertNoUnfinishedImport(client, target)
         try { await mkdir(target) } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new DomainError('DIRECTORY_EXISTS', 'A folder with this name already exists.', 409, undefined, { cause: error })
           throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422, undefined, { cause: error })
@@ -133,9 +153,7 @@ export class HarnessDirectoryBrowser {
         if (!identity.isDirectory() || String(identity.dev) !== created.device || String(identity.ino) !== created.inode) {
           throw new DomainError('DIRECTORY_CHANGED', 'The original folder has been replaced and cannot be undone.', 409)
         }
-        const references = await client.query("select id from workspaces where execution_location->>'rootPath'=$1", [path])
-        const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [path])
-        if (references.rowCount || defaults.rowCount) throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
+        await this.assertFolderUnused(client, path)
         try { await rmdir(path) } catch (error) {
           if (['ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) {
             throw new DomainError('DIRECTORY_NOT_EMPTY', 'This folder contains files and cannot be undone.', 409, undefined, { cause: error })
@@ -172,9 +190,7 @@ export class HarnessDirectoryBrowser {
             if (await realpath(path) !== path || !(await lstat(path)).isDirectory()) {
               throw new Error('This folder is no longer available at its original location.')
             }
-            const references = await client.query("select id from workspaces where execution_location->>'rootPath'=$1", [path])
-            const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [path])
-            if (references.rowCount || defaults.rowCount) throw new Error('This folder is used by workspace settings.')
+            await this.assertFolderUnused(client, path)
             await rmdir(path)
             deleted.push(path)
           } catch (error) {
