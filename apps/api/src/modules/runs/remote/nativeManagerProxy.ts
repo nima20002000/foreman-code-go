@@ -56,7 +56,8 @@ export interface RemoteNativeManagerOptions {
   readResponseControl?(): Promise<RemoteOwnerControl | undefined>
   authorizeResponseRetry?(command: RemoteOwnerControl): Promise<void>
   observeReceipt(receipt: RemoteOperationReceipt, response: unknown): Promise<void>
-  discardReceipt?(receipt: RemoteOperationReceipt, response: unknown): void
+  /** Releases authentication only while the response remains unobserved. */
+  discardReceipt?(response: unknown): void
   observeOriginalSource?(receipt: RemoteOperationReceipt, source: WorkflowOriginalNativeSource, signal?: AbortSignal): Promise<void>
 }
 /** Main-side native port, bound once to the accepted host/attempt. No provider credential crosses it. */
@@ -120,22 +121,27 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     }
   }
   private async historyResponse(reply: RemoteReply, signal?: AbortSignal) {
-    const value = HistoryResponseSchema.parse(reply.value)
-    if (!value.page.metadata) return { ...value, reply }
-    const fields = await readJsonContinuation(value.page.metadata, async metadata => {
-      const response = await this.request('history', {
-        metadata, afterSequence: value.page.nextAfterSequence,
-        ...(value.history.correlationId === undefined ? {} : { correlationId: value.history.correlationId }),
+    try {
+      const value = HistoryResponseSchema.parse(reply.value)
+      if (!value.page.metadata) return { ...value, reply }
+      const fields = await readJsonContinuation(value.page.metadata, async metadata => {
+        const response = await this.request('history', {
+          metadata, afterSequence: value.page.nextAfterSequence,
+          ...(value.history.correlationId === undefined ? {} : { correlationId: value.history.correlationId }),
+        }, signal)
+        const continuation = HistoryResponseSchema.parse(response.value)
+        const original = this.readReceipt(value.status, this.intent)
+        this.readReceipt(continuation.status, this.intent, original)
+        if (!continuation.page.metadata) throw new Error('Remote history metadata owner changed')
+        // The first page owns the receipt; continuation bytes are pinned by their digest.
+        return continuation.page.metadata
       }, signal)
-      const continuation = HistoryResponseSchema.parse(response.value)
-      const original = this.readReceipt(value.status, this.intent)
-      this.readReceipt(continuation.status, this.intent, original)
-      if (!continuation.page.metadata) throw new Error('Remote history metadata owner changed')
-      // The first page owns the receipt; continuation bytes are pinned by their digest.
-      return continuation.page.metadata
-    }, signal)
-    value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...decodeResultCopies(fields) as object })
-    return { ...value, reply }
+      value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...decodeResultCopies(fields) as object })
+      return { ...value, reply }
+    } catch (error) {
+      this.options.discardReceipt?.(reply.value)
+      throw error
+    }
   }
   private observeSource(receipt: RemoteOperationReceipt, source: WorkflowOriginalNativeSource, signal?: AbortSignal) {
     if (signal) return this.options.observeOriginalSource?.(receipt, source, signal)
@@ -160,13 +166,19 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   private status(reply: RemoteReply, raw = reply.value, intent = this.intent): Promise<RemoteOperationReceipt> {
     const task = this.receiptUpdates.then(async () => {
-      const receipt = this.readReceipt(raw, intent, this.receipt)
+      let receipt: RemoteOperationReceipt
+      try {
+        receipt = this.readReceipt(raw, intent, this.receipt)
+      } catch (error) {
+        this.options.discardReceipt?.(reply.value)
+        throw error
+      }
       if (receipt.sequence < reply.minimumSequence) {
-        this.options.discardReceipt?.(receipt, reply.value)
+        this.options.discardReceipt?.(reply.value)
         throw new Error('Original remote receipt changed')
       }
       if (this.receipt && receipt.sequence < this.receipt.sequence) {
-        this.options.discardReceipt?.(receipt, reply.value)
+        this.options.discardReceipt?.(reply.value)
         return this.receipt
       }
       await this.options.observeReceipt(receipt, reply.value)
