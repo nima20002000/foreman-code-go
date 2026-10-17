@@ -1269,7 +1269,6 @@ export class HostCiRunner {
       if (meta.state === 'queued') {
         await withHostCiRunLock(directory, () => this.finish(runId, 'canceled', null, 'Canceled before execution.'))
       }
-      await this.starts.get(runId)
       await this.preparing.get(runId)
     }
     return this.refresh(runId)
