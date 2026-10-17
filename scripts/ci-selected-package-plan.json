@@ -1,0 +1,13 @@
+{
+  "source": "dce205581cf5411dfff6719acb3023435f249a4d",
+  "sourceTree": "6138689b32f9bd7a8e0ce1b701e45012d3d4231d",
+  "package": "./internal/worker",
+  "goFiles": [
+    "internal/worker/lock.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "testTimeout": "30s",
+  "integrationRequiresDatabase": false,
+  "mode": "format-only"
+}
