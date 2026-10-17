@@ -95,9 +95,9 @@ try {
   const setup = provider('database-start')
   metadata.databaseSetupExitStatus = setup.status
   if (setup.status !== 0) {
-    metadata.databaseFailure = /ENOENT/.test(setup.stderr) ? 'Docker command unavailable'
-      : /Cannot connect|daemon is not running/.test(setup.stderr) ? 'Docker daemon unavailable'
-        : 'Existing disposable database helper failed'
+    metadata.databaseFailure = 'Existing disposable database helper failed'
+    if (/ENOENT/.test(setup.stderr)) metadata.databaseFailure = 'Docker command unavailable'
+    else if (/Cannot connect|daemon is not running/.test(setup.stderr)) metadata.databaseFailure = 'Docker daemon unavailable'
     throw new Error(`${metadata.databaseFailure}; no Go tests ran.`)
   }
   const readiness = provider('database-env')
