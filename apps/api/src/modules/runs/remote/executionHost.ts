@@ -569,16 +569,18 @@ export class RemoteExecutionHost {
     void task.then(() => { if (resident.settlementTask === task) delete resident.settlementTask }, () => { if (resident.settlementTask === task) delete resident.settlementTask })
     return task
   }
-  async closeRetainedReviewer(operationId: string): Promise<void> {
+  async closeRetainedReviewer(operationId: string, expiredReviewer?: { sequence: number }): Promise<boolean> {
     const resident = this.residents.get(operationId)
     const status = await this.ports.journal.status(operationId)
     if (!resident || status.status !== 'known' || !status.receipt.retainedReviewer
       || status.receipt.terminal || !isDeepStrictEqual(status.receipt.intent, resident.intent))
       throw new Error('Original retained reviewer owner unavailable')
-    await this.ports.journal.revokeFence(operationId)
+    const fenced = await this.ports.journal.revokeFence(operationId, expiredReviewer)
+    if (!fenced.stopFence || fenced.terminal) return false
     resident.controller.abort()
     await resident.manager.cancel(resident.session)
     await this.settle(resident, `execution:${resident.intent.executionId}`)
+    return true
   }
   async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp',
     correlationId?: string, afterSequence?: number) {

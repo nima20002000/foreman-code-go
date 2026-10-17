@@ -754,9 +754,11 @@ export class RemoteOperationJournal {
       delivery.phase = 'acknowledged'
     }, { controlOperationId: command.operationId })
   }
-  revokeFence(operationId: string) {
+  revokeFence(operationId: string, expiredReviewer?: { sequence: number }) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
+      if (expiredReviewer && (receipt.sequence !== expiredReviewer.sequence || !receipt.retainedReviewer
+        || !this.reviewerExpired(receipt.retainedReviewer.expiresAt))) return receipt
       if (receipt.phase !== 'confirmed_terminal') {
         receipt.stopFence = true; receipt.phase = 'stop_requested'; receipt.uncertainty = 'Authority revoked; physical closure pending'; receipt.sequence++
       }

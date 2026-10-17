@@ -39,6 +39,8 @@ const HistoryResponseSchema = z.object({
 function expiredPhysicalReply(error: unknown): boolean {
   return error instanceof DeviceApplicationError && error.code === 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED'
 }
+class RemoteHistorySnapshotChangedError extends Error {}
+
 export interface RemoteNativeManagerOptions {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
@@ -58,6 +60,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private intent: DispatchIntent
   private session?: NativeSessionReference
   private receipt?: RemoteOperationReceipt
+  private receiptUpdates: Promise<unknown> = Promise.resolve()
   private streamHistory: {
     value: z.infer<typeof RemoteNativeHistorySchema>
     receipt: RemoteOperationReceipt
@@ -118,8 +121,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
         metadata, afterSequence: value.page.nextAfterSequence,
         ...(value.history.correlationId === undefined ? {} : { correlationId: value.history.correlationId }),
       }, signal))
-      if (!isDeepStrictEqual(continuation.status, value.status) || !continuation.page.metadata)
-        throw new Error('Remote history metadata owner changed')
+      const original = this.readReceipt(value.status, this.intent)
+      this.readReceipt(continuation.status, this.intent, original)
+      if (!continuation.page.metadata) throw new Error('Remote history metadata owner changed')
+      // The first page owns the receipt; continuation bytes are pinned by their digest.
       return continuation.page.metadata
     }, signal)
     value.history = RemoteNativeHistorySchema.parse({ ...value.history, ...decodeResultCopies(fields) as object })
@@ -129,21 +134,50 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     if (signal) return this.options.observeOriginalSource?.(receipt, source, signal)
     return this.options.observeOriginalSource?.(receipt, source)
   }
-  private async status(raw: unknown, intent = this.intent) {
+  private readReceipt(raw: unknown, intent: DispatchIntent, original?: RemoteOperationReceipt) {
     const status = StatusSchema.parse(raw)
     if (status.status !== 'known') throw new Error('Original worker journal requires reconciliation')
     const receipt = status.receipt
     if (!isDeepStrictEqual(receipt.intent, intent)) throw new Error('Remote receipt binding mismatch')
-    if (this.receipt) {
-      const original = this.receipt
-      if (!isDeepStrictEqual(receipt.connection, original.connection) || receipt.workerIncarnationId !== original.workerIncarnationId
-        || receipt.sequence < original.sequence || receipt.sequence === original.sequence && !isDeepStrictEqual(receipt, original)
-        || original.native && !remoteNativeContinues(original.native, receipt, original.nativeTurnRetries)
-        || original.terminal && !isDeepStrictEqual(receipt.terminal, original.terminal)) throw new Error('Original remote receipt changed')
+    if (original) {
+      const [earlier, later] = receipt.sequence < original.sequence ? [receipt, original] : [original, receipt]
+      if (!isDeepStrictEqual(receipt.connection, original.connection)
+        || receipt.workerIncarnationId !== original.workerIncarnationId
+        || receipt.sequence === original.sequence && !isDeepStrictEqual(receipt, original)
+        || earlier.native && !remoteNativeContinues(earlier.native, later, earlier.nativeTurnRetries)
+        || earlier.terminal && !isDeepStrictEqual(later.terminal, earlier.terminal)) {
+        throw new Error('Original remote receipt changed')
+      }
     }
-    await this.options.observeReceipt(receipt)
-    this.receipt = receipt
     return receipt
+  }
+  private status(raw: unknown, intent = this.intent): Promise<RemoteOperationReceipt> {
+    const task = this.receiptUpdates.then(async () => {
+      const receipt = this.readReceipt(raw, intent, this.receipt)
+      if (this.receipt && receipt.sequence < this.receipt.sequence) return this.receipt
+      await this.options.observeReceipt(receipt)
+      this.receipt = receipt
+      return receipt
+    })
+    this.receiptUpdates = task.catch(() => {
+      // ignore: the caller receives the failure; later observations still need to validate their receipts.
+    })
+    return task
+  }
+  private async readHistoryResponse(payload: Record<string, unknown>, signal?: AbortSignal) {
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted()
+      try {
+        const value = await this.historyResponse(await this.request('history', payload, signal), signal)
+        const receipt = await this.status(value.status)
+        if (!isDeepStrictEqual(value.status, { status: 'known', receipt })) {
+          throw new RemoteHistorySnapshotChangedError('Remote history response was overtaken')
+        }
+        return { value, receipt }
+      } catch (error) {
+        if (!(error instanceof RemoteHistorySnapshotChangedError) || attempt >= 4) throw error
+      }
+    }
   }
   private assertSession(session: NativeSessionReference) {
     if (!this.session || !isDeepStrictEqual(this.session, session)) throw new Error('Wrong remote native session')
@@ -285,12 +319,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       const canReuse: boolean = cached !== undefined && cached.afterSequence === sequence
         && Date.now() - cached.observedAt < 30_000 && isDeepStrictEqual(cached.receipt, this.receipt)
       const observedAt: number = canReuse && cached ? cached.observedAt : Date.now()
-      const value: z.infer<typeof HistoryResponseSchema> = canReuse && cached
-        ? { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
-          page: cached.page, context: this.context }
-        : await this.historyResponse(await this.request('history', { afterSequence: sequence,
-          correlationId: input.clientCorrelationId }, signal), signal)
-      const receipt: RemoteOperationReceipt = canReuse && cached ? cached.receipt : await this.status(value.status)
+      const { value, receipt } = canReuse && cached
+        ? { value: { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
+          page: cached.page, context: this.context }, receipt: cached.receipt }
+        : await this.readHistoryResponse({ afterSequence: sequence, correlationId: input.clientCorrelationId }, signal)
       this.assertHistoryIdentity(value.history, session, input.clientCorrelationId, receipt)
       const retainedFloor = value.history.firstRetainedSequence ?? 0
       if (sequence + 1 < retainedFloor) {
@@ -443,17 +475,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
           await this.observeSource(streamed.receipt, { type: 'history', history }, signal)
           return history
         }
-        const value = await this.historyResponse(await this.request('history', {
+        const { value, receipt } = await this.readHistoryResponse({
           ...(correlationId ? { correlationId } : {}),
           ...(streamed ? { afterSequence: streamed.afterSequence } : {}),
-        }, signal), signal)
-        await this.status(value.status)
-        if (correlationId) this.assertHistoryIdentity(value.history, session, correlationId, this.receipt!)
+        }, signal)
+        if (correlationId) this.assertHistoryIdentity(value.history, session, correlationId, receipt)
         if (value.context !== undefined) this.context = value.context
-        if (streamed) this.streamHistory = { value: value.history, receipt: this.receipt!, observedAt: Date.now(),
+        if (streamed) this.streamHistory = { value: value.history, receipt, observedAt: Date.now(),
           afterSequence: streamed.afterSequence, page: value.page }
         const history = this.projectHistory(value.history)
-        await this.observeSource(this.receipt!, { type: 'history', history }, signal)
+        await this.observeSource(receipt, { type: 'history', history }, signal)
         return history
       } catch (error) {
         if (!expiredPhysicalReply(error) || attempt >= 4) throw error
