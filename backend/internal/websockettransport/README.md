@@ -1,0 +1,23 @@
+# Shared WebSocket upgrade boundary
+
+Source interface authored for NIM-2898 Step2; no tests, build, lint, typecheck or formatting have run in Web. Terminal Foreman CI must supply the actual execution evidence before a lane treats this package as qualified.
+
+`New(Options) (httpserver.Handler, error)` accepts mandatory `Authorize func(*http.Request) (context.Context, error)`, `Serve func(context.Context, *websocket.Conn) error`, and positive `ReadLimit int64`. The read limit has no shared default. The registering lane passes its existing source contract limit. The upper integer rejection prevents the library's limit-plus-one calculation from overflowing; it does not introduce a product capacity.
+
+Register the returned handler through `App.RegisterStream`. `Authorize` must enforce the existing Host, Origin and credential policy before every upgrade and return its generated principal in a non-nil context. The helper propagates the authorization context and HTTP request cancellation to the synchronous connection owner. It rejects a cancelled authorization context before upgrading. The official library's separate default Origin policy is disabled because the mandatory source access callback owns that policy; the option controls HTTP Origin, not TLS verification.
+
+The frozen source is `8d2ea76c5028ef4458bf8cd64ef8624422e71d9f`, with `apps/api/src/modules/devices/deviceCarrier.ts` blob `66ce82cc91e3271c1998f2bf241629d6effbb64b`. That carrier destroys a connection offering WebSocket extensions before authentication. The helper uses the documented `http.ErrAbortHandler` response abort, and compression is disabled. The public raw HTTP test covers zero response bytes and zero authentication calls, including repeated headers. The source-specific `/device/connect` path and status-only rejection mapping stay in R's route adapter.
+
+R owns device credentials, generated frame schemas, JSON validation, binary-message rejection, queues, close statuses, deadlines, paired-worker behavior and route binding. `Serve` owns the accepted connection until returning and must perform its domain close handshake. The helper then releases any remaining underlying socket with `CloseNow`, retaining an independent cleanup error alongside the callback error. This resource cleanup does not choose a domain close status. Authorization errors are returned to the route adapter; the adapter is responsible for the frozen device handshake rejection mapping. The helper does not claim the device endpoint is complete or qualified.
+
+## Dependency capture and focused terminal request
+
+The approved dependency is `github.com/coder/websocket@v1.8.15`. Terminal integration must capture this exact module and its authentic sum metadata in the isolated candidate; no module or sum entry is fabricated by this increment. Its official `accept.go` blob is `bcfd38e8b83fa4c1823081656817ae10ca1291a1`, `hijack.go` blob is `9cce45cad66d78b1dbae90534f0b93f931a6bd46`, `close.go` blob is `fcc68065bc931815189c1a1d8484d839e228312c`, and `read.go` blob is `c19f41de40d463f607a7df766145cf2fde1d6c8a` at that tag. Its accept path follows response-writer `Unwrap` and sends `101` through the existing app wrapper before hijacking. The required public app test checks that a later `Serve` error reaches the configured logger and no HTTP JSON error bytes follow the upgrade.
+
+Only terminal Foreman CI may run the following affected cases. Use a fresh isolated checkout and module cache/HOME, no installation, database or paired worker. The authored HTTP fixtures choose random test-server ports and bound client/socket operations.
+
+```sh
+go test ./internal/websockettransport -run '^(TestWebSocketRejectsInvalidOptions|TestWebSocketRejectsExtensionsBeforeAuthentication|TestWebSocketAuthenticatesBeforeHandshakeValidation|TestWebSocketRejectsMissingOrCancelledAuthorizedContext|TestWebSocketUsesAuthenticatedContextAndSourceOriginPolicy|TestWebSocketEnforcesSuppliedReadLimit|TestWebSocketAppRetainsServeFailureAfterUpgrade)$' -count=1
+```
+
+Run from `backend`. Required subcases include `TestWebSocketRejectsExtensionsBeforeAuthentication/{offer,duplicate_offer,duplicate_empty}`, `TestWebSocketRejectsMissingOrCancelledAuthorizedContext/{nil,cancelled,request_cancelled}`, and `TestWebSocketEnforcesSuppliedReadLimit/{at_limit,above_limit,fragmented_above_limit}`. Compile only this package and its necessary dependencies; no unrelated package suite or full wrapper. Request scoped terminal formatting of `upgrade.go` and `upgrade_test.go` because no formatter ran here. Retain resulting candidate/tree identity and the exact CI ticket with actual outcomes.
