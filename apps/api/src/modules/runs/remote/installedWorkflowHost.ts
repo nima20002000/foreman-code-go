@@ -68,7 +68,7 @@ import { createInstalledWorkflowNativeOutputProviders, type CapturedWorkflowMain
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
   type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { workflowArtifactDigestsByOutputKey, type WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
-import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.js'
+import { projectNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.js'
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
 import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
 import { recoverInstalledWorkflowReply } from './installedWorkflowRecoveryHandler.js'
@@ -1336,7 +1336,7 @@ class InstalledWorkflowHostRuntime {
             const source:WorkflowOriginalNativeSource=value?.session?{type:'session_created',session:value.session}
               :originalHistory?{type:'history',history:originalHistory}:{type:'boundary'}
             const history = originalHistory ?? (resident.retainedHistory
-              ? nativeHistoryPageSource(pageNativeHistory(resident.retainedHistory)) : undefined)
+              ? projectNativeHistory(resident.retainedHistory) : undefined)
             const readout=RemoteWorkflowPhysicalReadoutSchema.parse({version:1,expiresAt:new Date(Math.min(Date.parse(observationExpiresAt),Date.now()+60_000)).toISOString(),
               launchIntent: this.recovery.read(receipt)?.intent ?? resident.intent,
               receipt,session:resident.session,launch:resident.native.launch,

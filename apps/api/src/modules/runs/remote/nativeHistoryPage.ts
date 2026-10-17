@@ -16,16 +16,26 @@ type MetadataTransfer = {
   fields: HistoryFields
   bytes: Buffer
   page: ReturnType<typeof createJsonContinuationPager>
-  /** A download Main is still reading; it stays retained until its last page or one Main request timeout. */
-  activeUntil: number
+  /** Each reader retains its next page until it is read or goes idle. */
+  downloads: Array<{ offset: number; expiresAt: number }>
 }
 const metadataTransfers = new Map<string, MetadataTransfer>()
 let retainedMetadataBytes = 0
 
 function servePage(transfer: MetadataTransfer, page: DeviceJsonContinuation) {
-  transfer.activeUntil = page.offset + DEVICE_JSON_CONTINUATION_BYTES >= page.byteSize ? 0
-    : Date.now() + deviceRequestTimeoutMs
+  const now = Date.now()
+  transfer.downloads = transfer.downloads.filter(download => download.expiresAt > now)
+  const reader = transfer.downloads.findIndex(download => download.offset === page.offset)
+  if (reader !== -1) transfer.downloads.splice(reader, 1)
+  const nextOffset = page.offset + DEVICE_JSON_CONTINUATION_BYTES
+  if (nextOffset < page.byteSize) {
+    transfer.downloads.push({ offset: nextOffset, expiresAt: now + deviceRequestTimeoutMs })
+  }
   return page
+}
+
+function metadataBytes(fields: HistoryFields) {
+  return Buffer.from(JSON.stringify(encodeResultCopies(fields, historyResultPaths())))
 }
 
 function metadataPage(fields: HistoryFields, request?: DeviceJsonContinuationRequest) {
@@ -37,20 +47,22 @@ function metadataPage(fields: HistoryFields, request?: DeviceJsonContinuationReq
   )) {
     return servePage(retained, retained.page(request))
   }
-  const bytes = Buffer.from(JSON.stringify(encodeResultCopies(fields, historyResultPaths())))
+  const bytes = metadataBytes(fields)
   const pager = createJsonContinuationPager(bytes)
   const page = pager(request)
   const existing = metadataTransfers.get(page.digest)
   if (existing) return servePage(existing, page)
+  if (page.offset + DEVICE_JSON_CONTINUATION_BYTES >= page.byteSize) return page
   while (metadataTransfers.size >= 64
     || retainedMetadataBytes + bytes.byteLength > DEVICE_JSON_CONTINUATION_LIMIT * 4) {
     const now = Date.now()
-    const idle = [...metadataTransfers].find(([, transfer]) => transfer.activeUntil <= now)
+    const idle = [...metadataTransfers].find(([, transfer]) =>
+      !transfer.downloads.some(download => download.expiresAt > now))
     if (!idle) throw new DomainError('backpressure', 'Native history downloads in progress fill their retention.', 503)
     metadataTransfers.delete(idle[0])
     retainedMetadataBytes -= idle[1].bytes.byteLength
   }
-  const transfer = { fields: structuredClone(fields), bytes, page: pager, activeUntil: 0 }
+  const transfer: MetadataTransfer = { fields: structuredClone(fields), bytes, page: pager, downloads: [] }
   metadataTransfers.set(page.digest, transfer)
   retainedMetadataBytes += bytes.byteLength
   return servePage(transfer, page)
@@ -68,11 +80,27 @@ export function nativeHistoryPageSource(reply: unknown): NativeHistory | undefin
 
 /** No cursor returns a recent window; a cursor returns the next chronological page. */
 export function pageNativeHistory(history: NativeHistory, afterSequence?: number,
-  metadataRequest?: DeviceJsonContinuationRequest): {
+  metadataRequest?: DeviceJsonContinuationRequest) {
+  return buildNativeHistoryPage(history, { afterSequence, metadataRequest, readMetadata: metadataPage })
+}
+
+/** Physical evidence uses the same event window without starting a metadata download. */
+export function projectNativeHistory(history: NativeHistory): NativeHistory {
+  return buildNativeHistoryPage(history, {
+    readMetadata: fields => createJsonContinuationPager(metadataBytes(fields))(),
+  })[historySource]
+}
+
+function buildNativeHistoryPage(history: NativeHistory, options: {
+  afterSequence?: number | undefined
+  metadataRequest?: DeviceJsonContinuationRequest | undefined
+  readMetadata: typeof metadataPage
+}): {
   history: NativeHistory
   page: DeviceHistoryPage
   [historySource]: NativeHistory
 } {
+  const { afterSequence, metadataRequest, readMetadata } = options
   const events: NativeHarnessEvent[] = []
   const nextSequence = history.nextSequence ?? (history.events.at(-1)?.sequence ?? -1) + 1
   const firstSequence = history.firstRetainedSequence ?? history.events[0]?.sequence ?? nextSequence
@@ -84,7 +112,7 @@ export function pageNativeHistory(history: NativeHistory, afterSequence?: number
   if (bytes > limit || metadataRequest) {
     const fields: HistoryFields = { ...history }
     for (const key of ['events', 'firstRetainedSequence', 'nextSequence', 'gap']) Reflect.deleteProperty(fields, key)
-    metadata = metadataPage(fields, metadataRequest)
+    metadata = readMetadata(fields, metadataRequest)
     value = { events, pendingInteractions: [], firstRetainedSequence: firstSequence, nextSequence,
       ...(history.correlationId === undefined ? {} : { correlationId: history.correlationId }),
       ...(history.nativeTurnId === undefined ? {} : { nativeTurnId: history.nativeTurnId }),
