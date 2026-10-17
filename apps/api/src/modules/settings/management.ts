@@ -139,6 +139,7 @@ export class FoundationSettingsManagementService {
           }
         }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
         const previous = await this.settings.getAgentDefaults(client)
         if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {

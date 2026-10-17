@@ -20,6 +20,7 @@ import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
 import { lockActiveWorkspace } from './admission.js'
 import { lockAgentConfigurations, saveAgentConfiguration } from './agentConfiguration.js'
 import type { ProviderAccountConfigurationService } from '../harnesses/providerAccountConfiguration.js'
+import { prepareAgentConfiguration } from './agentConfigurationPreparation.js'
 
 export function agentWithConfiguration(agent: Agent, configuration: HarnessConfiguration): Agent {
   return AgentSchema.parse({...agent, harness: configuration.harness, model: configuration.model,
@@ -107,9 +108,23 @@ export class OperatorAgentMutationService {
     requireAuthorization(principal,'agents:create',{workspaceId:input.workspaceId})
     requireAuthorization(principal,'agents:read',{workspaceId:input.workspaceId})
     let livePrincipal = principal
+    const preparation = this.accountConfigurations && prepareAgentConfiguration({ pool: this.pool,
+      accounts: this.accountConfigurations, principal: () => livePrincipal, workspaceId: input.workspaceId,
+      source, commandId: input.commandId, load: async client => {
+        await lockActiveWorkspace(client, input.workspaceId)
+        await lockAgentConfigurations(client, [input.agentId])
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        requireAuthorization(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })
+        const existing = await client.query('select id from agents where id=$1', [input.agentId])
+        if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT', 'The Agent ID already exists.', 409)
+        const defaults = (await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)).value[input.productRole]
+        return { configuration: input.configuration ?? defaults.harness,
+          selection: input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.harnessProfileSelection) }
+      } })
     return this.commands.execute({principal,source,operation:'agent.create',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
-      resourceLock: `admission:workspace:${input.workspaceId}`,
+      ...(preparation?.command ?? { resourceLock: `admission:workspace:${input.workspaceId}` }),
       authorize: async client => {
         livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
@@ -124,13 +139,14 @@ export class OperatorAgentMutationService {
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The Agent ID already exists.',409)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
-        let configuration = input.configuration ?? defaults.value[input.productRole].harness
-        let harnessProfileSelection = input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
+        let configuration = preparation?.value().configuration ?? input.configuration ?? defaults.value[input.productRole].harness
+        let harnessProfileSelection = preparation ? preparation.value().selection
+          : input.harnessProfileSelection ?? (input.configuration ? undefined : defaults.value[input.productRole].harnessProfileSelection)
         if (this.accountConfigurations) {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client,
         })
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills)
         if (!harnessProfileSelection) await this.harnesses.qualifyConfiguration(configuration)
@@ -151,9 +167,17 @@ export class OperatorAgentMutationService {
     const input = AgentUpdateInputSchema.parse(raw)
     requireAuthorization(principal,'agents:update',{workspaceId:input.workspaceId})
     let livePrincipal = principal
+    const preparation = this.accountConfigurations && prepareAgentConfiguration({ pool: this.pool,
+      accounts: this.accountConfigurations, principal: () => livePrincipal, workspaceId: input.workspaceId,
+      source, commandId: input.commandId, load: async client => {
+        const current = await this.authorizeWrite(client, livePrincipal, input.workspaceId, input.agentId)
+        this.assertRevision(current, input.expectedRevision, input.expectedConfigurationVersionId)
+        return { configuration: input.configuration ?? current.agent.harnessConfiguration!,
+          selection: input.harnessProfileSelection ?? current.agent.harnessProfileSelection }
+      } })
     return this.commands.execute({principal,source,operation:'agent.update',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
-      resourceLock: `admission:workspace:${input.workspaceId}`,
+      ...(preparation?.command ?? { resourceLock: `admission:workspace:${input.workspaceId}` }),
       authorize: async client => {
         livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(livePrincipal, 'agents:update', { workspaceId: input.workspaceId })
@@ -164,13 +188,14 @@ export class OperatorAgentMutationService {
       perform:async(client) => {
         const current = await this.authorizeWrite(client,livePrincipal,input.workspaceId,input.agentId)
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
-        let configuration = input.configuration ?? current.agent.harnessConfiguration!
-        let harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
+        let configuration = preparation?.value().configuration ?? input.configuration ?? current.agent.harnessConfiguration!
+        let harnessProfileSelection = preparation ? preparation.value().selection
+          : input.harnessProfileSelection ?? current.agent.harnessProfileSelection
         if (this.accountConfigurations) {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client,
         })
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
         if (!harnessProfileSelection && !isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {
@@ -195,9 +220,22 @@ export class OperatorAgentMutationService {
     const input = AgentCloneInputSchema.parse(raw)
     requireAuthorization(principal,'agents:create',{workspaceId:input.workspaceId})
     let livePrincipal = principal
+    const preparation = this.accountConfigurations && prepareAgentConfiguration({ pool: this.pool,
+      accounts: this.accountConfigurations, principal: () => livePrincipal, workspaceId: input.workspaceId,
+      source: 'mcp', commandId: input.commandId, load: async client => {
+        await lockActiveWorkspace(client, input.workspaceId)
+        await lockAgentConfigurations(client, [input.agentId, input.sourceAgentId])
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        const current = await readAgentForReuse(client, livePrincipal, input.workspaceId, input.sourceAgentId)
+        this.assertRevision(current, input.expectedSourceRevision, input.expectedSourceConfigurationVersionId)
+        const existing = await client.query('select id from agents where id=$1', [input.agentId])
+        if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT', 'The clone Agent ID already exists.', 409)
+        return { configuration: current.agent.harnessConfiguration!, selection: current.agent.harnessProfileSelection }
+      } })
     return this.commands.execute({principal,source:'mcp',operation:'agent.clone',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
-      resourceLock: `admission:workspace:${input.workspaceId}`,
+      ...(preparation?.command ?? { resourceLock: `admission:workspace:${input.workspaceId}` }),
       authorize: async client => {
         livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
@@ -218,11 +256,12 @@ export class OperatorAgentMutationService {
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The clone Agent ID already exists.',409)
         const source = current.agent
+        const prepared = preparation?.value()
         const configuration = this.accountConfigurations
-          ? await this.accountConfigurations.resolve(source.harnessConfiguration!, source.harnessProfileSelection, { sql: client })
+          ? await this.accountConfigurations.resolve(prepared!.configuration, prepared!.selection, { sql: client })
           : source.harnessConfiguration!
         const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal: livePrincipal, source: 'mcp',
-          configuration, selection: source.harnessProfileSelection, commandId: input.commandId, client, check: true,
+          configuration, selection: prepared!.selection, commandId: input.commandId, client,
         }) : source.harnessProfileSelection
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,source.assignedSkills)
         if (!selection) await this.harnesses.qualifyConfiguration(configuration)
@@ -242,9 +281,24 @@ export class OperatorAgentMutationService {
   restore(principal: ManagementPrincipal, input: {workspaceId:string;agentId:string;versionId:string;commandId:string;expectedRevision:number;expectedConfigurationVersionId:string}) {
     requireAuthorization(principal,'agents:update',{workspaceId:input.workspaceId})
     let livePrincipal = principal
+    const preparation = this.accountConfigurations && prepareAgentConfiguration({ pool: this.pool,
+      accounts: this.accountConfigurations, principal: () => livePrincipal, workspaceId: input.workspaceId,
+      source: 'mcp', commandId: input.commandId, load: async client => {
+        const current = await this.authorizeWrite(client, livePrincipal, input.workspaceId, input.agentId)
+        this.assertRevision(current, input.expectedRevision, input.expectedConfigurationVersionId)
+        const rows = await client.query<{ record: unknown }>(
+          'select record from agent_configuration_versions where workspace_id=$1 and agent_id=$2 and id=$3',
+          [input.workspaceId, input.agentId, input.versionId])
+        if (!rows.rows[0]) throw new DomainError('AGENT_VERSION_NOT_FOUND', 'The historical Agent version was not found.', 404)
+        const version = AgentConfigurationVersionSchema.parse(rows.rows[0].record)
+        if (version.productRole !== current.agent.productRole) {
+          throw new DomainError('AGENT_ROLE_RESTORE_UNSUPPORTED', 'Restore role-changing history through an explicitly validated graph change.', 409)
+        }
+        return { configuration: version.harness, selection: version.harnessProfileSelection }
+      } })
     return this.commands.execute({principal,source:'mcp',operation:'agent.configuration.restore',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
-      resourceLock: `admission:workspace:${input.workspaceId}`,
+      ...(preparation?.command ?? { resourceLock: `admission:workspace:${input.workspaceId}` }),
       authorize: async client => {
         livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         requireAuthorization(livePrincipal, 'agents:update', { workspaceId: input.workspaceId })
@@ -261,11 +315,12 @@ export class OperatorAgentMutationService {
         // Role changes can invalidate Orchestrator assignments. A restore does not
         // silently redesign those assignments across shared workflows.
         if (version.productRole !== current.agent.productRole) throw new DomainError('AGENT_ROLE_RESTORE_UNSUPPORTED','Restore role-changing history through an explicitly validated graph change.',409)
+        const prepared = preparation?.value()
         const configuration = this.accountConfigurations
-          ? await this.accountConfigurations.resolve(version.harness, version.harnessProfileSelection, { sql: client })
+          ? await this.accountConfigurations.resolve(prepared!.configuration, prepared!.selection, { sql: client })
           : version.harness
         const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal: livePrincipal, source: 'mcp',
-          configuration, selection: version.harnessProfileSelection, commandId: input.commandId, client, check: true,
+          configuration, selection: prepared!.selection, commandId: input.commandId, client,
         }) : version.harnessProfileSelection
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,version.assignedSkills)
         if (!selection) await this.harnesses.qualifyConfiguration(configuration)

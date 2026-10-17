@@ -22,6 +22,7 @@ import { workspaceStorageRoot } from './storage.js'
 import { OwnedRepositoryPreparation, repositoryProjectPath } from './repositoryPreparation.js'
 import { recoverRepositoryCommands, repositorySubcommand, repositoryRootSelection, repositoryRootBindInput } from './repositoryRecovery.js'
 import { WorkspaceRepositoryJournal, type RepositoryImport, type ImportFailure } from './repositoryJournal.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
 
 type Sql = Pick<pg.PoolClient, 'query'>
 type Transport = 'http' | 'mcp'
@@ -78,6 +79,7 @@ export class WorkspaceRepositoryService {
 
   private async reserve(principal: ManagementPrincipal, input: WorkspaceRepositoryAddInput): Promise<RepositoryImport> {
     return this.transaction(async sql => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
       const workspace = await this.authorize(sql, principal, input.workspaceId, REPOSITORY_ADD_ACTIONS)
       const existing = await this.journal.find(sql, input.workspaceId, { principalId: principal.id, commandId: input.commandId })
       if (existing) {
