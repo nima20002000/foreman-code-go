@@ -1,3 +1,4 @@
+import { setTimeout as setRealTimeout, clearTimeout as clearRealTimeout } from 'node:timers'
 import { randomUUID } from 'node:crypto'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rename, symlink, rm } from 'node:fs/promises'
@@ -89,7 +90,13 @@ describe('source manifest policy', () => {
     expect(sourcePath('.env.example')).toBe('.env.example')
     const { manifest } = await fixture()
     expect(() => verifySourceManifest({ ...manifest, totalBytes: 0 })).toThrow()
-    expect(() => createSourceManifest({ ...manifest, entries: [manifest.entries[0]!, { ...manifest.entries[0]!, path: 'SRC/app.ts' }] })).toThrow()
+    const entry = manifest.entries[0]!
+    expect(() => createSourceManifest({ ...manifest, entries: [
+      { ...entry, path: 'SRC/app.txt' }, entry,
+    ] })).toThrow(expect.objectContaining({ code: 'SOURCE_PATH_COLLISION' }))
+    expect(createSourceManifest({ ...manifest, entries: [
+      { ...entry, path: 'SRC/other.txt' }, entry,
+    ] }).entries).toHaveLength(2)
   })
 })
 describe('private materialization', () => {
@@ -105,24 +112,48 @@ describe('private materialization', () => {
       setTimeout(() => controller.abort(new DOMException('Source copy deadline exceeded.', 'TimeoutError')), milliseconds)
       return controller.signal
     })
+    let transfer: Promise<unknown> | undefined
     try {
-      const service = new PrivateSourceMaterializer({ async read() {
+      const service = new PrivateSourceMaterializer({ async read(_manifest, _entry, signal) {
         entered()
-        await bytesReady
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => reject(signal.reason)
+          signal?.addEventListener('abort', abort, { once: true })
+          bytesReady.then(() => {
+            signal?.removeEventListener('abort', abort)
+            resolve()
+          })
+          if (signal?.aborted) abort()
+        })
         return f.bytes
       } }, async () => {})
       const prepared = service.prepare(f)
+      const outcome = prepared.then(value => ({ value }), error => ({ error }))
+      transfer = outcome
       await reading
       await vi.advanceTimersByTimeAsync(elapsed)
-      release()
       if (elapsed < 300_000) {
+        release()
         const receipt = await prepared
         expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.txt'))).toEqual(f.bytes)
       } else {
-        await expect(prepared).rejects.toThrow('Source copy deadline exceeded.')
+        // Bound the assertion while keeping the simulated transfer blocked.
+        let timer: ReturnType<typeof setRealTimeout> | undefined
+        try {
+          const result = await Promise.race([
+            outcome,
+            new Promise(resolve => { timer = setRealTimeout(() => resolve('still blocked'), 1000) }),
+          ])
+          expect(result).toMatchObject({ error: { message: 'Source copy deadline exceeded.' } })
+        } finally { clearRealTimeout(timer) }
+        const directories = await readdir(f.root, { withFileTypes: true })
+        for (const directory of directories.filter(entry => entry.isDirectory())) {
+          expect(await readdir(join(f.root, directory.name))).not.toContain('tree')
+        }
       }
     } finally {
       release()
+      await transfer
       deadline.mockRestore()
       vi.useRealTimers()
     }
@@ -251,10 +282,16 @@ describe('capture semantics', () => {
     const commit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim()
     await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit: 'f'.repeat(40), executablePolicy: 'strip', sink: sink() })).rejects.toThrow()
     await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit, executablePolicy: 'strip', sink: sink() })).rejects.toThrow('LFS')
+    await qualifiedGit(f.root, ['rm', 'asset.bin'])
+    await writeFile(join(f.root, 'ordinary.txt'), 'ordinary source')
+    await qualifiedGit(f.root, ['add', 'ordinary.txt'])
     await qualifiedGit(f.root, ['update-index', '--add', '--cacheinfo', '160000', commit, 'module'])
     await qualifiedGit(f.root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'submodule'])
     const subCommit = (await qualifiedGit(f.root, ['rev-parse', 'HEAD'])).toString().trim()
-    await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit: subCommit, executablePolicy: 'strip', sink: sink() })).rejects.toThrow()
+    const target = sink()
+    await expect(captureGitSource({ root: f.root, approvedSourceId: randomUUID(), commit: subCommit,
+      executablePolicy: 'strip', sink: target })).rejects.toThrow('submodules')
+    expect(target.committed).toEqual([])
   })
   it('rejects corrupted Git objects even when the object filename still matches the accepted ref', async () => {
     const f = await fixture(); await qualifiedGit(f.root, ['init', '--template=']); await writeFile(join(f.root, 'data.txt'), 'good')
