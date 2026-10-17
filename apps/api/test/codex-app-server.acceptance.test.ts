@@ -63,7 +63,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
   }), 120_000)
 
   it('measures installed schemas, approves, continues, cancels and reattaches the same native session', () => withCodexNativeHome(async () => {
-    const fixture = await codexNativeAcceptanceFixture()
+    const fixture = await codexNativeAcceptanceFixture('on-request')
     const marker = join(fixture.directory, 'approved-command.txt')
     const manager = new CodexAppServerSessionManager(binary)
     const restored = new CodexAppServerSessionManager(binary)

@@ -22,6 +22,7 @@ import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { browserOwnerUpgrade } from './helpers/browserOwnerUpgrade.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import type { LocalHumanRecoveryInput } from './helpers/localHumanRecoveryChild.js'
+import { readUntil } from './helpers/observableCondition.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 const databaseUrl = process.env.ENG03_A_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL
@@ -39,7 +40,7 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
     const initial = await operators.ensure()
     const { operator, configuration } = await operators.update({ harness: 'codex',
       model: process.env.CODEX_TEST_MODEL ?? 'gpt-5.6-luna', reasoningEffort: 'medium', sandbox: 'read-only',
-      serviceTier: 'standard', advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
+      serviceTier: 'standard', advanced: { ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION), approvalPolicy: 'on-request' },
     }, initial.configuration.id)
     const repository = new PostgresOperatorConversationRepository(db.pool)
     const conversation = await repository.create(operator.id, configuration, owner.principal.id, 'Pending native request')
@@ -157,13 +158,19 @@ describe.skipIf(!enabled)('local human production native recovery', { timeout: 2
       const cancel = await fetch(`${url}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ requestId, commandId: randomUUID() }) })
       expect(cancel.status, await cancel.text()).toBe(200)
-      const row = await repository.active(conversation.id)
+      const row = await readUntil(() => repository.active(conversation.id),
+        value => value?.active_request_id === null, { timeoutMs: 5000, description: 'recovered native cancellation' })
       expect(row).toMatchObject({ owner_principal_id: owner.principal.id,
         native_session_id: original!.native_session_id })
-      const turn = (await db.pool.query('select native_turn_id from operator_conversation_turns where conversation_id=$1 and request_id=$2',
+      const turn = (await db.pool.query('select native_turn_id,result from operator_conversation_turns where conversation_id=$1 and request_id=$2',
         [conversation.id, requestId])).rows[0]
       expect(turn.native_turn_id).toBe(original!.active_native_turn_id)
-      expect(row!.cancel_requested || row!.active_request_id === null).toBe(true)
+      expect(turn.result).toMatchObject({ outcome: 'canceled' })
+      const canceledHistory = message(child, 'observedHistory')
+      child.send({ kind: 'inspect', conversationId: conversation.id })
+      expect((await canceledHistory).observedHistory).toMatchObject({
+        nativeTurnId: original!.active_native_turn_id, correlationId, terminalResult: { outcome: 'canceled' },
+      })
       expect(await access.authenticate(owner.token)).toEqual(owner.principal)
       child.send('stop')
       await exited
