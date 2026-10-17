@@ -1,10 +1,11 @@
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callClaudeHttpTool } from '../../fixtures/harnesses/claude-sdk/mcp.mjs'
 import { executeTool } from '../../fixtures/harnesses/claude-sdk/tools.mjs'
 
 const require = createRequire(new URL('../../package.json', import.meta.url))
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
 const closers = []
 
 async function statefulMcp() {
@@ -63,7 +64,10 @@ async function statefulMcp() {
 }
 
 describe('fake Claude authenticated MCP behavior', () => {
-  afterEach(async () => { await Promise.all(closers.splice(0).map(close => close())) })
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await Promise.all(closers.splice(0).map(close => close()))
+  })
 
   it('initializes a real stateful session, reads every tool page and preserves its complete tool result', async () => {
     const fixture = await statefulMcp()
@@ -97,5 +101,28 @@ describe('fake Claude authenticated MCP behavior', () => {
     const result = frames.find(frame => frame.type === 'user')
     expect(result.message.content).toEqual([{ type: 'tool_result', tool_use_id: frames[0].message.content[0].id,
       content: JSON.stringify(failure), is_error: true }])
+  })
+
+  it('retains the call failure and actual transport cleanup failure with its caught cause', async () => {
+    const fixture = await statefulMcp()
+    const primary = new Error('Owned Claude MCP call failed.')
+    const cleanup = new Error('Owned Claude MCP cleanup failed.')
+    vi.spyOn(Client.prototype, 'callTool').mockRejectedValue(primary)
+    const originalClose = Client.prototype.close
+    const close = vi.spyOn(Client.prototype, 'close').mockImplementation(async function () {
+      await originalClose.call(this)
+      throw cleanup
+    })
+    const failure = await callClaudeHttpTool('graphql', fixture.configuration, 'record', {},
+      AbortSignal.timeout(5000), fixture.scope).catch(error => error)
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.message).toBe('Fake Claude MCP call and transport cleanup failed.')
+    expect(failure.errors).toHaveLength(2)
+    expect(failure.errors[0]).toBe(primary)
+    expect(failure.errors[1]).toBe(cleanup)
+    expect(failure.cause).toBe(cleanup)
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(fixture.state.calls).toEqual(['initialize', 'notifications/initialized', 'tools/list', 'tools/list'])
+    expect(fixture.state.revision).toBe(0)
   })
 })

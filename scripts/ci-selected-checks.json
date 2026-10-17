@@ -1,0 +1,106 @@
+{
+  "source": "eaea4e3ff4e1ef9a8666083b16b26c734e1e83e1",
+  "sourceComparison": {
+    "oldProductBase": "eaea4e3ff4e1ef9a8666083b16b26c734e1e83e1",
+    "regressionTestSource": "0e40b1dbe160f02c88e94a3508e3fafcd3213bea",
+    "selectedCaseNames": [
+      "retains setup and ownership cleanup failures when isolated environment creation fails",
+      "retains readiness and process cleanup errors without starting a real database",
+      "retains target setup and cleanup errors while reporting cleanup as failed",
+      "retains a late protocol error and the channel cleanup rejection after disconnect",
+      "retains the startup error and cleanup aggregate with the caught cleanup as cause",
+      "retains the call failure and actual transport cleanup failure with its caught cause",
+      "preserves failed SDK setup and its failed cleanup exactly once",
+      "preserves a scripted turn failure and the caught MCP close failure"
+    ],
+    "testSha256": {
+      "conformance/src/clients/workerConnection.test.ts": "69395f89f08238075e760778cc2695e7e06247baac8c82c4a01f0d7eb2ad2ec3",
+      "conformance/src/harnesses/claudeMcp.test.mjs": "1c07e72cca5db32921d2dd45632eea381a0fd056df9c9c72d59fb604423d49e5",
+      "conformance/src/harnesses/scriptedMcpFailures.test.mjs": "6ef704c4723301cff4ab8cc281eadc6a9bdddfe238935824d7976700194da2b8",
+      "conformance/src/runtime/environment.test.ts": "4088316acbcd1a66830930b4447292020c412a7298b3c798fb38ea3eacec44f0",
+      "conformance/src/runtime/postgres.test.ts": "a941577bb409464800bc02a7ab9da1959ceddc7c8fe55da33516aade24c575a4",
+      "conformance/src/runtime/target.test.ts": "22071661b392316faa203058fffdbecc27b17ba4443e1c07bb8dc34002358d6a"
+    },
+    "expectedPublicFailure": "Missing retained cleanup cause; module load/setup failures are not regression proof"
+  },
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "requiredExports": [
+    "./device-application",
+    "./device-connection",
+    "./device-identity",
+    "./device-identity-node",
+    "./device-tls-node",
+    "./product-environment",
+    "./remote-execution-rpc"
+  ],
+  "exportSourceRoots": [
+    "src/deviceApplication.ts",
+    "src/deviceConnection.ts",
+    "src/deviceIdentity.ts",
+    "src/deviceIdentityNode.ts",
+    "src/deviceTlsNode.ts",
+    "src/productEnvironment.mjs",
+    "src/remoteExecutionRpc.ts"
+  ],
+  "groups": {
+    "qconf": [
+      {
+        "name": "required-old-source-contract-exports",
+        "cwd": "packages/contracts",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--ignoreConfig",
+          "--target",
+          "ES2022",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--types",
+          "node",
+          "--strict",
+          "--skipLibCheck",
+          "--allowJs",
+          "--declaration",
+          "--sourceMap",
+          "--rootDir",
+          "src",
+          "--outDir",
+          "dist",
+          "--listEmittedFiles",
+          "src/deviceApplication.ts",
+          "src/deviceConnection.ts",
+          "src/deviceIdentity.ts",
+          "src/deviceIdentityNode.ts",
+          "src/deviceTlsNode.ts",
+          "src/productEnvironment.mjs",
+          "src/remoteExecutionRpc.ts"
+        ],
+        "dependencySetup": true
+      },
+      {
+        "name": "eight-cleanup-cause-regressions-before-fix",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/clients/workerConnection.test.ts",
+          "src/harnesses/claudeMcp.test.mjs",
+          "src/harnesses/scriptedMcpFailures.test.mjs",
+          "src/runtime/environment.test.ts",
+          "src/runtime/postgres.test.ts",
+          "src/runtime/target.test.ts",
+          "--testNamePattern=(?:retains setup and ownership cleanup failures when isolated environment creation fails|retains readiness and process cleanup errors without starting a real database|retains target setup and cleanup errors while reporting cleanup as failed|retains a late protocol error and the channel cleanup rejection after disconnect|retains the startup error and cleanup aggregate with the caught cleanup as cause|retains the call failure and actual transport cleanup failure with its caught cause|preserves failed SDK setup and its failed cleanup exactly once|preserves a scripted turn failure and the caught MCP close failure)$"
+        ],
+        "reportKind": "vitest",
+        "needsContracts": true
+      }
+    ]
+  }
+}
