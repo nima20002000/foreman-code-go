@@ -15,7 +15,7 @@ import type { NativeMcpInspector } from '../harnesses/mcpDetection.js'
 import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.js'
 import type { HarnessQualificationRepository } from '../harnesses/qualification/repository.js'
 import { readInstalledCodexQualification } from '../harnesses/installedCodexInspection.js'
-import type { AcceptedHarnessProfileAdmission, AcceptedProfileSelector } from '../harnesses/instanceSettings/acceptedProfile.js'
+import type { AcceptedHarnessProfile, AcceptedHarnessProfileAdmission, AcceptedProfileSelector } from '../harnesses/instanceSettings/acceptedProfile.js'
 import type { ClaudeProfileOwner } from '../harnesses/claudeSdk/production.js'
 import type { ClaudeDomainBinding } from '../harnesses/claudeSdk/domainAuthority.js'
 
@@ -40,6 +40,7 @@ import { createMainWorkerClaudeFiles } from './mainWorkerClaudeFiles.js'
 import type { AgentFileToolService } from '../files/tools/service.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
+import { readRunChatSkillsTransition } from './workerRunChatBinding.js'
 import { definedProperties } from '../definedProperties.js'
 import { readExecutionPlacement, readNativePlacement } from '../placement/persistence.js'
 import type { WorkerConversationBinding } from '@foreman-code/contracts/remote-execution-rpc'
@@ -167,6 +168,24 @@ async function assertConversationSource(pool: pg.Pool,
       sourceExecution.workingTree)) unavailable('The original Run chat placement changed.')
 }
 
+async function readWorkerConversationProfileFacts(input: ProductionWorkerConversationsInput,
+  configuration: WorkerConversationConfiguration, accepted: AcceptedHarnessProfile) {
+  const installation = input.registry.pinOverride(accepted.override).installation
+  let qualification: HarnessQualification | null = null
+  const harness = configuration.harness.harness
+  const binary = installation.launcher.resolvedLauncher
+  const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === binary)?.fingerprint
+  const revision = harness === 'codex' ? input.suiteRevisions.codex : undefined
+  if (harness !== 'claude' && sha256 && revision) {
+    qualification = await readInstalledCodexQualification(input.qualifications,
+      { target: accepted.override.target, binarySha256: sha256, installation }, revision)
+  }
+  return WorkerConversationProfileFactsSchema.parse({
+    installation: qualification ? { ...installation, observedVersion: qualification.version } : installation,
+    override: accepted.override,
+    profile: accepted.persistedProof, qualification })
+}
+
 async function admitWorkerConversation(input: ProductionWorkerConversationsInput,
   options: WorkerConversationOptions, context: {
     configuration: WorkerConversationConfiguration
@@ -255,10 +274,14 @@ async function admitWorkerConversation(input: ProductionWorkerConversationsInput
   const changingAccess = !options.observationPrincipalId && original.native_session_id
     && originalBinding.appMcpAccess !== requestedBinding.appMcpAccess
     && sameConversationForAppAccess(originalBinding, requestedBinding)
-  if (!changingAccess && !isDeepStrictEqual(options.observationPrincipalId ? observationBinding : originalBinding, requestedBinding)) {
+  const previousConfiguration = await readRunChatSkillsTransition(input.pool, original,
+    originalBinding, requestedBinding, configuration)
+  const changingSkills = previousConfiguration !== undefined
+  if (!changingAccess && !changingSkills
+    && !isDeepStrictEqual(options.observationPrincipalId ? observationBinding : originalBinding, requestedBinding)) {
     unavailable('The original worker conversation binding changed.')
   }
-  const binding = changingAccess ? requestedBinding : originalBinding
+  const binding = changingAccess || changingSkills ? requestedBinding : originalBinding
   const requestCallers = new WeakMap<WorkerConversationRpcRequest, string>()
   const current = async (request: WorkerConversationRpcRequest, effectSignal?: AbortSignal) => {
     const live = await row(options.conversationId)
@@ -296,7 +319,8 @@ async function admitWorkerConversation(input: ProductionWorkerConversationsInput
     channel, currentChannel, bridge, current,
     ...(executionConfiguration !== configuration && 'operatorId' in configuration
       ? { acceptedConfiguration: configuration } : {}),
-    ...(changingAccess ? { previousBinding: originalBinding } : {}),
+    ...(changingAccess || changingSkills ? { previousBinding: originalBinding } : {}),
+    ...(previousConfiguration ? { previousConfiguration } : {}),
     sourceWorkingDirectory: options.workingDirectory,
     ...(configuration.harness.harness === 'codex' && binding.appMcpAccess === 'none' && input.files
       ? { files: input.files(options.conversationId, configuration, binding.workingDirectory) } : {}),
@@ -329,22 +353,7 @@ async function admitWorkerConversation(input: ProductionWorkerConversationsInput
       }
       return { authorized: true }
     } } : {}),
-    profile: async () => {
-      const installation = input.registry.pinOverride(accepted.override).installation
-      let qualification: HarnessQualification | null = null
-      const harness = configuration.harness.harness
-      const binary = installation.launcher.resolvedLauncher
-      const sha256 = installation.launcher.payloadFingerprints?.find(value => value.path === binary)?.fingerprint
-      const revision = harness === 'codex' ? input.suiteRevisions.codex : undefined
-      if (harness !== 'claude' && sha256 && revision) {
-        qualification = await readInstalledCodexQualification(input.qualifications,
-          { target: accepted.override.target, binarySha256: sha256, installation }, revision)
-      }
-      return WorkerConversationProfileFactsSchema.parse({
-        installation: qualification ? { ...installation, observedVersion: qualification.version } : installation,
-        override: accepted.override,
-        profile: accepted.persistedProof, qualification })
-    },
+    profile: () => readWorkerConversationProfileFacts(input, configuration, accepted),
     observeSession: async session => {
       const saved = await input.pool.query(`update operator_conversations set worker_conversation_binding=$2::jsonb
         where id=$1 and deleted_at is null
@@ -354,7 +363,7 @@ async function admitWorkerConversation(input: ProductionWorkerConversationsInput
           and (worker_conversation_binding is null or worker_conversation_binding=$2::jsonb
             or worker_conversation_binding=$5::jsonb)`,
       [options.conversationId, JSON.stringify(binding), session.nativeSessionId, configuration.id,
-        changingAccess ? JSON.stringify(originalBinding) : JSON.stringify(binding)])
+        changingAccess || changingSkills ? JSON.stringify(originalBinding) : JSON.stringify(binding)])
       if (saved.rowCount !== 1) unavailable('The native worker owner could not be retained.')
     } })
   if (claudeFiles) {

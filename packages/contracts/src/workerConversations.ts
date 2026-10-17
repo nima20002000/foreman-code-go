@@ -226,6 +226,7 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.open'), ...binding, operationId: id,
     configuration: WorkerConversationConfigurationSchema, mode: z.enum(['create', 'attach', 'fork']),
     previousBinding: WorkerConversationBindingSchema.optional(),
+    previousConfiguration: WorkerConversationConfigurationSchema.optional(),
     source: z.lazy(() => NativeSessionReferenceSchema).optional(), preferences: SessionPreferencesSchema.optional(),
     applicationAccess: applicationAccess.optional(),
   }).strict(),
@@ -269,11 +270,17 @@ export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method',
   z.object({ method: z.literal('conversation.reconcile-steers'), ...native,
     inputs: z.array(z.object({ clientCorrelationId: id, expectedTurnId: id }).strict()).max(1000) }).strict(),
 ]).superRefine((request, context) => {
-  if (request.method === 'conversation.open' && request.previousBinding
-    && (request.mode !== 'attach' || request.binding.owner.kind !== 'operator'
-      || request.previousBinding.owner.kind !== 'operator'
-      || request.previousBinding.appMcpAccess === request.binding.appMcpAccess)) {
-    context.addIssue({ code: 'custom', message: 'App MCP access changes attach an existing Operator session.' })
+  if (request.method === 'conversation.open') {
+    const skillsChange = request.previousConfiguration !== undefined
+    if (request.previousBinding && (request.mode !== 'attach'
+      || (skillsChange ? request.binding.owner.kind !== 'agent' || request.previousBinding.owner.kind !== 'agent'
+        : request.binding.owner.kind !== 'operator' || request.previousBinding.owner.kind !== 'operator'
+          || request.previousBinding.appMcpAccess === request.binding.appMcpAccess))) {
+      context.addIssue({ code: 'custom', message: 'Binding changes attach an existing conversation of the same kind.' })
+    }
+    if (skillsChange && !request.previousBinding) {
+      context.addIssue({ code: 'custom', message: 'A skills transition requires the previous conversation binding.' })
+    }
   }
   if ('applicationAccess' in request && request.applicationAccess
     && (request.binding.owner.kind !== 'operator' || request.binding.appMcpAccess !== 'scoped')) {

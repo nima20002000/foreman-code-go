@@ -3,9 +3,10 @@ import type { CompactionState, ExecutionResult, NativeSessionReference, SessionP
 import type { NativeMessageSubmission } from '@foreman-code/contracts/claude'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
-import type { WorkerConversationBinding, WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
+import type { WorkerConversationBinding, WorkerConversationReceipt, WorkerConversationConfiguration, WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
 import { sameConversationForAppAccess } from './conversationAppAccess.js'
+import { validRunChatSkillsTransition } from './workerRunChatBinding.js'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerClaudeCallbackRecordSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { ClaudeCallbackJournal } from '../harnesses/claudeSdk/callbackJournal.js'
@@ -52,15 +53,31 @@ export class WorkerConversationJournal {
     return record
   }
 
-  claudeCallbackJournal(binding: WorkerConversationBinding): ClaudeCallbackJournal {
-    const records = async () => Object.values((await this.inspectBinding(binding))?.claudeCallbacks ?? {})
+  async inspectSkillsTransition(previous: WorkerConversationBinding, next: WorkerConversationBinding,
+    base: WorkerConversationConfiguration, effective: WorkerConversationConfiguration) {
+    if (!validRunChatSkillsTransition(previous, next, base, effective)) conflict('The Run chat skills transition changed.')
+    const record = (await this.store.read(next.owner.conversationId)).find(value =>
+      value.binding.owner.conversationId === next.owner.conversationId)
+    if (record && !isDeepStrictEqual(record.binding, previous) && !isDeepStrictEqual(record.binding, next)) {
+      conflict('The original conversation binding changed.')
+    }
+    return record
+  }
+
+  claudeCallbackJournal(binding: WorkerConversationBinding, request?: WorkerConversationRpcRequest): ClaudeCallbackJournal {
+    const inspect = () => request?.method === 'conversation.open' && request.previousBinding && request.previousConfiguration
+      ? this.inspectSkillsTransition(request.previousBinding, binding, request.previousConfiguration, request.configuration)
+      : this.inspectBinding(binding)
+    const records = async () => Object.values((await inspect())?.claudeCallbacks ?? {})
       .map(record => definedProperties({ ...record, identity: definedProperties(record.identity) }))
     return {
       read: async key => (await records()).find(record => commandInputHash(record.identity) === key),
       write: async (key, value) => {
         const callback = WorkerClaudeCallbackRecordSchema.parse(value)
         if (key !== commandInputHash(callback.identity)) conflict('The callback journal key differs from its native identity.')
-        await this.change(binding, record => {
+        const storedBinding = request?.method === 'conversation.open' && request.previousConfiguration
+          ? (await inspect())?.binding ?? binding : binding
+        await this.change(storedBinding, record => {
           if (binding.harness !== 'claude' || callback.identity.nativeSessionId !== record.session?.nativeSessionId) {
             conflict('The callback belongs to another native session.')
           }
@@ -200,17 +217,23 @@ export class WorkerConversationJournal {
 
   recoveredOwner(binding: WorkerConversationBinding, connection: DeviceSessionBinding,
     previous: RemoteNativeIdentity, next: RemoteNativeIdentity,
-    options?: { targetBinding?: WorkerConversationBinding; pendingCorrelationId?: string }) {
+    options?: { targetBinding?: WorkerConversationBinding; pendingCorrelationId?: string
+      previousConfiguration?: WorkerConversationConfiguration; configuration?: WorkerConversationConfiguration }) {
     return this.change(binding, record => {
       if (record.closed || record.closing) conflict('The native conversation is closing or closed.')
       const change = record.applicationAccessChange
       const targetBinding = options?.targetBinding
-      if (targetBinding) {
+      const changingSkills = targetBinding && options?.previousConfiguration && options.configuration
+        && validRunChatSkillsTransition(binding, targetBinding, options.previousConfiguration, options.configuration)
+      if (targetBinding && !changingSkills) {
         if (!change || change.state !== 'reserved' || change.previous !== binding.appMcpAccess
           || change.next !== targetBinding.appMcpAccess || !sameConversationForAppAccess(binding, targetBinding)) {
           conflict('The original App MCP access change was not reserved.')
         }
-      } else if (change?.state === 'reserved') conflict('The native App MCP access change needs recovery.')
+      }
+      if ((!targetBinding || changingSkills) && change?.state === 'reserved') {
+        conflict('The native App MCP access change needs recovery.')
+      }
       const pending = record.turns.find(turn => turn.correlationId === options?.pendingCorrelationId)
       const replacingBeforeInput = pending?.status === 'reserved' && !pending.nativeTurnId && !pending.nativeSubmission
       const otherPending = record.turns.some(turn => !['completed', 'rejected'].includes(turn.status)
@@ -230,7 +253,7 @@ export class WorkerConversationJournal {
       record.connection = connection
       if (targetBinding) {
         record.binding = structuredClone(targetBinding)
-        change!.state = 'applied'
+        if (!changingSkills) change!.state = 'applied'
       }
       return record
     })

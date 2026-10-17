@@ -44,6 +44,7 @@ interface ManagerOptions {
   claudeAuthority?(request: WorkerClaudeAuthorityRequest, signal: AbortSignal): Promise<unknown>
   sourceWorkingDirectory?: string
   files?: PrepareWorkerFiles
+  previousConfiguration?: WorkerConversationConfiguration
   previousBinding?: WorkerConversationBinding
 }
 
@@ -229,6 +230,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
     if (mode === 'attach' && start.kind === 'operator' && start.observationOnly) delete fields.applicationAccess
     const frame = this.frame({ method: 'conversation.open', ...fields, mode,
       ...(mode === 'attach' && this.options.previousBinding ? { previousBinding: this.options.previousBinding } : {}),
+      ...(mode === 'attach' && this.options.previousConfiguration
+        ? { previousConfiguration: this.options.previousConfiguration } : {}),
       ...(source ? { source } : {}) })
     const lease = await this.capture(frame, { callbacks: { sessionObserved: async session => {
       if (session.harness !== this.harness || mode === 'fork' && session.nativeSessionId === source?.nativeSessionId) {
@@ -245,6 +248,7 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
       if (this.options.previousBinding) {
         await this.options.observeSession?.(receipt.session)
         delete this.options.previousBinding
+        delete this.options.previousConfiguration
       }
       return receipt.session
     } finally { await this.release(lease) }

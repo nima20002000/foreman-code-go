@@ -8,6 +8,7 @@ import type { HarnessQualificationRepository } from '../harnesses/qualification/
 import type { InstalledHarnessInspection } from '../harnesses/installedCodexInspection.js'
 import { QUALIFICATION_TARGET_PROFILE } from '../harnesses/qualification/profiles.js'
 import { DomainError } from '../errors.js'
+import { sameWorkerProfileHost } from './workerProfileTarget.js'
 
 function unavailable(): never {
   throw new DomainError('HARNESS_UNQUALIFIED', 'The selected worker profile or native installation changed.', 409)
@@ -52,8 +53,8 @@ export function createInstalledConversationNativeReader(input: {
       || !isDeepStrictEqual(workerConversationProfileSelection(binding, configuration), binding.profile)
       || !isDeepStrictEqual(before.binding, currentConnection)
       || !isDeepStrictEqual(after.binding, currentConnection)
-      || !isDeepStrictEqual(before.target, binding.profile.target)
-      || !isDeepStrictEqual(override.target, binding.profile.target)
+      || !sameWorkerProfileHost(binding.profile.target, override.target)
+      || !isDeepStrictEqual(before.target, override.target)
       || override.instanceId !== binding.profile.instanceId || override.instanceRevision !== binding.profile.instanceRevision
       || !override.enabled || override.driverId !== harness
       || !isDeepStrictEqual(withAdvancedDefaults(override.configuration), withAdvancedDefaults(configuration.harness))
