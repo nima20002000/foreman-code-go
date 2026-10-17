@@ -840,7 +840,7 @@ it('keeps overdue Host fetch cancellation pending until preparation closes and p
   let preparationSignal: AbortSignal | undefined
   const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(),
     run: async (file, args, options) => {
-      if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: 'Commit not fetched' }
+      if (file === 'git' && args.includes('rev-list')) return { code: 1, stdout: '', stderr: 'Commit not fetched' }
       if (file === 'git' && args.includes('fetch')) {
         preparationSignal = options?.signal
         entered.resolve()
