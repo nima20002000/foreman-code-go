@@ -43,6 +43,31 @@ func TestHostPartStartReportsBoundedManagerRejection(t *testing.T) {
 	}
 }
 
+func TestHostPartStartPreservesManagerRejectionMessage(t *testing.T) {
+	for _, fixture := range []struct {
+		name, stderr, message string
+	}{
+		{"short", "  Access denied.\n", "The CI unit could not start: Access denied."},
+		{"blank", " \t\r\n ", "The CI unit could not start: "},
+		{"multiline", "\nFailed to connect to bus:\nPermission denied.\n", "The CI unit could not start: Failed to connect to bus:\nPermission denied."},
+		{"multibyte", "\t" + strings.Repeat("界", 501) + "\n", "The CI unit could not start: " + strings.Repeat("界", 500)},
+		{"surrogate-pairs", strings.Repeat("\U0001F600", 251), "The CI unit could not start: " + strings.Repeat("\U0001F600", 250)},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			executor, err := cihost.NewHostPartExecutor(cihost.HostCiPorts{Run: func(context.Context, string, []string, cihost.HostCiCommandOptions) (cihost.HostCiCommand, error) {
+				return cihost.HostCiCommand{Code: 1, Stderr: fixture.stderr}, nil
+			}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = executor.Start(context.Background(), cihost.HostPartLaunch{RunID: "owned-part"})
+			if err == nil || err.Error() != fixture.message {
+				t.Fatalf("manager rejection message changed: got %v, want %q", err, fixture.message)
+			}
+		})
+	}
+}
+
 func TestHostPartCanceledBeforeLaunchMakesNoNativeCall(t *testing.T) {
 	calls := 0
 	executor, err := cihost.NewHostPartExecutor(cihost.HostCiPorts{Run: func(context.Context, string, []string, cihost.HostCiCommandOptions) (cihost.HostCiCommand, error) {
