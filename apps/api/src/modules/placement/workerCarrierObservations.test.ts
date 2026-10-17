@@ -3,7 +3,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import { expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { RemoteOperationReceiptSchema, type RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
-import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { RemoteHistoryReceiptIdentitySchema, RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import type { NativeHistory } from '../harnesses/port.js'
@@ -99,7 +99,8 @@ function observationFixture(history?: NativeHistory, options: {
             const afterSequence = frame.method === 'history' ? frame.afterSequence : undefined
             const reply = { ...pageNativeHistory(history, afterSequence, metadata), status }
             await options.historyReply?.(reply, metadata !== undefined, requestOptions?.signal)
-            return { payload: reply }
+            return { payload: metadata ? { receiptIdentity: RemoteHistoryReceiptIdentitySchema.parse(reply.status.receipt),
+              page: reply.page } : reply }
           }
           if (frame.method !== 'status') throw new Error('Only session preparation and boundary reads are expected')
           if (identity.connectionGeneration === 3) secondReply.resolve()

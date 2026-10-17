@@ -9,6 +9,7 @@ import { remoteEntryClosureDigest, remoteNonEntryClosureDigest } from '@foreman-
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import type { NativeHistory } from '../../harnesses/port.js'
+import { HistoryObservationPages } from './historyObservationPages.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { RemoteNativeSessionManager, type RemoteNativeTransport, type RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
@@ -58,16 +59,18 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   const controlFor = vi.fn<RemoteNativeManagerOptions['controlFor']>(async () => {
     throw new Error('No native control requested')
   })
+  const historyPages = new HistoryObservationPages()
   const request = vi.fn<RemoteNativeTransport['request']>(async (method, raw) => {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     if (method === 'prepare') return { session, status }
     if (method === 'start-turn') return status
     if (frame.method !== 'history') throw new Error('Unexpected request')
     cursors.push(frame.afterSequence)
+    if (frame.metadata) return historyPages.read(frame)
     const reply = { ...pageNativeHistory(read(), frame.afterSequence, frame.metadata), status }
     changeReply?.(reply)
     expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
-    return reply
+    return historyPages.remember(reply, intent, placement)
   })
   const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
     transport: { request }, observeReceipt: async value => { observedReceipts.push(value) },
@@ -93,6 +96,62 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('refreshes physical history after a slow download before publishing and settling', async () => {
+    const f = setup(() => terminal([event(0), event(1)]))
+    let now = 1_000
+    let downloads = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method, raw, signal) => {
+      if (method === 'history') {
+        if (++downloads > 6) throw new Error('History download repeated without publication')
+        now += 31_000
+      }
+      return request(method, raw, signal)
+    })
+    try {
+      const session = await f.proxy.createSession(f.start)
+      f.observeOriginalSource.mockClear()
+      const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+      expect(await stream.next()).toEqual({ done: false, value: event(0) })
+      expect(f.observeOriginalSource.mock.calls.map(([, source]) => source.type)).toEqual(['history', 'event'])
+      expect(await stream.next()).toEqual({ done: false, value: event(1) })
+      expect((await stream.next()).done).toBe(true)
+      expect(downloads).toBe(1)
+      expect(f.controlFor).not.toHaveBeenCalled()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('bounds slow history refetches when fresh physical checks keep expiring without cursor progress', async () => {
+    const f = setup(() => terminal([event(0)]))
+    let now = 1_000
+    let downloads = 0
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method, raw, signal) => {
+      if (method === 'history') {
+        if (++downloads > 6) throw new Error('Unbounded history refetch')
+        now += 31_000
+      }
+      return request(method, raw, signal)
+    })
+    f.observeOriginalSource.mockImplementation(async (_receipt, source) => {
+      if (source.type === 'history') throw new DeviceApplicationError(
+        'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED')
+    })
+    try {
+      const session = await f.proxy.createSession(f.start)
+      const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+      await expect(stream.next()).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_REPLY_EXPIRED' })
+      expect(downloads).toBe(5)
+      expect(f.observeOriginalSource.mock.calls.some(([, source]) => source.type === 'event')).toBe(false)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it.each(['history', 'stream'] as const)(
     'pins the %s snapshot while reviewer renewal overtakes metadata pages', async operation => {
       const history = terminal([event(0)])

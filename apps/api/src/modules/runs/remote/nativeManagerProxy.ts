@@ -16,6 +16,7 @@ import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from 
 import type { ReviewJob } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput, NativeHistory } from '../../harnesses/port.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
+import { RemoteHistoryContinuationSchema, RemoteHistoryReceiptIdentitySchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { decodeResultCopies } from './executionResultCodec.js'
@@ -124,14 +125,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     try {
       const value = HistoryResponseSchema.parse(reply.value)
       if (!value.page.metadata) return { ...value, reply }
+      const original = this.readReceipt(value.status, this.intent)
+      const receiptIdentity = RemoteHistoryReceiptIdentitySchema.parse(original)
       const fields = await readJsonContinuation(value.page.metadata, async metadata => {
         const response = await this.request('history', {
-          metadata, afterSequence: value.page.nextAfterSequence,
+          metadata, receiptSequence: original.sequence,
+          afterSequence: value.page.nextAfterSequence,
           ...(value.history.correlationId === undefined ? {} : { correlationId: value.history.correlationId }),
         }, signal)
-        const continuation = HistoryResponseSchema.parse(response.value)
-        const original = this.readReceipt(value.status, this.intent)
-        this.readReceipt(continuation.status, this.intent, original)
+        const continuation = RemoteHistoryContinuationSchema.parse(response.value)
+        if (!isDeepStrictEqual(continuation.receiptIdentity, receiptIdentity)) {
+          throw new Error('Original remote history receipt identity changed')
+        }
         if (!continuation.page.metadata) throw new Error('Remote history metadata owner changed')
         // The first page owns the receipt; continuation bytes are pinned by their digest.
         return continuation.page.metadata
@@ -352,19 +357,37 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     let submitted = false
     let providerId: string | undefined
     let expiredReplies = 0
+    let stalledRefetches = 0
     streaming: while (true) {
       signal?.throwIfAborted()
       const requestedSequence = sequence
       const cached: RemoteNativeSessionManager['streamHistory'] = this.streamHistory
       const canReuse: boolean = cached !== undefined && cached.afterSequence === sequence
         && Date.now() - cached.observedAt < 30_000 && isDeepStrictEqual(cached.receipt, this.receipt)
-      const observedAt: number = canReuse && cached ? cached.observedAt : Date.now()
+      let observedAt: number = canReuse && cached ? cached.observedAt : Date.now()
       const read: { value: z.infer<typeof HistoryResponseSchema>, receipt: RemoteOperationReceipt } = canReuse && cached
         ? { value: { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
           page: cached.page, context: this.context }, receipt: cached.receipt }
         : await this.readHistoryResponse({ afterSequence: sequence, correlationId: input.clientCorrelationId }, signal)
       const { value, receipt } = read
       this.assertHistoryIdentity(value.history, session, input.clientCorrelationId, receipt)
+      const refetch = () => {
+        if (this.streamHistory?.value === value.history) this.streamHistory = undefined
+        if (sequence > requestedSequence) stalledRefetches = 0
+        else if (++stalledRefetches > 4) {
+          throw new HarnessExecutionError('NATIVE_HISTORY_STALLED', 'Remote history could not be refreshed before publication.')
+        }
+      }
+      if (Date.now() - observedAt >= 30_000) {
+        try {
+          await this.observeSource(receipt, { type: 'history', history: this.projectHistory(value.history) }, signal)
+        } catch (error) {
+          if (!expiredPhysicalReply(error) || expiredReplies++ >= 4) throw error
+          refetch()
+          continue streaming
+        }
+        observedAt = Date.now()
+      }
       const retainedFloor = value.history.firstRetainedSequence ?? 0
       if (sequence + 1 < retainedFloor) {
         await input.onEventsSkipped?.({ fromSequence: sequence + 1, toSequence: retainedFloor - 1, reason: 'retention' })
@@ -388,7 +411,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
           if (event.sequence <= sequence) continue
           // Publication can outlast the Worker's physical observation window.
           if (Date.now() - observedAt >= 30_000 || !isDeepStrictEqual(receipt, this.receipt)
-            || this.streamHistory?.value !== value.history) continue streaming
+            || this.streamHistory?.value !== value.history) {
+            refetch()
+            continue streaming
+          }
           if (event.sequence !== sequence + 1) {
             const gap = value.history.gap
             if (!gap || gap.fromSequence > sequence + 1 || gap.toSequence !== event.sequence - 1) {
@@ -396,7 +422,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
             }
             await input.onEventsSkipped?.({ ...gap, fromSequence: sequence + 1 })
             sequence = gap.toSequence
-            if (Date.now() - observedAt >= 30_000 || !isDeepStrictEqual(receipt, this.receipt)) continue streaming
+            if (Date.now() - observedAt >= 30_000 || !isDeepStrictEqual(receipt, this.receipt)) {
+              refetch()
+              continue streaming
+            }
           }
           // A caller may refresh history between yields. Use its current original
           // receipt; the Worker still verifies this exact event in that history.
@@ -415,10 +444,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
           } catch (error) {
             if (!expiredPhysicalReply(error) || expiredReplies++ >= 4) throw error
             // Re-read this execution's history; an evicted reply says nothing about its native process.
+            refetch()
             continue streaming
           }
           expiredReplies = 0
           sequence = event.sequence
+          stalledRefetches = 0
           if (this.streamHistory?.value === value.history) this.streamHistory.afterSequence = sequence
           if (event.type === 'turn.capacity_retry' && event.payload.turnId === providerId && providerId) {
             await input.onRetry?.(providerId)

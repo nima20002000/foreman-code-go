@@ -2,6 +2,7 @@ import { DEVICE_HISTORY_PAGE_BYTES, type DeviceHistoryPage,
   type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
+import { DomainError } from '../../errors.js'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import { isDeepStrictEqual } from 'node:util'
 import { DEVICE_JSON_CONTINUATION_LIMIT } from '@foreman-code/contracts/device-application'
@@ -44,6 +45,12 @@ function metadataPage(fields: HistoryFields, request?: DeviceJsonContinuationReq
   }
   return page
 }
+export function readNativeHistoryMetadata(request: DeviceJsonContinuationRequest) {
+  const retained = metadataTransfers.get(request.digest)
+  if (!retained) throw new DomainError('transfer-expired', 'Native history metadata is no longer retained.', 409)
+  return retained.page(request)
+}
+
 export function nativeHistoryPageSource(reply: unknown): NativeHistory | undefined {
   if (!reply || typeof reply !== 'object') return undefined
   return (reply as { [historySource]?: NativeHistory })[historySource]
