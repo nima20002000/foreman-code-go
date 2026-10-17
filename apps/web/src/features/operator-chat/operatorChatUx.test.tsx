@@ -449,12 +449,14 @@ describe('Operator chat UX', () => {
   it('loads older chat rows on scroll without replacing the visible history', async () => {
     api.list.mockImplementation(async (_options, limit = 10) => ({ hasMore: limit < 21, conversations: Array.from({ length: Math.min(limit, 21) }, (_, i) => ({ ...summarizeOperatorConversation(operatorState()), conversationId: `chat-${i}`, title: `Topic ${i}` })) }))
     chat()
-    await screen.findByRole('button', { name: /^Topic 0(?: |$)/ })
-    expect(screen.queryByRole('button', { name: /^Topic 10(?: |$)/ })).not.toBeInTheDocument()
-    fireEvent.scroll(screen.getByRole('complementary', { name: 'Operator conversation history' }))
-    expect(await screen.findByRole('button', { name: /^Topic 10(?: |$)/ })).toBeInTheDocument()
+    // Scoped to the history panel: role queries over the whole chat dialog are slow enough to time out under CI load.
+    const history = await screen.findByRole('complementary', { name: 'Operator conversation history' })
+    await within(history).findByRole('button', { name: /^Topic 0(?: |$)/ })
+    expect(within(history).queryByRole('button', { name: /^Topic 10(?: |$)/ })).not.toBeInTheDocument()
+    fireEvent.scroll(history)
+    expect(await within(history).findByRole('button', { name: /^Topic 10(?: |$)/ })).toBeInTheDocument()
     expect(api.list).toHaveBeenLastCalledWith(expect.anything(), 20)
-    expect(screen.getByRole('button', { name: /^Topic 0(?: |$)/ })).toBeInTheDocument()
+    expect(within(history).getByRole('button', { name: /^Topic 0(?: |$)/ })).toBeInTheDocument()
     expect(screen.queryByLabelText('Switch conversation')).not.toBeInTheDocument()
     expect(screen.queryByText(/accepted request IDs/)).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Close Operator chat' })).toHaveLength(1)
@@ -547,7 +549,7 @@ async function withPr19Locks(work: () => Promise<void>) {
   let tail: Promise<unknown> = Promise.resolve()
   Object.defineProperty(navigator, 'locks', { configurable: true, value: {
     request: (_name: string, options: LockOptions, callback: (lock: Lock) => unknown) => {
-      const next = tail.catch(() => undefined).then(() => {
+      const next = tail.catch(() => { /* ignore: a failed holder releases the lock; its caller already saw the error */ }).then(() => {
         options.signal?.throwIfAborted()
         return callback({ name: 'graphql.operator-outbox.v1', mode: 'exclusive' } as Lock)
       })

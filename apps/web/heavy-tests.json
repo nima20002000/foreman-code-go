@@ -8,7 +8,8 @@
     "src/features/workflow-board/eng0*.test.tsx",
     "src/features/workflow-board/boardHistoryBudget.test.tsx",
     "src/features/graph/nextDraft/nim2644*.test.tsx",
-    "src/features/conversations/agentChat/F7*.test.tsx"
+    "src/features/conversations/agentChat/F7*.test.tsx",
+    "src/features/operator-chat/operatorChatUx.test.tsx"
   ],
   "workers": 4,
   "timeoutMs": 30000
