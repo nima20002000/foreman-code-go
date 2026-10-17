@@ -293,16 +293,22 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const second = await client.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID(), commit: newCommit } }); expect(second.isError).not.toBe(true)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })))).manifest.git?.commit).toBe(commit)
     expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(3)
-    const page = OperatorSourceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
-      name: 'source_list', arguments: { workspaceId: workspace.id, limit: 1 },
-    })))
-    expect(page.items).toHaveLength(1)
-    expect(page.nextSnapshotId).not.toBeNull()
-    const next = OperatorSourceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
-      name: 'source_list', arguments: { workspaceId: workspace.id, limit: 1, afterSnapshotId: page.nextSnapshotId },
-    })))
-    expect(next.items).toHaveLength(1)
-    expect(next.items[0]!.manifest.snapshotId).not.toBe(page.items[0]!.manifest.snapshotId)
+    const expectedSnapshots = [read, captured, SourceApproveResultSchema.parse(decodeMcpToolResult(second)).value]
+      .map(source => source.manifest.snapshotId).sort()
+    const snapshotIds: string[] = []
+    let afterSnapshotId: string | null = null
+    do {
+      const page = OperatorSourceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
+        name: 'source_list', arguments: { workspaceId: workspace.id, limit: 1,
+          ...(afterSnapshotId === null ? {} : { afterSnapshotId }) },
+      })))
+      expect(page.items).toHaveLength(1)
+      snapshotIds.push(page.items[0]!.manifest.snapshotId)
+      expect(new Set(snapshotIds).size).toBe(snapshotIds.length)
+      expect(snapshotIds.length).toBeLessThanOrEqual(expectedSnapshots.length)
+      afterSnapshotId = page.nextSnapshotId
+    } while (afterSnapshotId !== null)
+    expect(snapshotIds.sort()).toEqual(expectedSnapshots)
     expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list',
       arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(3)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',

@@ -3,9 +3,7 @@ import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  DeviceSetupApproveResultSchema, DeviceSetupOptionsSchema, decodeWorkerIdentityRequest, encodeWorkerIdentityRequest,
-} from '@foreman-code/contracts/device-setup'
+import { DeviceSetupOptionsSchema } from '@foreman-code/contracts/device-setup'
 import { ActivitySnapshotV1Schema } from '@foreman-code/contracts/activity'
 import { DeviceListResultSchema, DeviceRegistrationSchema, DevicePairingGrantResultSchema, MainDeviceIdentityPublicSchema } from '@foreman-code/contracts/device-identity'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -87,21 +85,14 @@ describe('current device and Operator control MCP parity', () => {
         publicKeyFingerprint: input.expectedFingerprint, scopes: input.scopes }
       return { registration: saved, grant: 'g'.repeat(43), expiresAt: '2099-01-01T00:00:00.000Z' }
     })
-    const setupCode = vi.fn<NonNullable<typeof c.services.devices>['createSetupCode']>(async (_principal, input) => {
-      const identity = decodeWorkerIdentityRequest(input.identityRequestCode)
-      if (identity.workerInstallationId !== saved.workerInstallationId || saved.status !== 'revoked'
-        || input.expectedAuthorizationRevision !== saved.authorizationRevision) {
-        throw new DomainError('conflict', 'Device authorization revision changed.', 403)
-      }
-      saved = { ...saved, status: 'pending', authorizationRevision: saved.authorizationRevision + 1,
-        publicKeyFingerprint: identity.publicKeyFingerprint, scopes: input.scopes }
-      return { registration: saved, enrollmentCode: 'GQLWE1.synthetic-secret', expiresAt: '2099-01-01T00:00:00.000Z' }
-    })
     c.services.devices = {
       readMainIdentity: async () => ({ mainId: registration.mainId, mainPublicKey: 'public-key', mainPublicKeyFingerprint: 'b'.repeat(64) }),
       list: async () => [saved], revoke,
       createPairingGrant: grant,
-      createSetupCode: setupCode, readSetupOptions: vi.fn(async () => ({ endpoint: null, available: false, reason: 'listener-unconfigured' as const })),
+      createSetupCode: vi.fn(async () => {
+        throw new Error('Enrollment is covered by the PostgreSQL integration test.')
+      }),
+      readSetupOptions: vi.fn(async () => ({ endpoint: null, available: false, reason: 'listener-unconfigured' as const })),
     }
     const activitySnapshot = ActivitySnapshotV1Schema.parse({ schemaVersion: 1,
       scope: { kind: 'operator_chat', conversationId: 'conversation' }, revision: '7',
@@ -172,7 +163,7 @@ describe('current device and Operator control MCP parity', () => {
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
       return client
     }
-    return { c, app, registration, revoke, grant, setupCode, cancel, respond, chat, audit, connectSql, connect,
+    return { c, app, registration, revoke, grant, cancel, respond, chat, audit, connectSql, connect,
       close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
   }
 
@@ -261,50 +252,6 @@ describe('current device and Operator control MCP parity', () => {
       const responded = CancelOperatorTurnResponseSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_respond', arguments: { conversationId: 'conversation', request: response } }))))
       expect(f.respond).toHaveBeenCalledWith('conversation', response, owner, 'mcp')
       expect(OperatorConversationStateSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'operator_chat_get', arguments: { conversationId: 'conversation' } }))))).toEqual(responded.state)
-      expect(f.connectSql).not.toHaveBeenCalled()
-    } finally { await f.close() }
-  })
-
-  it('re-enrolls revoked pairing through authenticated MCP and denies stale revisions or read-only callers', async () => {
-    const f = await fixture()
-    try {
-      const [client, reader] = await Promise.all([f.connect('owner'), f.connect('reader')])
-      const revoked = DeviceRegistrationSchema.parse(decodeMcpToolResult(await client.callTool({
-        name: 'device_revoke', arguments: { deviceId: f.registration.deviceId,
-          expectedRevision: f.registration.authorizationRevision, commandId: randomUUID() },
-      })))
-      const input = { commandId: randomUUID(), endpoint: 'wss://192.168.1.10:8443/device/connect',
-        identityRequestCode: encodeWorkerIdentityRequest({ version: 1, kind: 'identity-request',
-          workerInstallationId: revoked.workerInstallationId, publicKey: 'synthetic-public-key',
-          publicKeyFingerprint: revoked.publicKeyFingerprint }),
-        scopes: revoked.scopes, expectedAuthorizationRevision: revoked.authorizationRevision }
-      const denied = await reader.callTool({ name: 'device_setup_code_create', arguments: input })
-      expect(denied.isError).toBe(true)
-      expect(f.audit).toHaveBeenCalledWith('reader', 'mcp', 'device_setup_code_create', 'mcp:device_setup_code_create')
-      expect(f.setupCode).not.toHaveBeenCalled()
-
-      const stale = await client.callTool({ name: 'device_setup_code_create', arguments: {
-        ...input, commandId: randomUUID(), expectedAuthorizationRevision: revoked.authorizationRevision - 1,
-      } })
-      expect(stale.isError).toBe(true)
-      expect(stale.content).toEqual([{ type: 'text', text: expect.stringContaining('"code":"conflict"') }])
-      const afterRejection = DeviceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
-        name: 'devices_list', arguments: {},
-      })))
-      expect(afterRejection.devices).toEqual([revoked])
-
-      const issued = DeviceSetupApproveResultSchema.parse(decodeMcpToolResult(await client.callTool({
-        name: 'device_setup_code_create', arguments: input,
-      })))
-      expect(f.setupCode).toHaveBeenLastCalledWith(owner, input, 'mcp')
-      expect(issued.registration).toMatchObject({ deviceId: revoked.deviceId, status: 'pending',
-        authorizationRevision: revoked.authorizationRevision + 1 })
-      const persisted = DeviceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
-        name: 'devices_list', arguments: {},
-      })))
-      expect(persisted.devices).toEqual([issued.registration])
-      expect(JSON.stringify(persisted)).not.toContain(issued.enrollmentCode)
-      expect(f.grant).not.toHaveBeenCalled()
       expect(f.connectSql).not.toHaveBeenCalled()
     } finally { await f.close() }
   })

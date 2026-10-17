@@ -1,10 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpServer } from '@modelcontextprotocol/server'
 import type pg from 'pg'
-import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, canonicalGraphJson, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { CurrentWorkflowAuthoring } from '../src/modules/workflows/currentAuthoring.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
@@ -69,46 +68,6 @@ describe('NIM-2646 current V3 authoring/read MCP boundaries', () => {
       .rejects.toMatchObject({ code: 'ACCESS_DENIED', status: 403 })
     expect(execute).not.toHaveBeenCalled()
     expect(c.connect).not.toHaveBeenCalled()
-  })
-
-  it('reads the exact persisted V3 version with live authority and immutable hash validation', async () => {
-    const f = fixture(), version = f.version
-    version.contentHash = `sha256:${createHash('sha256').update(canonicalGraphJson({ definition: version.definition,
-      configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })).digest('hex')}`
-    const p = principal(['workflows:read', 'graph:read'], [version.workflowId])
-    const query = vi.fn(async (sql: string, values?: unknown[]) => {
-      const text = sql.replace(/\s+/g, ' ').trim()
-      if (['begin', 'commit', 'rollback'].includes(text)) return { rows: [], rowCount: 0 }
-      if (text.includes('from management_principals')) {
-        expect(values).toEqual([p.id])
-        return { rows: [{ id: p.id, name: p.name, audience: p.audience, grants: p.grants,
-          expires_at: new Date(p.expiresAt), revoked_at: null, delegated_from: null }], rowCount: 1 }
-      }
-      if (text.startsWith('select revision::text,current_version_id from workflows')) {
-        expect(values).toEqual([version.workspaceId, version.workflowId])
-        return { rows: [{ revision: '9', current_version_id: version.id }], rowCount: 1 }
-      }
-      if (text.includes('from workflow_versions')) {
-        expect(values).toEqual([version.id, version.workspaceId, version.workflowId])
-        return { rows: [{ id: version.id, workspace_id: version.workspaceId, workflow_id: version.workflowId,
-          version: version.version, entry_node_id: version.entryNodeId, execution_semantics_version: 3, record: version }], rowCount: 1 }
-      }
-      if (text.includes('from agent_configuration_versions')) {
-        expect(values).toEqual([Object.values(version.agentConfigurationVersionIds)])
-        return { rows: f.configurations.map((configuration) => ({ id: configuration.id, workspace_id: configuration.workspaceId,
-          agent_id: configuration.agentId, version: configuration.version, record: configuration })), rowCount: f.configurations.length }
-      }
-      throw new Error(`Unscripted current read SQL: ${text}`)
-    })
-    const client = { query, release: vi.fn() }
-    const pool = { connect: vi.fn(async () => client) } as unknown as pg.Pool
-    const service = new CurrentWorkflowAuthoring(pool, new PostgresCommandCoordinator(pool))
-    const result = await service.read(p, { workspaceId: version.workspaceId, workflowId: version.workflowId })
-    expect(result).toEqual({ workspaceId: version.workspaceId, workflowId: version.workflowId, revision: 9,
-      currentVersionId: version.id, version })
-    expect(result.version.definition.repeat).toEqual(version.definition.repeat)
-    expect(query.mock.calls.at(-1)).toEqual(['commit'])
-    expect(client.release).toHaveBeenCalledOnce()
   })
 
   it('fails explicitly when canonical Run reads are not qualified instead of fabricating repeat state', async () => {

@@ -3,36 +3,22 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { describe, expect, it } from 'vitest'
 import {
   COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE, ComputerMaintenanceListSchema, ComputerMaintenanceStartResultSchema,
   MaintenanceRequestSchema, MaintenanceStatusSchema, type MaintenanceStatus, type MaintenanceTask,
 } from '@foreman-code/contracts/computer-maintenance'
-import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
-import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
-import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
 import { fakeComputer } from './helpers/fleetSync.js'
 import { FleetMaintenanceService } from '../src/modules/computers/fleet.js'
-import { DomainError } from '../src/modules/errors.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
-interface SavedCommand {
-  hash: string
-  targetKey: string
-  value: unknown
-}
-interface Audit {
-  principalId: string | undefined
-  source: string
-  action: string
-  outcome: 'succeeded' | 'denied'
-}
 const initialStatus = (): MaintenanceStatus => ({
   observedAt: new Date().toISOString(),
   harnesses: [],
@@ -45,44 +31,38 @@ async function fixture() {
   const storage = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(storage, { recursive: true })
   const directory = await mkdtemp(join(storage, 'worker-update-mcp-'))
-  const commandsFile = join(directory, 'commands.json')
   const workerFile = join(directory, 'worker.json')
-  await writeFile(commandsFile, '{}')
   await writeFile(workerFile, JSON.stringify(initialStatus()))
-  const mainId = randomUUID()
+  const db = await currentDatabase()
+  const pool = db.pool
+  const access = new PostgresAccessService(pool)
+  const mainId = (await pool.query('select id from application_installation where singleton=true')).rows[0]!.id
   const registration = {
     mainId, deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1,
     authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'],
     publicKeyFingerprint: 'a'.repeat(64),
   }
-  const registrations = [registration]
-  const writer: ManagementPrincipal = {
-    id: randomUUID(), name: 'Maintainer', audience: 'operator', revokedAt: null,
-    expiresAt: '2099-01-01T00:00:00.000Z',
+  const saveRegistration = async (record: typeof registration) => {
+    await pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
+      values($1,$2,$3,$4,$5) on conflict(id) do update set record=excluded.record`,
+    [record.deviceId, mainId, record.workerInstallationId, 'worker-transport-fixture', record])
+  }
+  await saveRegistration(registration)
+  const writerCredential = await access.issue({ name: 'Maintainer', audience: 'operator',
     grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read'], scope: {} }],
-  }
-  const reader: ManagementPrincipal = { ...writer, id: randomUUID(), name: 'Reader',
-    grants: [{ actions: ['settings:read', 'capabilities:read'], scope: {} }] }
-  const scoped: ManagementPrincipal = { ...writer, id: randomUUID(), name: 'Scoped writer',
-    grants: [{ actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['workspace'] } }] }
-  const principals = { writer, reader, scoped }
-  const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex')
-  const rows = Object.entries(principals).map(([token, principal]) => ({
-    id: principal.id, name: principal.name, audience: principal.audience, agent_id: null,
-    grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null,
-    delegated_from: null, token_hash: tokenHash(token),
-  }))
-  const query = async (sql: string, values?: unknown[]) => {
-    if (sql.includes('management_principals')) {
-      const key = sql.includes('token_hash =') ? 'token_hash' : 'id'
-      return { rows: rows.filter(row => row[key] === values?.[0]) }
-    }
-    if (sql.includes('device_registrations')) return { rows: registrations.map(record => ({ record })) }
-    throw new Error('Unexpected database operation in maintenance fixture.')
-  }
-  const client = { query, release() {} } as unknown as pg.PoolClient
-  const pool = { query, connect: async () => client } as unknown as pg.Pool
-  const audits: Audit[] = []
+    expiresAt: new Date(Date.now() + 600000) })
+  const readerCredential = await access.issue({ name: 'Reader', audience: 'operator',
+    grants: [{ actions: ['settings:read', 'capabilities:read'], scope: {} }],
+    expiresAt: new Date(Date.now() + 600000) })
+  const scopedCredential = await access.issue({ name: 'Scoped writer', audience: 'operator',
+    grants: [{ actions: ['settings:read', 'settings:update'], scope: { workspaceIds: ['workspace'] } }],
+    expiresAt: new Date(Date.now() + 600000) })
+  const credentials = { writer: writerCredential, reader: readerCredential, scoped: scopedCredential }
+  const writer = writerCredential.principal
+  const reader = readerCredential.principal
+  const scoped = scopedCredential.principal
+  const readAudits = async () => (await pool.query(`select principal_id as "principalId", source, action, outcome
+    from management_audit order by sequence`)).rows
   let starts = 0
   let mainStarts = 0
   let updateSupported = true
@@ -91,33 +71,7 @@ async function fixture() {
   let workerMaintenance: ComputerMaintenance | undefined
   const readWorker = async () => MaintenanceStatusSchema.parse(JSON.parse(await readFile(workerFile, 'utf8')))
   const saveWorker = async (status: MaintenanceStatus) => writeFile(workerFile, JSON.stringify(status))
-  const createCommands = () => ({
-    async execute<T>(input: Parameters<PostgresCommandCoordinator['execute']>[0]) {
-      await input.authorize?.(client)
-      const saved = JSON.parse(await readFile(commandsFile, 'utf8')) as Record<string, SavedCommand>
-      const key = `${input.principal.id}:${input.operation}:${input.commandId}`
-      const hash = commandInputHash(input.payload)
-      const previous = saved[key]
-      if (previous) {
-        if (previous.hash !== hash || previous.targetKey !== input.targetKey) {
-          throw new DomainError('COMMAND_ID_CONFLICT', 'This command ID has different input.', 409)
-        }
-        return { value: previous.value as T, replayed: true }
-      }
-      await input.prepare?.()
-      await input.authorize?.(client)
-      const value = await input.perform(client)
-      const retained = JSON.parse(await readFile(commandsFile, 'utf8')) as Record<string, SavedCommand>
-      retained[key] = { hash, targetKey: input.targetKey, value }
-      await writeFile(commandsFile, JSON.stringify(retained))
-      audits.push({ principalId: input.principal.id, source: input.source,
-        action: input.operation, outcome: 'succeeded' })
-      return { value: value as T, replayed: false }
-    },
-    async recordDenied(principalId: string | undefined, source: string, action: string) {
-      audits.push({ principalId, source, action, outcome: 'denied' })
-    },
-  }) as unknown as PostgresCommandCoordinator
+  const createCommands = () => new PostgresCommandCoordinator(pool)
   const local = {
     status: async () => {
       const status = initialStatus()
@@ -166,12 +120,12 @@ async function fixture() {
     const connected = new Client({ name: 'worker-update-test', version: '1' })
     clients.push(connected)
     await connected.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
-      authProvider: { token: async () => token },
+      authProvider: { token: async () => credentials[token as keyof typeof credentials]?.token ?? token },
     }))
     return connected
   }
   return {
-    app, connect, registration, registrations, writer, reader, scoped, audits, readWorker, saveWorker, directory,
+    app, connect, registration, saveRegistration, writer, reader, scoped, readAudits, pool, readWorker, saveWorker, directory,
     mountUpdater: (ports: NonNullable<MaintenancePorts['workerUpdate']>) => {
       updatePorts = ports
       workerMaintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: ports })
@@ -186,6 +140,7 @@ async function fixture() {
     close: async () => {
       await Promise.all(clients.map(connected => connected.close()))
       await app.close()
+      await db.close()
       await rm(directory, { recursive: true, force: true })
     },
   }
@@ -222,7 +177,13 @@ describe('Worker updates through authenticated Operator MCP', () => {
         summary: 'New release failed; previous release restored.' }
       retained.worker = { currentVersion: '0.0.55', targetVersion: '0.0.56', state: 'rolled-back', lastError: 'Start failed.' }
       await f.saveWorker(retained)
-      f.registrations.push({ ...f.registration, deviceId: randomUUID(), workerInstallationId: randomUUID() })
+      await f.saveRegistration({ ...f.registration, deviceId: randomUUID(), workerInstallationId: randomUUID() })
+      const receipts = (await f.pool.query(`select operation, result from management_command_receipts
+        where principal_id=$1 and command_id=$2 order by operation`, [f.writer.id, input.commandId])).rows
+      expect(receipts).toEqual([
+        { operation: 'computers.maintenance.plan', result: expect.objectContaining({ targets: [first.computers[0]!.target] }) },
+        { operation: 'computers.maintenance.start', result: first },
+      ])
       f.recreate()
       const afterRestart = await f.connect('writer')
       const replay = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(await afterRestart.callTool({
@@ -238,7 +199,7 @@ describe('Worker updates through authenticated Operator MCP', () => {
       expect(ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(retry)).computers[0]?.task)
         .toMatchObject({ kind: 'update-worker', state: 'running' })
       expect(f.counts()).toEqual({ starts: 2, mainStarts: 0 })
-      expect(f.audits.filter(audit => audit.action === 'computers.maintenance.start')).toEqual([
+      expect((await f.readAudits()).filter(audit => audit.action === 'computers.maintenance.start')).toEqual([
         { principalId: f.writer.id, source: 'mcp', action: 'computers.maintenance.start', outcome: 'succeeded' },
         { principalId: f.writer.id, source: 'mcp', action: 'computers.maintenance.start', outcome: 'succeeded' },
       ])
@@ -264,9 +225,9 @@ describe('Worker updates through authenticated Operator MCP', () => {
       } } })
       expect(invalid.statusCode).toBe(401)
       expect(f.counts()).toEqual({ starts: 0, mainStarts: 0 })
-      expect(f.audits.filter(audit => audit.outcome === 'denied').map(audit => audit.principalId))
-        .toEqual([f.reader.id, f.scoped.id, undefined])
-      expect(f.audits.at(-1)).toEqual({ principalId: undefined, source: 'mcp', action: 'AUTH_INVALID', outcome: 'denied' })
+      expect((await f.readAudits()).filter(audit => audit.outcome === 'denied').map(audit => audit.principalId))
+        .toEqual([f.reader.id, f.scoped.id, null])
+      expect((await f.readAudits()).at(-1)).toEqual({ principalId: null, source: 'mcp', action: 'AUTH_INVALID', outcome: 'denied' })
       expect((await readStatus(await f.connect('reader'))).computers[1]?.status?.worker)
         .toMatchObject({ currentVersion: '0.0.55', targetVersion: '0.0.56', state: 'pending', lastError: null })
     } finally { await f.close() }
@@ -288,7 +249,7 @@ describe('Worker updates through authenticated Operator MCP', () => {
       const changed = await operator.callTool({ name: 'computers_maintenance_start', arguments: { ...input, targets } })
       expect(changed.isError).toBe(true)
       expect(JSON.stringify(changed.content)).toContain('COMMAND_ID_CONFLICT')
-      f.registrations[0] = { ...f.registration, authorizationRevision: 2 }
+      await f.saveRegistration({ ...f.registration, authorizationRevision: 2 })
       const stale = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(await operator.callTool({
         name: 'computers_maintenance_start', arguments: { ...input, commandId: randomUUID() },
       })))
