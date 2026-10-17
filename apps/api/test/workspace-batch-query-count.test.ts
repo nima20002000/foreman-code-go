@@ -17,6 +17,7 @@ it.each([1, 100])('uses a constant number of domain and cleanup queries to archi
   const principal: ManagementPrincipal = { id: 'operator', name: 'Operator', audience: 'operator', revokedAt: null,
     expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['workspaces:archive'], scope: {} }] }
   await service.archiveBatch(principal, 'http', { commandId: 'batch-query-count', workspaces })
-  expect(query).toHaveBeenCalledTimes(8)
+  // The active-chat check under the admission lock adds one query for the whole batch.
+  expect(query).toHaveBeenCalledTimes(9)
   expect(query.mock.calls.filter(([sql]) => sql.startsWith('update workspaces'))).toHaveLength(1)
 })
