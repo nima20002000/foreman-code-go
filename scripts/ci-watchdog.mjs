@@ -23,7 +23,12 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   const child = spawn(command[0], command.slice(1), { detached: true, stdio: ['inherit', 'pipe', 'pipe'],
     env: { ...env, CI_WATCHDOG_ACTIVE: '1', CI_PROGRESS_FILE: progressFile, CI_REPOSITORY_ROOT: process.cwd() } })
   await new Promise((ready, reject) => { child.once('spawn', ready); child.once('error', reject) })
-  const monitor = startProcessMetrics(child.pid)
+  let monitor
+  try {
+    monitor = startProcessMetrics(child.pid)
+  } catch (error) {
+    console.warn(`[ci-watchdog] Warning: process metrics unavailable; continuing without metrics: ${error.message}`)
+  }
   const started = Date.now()
   let lastProgress = started
   const decoder = new StringDecoder('utf8')
@@ -39,7 +44,8 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   child.stdout.on('data', bytes => output(process.stdout, bytes))
   child.stderr.on('data', bytes => output(process.stderr, bytes))
   const stop = () => {
-    stopping ??= Promise.all(monitor.processGroups().map(group => stopGroup(group, { graceMs: 1000 })))
+    const groups = monitor ? monitor.processGroups() : [child.pid]
+    stopping ??= Promise.all(groups.map(group => stopGroup(group, { graceMs: 1000 })))
     return stopping
   }
   const signals = new Map(['SIGTERM', 'SIGINT'].map(signal => [signal, () => { void stop() }]))
@@ -111,7 +117,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   } finally {
     clearInterval(timer)
     closeSync(progress)
-    monitor.stop()
+    monitor?.stop()
     for (const [signal, handler] of signals) process.off(signal, handler)
   }
 }

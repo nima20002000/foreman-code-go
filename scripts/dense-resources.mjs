@@ -99,8 +99,8 @@ export function timeoutScale(pressure) {
 function linuxProcessUnits() {
   if (!processUnits) {
     processUnits = {
-      clockTicksPerSecond: Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 1000 })),
-      pageSizeBytes: Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8', timeout: 1000 })),
+      clockTicksPerSecond: Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 10_000 })),
+      pageSizeBytes: Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8', timeout: 10_000 })),
     }
   }
   return processUnits
