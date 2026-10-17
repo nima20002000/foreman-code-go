@@ -351,6 +351,12 @@ func TestSchedulerCancellationReturnsBeforeUnresponsiveWrapperDrains(t *testing.
 	}
 	gate.release()
 	drainInvocation(t, invocation)
+	// A completed drain stays observable after this cleanup observer canceled.
+	for read := 0; read < 64; read++ {
+		if err := invocation.Drain(drainCtx); err != nil {
+			t.Fatalf("completed drain changed to observer cancellation on read %d: %v", read+1, err)
+		}
+	}
 	if successorCalls.Load() != 0 {
 		t.Fatal("canceled invocation dispatched its successor after callback drain")
 	}
