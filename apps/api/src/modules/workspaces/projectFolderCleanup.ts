@@ -10,6 +10,7 @@ import { DomainError } from '../errors.js'
 import { pathsOverlap } from './filesystem.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 import { activeAgentChatDirectories } from '../conversations/activeAgentChats.js'
+import { lockWorkspaceFolders } from './folderLocks.js'
 
 export const WORKSPACE_FOLDER_LIFECYCLE_LOCK = 'workspace-folder-lifecycle'
 export const CreatedProjectFolderSchema = z.object({
@@ -31,6 +32,7 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
       requireAuthorization(principal, 'workspace_locations:provision', { workspaceId: row.id })
       const folder = CreatedProjectFolderSchema.parse(row.created_project_folder)
       if (folder.runnerId !== runnerId || !isAbsolute(folder.rootPath)) throw new Error('The project folder belongs to another runner.')
+      await lockWorkspaceFolders(client, [folder.rootPath])
       const references = await client.query<{ path: string }>(
         "select record->>'parentPath' as path from application_settings where record->>'parentPath' is not null",
       )

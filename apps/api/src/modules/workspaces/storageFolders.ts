@@ -12,6 +12,7 @@ import { DomainError } from '../errors.js'
 import { pathsOverlap } from './filesystem.js'
 import { activeAgentChatDirectories } from '../conversations/activeAgentChats.js'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK, continuingRunDirectories } from './projectFolderCleanup.js'
+import { lockWorkspaceFolders } from './folderLocks.js'
 
 function identity(details: { dev: bigint; ino: bigint }): string {
   return 'sha256:' + createHash('sha256').update(`${details.dev}:${details.ino}`).digest('hex')
@@ -97,6 +98,7 @@ export class WorkspaceStorageFolders {
         if (dirname(input.path) !== rootPath || resolve(input.path) !== input.path) {
           throw new DomainError('DIRECTORY_OUTSIDE_ROOT', 'Only direct workspace folders inside the app’s Workspaces location can be deleted.', 403)
         }
+        await lockWorkspaceFolders(client, [input.path])
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${input.path}`])
         const references = await this.references(client)
         const deletion = deletionState(input.path, rootPath, references)
