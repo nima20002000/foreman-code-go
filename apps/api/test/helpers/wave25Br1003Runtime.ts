@@ -218,7 +218,7 @@ export function providerLaunchCredentials(runs: PostgresRunRepository, locations
       const execution = await runs.getExecution(input.executionId)
       if (!execution || execution.workingDirectory !== input.workingDirectory) throw new DomainError(
         'WORKER_EXECUTION_IDENTITY_INVALID', 'Credential preflight requires the accepted directory.', 409)
-      const configuration = await runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+      const configuration = await runs.getExecutionConfiguration(execution.agentConfigurationVersionId, execution)
       const run = await runs.get(execution.runId)
       if (!configuration || configuration.agentId !== execution.agentId || configuration.harness.harness !== input.harness
         || !run?.executionLocation || run.executionLocation.runnerId !== LOCAL_RUNNER_ID) throw new DomainError(
