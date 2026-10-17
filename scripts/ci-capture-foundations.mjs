@@ -153,8 +153,17 @@ async function rejectCredentials(client, dump) {
     const result = await client.query(`select count(*) as count from ${quote(column.table_schema)}.${quote(column.table_name)} where ${quote(column.column_name)} is not null`)
     if (Number(result.rows[0].count)) throw new Error(`Credential-bearing startup rows prevent safe capture (${column.table_schema}.${column.table_name}).`)
   }
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer [A-Za-z0-9._-]{12,}|postgresql:\/\/[^\s']+:[^\s']+@/.test(dump)) {
-    throw new Error('The fresh SQL contains credential-like data; no SQL artifact was emitted.')
+  const patterns = [
+    ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+    ['bearer-like-text', /Bearer [A-Za-z0-9._-]{12,}/],
+    ['database-url', /postgresql:\/\/[^\s']+:[^\s']+@/],
+  ]
+  for (const [kind, pattern] of patterns) {
+    const match = pattern.exec(dump)
+    if (!match) continue
+    const statements = [...dump.slice(0, match.index).matchAll(/^(?:INSERT INTO|CREATE TABLE|CREATE FUNCTION)\s+([A-Za-z0-9_."]+)/gm)]
+    const relation = statements.at(-1)?.[1] ?? 'unidentified SQL statement'
+    throw new Error(`The fresh SQL contains ${kind} in ${relation}; no matched value or SQL artifact was emitted.`)
   }
 }
 
@@ -244,6 +253,7 @@ async function captureSchema(environment) {
       node: process.version, pnpm: command('read pinned pnpm version', 'corepack', ['pnpm', '--version'], { cwd: source, env: environment }).trim(),
       migrations, rowCounts: before, verification: 'Actual TS startup; SQL restored with PostgreSQL driver on second fresh owned database; matching table and row inventories.' }
     artifact('backend/internal/schema/assets/baseline.sql', sql)
+    artifact('raw-baseline.sql', raw)
     artifact('backend/internal/schema/assets/capture-provenance.json', `${JSON.stringify(provenance, null, 2)}\n`)
     console.log(`[capture] verified ${migrations.length} actual migrations across ${Object.keys(before).length} tables`)
   } finally {
