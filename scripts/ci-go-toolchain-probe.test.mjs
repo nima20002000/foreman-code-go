@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: generator at immutable source 81bbcb80aaa4324d834b45b684d361e49cf62188.

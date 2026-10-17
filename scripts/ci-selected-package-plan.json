@@ -1,0 +1,64 @@
+{
+  "source": "81bbcb80aaa4324d834b45b684d361e49cf62188",
+  "sourceTree": "7b2345a682b8829ef010818d44a7fcba4acbdf67",
+  "package": "./internal/harnesses/codex/protocol",
+  "goFiles": [],
+  "unitTests": [],
+  "integrationTests": [],
+  "pythonTests": [
+    "GeneratorCLITests.test_frozen_native_inputs_generate_reproducibly",
+    "GeneratorCLITests.test_added_newline_is_rejected_without_touching_output"
+  ],
+  "pythonTestFile": "backend/internal/harnesses/codex/protocol/generate_types_test.py",
+  "generatorFile": "backend/internal/harnesses/codex/protocol/generate_types.py",
+  "schemaFile": "apps/api/test/fixtures/codex-protocol.schemas.json",
+  "methodSourceFile": "scripts/generate-codex-method-types.mjs",
+  "generatedFile": "backend/internal/harnesses/codex/protocol/types.gen.go",
+  "reproduceGenerator": true,
+  "sourceProvenance": {
+    "old": "557d759decb4cdf6accdcac4c800a22cf6c95e12",
+    "corrected": "81bbcb80aaa4324d834b45b684d361e49cf62188",
+    "identicalInputsAndTests": [
+      {
+        "path": "backend/internal/harnesses/codex/protocol/generate_types_test.py",
+        "old": {
+          "blob": "a1533aabb3b0fd7514defdc4e560ed8fa05cb4a0",
+          "sha256": "def761f3f4f8ca7ba1cc3b858766bbd6e387df929d162b3469e4004f4f29fac3",
+          "bytes": 3655
+        },
+        "corrected": {
+          "blob": "a1533aabb3b0fd7514defdc4e560ed8fa05cb4a0",
+          "sha256": "def761f3f4f8ca7ba1cc3b858766bbd6e387df929d162b3469e4004f4f29fac3",
+          "bytes": 3655
+        }
+      },
+      {
+        "path": "apps/api/test/fixtures/codex-protocol.schemas.json",
+        "old": {
+          "blob": "7de4646ea2657038e164609d9473c76c1be7c843",
+          "sha256": "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a",
+          "bytes": 688845
+        },
+        "corrected": {
+          "blob": "7de4646ea2657038e164609d9473c76c1be7c843",
+          "sha256": "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a",
+          "bytes": 688845
+        }
+      },
+      {
+        "path": "scripts/generate-codex-method-types.mjs",
+        "old": {
+          "blob": "7403cbbd4408f3a30b729060cd2811f9f194352e",
+          "sha256": "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4",
+          "bytes": 3229
+        },
+        "corrected": {
+          "blob": "7403cbbd4408f3a30b729060cd2811f9f194352e",
+          "sha256": "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4",
+          "bytes": 3229
+        }
+      }
+    ]
+  },
+  "mode": "python-only"
+}
