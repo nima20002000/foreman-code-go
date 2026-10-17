@@ -158,6 +158,7 @@ export async function sourceFixture(relativeCwd='', options: {
 export async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation',
   fixtureOptions: { retainReviewer?: boolean; artifactOutputKeys?: string[];
     mainNow?: () => number;
+    authorizeReviewer?: () => Promise<void>;
     mcp?: { request: WorkerMcpRelay['request']; onSessionStart(input: NativeSessionStart): Promise<void> } } = {}) {
   const { artifactOutputKeys } = fixtureOptions
   const f = await sourceFixture('', artifactOutputKeys
@@ -314,6 +315,7 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
         requests.push({ namespace, payload, binding })
         if (namespace === 'execution-authority-v1') {
           const request = payload as { action: string; intent: typeof f.intent }
+          if (request.action === 'retain-reviewer') await fixtureOptions.authorizeReviewer?.()
           if (retentionDenied && request.action === 'retain-reviewer') throw new Error('Reviewer retention revoked')
           if (launchDenied && request.action !== 'stop' && request.action !== 'read') throw new Error('Launch authority revoked')
           return { payload: { version: 1, action: request.action, operationId: f.intent.operationId,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { deferred } from '../../../../test/helpers/deferred.js'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeHarnessEvent } from '@foreman-code/contracts'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
@@ -86,6 +87,135 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it.each(['history', 'stream'] as const)(
+    'pins the %s snapshot while reviewer renewal overtakes metadata pages', async operation => {
+      const history = terminal([event(0)])
+      const result = { outcome: 'succeeded' as const, output: { text: '漢😀'.repeat(65_536) } }
+      history.terminalResult = result
+      history.terminalTurn!.result = result
+      const f = setup(() => history)
+      f.receipt.retainedReviewer = { agentId: 'agent', workflowTurnId: 'native-turn', result,
+        expiresAt: '2099-01-01T00:00:00.000Z' }
+      const entered = deferred()
+      const release = deferred()
+      const request = f.request.getMockImplementation()!
+      let delayed = false
+      f.request.mockImplementation(async (method, raw, signal) => {
+        const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+        if (frame.method === 'history' && frame.metadata && !delayed) {
+          delayed = true
+          entered.resolve()
+          await release.promise
+        }
+        return structuredClone(await request(method, raw, signal))
+      })
+      const session = await f.proxy.createSession(f.start)
+      const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+      const reading = operation === 'history' ? f.proxy.history(session) : stream.next()
+      const outcome = Promise.allSettled([reading])
+      try {
+        await entered.promise
+        f.receipt.sequence++
+        f.receipt.retainedReviewer.expiresAt = '2099-01-01T00:01:00.000Z'
+      } finally {
+        release.resolve()
+      }
+      await outcome
+      if (operation === 'history') {
+        expect(await reading).toMatchObject({ terminalResult: result, terminalTurn: history.terminalTurn })
+      } else {
+        expect(await reading).toEqual({ done: false, value: event(0) })
+        expect((await stream.next()).done).toBe(true)
+      }
+      const historyRequests = f.request.mock.calls.map(([, raw]) => RemoteExecutionRpcRequestSchema.parse(raw))
+        .filter(frame => frame.method === 'history')
+      expect(historyRequests.filter(frame => !frame.metadata)).toHaveLength(1)
+      expect(f.observedReceipts.every(receipt => receipt.sequence === 1)).toBe(true)
+      expect(f.controlFor).not.toHaveBeenCalled()
+    })
+
+  it.each(['history', 'stream'] as const)(
+    'refetches an overtaken %s response after a newer boundary observation', async operation => {
+      const history = terminal([event(0), event(1)])
+      const f = setup(() => history)
+      const request = f.request.getMockImplementation()!
+      const entered = deferred()
+      const release = deferred()
+      let delayed = false
+      f.request.mockImplementation(async (method, raw, signal) => {
+        if (method === 'status') return { status: 'known', receipt: structuredClone(f.receipt) }
+        const reply = structuredClone(await request(method, raw, signal))
+        if (method === 'history' && !delayed) {
+          delayed = true
+          entered.resolve()
+          await release.promise
+        }
+        return reply
+      })
+      const session = await f.proxy.createSession(f.start)
+      const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+      const reading = operation === 'history' ? f.proxy.history(session) : stream.next()
+      const outcome = Promise.allSettled([reading])
+      try {
+        await entered.promise
+        f.receipt.sequence++
+        await f.proxy.observeBoundary(session)
+      } finally {
+        release.resolve()
+      }
+      await outcome
+      if (operation === 'history') {
+        expect(await reading).toEqual(history)
+      } else {
+        expect(await reading).toEqual({ done: false, value: event(0) })
+        expect(await stream.next()).toEqual({ done: false, value: event(1) })
+        expect((await stream.next()).done).toBe(true)
+      }
+      expect(f.request.mock.calls.filter(([method]) => method === 'history')).toHaveLength(2)
+      expect(f.observedReceipts.map(receipt => receipt.sequence)).toEqual([1, 1, 2, 2].slice(
+        operation === 'history' ? 1 : 0))
+      expect(f.controlFor).not.toHaveBeenCalled()
+    })
+
+  it.each(['session', 'process', 'connection', 'incarnation', 'intent', 'same-revision'] as const)(
+    'rejects an overtaken history response with a conflicting %s', async conflict => {
+      const f = setup(() => terminal([event(0)]))
+      const request = f.request.getMockImplementation()!
+      const entered = deferred()
+      const release = deferred()
+      f.request.mockImplementation(async (method, raw, signal) => {
+        if (method === 'status') return { status: 'known', receipt: structuredClone(f.receipt) }
+        const reply = structuredClone(await request(method, raw, signal))
+        if (method === 'history') {
+          const value = reply as { status: { receipt: typeof f.receipt } }
+          const receipt = value.status.receipt
+          if (conflict === 'session') receipt.native!.sessionId = 'foreign-session'
+          if (conflict === 'process') receipt.native!.processIdentityDigest = 'b'.repeat(64)
+          if (conflict === 'connection') receipt.connection.bootId = randomUUID()
+          if (conflict === 'incarnation') receipt.workerIncarnationId = randomUUID()
+          if (conflict === 'intent') receipt.intent.attemptId = 'foreign-attempt'
+          if (conflict === 'same-revision') receipt.stopFence = true
+          entered.resolve()
+          await release.promise
+        }
+        return reply
+      })
+      const session = await f.proxy.createSession(f.start)
+      const reading = f.proxy.history(session)
+      const outcome = Promise.allSettled([reading])
+      try {
+        await entered.promise
+        if (conflict !== 'same-revision') f.receipt.sequence++
+        await f.proxy.observeBoundary(session)
+      } finally {
+        release.resolve()
+      }
+      await outcome
+      await expect(reading).rejects.toThrow(conflict === 'intent'
+        ? 'Remote receipt binding mismatch' : 'Original remote receipt changed')
+      expect(f.request.mock.calls.filter(([method]) => method === 'history')).toHaveLength(1)
+    })
+
   it('refreshes an expired physical reply without skipping events or starting another native turn', async () => {
     const f = setup(() => terminal([event(0), event(1)]))
     const session = await f.proxy.createSession(f.start)
