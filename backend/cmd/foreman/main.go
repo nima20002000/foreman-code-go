@@ -17,6 +17,7 @@ import (
 	"github.com/nima20002000/foreman-code-go/backend/internal/config"
 	"github.com/nima20002000/foreman-code-go/backend/internal/database"
 	"github.com/nima20002000/foreman-code-go/backend/internal/health"
+	"github.com/nima20002000/foreman-code-go/backend/internal/logging"
 	"github.com/nima20002000/foreman-code-go/backend/internal/schema"
 )
 
@@ -24,8 +25,23 @@ func main() {
 	os.Exit(execute())
 }
 
-func execute() int {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+func execute() (exitCode int) {
+	logs := logging.New(logging.Options{Environment: config.FromEnviron(os.Environ()), Stdout: os.Stdout})
+	defer func() {
+		if err := logs.Close(); err != nil {
+			// A failed destination cannot report its own failure through itself.
+			// Preserve a prior command failure, and never claim a successful drain.
+			if exitCode == 0 {
+				exitCode = 1
+			}
+			if _, reportErr := fmt.Fprintln(os.Stderr, "Could not drain Foreman logs:", err); reportErr != nil {
+				// Both destinations failed. The retained nonzero status is the
+				// remaining process-level failure signal; do not recurse into logs.
+				return
+			}
+		}
+	}()
+	logger := logs.Component("lifecycle")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	arguments := os.Args[1:]
