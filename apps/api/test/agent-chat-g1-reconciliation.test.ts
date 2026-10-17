@@ -234,9 +234,13 @@ async function fixture(repository = new MemoryRepository(), native = new NativeF
   const root = await mkdtemp(join(tmpdir(), 'agent-chat-g1-'))
   const configuration = { id: 'configuration', harness: { harness: native.harness }, prompt: { system: 'SYSTEM' }, assignedSkills: [], resolvedSkills: [] } as unknown as AgentConfigurationVersion
   const workflows = { getAgentConfiguration: async () => configuration,
+    getSavedVersion: async () => ({ definition: { nodes: [{ id: 'node', agentId: 'agent' }] } }),
     getCurrentSavedVersion: async () => ({ definition: { nodes: [{ id: 'node', agentId: 'agent' }] } }) } as unknown as ConstructorParameters<typeof AgentChatService>[3]
+  const runs = {
+    getForWorkspace: async () => ({ workflowVersionId: 'source-version' }),
+  } as unknown as ConstructorParameters<typeof AgentChatService>[4]
   const service = new AgentChatService(pool, repository, {} as PostgresOperatorConversationRepository,
-    workflows, {} as ConstructorParameters<typeof AgentChatService>[4], () => native, root)
+    workflows, runs, () => native, root)
   cleanups.push(async () => { await service.shutdown(); await rm(root, { recursive: true, force: true }) })
   return { service, repository, native, configuration, internal: service as unknown as Internals }
 }

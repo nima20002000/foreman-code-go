@@ -42,9 +42,10 @@ it.each(['fork', 'recovery'] as const)('keeps the originating node skills during
     const source = HarnessExecutionSchema.parse({ ...candidate, state: 'completed',
       nativeSessionId: 'source-session', workingDirectory: db.directory,
       result: { outcome: 'succeeded', output: {} }, finishedAt: saved.createdAt })
+    const run = AcceptedWorkflowRunV3Schema.parse({ ...saved.run, executionState: 'completed',
+      outcome: 'succeeded', result: { outcome: 'succeeded', output: {} }, finishedAt: saved.createdAt })
     const runs: Pick<PostgresRunRepository, 'getForWorkspace' | 'getExecution' | 'executionPages'> = {
-      getForWorkspace: async () => AcceptedWorkflowRunV3Schema.parse({ ...saved.run, executionState: 'completed',
-        outcome: 'succeeded', finishedAt: saved.createdAt }),
+      getForWorkspace: async () => run,
       getExecution: async () => source, async *executionPages() { yield [source] } }
     const repository = new PostgresAgentChatRepository(db.pool)
     const owner = await new PostgresAccessService(db.pool).issue({ name: 'Chat writer', audience: 'operator',
