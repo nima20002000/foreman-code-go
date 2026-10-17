@@ -129,6 +129,50 @@ describe('owned native authentication', () => {
     f.registry.closeOwner.mockResolvedValue(true)
     expect(await f.restart().cancelAuthentication(value)).toMatchObject({ state: 'canceled', nativeClosed: true })
   })
+  it('releases a closed unknown sign-in after cancellation when Main disconnected during completion', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    f.eligibility.mockRejectedValue(new Error('Main disconnected'))
+    f.finishes[0]!({ code: 0, stdout: '' })
+    await vi.waitFor(async () => {
+      expect(await f.native.observeAuthentication(value)).toMatchObject({ state: 'outcome-unknown', nativeClosed: true })
+    })
+    f.eligibility.mockResolvedValue(undefined)
+    const recovered = f.restart()
+    expect(await recovered.cancelAuthentication(value)).toMatchObject({ state: 'canceled', nativeClosed: true })
+    const next = { ...value, operation: { ...value.operation, id: randomUUID(), commandId: randomUUID() } }
+    expect(await recovered.prepareAuthentication(next)).toMatchObject({ state: 'awaiting-human', nativeClosed: false })
+    await recovered.cancelAuthentication(next)
+  })
+  it('honors cancellation observed after restart for a closed unknown operation', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    f.eligibility.mockRejectedValue(new Error('Main disconnected'))
+    f.finishes[0]!({ code: 0, stdout: '' })
+    await vi.waitFor(async () => {
+      expect(await f.native.observeAuthentication(value)).toMatchObject({ state: 'outcome-unknown', nativeClosed: true })
+    })
+    expect(await f.restart().observeAuthentication({ ...value,
+      operation: { ...value.operation, cancelRequested: true } }))
+      .toMatchObject({ state: 'canceled', nativeClosed: true })
+  })
+  it('accepts the next sign-in after an unknown predecessor has confirmed native closure', async () => {
+    const f = await fixture()
+    const value = input()
+    await f.native.prepareAuthentication(value)
+    f.eligibility.mockRejectedValue(new Error('Main disconnected'))
+    f.finishes[0]!({ code: 0, stdout: '' })
+    await vi.waitFor(async () => {
+      expect(await f.native.observeAuthentication(value)).toMatchObject({ state: 'outcome-unknown', nativeClosed: true })
+    })
+    f.eligibility.mockResolvedValue(undefined)
+    const recovered = f.restart()
+    const next = { ...value, operation: { ...value.operation, id: randomUUID(), commandId: randomUUID() } }
+    expect(await recovered.prepareAuthentication(next)).toMatchObject({ state: 'awaiting-human', nativeClosed: false })
+    await recovered.cancelAuthentication(next)
+  })
   it('rejects changed input and live eligibility denial before effects', async () => {
     const f = await fixture()
     const value = input()

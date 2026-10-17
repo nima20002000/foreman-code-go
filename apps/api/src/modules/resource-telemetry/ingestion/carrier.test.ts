@@ -245,6 +245,50 @@ describe('authenticated W07 passive telemetry carrier', () => {
     expect(failed).toBe(false)
     s.lifetime.abort(); await session.close(); await s.worker.close(); await s.service.close()
   })
+  it.each(['unavailable', 'DATABASE_READ_TIMEOUT', 'transport'])(
+    'resumes collection at the normal interval after a transient %s response', async code => {
+      vi.useFakeTimers()
+      const s = setup()
+      s.request.mockImplementationOnce(async () => { throw new DeviceApplicationError(code) })
+      const session = await startRemoteTelemetrySession({ service: s.service, binding,
+        signal: s.lifetime.signal, request: s.request })
+      const failures: unknown[] = []
+      void session.completion.catch(error => { failures.push(error) })
+      try {
+        await vi.advanceTimersByTimeAsync(1999)
+        expect(s.request).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(s.request).toHaveBeenCalledTimes(2)
+        expect(failures).toEqual([])
+        expect(await s.service.availableComputerMemory({
+          hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+          applicationInstallationId: binding.workerInstallationId, bootId: binding.bootId,
+          keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
+        }, s.lifetime.signal)).toBe(1)
+      } finally {
+        s.lifetime.abort()
+        await session.close()
+        await s.worker.close()
+        await s.service.close()
+      }
+    })
+  it.each(['permission', 'revoked'])('ends collection after a terminal %s response', async code => {
+    vi.useFakeTimers()
+    const s = setup()
+    s.request.mockImplementationOnce(async () => { throw new DeviceApplicationError(code) })
+    const session = await startRemoteTelemetrySession({ service: s.service, binding,
+      signal: s.lifetime.signal, request: s.request })
+    try {
+      await expect(session.completion).rejects.toThrow(code)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(s.request).toHaveBeenCalledTimes(1)
+    } finally {
+      s.lifetime.abort()
+      await session.close()
+      await s.worker.close()
+      await s.service.close()
+    }
+  })
   it('denies revoked authority before sending a collection request', async () => {
     const s = setup(); s.revoke()
     await expect(startRemoteTelemetrySession({ service: s.service, binding, signal: s.lifetime.signal, request: s.request })).rejects.toThrow('authorization')

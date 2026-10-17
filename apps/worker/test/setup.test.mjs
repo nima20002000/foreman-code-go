@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, stat, rm, chmod, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, chmod, realpath, symlink, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -116,6 +116,20 @@ test('setup rejects checksum and nonprivate identity storage before publishing a
   await assert.rejects(readFile(join(f.home, '.local/lib/graphql-worker/graphql-companion')), { code: 'ENOENT' });
   const state = join(f.home, '.local/state/graphql-worker'); await chmod(state, 0o755);
   await assert.rejects(setupCompanion(f), /private_directory_required/);
+});
+
+test('reopening Companion follows the release selected by an automatic update', async t => {
+  const first = await fixture(t, 'first');
+  const second = await fixture(t, 'second');
+  const installed = await setupCompanion(first);
+  const replacement = join(installed.root, 'versions', 'replacement');
+  await fs.cp(second.artifact, replacement, { recursive: true });
+  const pointer = join(installed.root, 'incoming');
+  await symlink(replacement, pointer);
+  await rename(pointer, join(installed.root, 'current'));
+  const result = spawnSync(installed.launcher, ['capture-env'], { encoding: 'utf8', timeout: 2000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).artifact, 'second');
 });
 
 test('generated launcher discovers NVM harnesses and filters the invoking environment', async (t) => {
