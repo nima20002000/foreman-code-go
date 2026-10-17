@@ -132,12 +132,13 @@ export class WorkerConversationHost {
     validateConfiguration(request.binding, request.configuration)
     const id = request.binding.owner.conversationId
     const original = this.residents.get(id)
+    const recoveringExited = original?.allocation.hasExited?.() === true
     const upgradingObservation = original?.allocation.observationOnly && request.method === 'conversation.open'
       && request.mode === 'attach' && request.applicationAccess
     if (original) {
       if (!isDeepStrictEqual(original.binding, request.binding)
         || !isDeepStrictEqual(original.configuration, request.configuration)) unavailable('The native chat owner changed.')
-      if (!upgradingObservation) return original
+      if (!upgradingObservation && !recoveringExited) return original
     }
     const opening = this.allocating.get(id)
     if (opening) {
@@ -145,7 +146,7 @@ export class WorkerConversationHost {
       return this.allocate(request, connection, signal)
     }
     const task = (async () => {
-      if (upgradingObservation) {
+      if (upgradingObservation && !recoveringExited) {
         if (this.hasRunningOperation(id)) unavailable('The native conversation is busy.')
         await original.allocation.close()
         this.residents.delete(id)
@@ -153,9 +154,15 @@ export class WorkerConversationHost {
       const record = await this.ports.journal.read(request.binding)
       if (record?.closed || record?.closing) unavailable('The native chat is closing or closed.')
       if (record?.applicationAccessChange?.state === 'reserved') unavailable('The native App MCP access change needs recovery.')
-      const allocation = record?.session
-        ? await this.recover(record, request.configuration, connection, signal, request)
-        : await this.ports.allocate(request.binding, request.configuration, connection, signal)
+      let allocation: WorkerConversationAllocation
+      if (original && recoveringExited) {
+        if (!record) unavailable('The original native chat session is unavailable.')
+        allocation = (await this.recoverResident(original, record, request, connection, signal)).allocation
+      } else if (record?.session) {
+        allocation = await this.recover(record, request.configuration, connection, signal, request)
+      } else {
+        allocation = await this.ports.allocate(request.binding, request.configuration, connection, signal)
+      }
       try {
         this.current(request.binding, connection, signal)
         if (allocation.manager.harness !== request.binding.harness) unavailable('The worker allocated another native driver.')
@@ -343,18 +350,28 @@ export class WorkerConversationHost {
     return [...this.running.keys(), ...this.runningCompactions].some(key => key.startsWith(`${conversationId}:`))
   }
 
+  private async recoverResident(resident: Resident, record: WorkerConversationReceipt,
+    request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal): Promise<Resident> {
+    if (!record.session || !isDeepStrictEqual(resident.binding, record.binding)) {
+      unavailable('The original native chat owner changed.')
+    }
+    const id = record.binding.owner.conversationId
+    if (this.hasRunningOperation(id)) unavailable('The native conversation is busy.')
+    await resident.allocation.close()
+    this.residents.delete(id)
+    await this.authorize(request, connection, signal)
+    const allocation = await this.recover(record, resident.configuration, connection, signal, request)
+    return { ...resident, allocation }
+  }
+
   private async settleResident(resident: Resident, record: WorkerConversationReceipt,
     request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>, signal: AbortSignal) {
     if (!record.session || !isDeepStrictEqual(resident.binding, record.binding)) {
       unavailable('The original native chat owner changed.')
     }
     if (resident.allocation.hasExited?.()) {
-      const id = record.binding.owner.conversationId
-      await resident.allocation.close()
-      this.residents.delete(id)
-      await this.authorize(request, connection, signal)
-      const allocation = await this.recover(record, resident.configuration, connection, signal, request)
-      this.residents.set(id, { ...resident, allocation })
+      const recovered = await this.recoverResident(resident, record, request, connection, signal)
+      this.residents.set(record.binding.owner.conversationId, recovered)
       return
     }
     if (!isDeepStrictEqual(record.nativeOwner, sessionOwner(await resident.allocation.nativeOwner(record.session)))) {

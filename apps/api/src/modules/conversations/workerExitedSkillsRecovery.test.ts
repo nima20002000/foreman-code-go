@@ -103,9 +103,11 @@ async function fixture() {
   await journal.submitted(f.binding, 'unfinished', { nativeTurnId: 'native-turn' })
   await journal.finishTurn(f.binding, 'unfinished')
   launches[0] = { ...launches[0]!, lifecycle: 'ended' }
+  const attach = () => request({ method: 'conversation.open', binding: f.binding, configuration: base,
+    mode: 'attach', source: provider.session, operationId: 'reconnect' })
   const transition = () => request({ method: 'conversation.open', binding, configuration, previousBinding: f.binding,
     previousConfiguration: base, mode: 'attach', source: provider.session, operationId: 'skills' })
-  return { ...f, originalBinding: f.binding, base, binding, configuration, journal, launches, transition, closeOwner,
+  return { ...f, originalBinding: f.binding, base, binding, configuration, journal, launches, attach, transition, closeOwner,
     setClosureConfirmed(value: boolean) { closureConfirmed = value },
     cleanup: async () => { closureConfirmed = true; await host.close(); await bridge.close() } }
 }
@@ -172,6 +174,87 @@ it('refuses a different exited process without closing it or rewriting its saved
   f.launches[0] = { ...f.launches[0]!, provider: { pid: 22222, startTicks: '22' } }
   try {
     await expect(f.transition()).rejects.toThrow('unavailable or changed')
+    expect(f.closeOwner).not.toHaveBeenCalled()
+    expect(provider.starts).toHaveLength(0)
+    expect((await f.journal.read(f.originalBinding))?.turns[0]?.status).toBe('uncertain')
+  } finally { await f.cleanup() }
+})
+
+it.each(['succeeded', 'failed'] as const)(
+  'reattaches an exited resident with unchanged skills and its saved %s result', async outcome => {
+    const f = await fixture()
+    const result: ExecutionResult = outcome === 'succeeded' ? { outcome, output: 'Saved native answer' }
+      : { outcome, error: { code: 'NATIVE_FAILURE', message: 'Saved native failure', retryable: false } }
+    provider.history.terminalResult = result
+    try {
+      const response = await f.attach() as { receipt: WorkerConversationReceipt }
+      expect(response.receipt.binding).toEqual(f.originalBinding)
+      expect(response.receipt.session).toEqual(provider.session)
+      expect(response.receipt.creation?.operationId).toBe('original-create')
+      expect(response.receipt.turns[0]).toMatchObject({ status: 'completed', nativeTurnId: 'native-turn', result })
+      expect(provider.starts.map(start => 'configuration' in start && start.configuration)).toEqual([f.base])
+      expect(response.receipt.ownerTransitions).toHaveLength(1)
+      expect(f.launches[0]).toMatchObject({ lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty' })
+      expect(provider.creates).toBe(1)
+      await expect(f.attach()).resolves.toMatchObject({ receipt: {
+        binding: f.originalBinding, session: provider.session, turns: response.receipt.turns,
+        nativeOwner: response.receipt.nativeOwner, ownerTransitions: response.receipt.ownerTransitions,
+      } })
+      expect(provider.starts).toHaveLength(1)
+      expect(f.launches).toHaveLength(2)
+    } finally { await f.cleanup() }
+  })
+
+it('retries ordinary attachment after closure is confirmed without restarting the Worker', async () => {
+  const f = await fixture()
+  try {
+    f.setClosureConfirmed(false)
+    await expect(f.attach()).rejects.toThrow('closure is unconfirmed')
+    expect((await f.journal.read(f.originalBinding))?.turns[0]?.status).toBe('uncertain')
+    expect(provider.starts).toHaveLength(0)
+    expect(f.launches).toHaveLength(1)
+    f.setClosureConfirmed(true)
+    await expect(f.attach()).resolves.toMatchObject({ receipt: { binding: f.originalBinding,
+      turns: [{ status: 'completed', nativeTurnId: 'native-turn', result: provider.history.terminalResult }] } })
+    expect(provider.creates).toBe(1)
+  } finally { await f.cleanup() }
+})
+
+it('keeps an ordinary attachment uncertain until its saved terminal result is available', async () => {
+  const f = await fixture()
+  const result = provider.history.terminalResult!
+  delete provider.history.terminalResult
+  try {
+    await expect(f.attach()).rejects.toThrow('could not be recovered')
+    const saved = await f.journal.read(f.originalBinding)
+    expect(saved?.binding).toEqual(f.originalBinding)
+    expect(saved?.turns[0]?.status).toBe('uncertain')
+    expect(saved?.turns[0]?.result).toBeUndefined()
+    expect(provider.starts.map(start => 'configuration' in start && start.configuration)).toEqual([f.base])
+    provider.history.terminalResult = result
+    await expect(f.attach()).resolves.toMatchObject({ receipt: { binding: f.originalBinding,
+      turns: [{ status: 'completed', nativeTurnId: 'native-turn', result }] } })
+    expect(provider.creates).toBe(1)
+  } finally { await f.cleanup() }
+})
+
+it('does not replace a live resident during ordinary attachment', async () => {
+  const f = await fixture()
+  f.launches[0] = { ...f.launches[0]!, lifecycle: 'active' }
+  try {
+    await expect(f.attach()).resolves.toMatchObject({ receipt: { binding: f.originalBinding } })
+    expect(provider.starts).toHaveLength(0)
+    expect(f.closeOwner).not.toHaveBeenCalled()
+    expect(f.launches).toHaveLength(1)
+    expect(provider.creates).toBe(1)
+  } finally { await f.cleanup() }
+})
+
+it('refuses a different exited process during ordinary attachment without closing it', async () => {
+  const f = await fixture()
+  f.launches[0] = { ...f.launches[0]!, provider: { pid: 22222, startTicks: '22' } }
+  try {
+    await expect(f.attach()).rejects.toThrow('unavailable or changed')
     expect(f.closeOwner).not.toHaveBeenCalled()
     expect(provider.starts).toHaveLength(0)
     expect((await f.journal.read(f.originalBinding))?.turns[0]?.status).toBe('uncertain')
