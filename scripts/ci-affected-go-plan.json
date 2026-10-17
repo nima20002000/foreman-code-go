@@ -1,0 +1,13 @@
+{
+  "source": "07912ef1766146b170e465cf13b49018e13e613d",
+  "package": "./internal/cihost",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/cihost/host_part.go",
+    "internal/cihost/host_part_test.go"
+  ],
+  "unitRoots": [
+    "TestHostPartStartPreservesManagerRejectionMessage"
+  ],
+  "unitPattern": "^TestHostPartStartPreservesManagerRejectionMessage$"
+}
