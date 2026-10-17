@@ -10,10 +10,18 @@ import (
 // The version is transport metadata, never a qualification/admission receipt.
 func (c *Client) Initialize(ctx context.Context, sdkEntrypoint string) (string, error) {
 	result, err := c.call(ctx, "initialize", map[string]string{"sdkEntrypoint": sdkEntrypoint})
-	if err != nil { return "", err }
-	var metadata struct { SDKVersion string `json:"sdkVersion"` }
-	if err := json.Unmarshal(result, &metadata); err != nil { return "", err }
-	if metadata.SDKVersion != SDKVersion { return "", fmt.Errorf("Claude SDK version %q does not match pinned %s", metadata.SDKVersion, SDKVersion) }
+	if err != nil {
+		return "", err
+	}
+	var metadata struct {
+		SDKVersion string `json:"sdkVersion"`
+	}
+	if err := json.Unmarshal(result, &metadata); err != nil {
+		return "", err
+	}
+	if metadata.SDKVersion != SDKVersion {
+		return "", fmt.Errorf("Claude SDK version %q does not match pinned %s", metadata.SDKVersion, SDKVersion)
+	}
 	return metadata.SDKVersion, nil
 }
 

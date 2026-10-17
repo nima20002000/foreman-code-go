@@ -16,9 +16,9 @@ var ErrClosed = errors.New("Claude bridge is closed")
 // RemoteError preserves failures returned by the SDK bridge without manufacturing
 // a successful tool decision, delivery receipt, or runtime-closure assertion.
 type RemoteError struct {
-	Code int `json:"code"`
-	Message string `json:"message"`
-	Data json.RawMessage `json:"data,omitempty"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *RemoteError) Error() string {
@@ -26,17 +26,17 @@ func (e *RemoteError) Error() string {
 }
 
 type frame struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID string `json:"id,omitempty"`
-	Method string `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error *RemoteError `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      string          `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *RemoteError    `json:"error,omitempty"`
 }
 
 type response struct {
 	result json.RawMessage
-	err error
+	err    error
 }
 
 // Callback runs Go policy for one native SDK callback. Its context is canceled
