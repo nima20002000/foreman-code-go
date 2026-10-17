@@ -39,7 +39,8 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     const stop = () => {
       failed = true
       if (!child.pid) return
-      try { process.kill(-child.pid, 'SIGKILL') }
+      // The supervisor kills the command's whole group on SIGTERM.
+      try { process.kill(-child.pid, 'SIGTERM') }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
       }
