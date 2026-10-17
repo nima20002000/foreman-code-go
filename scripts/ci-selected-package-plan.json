@@ -1,0 +1,29 @@
+{
+  "source": "1af675de65f0c6284a6534721262866f8d469b4f",
+  "sourceTree": "43959b8f3bd8b325003e8e53b18cc88752d41c50",
+  "package": "./internal/roots",
+  "goFiles": [
+    "internal/roots/directory.go",
+    "internal/roots/directory_linux.go",
+    "internal/roots/directory_linux_test.go",
+    "internal/roots/directory_other.go",
+    "internal/roots/errors.go",
+    "internal/roots/path.go",
+    "internal/roots/path_test.go"
+  ],
+  "unitTests": [
+    "TestOpenPrivateRootRejectsCanonicalAliases",
+    "TestOpenPrivateRootHonorsPrivateAndProtectedModes",
+    "TestOpenPrivateRootRechecksAncestorPermissions",
+    "TestOpenChildCreatesOnlyPrivateDirectories",
+    "TestOpenChildRejectsTraversalSymlinksAndSharedEntries",
+    "TestOpenChildStaysPinnedAfterParentReplacement",
+    "TestEntryParentCreatesParentsAndPreservesRootOwnership",
+    "TestEntryParentRejectsTraversalAndSymlinkParents",
+    "TestClosedDirectoryCannotBeReused",
+    "TestRelativePathPreservesAcceptedNames",
+    "TestRelativePathRejectsTraversalAndAmbiguousNames"
+  ],
+  "integrationTests": [],
+  "mode": "Staticcheck-only"
+}
