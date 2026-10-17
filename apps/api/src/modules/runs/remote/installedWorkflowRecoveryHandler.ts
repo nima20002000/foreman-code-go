@@ -156,8 +156,9 @@ export async function recoverInstalledWorkflowReply(input: {
       terminalResult: result, terminalTurn: { correlationId: status.receipt.turnInput.correlationId,
         providerId: status.receipt.native.turnId, result },
     } : {}) }
-  const historyReply = frame.method === 'history'
-    ? pageNativeHistory(history, frame.afterSequence) : undefined
+  // Both history replies retain the exact paged source that Main verifies by digest.
+  const historyReply = frame.method === 'history' || frame.method === 'reconcile-response'
+    ? pageNativeHistory(history, frame.method === 'history' ? frame.afterSequence : undefined) : undefined
   if (capture && frame.method !== 'physical-readout' && frame.method !== 'physical-ack') {
     let source: WorkflowOriginalNativeSource = { type: 'boundary' }
     if (historyReply) source = { type: 'history', history: nativeHistoryPageSource(historyReply)! }
@@ -206,9 +207,8 @@ export async function recoverInstalledWorkflowReply(input: {
     }
     return { payload: ack }
   }
-  if (frame.method === 'history' || frame.method === 'reconcile-response') {
-    return { payload: input.recovery.historyPages.remember({ ...(historyReply ?? pageNativeHistory(history)), status },
-      frame.intent, frame.placement) }
+  if (historyReply) {
+    return { payload: input.recovery.historyPages.remember({ ...historyReply, status }, frame.intent, frame.placement) }
   }
   if (frame.method === 'pending') return { payload: null }
   if (frame.method === 'prepare' || frame.method === 'reattach') {

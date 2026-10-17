@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DEVICE_APPLICATION_JSON_BYTES, DEVICE_HISTORY_PAGE_BYTES } from '@foreman-code/contracts/device-application'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import type { NativeHistory } from '../../harnesses/port.js'
-import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.js'
+import { pageNativeHistory, nativeHistoryPageSource, readNativeHistoryMetadata } from './nativeHistoryPage.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { decodeResultCopies } from './executionResultCodec.js'
+import { deviceRequestTimeoutMs } from '../../devices/deviceRequestRetry.js'
 
 function event(sequence: number, text = 'event'): NativeHarnessEvent {
   return { sequence, type: 'native.notification', occurredAt: '2026-10-01T00:00:00.000Z', payload: { text } }
@@ -31,6 +32,17 @@ const retainedWindows: Array<{
   { name: 'empty explicit gap', sequences: [], firstRetainedSequence: 10, nextSequence: 50,
     gap: { fromSequence: 10, toSequence: 49, reason: 'retention' } },
 ]
+
+function largeTerminalHistory(label: string): NativeHistory {
+  const result = { outcome: 'succeeded' as const, output: { text: label + '漢😀'.repeat(450_000) } }
+  return { events: [], pendingInteractions: [], terminalResult: result,
+    terminalTurn: { correlationId: 'execution:execution', providerId: 'native-turn', result } }
+}
+
+function downloadMetadata(history: NativeHistory) {
+  const first = pageNativeHistory(history).page.metadata!
+  return { first, rest: async () => decodeResultCopies(await readJsonContinuation(first, async metadata => readNativeHistoryMetadata(metadata))) }
+}
 
 function sequenceRange(from: number, to: number): number[] {
   return Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index)
@@ -212,5 +224,32 @@ describe('byte-bounded native history pages', () => {
       pageNativeHistory(history, first.page.nextAfterSequence, metadata).page.metadata!)
     expect(decodeResultCopies(fields)).toEqual({ pendingInteractions: [], terminalResult: result,
       terminalTurn: history.terminalTurn })
+  })
+
+  it('finishes two concurrent large result downloads while later large results are read', async () => {
+    const concurrent = [largeTerminalHistory('first'), largeTerminalHistory('second')]
+    const started = concurrent.map(downloadMetadata)
+    for (const [index, history] of Array.from({ length: 5 }, (_, n) => largeTerminalHistory(`later-${n}`)).entries()) {
+      expect(await downloadMetadata(history).rest(), `later result ${index}`)
+        .toMatchObject({ terminalResult: history.terminalResult })
+    }
+    for (const [index, download] of started.entries()) {
+      expect(await download.rest()).toEqual({ pendingInteractions: [],
+        terminalResult: concurrent[index]!.terminalResult, terminalTurn: concurrent[index]!.terminalTurn })
+    }
+  })
+
+  it('refuses a new large result while unfinished downloads fill retention, until one is abandoned', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const unfinished = Array.from({ length: 5 }, (_, n) => downloadMetadata(largeTerminalHistory(`unfinished-${n}`)))
+      const waiting = largeTerminalHistory('waiting')
+      expect(() => pageNativeHistory(waiting)).toThrow(expect.objectContaining({ code: 'backpressure' }))
+      vi.setSystemTime(Date.now() + deviceRequestTimeoutMs + 1)
+      expect(await downloadMetadata(waiting).rest()).toMatchObject({ terminalResult: waiting.terminalResult })
+      await expect(unfinished[0]!.rest()).rejects.toMatchObject({ code: 'transfer-expired' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
