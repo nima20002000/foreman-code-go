@@ -457,40 +457,46 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
   }
 
   async respond(session: NativeSessionReference, nativeRequestId: string, option: ApprovalResponseOption, signal?: AbortSignal): Promise<void> {
-    const runtime = this.requireRuntime(session)
-    if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
-    const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === nativeRequestId)
-    if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
-    const stored = waiting.responses.get(option.optionId)
-    if (!stored) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The selected response was not offered for this native request.')
-    if (waiting.delivery !== 'pending' || waiting.conflictingIdentity || waiting.generation !== runtime.generation || waiting.transport !== runtime.transport || runtime.closed) {
-      throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
-    }
-    signal?.throwIfAborted()
-    const nativeResponse = resolveCodexInteractionResponse(stored, option)
-    // Synchronous reservation prevents two competing responses from both writing.
-    waiting.delivery = 'submitting'
-    waiting.selectedOptionId = stored.option.optionId
-    runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse,
-      sequence: runtime.sequence })
-    this.record(runtime, 'interaction.submitting', { nativeRequestId, optionId: option.optionId })
-    try {
-      await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
-      this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId,
-        semantic: stored.option.semantic, responseDigest: responseValueDigest(option.response) })
-      if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
-        waiting.delivery = 'submitted'
+    const { delivery } = await this.exclusive(session.nativeSessionId, async () => {
+      const runtime = this.requireRuntime(session)
+      const waiting = [...runtime.interactions.values()].find((entry) => entry.pending.turn.nativeRequestId === nativeRequestId)
+      if (!waiting) throw new HarnessExecutionError('NATIVE_RESPONSE_UNKNOWN_REQUEST', 'The addressed native request is not pending in this session.')
+      const stored = waiting.responses.get(option.optionId)
+      if (!stored) throw new HarnessExecutionError('NATIVE_RESPONSE_OPTION_INVALID', 'The selected response was not offered for this native request.')
+      if (waiting.delivery !== 'pending' || waiting.conflictingIdentity || waiting.generation !== runtime.generation || waiting.transport !== runtime.transport || runtime.closed) {
+        throw new HarnessExecutionError('NATIVE_RESPONSE_RECONCILIATION_REQUIRED', 'A submitted, disconnected, or uncertain native response cannot be retransmitted.')
       }
-      const resolved = await deadline(waiting.resolution, signal, undefined, this.dependencies)
-      if (resolved === 'cleared') throw new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'The native request was cleared; acceptance of the selected response was not confirmed.')
-    } catch (error) {
-      if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
-        const code = error instanceof HarnessExecutionError ? error.result.error?.code : undefined
-        waiting.delivery = ['NATIVE_RESPONSE_DELIVERY_FAILED', 'NATIVE_RESPONSE_INVALID'].includes(code ?? '') ? 'pending' : 'uncertain'
-        this.record(runtime, 'interaction.delivery_state', { nativeRequestId, delivery: waiting.delivery })
-      }
-      throw error
-    }
+      signal?.throwIfAborted()
+      const nativeResponse = resolveCodexInteractionResponse(stored, option)
+      // Synchronous reservation prevents two competing responses from both writing.
+      waiting.delivery = 'submitting'
+      waiting.selectedOptionId = stored.option.optionId
+      runtime.responseDecisions.set(nativeRequestId, { pending: waiting.pending, option, nativeResponse,
+        sequence: runtime.sequence })
+      this.record(runtime, 'interaction.submitting', { nativeRequestId, optionId: option.optionId })
+      const delivery = (async () => {
+        try {
+          await runtime.transport.respond(waiting.requestId, waiting.method, nativeResponse)
+          this.record(runtime, 'interaction.submitted', { nativeRequestId, optionId: stored.option.optionId,
+            semantic: stored.option.semantic, responseDigest: responseValueDigest(option.response) })
+          if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
+            waiting.delivery = 'submitted'
+          }
+          const resolved = await deadline(waiting.resolution, signal, undefined, this.dependencies)
+          if (resolved === 'cleared') throw new HarnessExecutionError('NATIVE_RESPONSE_CLEARED', 'The native request was cleared; acceptance of the selected response was not confirmed.')
+        } catch (error) {
+          if (runtime.interactions.get(requestKey(waiting.generation, waiting.requestId)) === waiting) {
+            const code = error instanceof HarnessExecutionError ? error.result.error?.code : undefined
+            waiting.delivery = ['NATIVE_RESPONSE_DELIVERY_FAILED', 'NATIVE_RESPONSE_INVALID'].includes(code ?? '') ? 'pending' : 'uncertain'
+            this.record(runtime, 'interaction.delivery_state', { nativeRequestId, delivery: waiting.delivery })
+          }
+          throw error
+        }
+      })()
+      // Resolution may require reconciliation or closure, so release the lifecycle lock after dispatch.
+      return { delivery }
+    })
+    await delivery
   }
 
   async cancel(session: NativeSessionReference, signal?: AbortSignal, nativeTurnId?: string): Promise<boolean> {
