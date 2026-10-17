@@ -17,7 +17,7 @@ import { PostgresInteractionRepository } from '../../src/modules/interactions/po
 import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 
 /** Real execution-bound credentials and authenticated MCP; no ambient token or authority is borrowed. */
-export async function codexNativeAcceptanceFixture() {
+export async function codexNativeAcceptanceFixture(approvalPolicy: 'never' | 'on-request' = 'never') {
   const database = await agent3Database(process.env.ENG03_A_TEST_DATABASE_URL)
   const { pool, directory } = database
   const workingDirectory = join(directory, 'work')
@@ -27,7 +27,7 @@ export async function codexNativeAcceptanceFixture() {
     const content = { prompt: { system: 'Follow explicit shell instructions by using the native shell tool; never simulate tool results.' },
       assignedSkills: [], harness: { harness: 'codex', model: process.env.CODEX_MODEL ?? 'gpt-6-luna',
         reasoningEffort: 'medium', sandbox: 'read-only', serviceTier: 'standard',
-        advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION) } }
+        advanced: { ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION), approvalPolicy } } }
     return AgentConfigurationVersionSchema.parse({ ...base, ...content, contentHash: `sha256:${commandInputHash(content)}` })
   })
   let app: ReturnType<typeof buildApp> | undefined

@@ -4,7 +4,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { expect } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { ManagementActionSchema, ManagedAgentDefaultsSchema, WorkspaceLocationSetResultSchema } from '@foreman-code/contracts/management'
 import { ManualRunStartResultSchema, SavedRunDetailsSchema, WorkflowVersionV3Schema, makeCurrentWorkflowFixture, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
 import { LOCAL_RUNNER_ID } from '../../src/modules/workspaces/location.js'
@@ -73,7 +73,7 @@ async function freePort() {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   return address.port
 }
-export async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write'; form?: CurrentFixtureForm; handoffs?: boolean } = {}) {
+export async function setup(options: { operatorSandbox?: 'read-only' | 'workspace-write'; form?: CurrentFixtureForm; handoffs?: boolean; approvalPolicy?: 'on-request' } = {}) {
   const db = await agent3Database(); closes.push(db.close)
   const directory = await privateFixtureDirectory('activity-replay-workspace-')
   closes.push(() => removeFixtureDirectory(directory))
@@ -94,7 +94,9 @@ export async function setup(options: { operatorSandbox?: 'read-only' | 'workspac
   if (options.handoffs) seed.version = agentWorkflowVersion(WorkflowVersionV3Schema.parse({ ...seed.version,
     definition: { ...seed.version.definition, handoffs: { contractVersion: 1 } } }))
   seed.configurations = seed.configurations.map((configuration) => AgentConfigurationVersionSchema.parse({ ...configuration,
-    harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } }))
+    harness: { harness: 'codex', model: 'test-model', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
+      ...(options.approvalPolicy ? { advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: options.approvalPolicy } } : {}),
+    } }))
   const saved = await seedAgent3(db.pool, workspace.workingDirectory, seed, { run: false })
   const access = new PostgresAccessService(db.pool)
   const writer = await access.issue({ name: 'W05 production fixture writer', audience: 'operator',

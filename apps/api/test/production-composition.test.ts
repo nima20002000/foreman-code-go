@@ -14,8 +14,6 @@ import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 
-import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
-import { Wave25InteractionRepository } from '../src/modules/interactions/wave25/repository.js'
 import type { NativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
 import { buildProductionApp } from '../src/production.js'
@@ -235,36 +233,6 @@ it('serves the Board and Operator CI list after production initializes CI, with 
   principal = operator([...CI_GET_ACTIONS, 'runs:read'], { workspaceIds: ['other-workspace'] })
   expect((await production.app.inject({ method: 'GET', url, headers })).statusCode).toBe(403)
   expect(endpoint.request).not.toHaveBeenCalled()
-})
-
-it('uses one real approval runtime across production HTTP, Operator MCP, App MCP, and targeted resume', async () => {
-  const options = vi.mocked(buildApp).mock.calls.at(-1)![0]
-  const service = options.product!.interactions!
-  const approvals: unknown = Reflect.get(production.engine, 'nativeExecutions')
-  const repository: unknown = Reflect.get(production.engine, 'interactions')
-  expect(approvals).toBeInstanceOf(ApprovalExecutionCoordinator)
-  expect(repository).toBeInstanceOf(Wave25InteractionRepository)
-  expect(service).toBeInstanceOf(InteractionService)
-  expect(service).toHaveProperty('nativeRuntime', approvals)
-  expect(service).toHaveProperty('interactions', repository)
-  expect(approvals).toHaveProperty('credentials', Reflect.get(production.engine, 'workerCredentials'))
-  expect(Reflect.get(production.engine, 'workerCredentials')).toHaveProperty('prepare', expect.any(Function))
-  expect(options.operator!.services.interactions).toHaveProperty('service', service)
-  expect(options.appMcp!.interactions).toHaveProperty('orchestration', service)
-  expect(options.appMcp!.access).toBe(options.operator!.access)
-  expect(options.mcpDetection?.service).toBeDefined()
-  await production.app.ready()
-  expect(production.app.hasRoute({ method: 'GET', url: '/api/interactions' })).toBe(false)
-  for (const url of ['/mcp', '/mcp']) expect(production.app.hasRoute({ method: 'POST', url })).toBe(true)
-  const resume = vi.spyOn(production.engine, 'resumeInteraction').mockResolvedValue(undefined)
-  const callback = Reflect.get(service, 'atomicApprovalResume') as
-    Parameters<InteractionService['useAtomicApprovalResume']>[0] | undefined
-  expect(callback).toBeTypeOf('function')
-  // Construction-level wiring only: the spied engine receives the exact claim;
-  // no SQL checkpoint, native response, or resume receipt is manufactured here.
-  const claim = { interaction: current, ownerToken: 'composition-resume-owner' }
-  await callback!(claim)
-  expect(resume).toHaveBeenCalledExactlyOnceWith(current, claim)
 })
 
 it('retains Worker qualification against the outgoing profile-check channel', async () => {

@@ -87,19 +87,45 @@ describe('Claude native session manager admission', () => {
     await f.manager.dispose?.()
   })
 
-  it('does not publish ACK/body before observed native SID persistence completes', async () => {
-    const f = fixture(); let release!: () => void
-    const saving = new Promise<void>((resolve) => { release = resolve })
+  it('publishes the body only after observed native SID persistence completes', async () => {
+    const sentinel = 'Body after session persistence'
+    const f = fixture(() => raw => {
+      const frame = raw as { type: string; message?: { content: { text: string }[] } }
+      return frame.type === 'assistant'
+        ? [{ type: 'claude.text', payload: { text: frame.message!.content[0]!.text } }]
+        : []
+    })
+    const saving = deferred<void>()
+    const entered = deferred<void>()
     const submitted = vi.fn(async () => undefined)
-    const result = drain(f.manager.startInitialTurn(start, { prompt: 'first', clientCorrelationId: 'operator:one', onSessionObserved: async () => saving, onMessageSubmitted: submitted }))
-    const input = await f.nextMessage()
-    void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply', user_message_uuid: input.uuid })
-    void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result', user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(submitted).not.toHaveBeenCalled()
-    release(); await result
-    expect(submitted).toHaveBeenCalledTimes(1)
-    await f.manager.dispose?.()
+    const received: import('@foreman-code/contracts').NativeHarnessEvent[] = []
+    const result = (async () => {
+      for await (const event of f.manager.startInitialTurn(start, {
+        prompt: 'first', clientCorrelationId: 'operator:one',
+        onSessionObserved: async () => { entered.resolve(); await saving.promise },
+        onMessageSubmitted: submitted,
+      })) received.push(event)
+    })()
+    try {
+      const input = await f.nextMessage()
+      void f.frames.offer({ type: 'assistant', session_id: 'native-session', uuid: 'reply',
+        user_message_uuid: input.uuid, message: { id: 'api-reply', content: [{ type: 'text', text: sentinel }] } })
+      void f.frames.offer({ type: 'result', session_id: 'native-session', uuid: 'result',
+        user_message_uuid: input.uuid, subtype: 'success', is_error: false, result: 'done' })
+      await entered.promise
+      await new Promise(resolve => setImmediate(resolve))
+      expect(submitted).not.toHaveBeenCalled()
+      expect(received.filter(event => event.type === 'claude.text')).toEqual([])
+      saving.resolve()
+      await result
+      expect(submitted).toHaveBeenCalledTimes(1)
+      expect(received.filter(event => event.type === 'claude.text')).toMatchObject([
+        { payload: { text: sentinel } },
+      ])
+    } finally {
+      saving.resolve()
+      await f.manager.dispose?.()
+    }
   })
 
   it('inspects real SDK control health before input and retains exactly the same query for the first turn', async () => {
