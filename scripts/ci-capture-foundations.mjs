@@ -250,10 +250,12 @@ async function main() {
     return
   }
   const environment = isolatedEnvironment()
-  command('generate genuine pinned module checksums', 'go', ['mod', 'tidy'], {
-    cwd: join(repository, 'backend'), env: { ...process.env, GOFLAGS: '-mod=mod' } })
-  artifact('backend/go.mod', readFileSync(join(repository, 'backend/go.mod')))
-  artifact('backend/go.sum', readFileSync(join(repository, 'backend/go.sum')))
+  if (process.argv[2] !== '--schema-only') {
+    command('generate genuine pinned module checksums', 'go', ['mod', 'tidy'], {
+      cwd: join(repository, 'backend'), env: { ...process.env, GOFLAGS: '-mod=mod' } })
+    artifact('backend/go.mod', readFileSync(join(repository, 'backend/go.mod')))
+    artifact('backend/go.sum', readFileSync(join(repository, 'backend/go.sum')))
+  }
   command('fetch exact TS baseline if needed', 'git', ['fetch', '--quiet', '--no-tags', 'origin', baseline])
   command('create pinned isolated TS source checkout', 'git', ['worktree', 'add', '--detach', source, baseline])
   sourceCreated = true

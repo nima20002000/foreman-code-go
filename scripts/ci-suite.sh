@@ -18,7 +18,9 @@ case "${SUITE:-}" in
       node scripts/ci-capture-foundations.mjs
     fi
     exit 0 ;;
-  build-other) exit 0 ;;
+  build-other)
+    if [ -z "${1:-}" ]; then node scripts/ci-capture-foundations.mjs --schema-only; fi
+    exit 0 ;;
 esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
