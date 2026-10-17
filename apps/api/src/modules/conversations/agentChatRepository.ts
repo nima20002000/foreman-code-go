@@ -401,7 +401,6 @@ export class PostgresAgentChatRepository {
         await this.acceptAccount(client, row)
         created = true
       }
-      await assertAgentChatDirectoryAvailable(client, row.id)
       if (row.record.origin.kind === 'fresh' && !row.native_session_id && !row.record.startupDelivered
         && !row.record.sessionCreation && !row.record.systemPrompt) {
         const systemPrompt = await readSystemPromptSetting(client)
@@ -420,6 +419,7 @@ export class PostgresAgentChatRepository {
         ? input.request.expectedNativeTurnId ?? interruptTarget?.nativeTurnId : input.targetNativeTurnId
       await admitSessionMessage(client, row.id, input.request)
       await validateMessageAttachments(client, row.id, input.request.attachments)
+      await assertAgentChatDirectoryAvailable(client, row.id)
       const now = new Date().toISOString()
       const message = MessageSchema.parse({ id: randomUUID(), conversationId: row.id, role: 'user', requestId: input.request.requestId,
         content: input.request.content, createdAt: now, updatedAt: now })

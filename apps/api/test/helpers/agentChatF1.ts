@@ -50,7 +50,7 @@ export class F1Store {
     origin_run_id: null, origin_execution_id: null, harness: 'codex', provider_version: 'fixture', native_session_id: 'session',
     active_request_id: null, active_native_turn_id: null, cancel_requested: false, turn_state: 'idle', last_error: null,
     revision: 0, pending_interaction: null, last_result: null,
-    record: { origin: { kind: 'fresh' }, workingDirectory: '/unused', runtimeDirectory: '/unused', startupDelivered: true },
+    record: { origin: { kind: 'fresh' }, workingDirectory: process.cwd(), runtimeDirectory: '/unused', startupDelivered: true },
     created_at: new Date(), updated_at: new Date(),
   }
   readonly turns = new Map<string, Receipt>()
@@ -93,6 +93,9 @@ export class F1Store {
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
     if (sql === 'select archived_at from workspaces where id = $1 for share') {
       return result([{ archived_at: this.workspaceArchived ? new Date() : null }])
+    }
+    if (sql.startsWith("select c.record->>'workingDirectory' as path,")) {
+      return result(values[0] === this.row.id ? [{ path: this.row.record.workingDirectory, host_kind: 'main' }] : [])
     }
     if (sql.startsWith('select record, revision, current_version_id from application_settings')) return result()
     if (sql.startsWith("update operator_conversations set record=record || jsonb_build_object('systemPrompt'")) {

@@ -28,7 +28,7 @@ function row(): AgentConversationRow {
     origin_run_id: null, origin_execution_id: null, harness: 'codex', provider_version: 'f5-fixture', native_session_id: 'native-f5',
     active_request_id: 'active-f5', active_native_turn_id: 'turn-f5', cancel_requested: false, turn_state: 'active', last_error: null,
     revision: 1, pending_interaction: null, last_result: null, created_at: now, updated_at: now,
-    record: { origin: { kind: 'fresh' }, workingDirectory: '/unused-f5', runtimeDirectory: '/unused-f5', startupDelivered: true } }
+    record: { origin: { kind: 'fresh' }, workingDirectory: process.cwd(), runtimeDirectory: '/unused-f5', startupDelivered: true } }
 }
 function request(requestId = 'new-f5', intent: SendAgentChatMessageRequest['intent'] = 'next_turn'): SendAgentChatMessageRequest {
   return { requestId, context: query, content: `Message ${requestId}`, intent, expectedConversationId: 'chat-f5' }
@@ -113,6 +113,11 @@ function sqlFixture(openCount: number, prior?: ReturnType<typeof receipt>, state
       || sql.startsWith('select pg_advisory_xact_lock')) return { rows: [], rowCount: 0 }
     if (sql === 'select archived_at from workspaces where id = $1 for share') {
       const rows = values[0] === workspaceId ? [{ archived_at: null }] : []
+      return { rows, rowCount: rows.length }
+    }
+    if (sql.startsWith("select c.record->>'workingDirectory' as path,")) {
+      const current = row()
+      const rows = values[0] === current.id ? [{ path: current.record.workingDirectory, host_kind: 'main' }] : []
       return { rows, rowCount: rows.length }
     }
     if (sql.startsWith('select record from conversation_session_controls')) return { rows: [], rowCount: 0 }
