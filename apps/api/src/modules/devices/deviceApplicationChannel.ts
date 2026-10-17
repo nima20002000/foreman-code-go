@@ -660,7 +660,7 @@ export class DeviceApplicationChannel {
     try {
       // Application assemblies already reserve bounded receive capacity before any chunks arrive.
       // Drain frames synchronously so a coalesced upload window does not occupy the handshake queue.
-      await iterator.consume(text => {
+      const receive = (text: string) => {
         const observedAt = new Date().toISOString()
         const frame = readFrame(text)
         if (frame.type === (worker ? 'pong' : 'ping')) {
@@ -679,6 +679,13 @@ export class DeviceApplicationChannel {
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
         this.current(); this.options.onObservedFrame?.(observedAt)
+      }
+      await iterator.consume(text => {
+        try { receive(text) }
+        catch (error) {
+          // The channel sends the failure reason before the adapter closes the socket.
+          this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
+        }
       }, this.abort.signal)
       if (this.failure) throw this.failure
       throw new DeviceConnectionError('transport', this.options.socket.closeDetail ?? 'peer closed the link')
@@ -692,18 +699,19 @@ export class DeviceApplicationChannel {
     }
   }
   close(error: Error = new DeviceConnectionError('transport')) {
-    if (this.abort.signal.aborted) return
+    if (this.failure) return
     this.requestQueue.close(error)
-    this.failure = error; this.abort.abort(); this.detach()
+    this.failure = error; this.detach()
     const code = error instanceof DeviceConnectionError ? error.code : undefined
     componentLogger('devices').warn({ side: this.options.side, deviceId: this.binding.deviceId,
       connectionGeneration: this.binding.connectionGeneration, code: code ?? (error as { code?: unknown }).code,
       detail: error instanceof DeviceConnectionError ? error.detail : undefined, ...(code ? {} : { err: error }) },
     'Device link closed')
-    // Name the cause to the peer, whose own log would otherwise only see the socket end.
+    // Send the reason before aborting the synchronous reader, which closes the adapter.
     if (code && code !== 'transport') {
       try { sendFrame(this.options.socket, { type: 'blocked', code }) } catch { /* ignore: the socket is already unusable */ }
     }
+    this.abort.abort()
     for (const pending of this.pending.values()) { pending.abort.abort(); pending.reject(error) }
     for (const assembly of this.assemblies.values()) assembly.abort.abort()
     for (const assembly of this.handlers.values()) assembly.abort.abort()
