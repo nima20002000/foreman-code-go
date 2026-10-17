@@ -39,7 +39,10 @@ it('keeps workspace identities separate, replaces membership and disconnects wit
   expect(folders.find(folder => folder.id === sharedFolderId('workspace-a'))?.devices).toEqual([{ deviceID: f.identity.deviceId }])
   expect(folders.find(folder => folder.id === sharedFolderId('workspace-b'))?.devices).toHaveLength(2)
   await f.computer.handle({ operation: 'configure', workspaceId: 'workspace-a', enabled: false, peers: [] })
-  expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(1)
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([
+    expect.objectContaining({ id: sharedFolderId('workspace-a'), paused: true, devices: [{ deviceID: f.identity.deviceId }] }),
+    expect.objectContaining({ id: sharedFolderId('workspace-b'), paused: false, devices: [{ deviceID: f.identity.deviceId }, { deviceID: workerSyncId }] }),
+  ])
   expect(f.directories.has(`/main/shared/${sharedFolderId('workspace-a')}`)).toBe(true)
 })
 
@@ -74,7 +77,9 @@ it('reports connectivity, syncing, errors and conflicts and retains prior config
   f.failConfiguration(false)
   expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(1)
   await f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: false, peers: [] })
-  expect(await f.rest('GET', '/rest/config/folders')).toHaveLength(0)
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([expect.objectContaining({
+    id: sharedFolderId('workspace'), paused: true, devices: [{ deviceID: f.identity.deviceId }],
+  })])
 })
 
 it('serializes enable and disable so a delayed enable cannot undo the later disable', async () => {
@@ -82,7 +87,10 @@ it('serializes enable and disable so a delayed enable cannot undo the later disa
   const enabled = f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: true, peers: [peer] })
   const disabled = f.computer.handle({ operation: 'configure', workspaceId: 'workspace', enabled: false, peers: [] })
   await Promise.all([enabled, disabled])
-  expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([expect.objectContaining({
+    id: sharedFolderId('workspace'), paused: true, devices: [{ deviceID: f.identity.deviceId }],
+  })])
+  expect(SyncComputerStateSchema.parse(await f.computer.handle({ operation: 'status' })).folders).toEqual([])
   f.stop()
   expect(await f.computer.handle({ operation: 'status' })).toMatchObject({ installed: true, running: false, folders: [] })
 })
