@@ -147,6 +147,22 @@ async function removeStaleRefLocks(directory: string): Promise<void> {
   }
 }
 
+async function waitForRepositoryTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return previous
+  signal.throwIfAborted()
+  let onAbort!: () => void
+  const canceled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    await Promise.race([previous, canceled])
+    signal.throwIfAborted()
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
 interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
@@ -615,7 +631,7 @@ export class HostCiRunner {
     const ready = await withHostCiRunLock(directory, async () => {
       try {
         if (!await this.cancelPreparation(meta.runId)) {
-          await this.withRepository(request.repository, () => this.prepareRepository(request, signal))
+          await this.withRepository(request.repository, () => this.prepareRepository(request, signal), { signal })
         }
         if (await this.cancelPreparation(meta.runId)) return false
         const databaseSuite = ['unit', 'integration'].includes(request.suite)
@@ -696,14 +712,18 @@ export class HostCiRunner {
   }
 
   private async withRepository<T>(repository: string, work: () => Promise<T>,
-    options: { nonBlocking?: boolean } = {}) {
+    options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}) {
     if (options.nonBlocking && this.repositoryQueues.has(repository)) return undefined
     const previous = this.repositoryQueues.get(repository) ?? Promise.resolve()
     let release!: () => void
-    const pending = new Promise<void>(resolve => { release = resolve })
+    const turn = new Promise<void>(resolve => { release = resolve })
+    // A canceled waiter can leave early, but later work must still wait for its predecessors.
+    const pending = previous.then(() => turn).finally(() => {
+      if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
+    })
     this.repositoryQueues.set(repository, pending)
-    await previous
     try {
+      await waitForRepositoryTurn(previous, options.signal)
       const clone = join(this.root, 'git', ...repository.split('/'))
       await mkdir(clone, { recursive: true, mode: 0o700 })
       return await withHostCiRunLock(clone, async () => {
@@ -714,7 +734,6 @@ export class HostCiRunner {
       }, options)
     } finally {
       release()
-      if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
     }
   }
 
@@ -726,7 +745,7 @@ export class HostCiRunner {
       const source = await this.checkout(meta, signal)
       await this.selectFiles(meta, source, signal)
       return source
-    })
+    }, { signal })
     if (!source) return
     signal?.throwIfAborted()
     const script = await this.script(meta, source)

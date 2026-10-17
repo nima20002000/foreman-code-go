@@ -4,7 +4,7 @@ import { SourceError } from '../sources/manifest.js'
 
 /** Native entry and reconciliation share a kernel lock, including across Worker restarts. */
 export async function withHostCiRunLock<T>(directory: string, work: () => Promise<T>,
-  options: { nonBlocking?: boolean } = {}): Promise<T | undefined> {
+  options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}): Promise<T | undefined> {
   const handle = await open(directory, directoryFlags)
   try {
     return await withPrivateDirectoryLock(handle, work, options)
