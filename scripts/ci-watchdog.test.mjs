@@ -122,6 +122,35 @@ async function watchdogFixture(t, source, overrides = {}) {
     results: existsSync(resultsFile) ? JSON.parse(readFileSync(resultsFile, 'utf8')) : null }
 }
 
+test('the watchdog supervises commands when getconf is unavailable', async t => {
+  const directory = mkdtempSync(join(temporary, 'ci-metrics-failure-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const watchdog = join(repository, 'scripts/ci-watchdog.mjs')
+  for (const exitCode of [0, 7, null]) {
+    const source = exitCode === null
+      ? 'setInterval(() => {}, 1000)'
+      : `setTimeout(() => { console.log('command completed'); process.exit(${exitCode}) }, 150)`
+    const child = spawn(process.execPath, [watchdog, '--', process.execPath, '-e', source], {
+      cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: directory, CI_EXPECTED_DURATION_MS: '0', CI_WATCHDOG_IDLE_MS: '500',
+        CI_WATCHDOG_DIRECTORY: directory },
+    })
+    t.after(() => stopGroup(child.pid, { graceMs: 100 }))
+    let output = ''
+    child.stdout.on('data', bytes => { output += bytes })
+    child.stderr.on('data', bytes => { output += bytes })
+    const code = await new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', resolve)
+    })
+    assert.equal(code, exitCode ?? 1, output)
+    if (exitCode === null) assert.match(output, /no test progress for 500 ms/)
+    else assert.match(output, /command completed/)
+    assert.equal(output.match(/\[ci-watchdog\] Warning: process metrics unavailable/g)?.length, 1, output)
+    assert.match(output, /getconf.*ENOENT/)
+  }
+})
+
 test('a watchdog during module setup records that no test started', async t => {
   const result = await watchdogFixture(t, `
     const { appendFileSync } = require('node:fs')
