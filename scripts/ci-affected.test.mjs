@@ -128,6 +128,7 @@ for (const progress of ['', 'parent-progress.jsonl']) {
     const file = 'apps/web/src/view.test.tsx'
     mkdirSync(join(root, 'apps/web/src'), { recursive: true })
     writeFileSync(join(root, file), 'export {}')
+    writeFileSync(join(root, 'apps/web/heavy-tests.json'), JSON.stringify({ files: ['src/**/*.integration.test.tsx'] }))
     const selection = join(root, 'selected.json')
     writeFileSync(selection, JSON.stringify([file]))
     writeFileSync(join(root, 'corepack'), `#!${process.execPath}\n`

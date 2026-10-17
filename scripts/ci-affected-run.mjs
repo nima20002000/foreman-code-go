@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
 import { lstatSync, readFileSync, rmSync } from 'node:fs'
-import { posix, resolve } from 'node:path'
+import { matchesGlob, posix, resolve } from 'node:path'
 import { repositoryFileList, selectByIndexes } from './ci-files.mjs'
 import { writeCiTestResults } from './ci-test-results.mjs'
 
 const projects = ['packages/contracts', 'apps/api', 'apps/web', 'apps/worker']
+const heavyWebFiles = () => JSON.parse(readFileSync(resolve('apps/web/heavy-tests.json'), 'utf8')).files
 
 /** Commands use argument arrays; supplied file names never become shell code. */
 export function affectedCommands(suite, files) {
@@ -36,8 +37,17 @@ export function affectedCommands(suite, files) {
       // Only API tests use the disposable PostgreSQL server, which CI starts for the unit and unit-api parts alone.
       const database = project === 'apps/api' ? [process.execPath, 'scripts/test-command.mjs', '--'] : []
       if (nodeFiles.length) commands.push([...database, process.execPath, '--test', ...nodeFiles])
-      if (vitestFiles.length) commands.push([...database, 'corepack', 'pnpm', '--dir', project, 'exec', 'vitest', 'run',
-        ...vitestFiles.map(file => file.slice(project.length + 1))])
+      const vitest = selected => [...database, 'corepack', 'pnpm', '--dir', project, 'exec', 'vitest', 'run',
+        ...selected.map(file => file.slice(project.length + 1))]
+      if (project === 'apps/web') {
+        // Load-sensitive web suites need the heavy phase's workers and timeouts, as in full runs.
+        const heavy = heavyWebFiles()
+        const isHeavy = file => heavy.some(pattern => matchesGlob(file.slice(project.length + 1), pattern))
+        for (const [phase, phaseFiles] of [['fast', vitestFiles.filter(file => !isHeavy(file))],
+          ['heavy', vitestFiles.filter(isHeavy)]]) {
+          if (phaseFiles.length) commands.push(['env', `FOREMAN_WEB_TEST_PHASE=${phase}`, ...vitest(phaseFiles)])
+        }
+      } else if (vitestFiles.length) commands.push(vitest(vitestFiles))
     } else throw new Error(`Unsupported affected suite: ${suite}`)
   }
   return commands
