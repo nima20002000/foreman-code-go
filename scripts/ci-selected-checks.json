@@ -1,0 +1,23 @@
+{
+  "source": "f1e7357de6e58dfd60629dd95a3e76bc9c44dc58",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "cleanup-selected-behavior",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/runtime/owned-processes.observation.test.ts",
+          "src/runtime/owned-processes.test.ts"
+        ],
+        "reportKind": "vitest",
+        "cwd": "conformance"
+      }
+    ]
+  },
+  "requiredExports": []
+}
