@@ -43,6 +43,7 @@ interface Receipt {
 /** Executes the production repository against a strict scripted SQL store. This is NOT PostgreSQL:
  * it checks query fences/order and durable-state transitions, not SQL validity or lock isolation. */
 export class F1Store {
+  workspaceArchived = false
   readonly row: AgentConversationRow & { deleted_at: Date | null } = {
     deleted_at: null, id: 'conversation', agent_key: agentChatKey(context), workspace_id: context.workspaceId, workflow_id: context.workflowId,
     workflow_node_id: context.workflowNodeId, agent_id: context.agentId, agent_configuration_version_id: configuration.id,
@@ -90,6 +91,9 @@ export class F1Store {
         grants: principal.grants, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null }] : [])
     }
     if (['begin', 'commit', 'rollback', 'begin isolation level repeatable read read only'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) return result()
+    if (sql === 'select archived_at from workspaces where id = $1 for share') {
+      return result([{ archived_at: this.workspaceArchived ? new Date() : null }])
+    }
     if (sql.startsWith('select record, revision, current_version_id from application_settings')) return result()
     if (sql.startsWith("update operator_conversations set record=record || jsonb_build_object('systemPrompt'")) {
       if (this.row.id !== values[0]) return result()

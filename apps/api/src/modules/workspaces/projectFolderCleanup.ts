@@ -9,6 +9,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { pathsOverlap } from './filesystem.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { activeAgentChatDirectories } from '../conversations/activeAgentChats.js'
 
 export const WORKSPACE_FOLDER_LIFECYCLE_LOCK = 'workspace-folder-lifecycle'
 export const CreatedProjectFolderSchema = z.object({
@@ -64,6 +65,10 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
       }
       if (runDirectories.rows.some(({ path }) => pathsOverlap(folder.rootPath, path))) {
         throw new Error('The project folder is still required by an accepted Run or its pending cleanup.')
+      }
+      const chatDirectories = await activeAgentChatDirectories(client)
+      if (chatDirectories.some(path => pathsOverlap(folder.rootPath, path))) {
+        throw new Error('The project folder is still required by queued or active Agent chat messages.')
       }
       let details
       try { details = await lstat(folder.rootPath, { bigint: true }) }

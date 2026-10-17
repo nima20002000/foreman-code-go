@@ -23,6 +23,7 @@ import { cleanupWorkspaceProjectFolders, WORKSPACE_FOLDER_LIFECYCLE_LOCK } from 
 import { WorkspaceStorageFolders } from './storageFolders.js'
 import { workspaceStorageRoot } from './storage.js'
 import { WorkspaceProjectProvisioning } from './projectProvisioning.js'
+import { assertNoActiveAgentChats } from '../conversations/activeAgentChats.js'
 
 interface WorkspaceRow { record: unknown; revision: string; archived_at: Date | null; created_project_folder?: unknown }
 
@@ -271,6 +272,7 @@ export class WorkspaceManagementService {
           `select 1 from runs where workspace_id = any($1::text[]) and execution_state <> 'completed' limit 1`, [ids],
         )
         if (active.rows.length) throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_RUN', 'A selected workspace has active runs. Nothing was deleted. Settle active work and try again.', 409)
+        await assertNoActiveAgentChats(client, ids)
         await client.query(
           `update workspaces set archived_at = coalesce(archived_at, now()), revision = revision + 1
            where id = any($1::text[])`, [ids],
@@ -318,6 +320,7 @@ export class WorkspaceManagementService {
         if (Number(active.rows[0]?.count ?? 0) > 0) {
           throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_RUN', 'Settle active work before archiving the workspace.', 409)
         }
+        await assertNoActiveAgentChats(client, [input.workspaceId])
         const result = await client.query<WorkspaceRow>(
           `update workspaces set archived_at = coalesce(archived_at, now()), revision = revision + 1
            where id = $1 returning record, revision, archived_at`, [input.workspaceId],

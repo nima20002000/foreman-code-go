@@ -82,6 +82,9 @@ function conversationStore() {
     if (['begin', 'commit', 'rollback'].includes(sql) || sql.startsWith('select pg_advisory_xact_lock')) {
       return { rows: [], rowCount: 0 }
     }
+    if (sql === 'select archived_at from workspaces where id = $1 for share') {
+      return { rows: [{ archived_at: null }], rowCount: 1 }
+    }
     throw new Error('Unexpected conversation persistence operation')
   }
   const pool = { query, connect: async () => ({ query, release() {} }) } as unknown as pg.Pool

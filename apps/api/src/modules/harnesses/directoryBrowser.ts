@@ -9,6 +9,7 @@ import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../workspaces/projectFolderCleanup.js'
 
 export function isInside(root: string, path: string): boolean {
   const rel = relative(root, path)
@@ -62,6 +63,7 @@ export class HarnessDirectoryBrowser {
       principal, source, operation: 'workspace.folder.rename', commandId: accepted.commandId,
       targetKey: 'workspace-folders', payload: accepted,
       perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         let sourcePath = accepted.path
         if (accepted.creationCommandId) {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`folder-creation:${principal.id}:${accepted.creationCommandId}`])
@@ -84,7 +86,7 @@ export class HarnessDirectoryBrowser {
         const target = resolve(dirname(current), accepted.name)
         if (target === current) return { path: current, name: accepted.name, creationCommandId: accepted.creationCommandId }
         if ((await readdir(current)).length) throw new DomainError('DIRECTORY_NOT_EMPTY', 'Only an empty folder can be renamed here.', 409)
-        // Assignment takes the same folder lock before validation; do not rename a saved destination.
+        // Assignment and folder mutation share lifecycle ownership through their commits.
         const references = await client.query("select id from workspaces where execution_location->>'rootPath'=$1", [current])
         const defaults = await client.query("select key from application_settings where record->>'parentPath'=$1", [current])
         if (references.rowCount || defaults.rowCount) throw new DomainError('DIRECTORY_IN_USE', 'This folder is already used by workspace settings.', 409)
@@ -110,6 +112,7 @@ export class HarnessDirectoryBrowser {
       principal, source, operation: 'workspace.folder.undo', commandId: accepted.commandId,
       targetKey: 'workspace-folders', payload: accepted,
       perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`folder-creation:${principal.id}:${accepted.creationCommandId}`])
         const receipt = await client.query<{ result: { path: string; device?: string; inode?: string } }>(
           "select result from management_command_receipts where principal_id=$1 and operation='workspace.folder.create' and command_id=$2",
@@ -153,6 +156,7 @@ export class HarnessDirectoryBrowser {
       principal, source, operation: 'workspace.folder.delete', commandId: accepted.commandId,
       targetKey: 'workspace-folders', payload: accepted,
       perform: async (client) => {
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
         const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
         const paths = [...accepted.paths].sort()
         for (const path of paths) {

@@ -1,0 +1,23 @@
+import type { SqlQuery } from '../../infrastructure/transaction.js'
+import { DomainError } from '../errors.js'
+
+export async function assertNoActiveAgentChats(sql: SqlQuery, workspaceIds: string[]): Promise<void> {
+  const active = await sql.query(`select 1 from operator_conversations c
+    where c.kind='agent' and c.workspace_id=any($1::text[])
+      and (c.active_request_id is not null or exists(
+        select 1 from operator_conversation_turns t where t.conversation_id=c.id
+          and t.delivery in ('queued','submitting','accepted','unknown'))) limit 1`, [workspaceIds])
+  if (active.rows.length) {
+    throw new DomainError('ARCHIVE_BLOCKED_BY_ACTIVE_CHAT',
+      'Settle queued and active Agent chat messages before archiving the workspace.', 409)
+  }
+}
+
+export async function activeAgentChatDirectories(sql: SqlQuery): Promise<string[]> {
+  const result = await sql.query<{ path: string }>(`select c.record->>'workingDirectory' as path
+    from operator_conversations c where c.kind='agent'
+      and (c.active_request_id is not null or exists(
+        select 1 from operator_conversation_turns t where t.conversation_id=c.id
+          and t.delivery in ('queued','submitting','accepted','unknown')))`)
+  return result.rows.map(row => row.path).filter(Boolean)
+}

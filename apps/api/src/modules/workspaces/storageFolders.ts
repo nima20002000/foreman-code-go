@@ -20,7 +20,7 @@ type FolderReference = { path: string; kind: 'workspace' | 'archived_workspace' 
 const protectionMessages: Record<FolderReference['kind'], string> = {
   workspace: 'This folder overlaps a registered workspace. Remove that workspace through its own action.',
   archived_workspace: 'An archived workspace still references this folder. Its retained location is protected.',
-  owned_folder: 'A workspace owns this project folder. Remove that workspace through its own action.',
+  owned_folder: 'A workspace owns or is preparing this project folder. Finish preparation before removing the workspace.',
   active_run: 'An active run uses this folder. Settle active work before deleting it.',
   defaults: 'Workspace defaults use this folder. Choose another default destination before deleting it.',
 }
@@ -46,6 +46,8 @@ export class WorkspaceStorageFolders {
         archived_at is null as registered from workspaces where execution_location is not null
       union all select created_project_folder->>'rootPath', 'owned_folder', false from workspaces where created_project_folder is not null
       union all select coalesce(working_directory, record->'executionLocation'->>'rootPath'), 'active_run', false from runs where execution_state <> 'completed'
+      union all select (preparation->>'basePath') || '/' || (preparation->>'directoryName'), 'owned_folder', false
+        from workspace_repository_imports where finished_at is null
       union all select record->>'parentPath', 'defaults', false from application_settings where record->>'parentPath' is not null
     `)
     return result.rows.filter(({ path }) => Boolean(path))

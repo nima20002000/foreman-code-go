@@ -1,5 +1,6 @@
 import { admitSessionMessage } from './sessionControls/messageAdmission.js'
 import { withTransaction } from '../../infrastructure/transaction.js'
+import { lockActiveWorkspace } from '../workspaces/admission.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -321,6 +322,7 @@ export class PostgresAgentChatRepository {
     assertCurrent?: (transaction: pg.PoolClient) => Promise<void>
   }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
     return withTransaction(this.pool, async (client) => {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.context.workspaceId}`])
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${input.key}`])
       let row = await this.byKey(input.key, client)
       const hash = agentChatInputHash(input.request)
@@ -357,6 +359,7 @@ export class PostgresAgentChatRepository {
             } } : {}) }
         }
       }
+      await lockActiveWorkspace(client, input.context.workspaceId)
       if ((row?.id ?? null) !== input.request.expectedConversationId) {
         throw new DomainError('AGENT_CHAT_CONTEXT_STALE', 'The conversation for this Agent changed. Reload it before sending.', 409)
       }

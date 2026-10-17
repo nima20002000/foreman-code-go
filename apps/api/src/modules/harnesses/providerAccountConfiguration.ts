@@ -6,6 +6,7 @@ import type { HostHarnessOverrideService } from './instanceSettings/service.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type pg from 'pg'
 import type { GraphSqlClient } from '../run-graph/connection.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 export { managedProviderEnvironment, pinnedCodexAccountEnvironment } from './providerAccountRuntime.js'
 import { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
 
@@ -20,6 +21,26 @@ export class ProviderAccountConfigurationService {
   bindProfiles(profiles: Pick<HostHarnessOverrideService,
     'selectionForConfiguration' | 'prepareOperatorConfiguration' | 'validateSelection'>): void {
     this.profiles = profiles
+  }
+
+  async prepareProfile(input: { principal: ManagementPrincipal; source: 'http' | 'mcp';
+    configuration: HarnessConfiguration; selection?: HarnessProfileSelection | undefined;
+    commandId: string; pool: pg.Pool }) {
+    const prepared = await withTransaction(input.pool, async client => {
+      const configuration = await this.resolve(input.configuration, input.selection, { sql: client })
+      try {
+        const selection = await this.profile({ ...input, configuration, client })
+        return { configuration, selection }
+      } catch (error) {
+        if (!(error instanceof DomainError) || error.code !== 'HARNESS_PROFILE_UNAVAILABLE') throw error
+        return { configuration, selection: undefined }
+      }
+    })
+    if (prepared.configuration.harness === 'claude' && prepared.configuration.accountId && !prepared.selection) {
+      prepared.selection = await this.profiles!.prepareOperatorConfiguration(input.principal, input.source,
+        prepared.configuration, input.commandId)
+    }
+    return prepared
   }
 
   async profile(input: { principal: ManagementPrincipal; source: 'http' | 'mcp'; configuration: HarnessConfiguration;
