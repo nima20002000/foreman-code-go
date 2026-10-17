@@ -1,0 +1,135 @@
+From a9ff1a1ea55bee12751c751460a0102493fa65aa Mon Sep 17 00:00:00 2001
+From: Bruno Haible <bruno@clisp.org>
+Date: Mon, 12 May 2025 03:05:51 +0200
+Subject: [PATCH] string-h, wchar-h: Fix some g++ -Wsystem-headers warnings.
+
+* lib/string.in.h (memcpy, memccpy, memmove, strncpy, strndup, strncat,
+memcmp, strncmp, memset): On glibc systems, declare with
+_GL_ATTRIBUTE_NOTHROW.
+* lib/wchar.in.h (wmemcpy, wmemmove, wcsncpy, wcsncat, wmemcmp, wcsncmp,
+wmemset): Likewise.
+
+Upstream-Status: Backport [https://cgit.git.savannah.gnu.org/cgit/gnulib.git/commit/?id=0614c2db34f65c595d85be4adc5628778905855a]
+Signed-off-by: Martin Jansa <Martin.Jansa@gmail.com>
+---
+ lib/string.in.h | 27 +++++++++++++++++++++++++++
+ lib/wchar.in.h  | 21 +++++++++++++++++++++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/lib/string.in.h b/lib/string.in.h
+index e764221..e3d94b7 100644
+--- a/lib/string.in.h
++++ b/lib/string.in.h
+@@ -215,25 +215,49 @@ _GL_EXTERN_C void free (void *);
+ /* Declarations for ISO C N3322.  */
+ #if defined __GNUC__ && __GNUC__ >= 15 && !defined __clang__
+ _GL_EXTERN_C void *memcpy (void *__dest, const void *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C void *memccpy (void *__dest, const void *__src, int __c, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 4)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 4);
+ _GL_EXTERN_C void *memmove (void *__dest, const void *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C char *strncpy (char *__dest, const char *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C char *strndup (const char *__s, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 2);
+ _GL_EXTERN_C char *strncat (char *__dest, const char *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ARG_NONNULL ((1)) _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C int memcmp (const void *__s1, const void *__s2, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C int strncmp (const char *__s1, const char *__s2, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ # ifndef __cplusplus
+@@ -243,6 +267,9 @@ _GL_EXTERN_C void *memrchr (const void *__s, int __c, size_t __n)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+ # endif
+ _GL_EXTERN_C void *memset (void *__s, int __c, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+ _GL_EXTERN_C void *memset_explicit (void *__s, int __c, size_t __n)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+diff --git a/lib/wchar.in.h b/lib/wchar.in.h
+index 8836ed1..a6c52eb 100644
+--- a/lib/wchar.in.h
++++ b/lib/wchar.in.h
+@@ -281,20 +281,38 @@ _GL_EXTERN_C void free (void *);
+ /* Declarations for ISO C N3322.  */
+ #if defined __GNUC__ && __GNUC__ >= 15 && !defined __clang__
+ _GL_EXTERN_C wchar_t *wmemcpy (wchar_t *__dest, const wchar_t *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C wchar_t *wmemmove (wchar_t *__dest, const wchar_t *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C wchar_t *wcsncpy (wchar_t *__dest, const wchar_t *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C wchar_t *wcsncat (wchar_t *__dest, const wchar_t *__src, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ARG_NONNULL ((1)) _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C int wmemcmp (const wchar_t *__s1, const wchar_t *__s2, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ _GL_EXTERN_C int wcsncmp (const wchar_t *__s1, const wchar_t *__s2, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (2, 3);
+ # ifndef __cplusplus
+@@ -302,6 +320,9 @@ _GL_EXTERN_C wchar_t *wmemchr (const wchar_t *__s, wchar_t __wc, size_t __n)
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+ # endif
+ _GL_EXTERN_C wchar_t *wmemset (wchar_t *__s, wchar_t __wc, size_t __n)
++# if __GLIBC__ + (__GLIBC_MINOR__ >= 2) > 2
++  _GL_ATTRIBUTE_NOTHROW
++# endif
+   _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+ #endif
+ 

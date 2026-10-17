@@ -1,0 +1,35 @@
+{
+  "baseline": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "files": [
+    {
+      "filename": "sample.png",
+      "bytes": 85,
+      "sha256": "75b6042e0271a581f9ec6ef90db564157b873c2fd4c1e7b505172199f7a5c68a"
+    },
+    {
+      "filename": "oriented.jpg",
+      "bytes": 697,
+      "sha256": "81dd790fe45140f33267f2bd1ad24f01a37fcce67785164faf522e17618a77cf"
+    },
+    {
+      "filename": "animated.gif",
+      "bytes": 127,
+      "sha256": "b0ec112ee4c53d61a9094d47a09df4359084dae6c9f9c48b8f7f0a29e8089f0c"
+    },
+    {
+      "filename": "animated.webp",
+      "bytes": 140,
+      "sha256": "cc3d5bb986c5080a7a67ccdce69bf7be04cafdf16c9e52e0728a33cacf534377"
+    },
+    {
+      "filename": "original.pdf",
+      "bytes": 642,
+      "sha256": "9ac33b5bfefb0cae3c579a83f6d0ddb6c47fc5396c0cd03c6c6e4001a819f4e4"
+    },
+    {
+      "filename": "original.docx",
+      "bytes": 1259,
+      "sha256": "d3591d37e0e5206d5abb2ee13a8dd927bc32f3d50ec4a2b684e960b1d7d86193"
+    }
+  ]
+}

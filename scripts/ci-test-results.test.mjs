@@ -1,17 +1,28 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { CI_TEST_RESULT_LIMITS, ciTestResults, writeCiTestResults } from './ci-test-results.mjs'
+import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
 const temporary = t => {
   const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-test-results-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   return directory
 }
+
+function reportEnvironment(directory) {
+  const environment = { ...process.env, HOME: directory, CI_STATE: join(directory, 'state'),
+    CI_PROGRESS_FILE: '', TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '' }
+  delete environment.NODE_TEST_CONTEXT
+  return environment
+}
+
+const webFiles = ['apps/web/src/report-first.test.tsx', 'apps/web/src/report-second.test.tsx',
+  'apps/web/src/report-third.test.tsx']
 
 test('merges Vitest reports into repository files with per-test status, duration and failure', () => {
   const root = resolve('results-fixture')
@@ -85,44 +96,36 @@ test('fails expected collection without publishing partial reports', t => {
 })
 
 test('a unit slice records its test results without handing the results path to the tests', t => {
-  const directory = temporary(t)
-  const root = fileURLToPath(new URL('..', import.meta.url))
-  const output = join(directory, 'reports', 'test-results.json')
-  mkdirSync(join(directory, 'reports'))
-  writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+  const fixture = goCiFixture(t, { SCOPE: 'full', SLICE: '1/3', FIXTURE_WEB_FILES: JSON.stringify(webFiles) })
+  const directory = fixture.directory
+  writeFileSync(join(directory, 'corepack'), `#!${process.execPath}
 const { writeFileSync } = require('node:fs')
-const { resolve } = require('node:path')
 const args = process.argv.slice(2)
 if (args.includes('build')) process.exit(0)
 writeFileSync(process.env.SEEN_FILE, JSON.stringify(process.env.TEST_RESULTS_OUTPUT ?? null))
 const report = args.find(arg => arg.startsWith('--outputFile.json=')).split('=').slice(1).join('=')
 const file = args.find(arg => arg.endsWith('.test.tsx') || arg.endsWith('.test.ts'))
-writeFileSync(report, JSON.stringify({ testResults: [{ name: resolve(file), startTime: 100, endTime: 175, status: 'failed',
+writeFileSync(report, JSON.stringify({ testResults: [{ name: 'apps/web/' + file, startTime: 100, endTime: 175, status: 'failed',
   assertionResults: [{ fullName: 'renders', status: 'failed', duration: 9, failureMessages: ['broken'] }] }] }))
 process.exit(3)
 `, { mode: 0o755 })
-  const result = spawnSync('bash', ['scripts/ci-suite.sh'], {
-    cwd: root, encoding: 'utf8',
-    env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3',
-      CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '', DURATIONS_INPUT: '',
-      DURATIONS_OUTPUT: join(directory, 'reports', 'durations.json'), TEST_RESULTS_OUTPUT: output,
-      CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
-      SEEN_FILE: join(directory, 'seen.json'), CI_HOST_RUNNER: '0' },
+  const result = fixture.run('unit-web', '', {
+    PATH: `${directory}${delimiter}${fixture.environment.PATH}`, SEEN_FILE: join(directory, 'seen.json'),
   })
+  assert.ifError(result.error)
   assert.equal(result.status, 3, result.stderr)
   assert.equal(JSON.parse(readFileSync(join(directory, 'seen.json'), 'utf8')), null)
-  const results = JSON.parse(readFileSync(output, 'utf8'))
+  const results = fixture.results()
   assert.deepEqual(results.summary, { passed: 0, failed: 1, skipped: 0 })
   assert.equal(results.files.length, 1)
   assert.ok(results.files[0].file.startsWith('apps/web/src/'))
   assert.deepEqual(results.files[0].tests, [{ name: 'renders', status: 'failed', durationMs: 9, message: 'broken' }])
 })
 
-test('unit-other merges contracts, Worker and script results while preserving a failing exit status', t => {
-  const directory = temporary(t)
-  const root = fileURLToPath(new URL('..', import.meta.url))
-  const output = join(directory, 'test-results.json')
-  writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+test('unit-other merges retained contracts, conformance, and script results while preserving a failing exit status', t => {
+  const fixture = goCiFixture(t, { SCOPE: 'full' })
+  const directory = fixture.directory
+  writeFileSync(join(directory, 'corepack'), `#!${process.execPath}
 const { writeFileSync } = require('node:fs')
 const args = process.argv.slice(2)
 if (args.includes('build')) process.exit(0)
@@ -130,23 +133,25 @@ const vitest = args.find(arg => arg.startsWith('--outputFile.json='))
 const destination = args.find(arg => arg.startsWith('--test-reporter-destination=') && !arg.endsWith('=stdout'))
 if (!vitest && !destination) process.exit(0)
 const report = (vitest ?? destination).slice((vitest ?? destination).indexOf('=') + 1)
-const file = vitest ? 'packages/contracts/src/value.test.ts' : process.cwd().endsWith('/apps/worker')
-  ? 'apps/worker/test/value.test.mjs' : 'scripts/value.test.mjs'
-const failed = file.startsWith('apps/worker/')
+let file = vitest ? 'packages/contracts/src/value.test.ts' : 'scripts/value.test.mjs'
+if (args.includes('conformance')) file = 'conformance/src/reporting/report.test.ts'
+const failed = file.startsWith('scripts/')
 writeFileSync(report, JSON.stringify({ testResults: [{ name: file, status: failed ? 'failed' : 'passed',
   assertionResults: [{ fullName: file + ' case', status: failed ? 'failed' : 'passed', duration: 1,
-    failureMessages: failed ? ['worker assertion failed'] : [] }] }] }))
+    failureMessages: failed ? ['script assertion failed'] : [] }] }] }))
 process.exit(failed ? 7 : 0)
 `, { mode: 0o755 })
-  const result = spawnSync('bash', ['scripts/ci-suite.sh'], { cwd: root, encoding: 'utf8',
-    env: { ...process.env, SUITE: 'unit-other', SCOPE: 'full', CI_PREREQUISITES_UNTRACKED: '1', TEST_RESULTS_OUTPUT: output,
-      CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
-      CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '', CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', BASH_ENV: '' } })
+  const environment = { PATH: `${directory}${delimiter}${fixture.environment.PATH}` }
+  const prepared = fixture.run('unit-other', 'prepare', environment)
+  assert.equal(prepared.status, 0, prepared.stderr)
+  const result = fixture.run('unit-other', '', environment)
+  assert.ifError(result.error)
   assert.equal(result.status, 7, result.stderr)
-  const results = JSON.parse(readFileSync(output, 'utf8'))
+  const results = fixture.results()
   assert.deepEqual(results.summary, { passed: 2, failed: 1, skipped: 0 })
-  assert.equal(results.files[0].file, 'apps/worker/test/value.test.mjs')
-  assert.equal(results.files[0].tests[0].message, 'worker assertion failed')
+  assert.equal(results.files[0].file, 'scripts/value.test.mjs')
+  assert.equal(results.files[0].tests[0].message, 'script assertion failed')
+  assert.ok(results.files.some(file => file.file === 'conformance/src/reporting/report.test.ts' && file.status === 'passed'))
 })
 
 test('the Node reporter records passing and failing tests with their file and failure detail', t => {
@@ -160,12 +165,11 @@ test('fails', () => assert.equal(1, 2))
 test.skip('skips', () => assert.fail('skipped case ran'))
 `)
   const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
-  const environment = { ...process.env }
-  // The independent suite uses its reporter instead of the parent's test IPC channel.
-  delete environment.NODE_TEST_CONTEXT
+  const environment = reportEnvironment(directory)
   const result = spawnSync(process.execPath, ['--test', `--test-reporter=${reporter}`,
     `--test-reporter-destination=${output}`, file], { encoding: 'utf8',
       env: environment })
+  assert.ifError(result.error)
   assert.equal(result.status, 1, result.stderr)
   const results = ciTestResults([JSON.parse(readFileSync(output, 'utf8'))], directory)
   assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 1 })
@@ -183,7 +187,9 @@ for (const report of ['{broken', '{}', 'null']) {
     writeFileSync(input, report)
     assert.throws(() => writeCiTestResults(output, [input]), /invalid.json/)
     assert.equal(existsSync(output), false)
-    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, input], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, input],
+      { encoding: 'utf8', env: reportEnvironment(directory) })
+    assert.ifError(result.error)
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /invalid.json/)
   })
@@ -193,7 +199,9 @@ test('CLI rejects an expected missing report and an empty collection', t => {
   const directory = temporary(t)
   const output = join(directory, 'results.json')
   for (const inputs of [[join(directory, 'missing.json')], []]) {
-    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, ...inputs], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, ...inputs],
+      { encoding: 'utf8', env: reportEnvironment(directory) })
+    assert.ifError(result.error)
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /report/i)
   }
@@ -201,18 +209,18 @@ test('CLI rejects an expected missing report and an empty collection', t => {
 
 
 test('missing reports fail a successful test command and preserve an existing test failure', t => {
-  const directory = temporary(t)
-  writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+  const fixture = goCiFixture(t, { SCOPE: 'full', SLICE: '1/3', FIXTURE_WEB_FILES: JSON.stringify(webFiles) })
+  const directory = fixture.directory
+  writeFileSync(join(directory, 'corepack'), `#!${process.execPath}
 const args = process.argv.slice(2)
 process.exit(args.includes('build') ? 0 : Number(process.env.FIXTURE_EXIT))
 `, { mode: 0o755 })
   for (const code of [0, 7]) {
-    const result = spawnSync('bash', ['scripts/ci-suite.sh'], { encoding: 'utf8',
-      env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3', FIXTURE_EXIT: String(code),
-        CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '', DURATIONS_INPUT: '',
-        DURATIONS_OUTPUT: join(directory, `durations-${code}.json`),
-        TEST_RESULTS_OUTPUT: join(directory, `results-${code}.json`), CI_STATE: join(directory, `state-${code}`),
-        PATH: `${directory}${delimiter}${process.env.PATH}`, CI_HOST_RUNNER: '0', BASH_ENV: '' } })
+    const result = fixture.run('unit-web', '', { FIXTURE_EXIT: String(code),
+      DURATIONS_OUTPUT: join(directory, `durations-${code}.json`),
+      TEST_RESULTS_OUTPUT: join(directory, `results-${code}.json`), CI_STATE: join(directory, `state-${code}`),
+      PATH: `${directory}${delimiter}${fixture.environment.PATH}` })
+    assert.ifError(result.error)
     assert.equal(result.status, code || 1, result.stderr)
     assert.match(result.stderr + result.stdout, /report/i)
   }

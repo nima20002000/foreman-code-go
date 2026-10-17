@@ -8,7 +8,7 @@ if (!cache || divider !== '--' || !command) {
   throw new Error('Usage: FOREMAN_CODE_CI_TYPECHECK_CACHE=directory ci-typecheck-cache.mjs -- command [args...]')
 }
 
-const projects = ['apps/api', 'apps/web', 'packages/contracts']
+const projects = ['apps/web', 'packages/contracts', 'conformance']
 
 function copyState(from, to) {
   if (!existsSync(from)) return

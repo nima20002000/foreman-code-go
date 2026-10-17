@@ -43,7 +43,7 @@ test('filters the same affected selection into API, fast web, heavy web and othe
   assert.deepEqual(executionFiles(f.files, 'unit-other', f.cwd), ['packages/contracts/src/other.test.ts'])
 })
 
-test('an explicit base selects release changes even at the default branch head and without a default ref', t => {
+test('an explicit base preserves full fork scope at the default branch head and without a default ref', t => {
   const f = repository(t)
   const baseCommit = f.git('rev-parse', 'HEAD')
   f.write('apps/api/src/value.ts', 'export const value = 2')
@@ -51,16 +51,18 @@ test('an explicit base selects release changes even at the default branch head a
   f.git('commit', '-qm', 'release changes')
   f.git('update-ref', 'refs/remotes/origin/stable', 'HEAD')
   for (const defaultRef of ['origin/stable', 'origin/unavailable']) {
-    assert.deepEqual(executionSelection({ commit: 'HEAD', baseCommit, executionSuite: 'unit-api', defaultRef,
-      cwd: f.cwd }).files, ['apps/api/src/value.test.ts'])
+    const unit = executionSelection({ commit: 'HEAD', baseCommit, executionSuite: 'unit-api', defaultRef, cwd: f.cwd })
+    assert.equal(unit.scope, 'full')
+    assert.deepEqual(unit.files, [])
     const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', baseCommit,
       executionSuite: 'integration', defaultRef, partition: { index, count: 2 }, cwd: f.cwd }))
-    assert.ok(slices.every(slice => slice.scope === 'affected'))
-    assert.deepEqual(slices.flatMap(slice => slice.files), ['apps/api/test/value.integration.test.ts'])
+    assert.ok(slices.every(slice => slice.scope === 'full'))
+    assert.deepEqual(slices.flatMap(slice => slice.files).sort(),
+      ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
   }
   const empty = executionSelection({ commit: 'HEAD', baseCommit: f.git('rev-parse', 'HEAD'),
     executionSuite: 'unit-api', cwd: f.cwd })
-  assert.equal(empty.scope, 'affected')
+  assert.equal(empty.scope, 'full')
   assert.deepEqual(empty.files, [])
 })
 
@@ -79,7 +81,7 @@ test('unavailable and non-ancestor bases fall back to full with a reason and ret
   }
 })
 
-test('selects and partitions affected tests against a non-main default branch, including empty shards', t => {
+test('a non-main default branch never narrows full Go scope to changed TypeScript files', t => {
   const f = repository(t)
   f.write('apps/api/src/value.ts', 'export const value = 2')
   f.git('add', '.')
@@ -87,10 +89,9 @@ test('selects and partitions affected tests against a non-main default branch, i
   for (const executionSuite of ['unit-api', 'integration']) {
     const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', executionSuite,
       defaultRef: 'origin/stable', partition: { index, count: 2 }, cwd: f.cwd }))
-    assert.ok(slices.every(slice => slice.scope === 'affected'))
-    assert.deepEqual(slices.map(slice => slice.files.length), [1, 0])
-    assert.deepEqual(slices.flatMap(slice => slice.files), [executionSuite === 'unit-api'
-      ? 'apps/api/src/value.test.ts' : 'apps/api/test/value.integration.test.ts'])
+    assert.ok(slices.every(slice => slice.scope === 'full'))
+    assert.deepEqual(slices.flatMap(slice => slice.files).sort(), executionSuite === 'unit-api' ? []
+      : ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
   }
 })
 

@@ -148,10 +148,11 @@ const replyThread = (owner, id, params) => {
   store(persisted)
   result(id, { ...persisted.settings, thread: params.excludeTurns ? { ...persisted, turns: [] } : persisted })
 }
-const complete = (threadId, turnId, status = 'completed', answer = `answer-${agent}`) => {
+const complete = (threadId, turnId, status = 'completed', answer = `answer-${agent}`, error = null) => {
   const owner = loadThread(threadId)
   const nativeTurn = owner.turns.find((entry) => entry.id === turnId)
   nativeTurn.status = status
+  if (error) nativeTurn.error = error
   nativeTurn.completedAt = 2
   nativeTurn.items.push(agentMessage(`answer-${nativeTurn.id}`, answer))
   owner.status = { type: 'idle' }
@@ -161,6 +162,10 @@ const complete = (threadId, turnId, status = 'completed', answer = `answer-${age
   send({ method: 'item/completed', params: { threadId, turnId, item, completedAtMs: 2 } })
   send({ method: 'turn/completed', params: { threadId, turn: nativeTurn } })
 }
+// Conformance may install an adjacent script; existing fixture runs keep their default behavior.
+const scriptedTurns = flag('scripted-turns.cjs')
+  ? require(path.join(root, 'scripted-turns.cjs')).createScriptedTurns({ root, send, complete, loadThread, store })
+  : undefined
 const approval = (pending, id) => {
   while (outstanding.has(id) && outstanding.get(id) !== pending) id += 10_000
   outstanding.set(id, pending)
@@ -254,6 +259,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     if (flag('fail-start') || flag('required-mcp-failure')) { fail(message.id); return }
     if (flag('late-reject-thread-start')) { setTimeout(() => fail(message.id), 800); return }
     const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params)
+    scriptedTurns?.registerThread(owner, params)
     store(owner)
     if (flag('hold-thread-start')) replyOrHold('thread-start', () => replyThread(owner, message.id, params))
     else if (flag('late-thread-start')) setTimeout(() => replyThread(owner, message.id, params), 800)
@@ -262,6 +268,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const original = read(`state-${params.threadId}.json`, null)
     if (!original) { fail(message.id); return }
     const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params, original)
+    scriptedTurns?.registerThread(owner, params, original.id)
     store(owner)
     if (flag('hold-thread-fork-ack')) return
     if (flag('hold-thread-fork')) replyOrHold('thread-fork', () => replyThread(owner, message.id, params))
@@ -285,6 +292,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   } else if (message.method === 'thread/resume') {
     if (flag('fail-resume')) { fail(message.id); return }
     const owner = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))
+    scriptedTurns?.registerThread(owner, params, owner.id)
     const resumeDelayMs = read('resume-delay-ms.json', flag('resume-delay') ? 250 : 0)
     if (resumeDelayMs) setTimeout(() => replyThread(owner, message.id, params), resumeDelayMs)
     else replyThread(owner, message.id, params)
@@ -336,6 +344,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const started = () => {
       const persistedTurn = loadThread(owner.id).turns.find((entry) => entry.id === nativeTurn.id)
       if (!flag('hold-turn-start-ack')) result(message.id, { turn: persistedTurn })
+      if (scriptedTurns?.startTurn(owner, nativeTurn, prompt, params.input)) return
       const inputRequest = read('workflow-input.json', null)
       if (inputRequest) {
         const id = 900 + turnNumber
@@ -380,9 +389,11 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const owner = loadThread(params.threadId)
     if (!owner) { fail(message.id); return }
     const found = owner.turns.find((entry) => entry.id === params.turnId)
+    scriptedTurns?.interrupt(owner.id, params.turnId)
     if (found) complete(owner.id, found.id, 'interrupted', '')
     result(message.id, {})
   } else if (!message.method && message.id !== undefined) {
+    if (scriptedTurns?.handleResponse(message)) return
     const found = outstanding.get(message.id)
     if (found && message.result) {
       outstanding.delete(message.id)

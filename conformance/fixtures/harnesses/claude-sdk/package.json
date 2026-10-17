@@ -1,0 +1,8 @@
+{
+  "name": "@anthropic-ai/claude-agent-sdk",
+  "version": "0.3.284",
+  "private": true,
+  "type": "module",
+  "main": "./sdk.mjs",
+  "description": "Scripted conformance fixture; never an installed official SDK."
+}

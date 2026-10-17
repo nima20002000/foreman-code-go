@@ -1,0 +1,41 @@
+{
+  "go": {
+    "version": "1.27.2",
+    "released": "2026-10-08",
+    "source": "https://go.dev/doc/devel/release#go1.27.2",
+    "checksumsSource": "https://go.dev/dl/",
+    "sha256": {
+      "linux-amd64": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+      "linux-arm64": "94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8"
+    },
+    "toolchainModules": {
+      "linux-amd64": {
+        "version": "v0.0.1-go1.27.2.linux-amd64",
+        "sum": "h1:N6Xv/1OLzI0jVVkUwkrxHRZc/GCTARUo6idcngKwlDE=",
+        "zipSize": 75779124,
+        "zipSha256": "3a467ed067f27cd55bf3a702f8e2bf12479f53c9d8ae0de548f48ebcb3c67796",
+        "evidence": {
+          "status": "controller-reported SDK/sumdb capture and Main ZIP download PASS; installer CI pending",
+          "ticket": "af0b04c8-4351-42e3-aafa-9e600111a067",
+          "source": "2c2380b23ed16b11fbcdd737fd7e23fac4df72b5",
+          "bootstrapVersion": "1.26.8",
+          "proxy": "https://proxy.golang.org",
+          "sumdb": "sum.golang.org",
+          "downloadProbe": {
+            "ticket": "77d0020f-e5ed-49cc-a17b-e18b13f73259",
+            "source": "6b6cf441f67a0e0720e8c9b925a5aac38fb85858",
+            "httpStatus": 200,
+            "zipSizeAndSha256Matched": true,
+            "cacheCleanup": true,
+            "compilerExecuted": false
+          }
+        }
+      }
+    }
+  },
+  "staticcheck": {
+    "version": "v0.8.2",
+    "released": "2026-10-12",
+    "source": "https://github.com/dominikh/go-tools/releases/tag/2026.2.2"
+  }
+}
