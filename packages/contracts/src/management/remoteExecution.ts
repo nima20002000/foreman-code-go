@@ -37,7 +37,7 @@ export const RemoteExecutionSettingsSchema = z.object({
 }).strict()
 
 export const DEFAULT_REMOTE_EXECUTION_SETTINGS = RemoteExecutionSettingsSchema.parse({
-  enabled: true,
+  enabled: false,
   listener: {
     enabled: false, host: null, port: null, certificateFile: null, privateKeyFile: null,
     advertisedEndpoint: null, trustCertificateFile: null,
