@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, readFile, realpath, unlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { openPrivateRoot, anchored } from '../../../apps/api/src/modules/sources/privateFilesystem.ts';
@@ -96,23 +96,48 @@ async function claudeSelection(environment, release, signal) {
   const binary = await executable('claude', environment);
   if (!binary) return null;
   for (const source of [join(release, 'package.json'), binary]) {
-    let sdkEntrypoint;
-    try { sdkEntrypoint = await realpath(createRequire(source).resolve('@anthropic-ai/claude-agent-sdk')); }
-    catch (error) {
-      if (error.code === 'MODULE_NOT_FOUND') continue;
-      throw error;
-    }
-    const offset = sdkEntrypoint.indexOf('/node_modules/.pnpm/');
-    const installedLockPath = offset < 0
-      ? join(release, 'artifacts/claude-sdk-lock.yaml')
-      : join(sdkEntrypoint.slice(0, offset), 'node_modules/.pnpm/lock.yaml');
-    await discoverInstalledClaudeSdk({ entrypoint: sdkEntrypoint, installedLockPath, selectedExecutable: binary }, {
-      harnessInstallationId: 'worker-installed-claude',
-      environment: { path: environment.PATH ?? '', cwd: release, provenance: 'worker', generation: 'selection' },
-    }, signal);
-    return { binary, installedLockPath, sdkEntrypoint };
+    const selection = await claudeSdkSelection(binary, source, environment, release, signal);
+    if (selection) return selection;
   }
   return null;
+}
+
+async function claudeSdkSelection(binary, source, environment, release, signal) {
+  let sdkEntrypoint;
+  try { sdkEntrypoint = await realpath(createRequire(source).resolve('@anthropic-ai/claude-agent-sdk')); }
+  catch (error) {
+    if (error.code === 'MODULE_NOT_FOUND') return null;
+    throw error;
+  }
+  const offset = sdkEntrypoint.indexOf('/node_modules/.pnpm/');
+  const installedLockPath = offset < 0
+    ? join(release, 'artifacts/claude-sdk-lock.yaml')
+    : join(sdkEntrypoint.slice(0, offset), 'node_modules/.pnpm/lock.yaml');
+  await discoverInstalledClaudeSdk({ entrypoint: sdkEntrypoint, installedLockPath, selectedExecutable: binary }, {
+    harnessInstallationId: 'worker-installed-claude',
+    environment: { path: environment.PATH ?? '', cwd: release, provenance: 'worker', generation: 'selection' },
+  }, signal);
+  return { binary, installedLockPath, sdkEntrypoint };
+}
+
+function workerSdkNeedsUpgrade(claude, release) {
+  if (!claude?.sdkEntrypoint) return false;
+  const versions = dirname(join(release));
+  const [version] = relative(versions, claude.sdkEntrypoint).split('/');
+  if (!/^\d+\.\d+\.\d+-[a-f0-9]{64}$/u.test(version)) return false;
+  const selectedRelease = join(versions, version);
+  if (selectedRelease === join(release)
+    || !claude.sdkEntrypoint.startsWith(`${selectedRelease}/node_modules/`)) return false;
+  return [join(selectedRelease, 'artifacts/claude-sdk-lock.yaml'),
+    join(selectedRelease, 'node_modules/.pnpm/lock.yaml')].includes(claude.installedLockPath);
+}
+
+async function upgradeClaudeSdk(claude, environment, release, signal) {
+  const selection = await claudeSdkSelection(claude.binary, join(release, 'package.json'), environment, release, signal);
+  if (!selection || !selection.sdkEntrypoint.startsWith(`${join(release)}/node_modules/`)) {
+    throw new WorkerError('installed_claude_sdk_unavailable');
+  }
+  return selection;
 }
 
 /** A launcher from one of this Worker's own releases follows the running release; an explicit one stays. */
@@ -164,9 +189,15 @@ export async function refreshWorkflowSelection({ stateDirectory, release = relea
     const exists = await managedEntryExists(state, 'workflow-runtime.json');
     const previous = exists ? await readInstalledWorkflowConfiguration(location) : null;
     const retained = await retainedSelection(previous, environment, release, signal);
+    let claudeDiscovery = () => claudeSelection(environment, release, signal);
+    if (retained?.claude) {
+      claudeDiscovery = workerSdkNeedsUpgrade(retained.claude, release)
+        ? () => upgradeClaudeSdk(retained.claude, environment, release, signal)
+        : () => Promise.resolve(null);
+    }
     const selections = await Promise.allSettled([
       retained?.codexBinary ? Promise.resolve(null) : codexSelection(environment, signal),
-      retained?.claude ? Promise.resolve(null) : claudeSelection(environment, release, signal),
+      claudeDiscovery(),
     ]);
     for (const result of selections) {
       if (result.status === 'rejected') reportError(result.reason);

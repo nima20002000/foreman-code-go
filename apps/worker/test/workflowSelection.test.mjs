@@ -306,3 +306,70 @@ test('discovers Claude from a standalone artifact with sibling packages and ship
     binary: join(f.bin, 'claude'), installedLockPath: lock, sdkEntrypoint: join(sdk, 'sdk.mjs'),
   });
 });
+
+async function standaloneSdk(release, version) {
+  const sdk = join(release, 'node_modules/@anthropic-ai/claude-agent-sdk');
+  await mkdir(sdk, { recursive: true });
+  await mkdir(join(release, 'artifacts'), { recursive: true });
+  await writeFile(join(release, 'artifacts/graphql-mcp.mjs'), 'export {};');
+  await writeFile(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk',
+    version, main: 'sdk.mjs' }));
+  await writeFile(join(sdk, 'sdk.mjs'), `export const version = '${version}';`);
+  const installedLockPath = join(release, 'artifacts/claude-sdk-lock.yaml');
+  await writeFile(installedLockPath,
+    `packages:\n  '@anthropic-ai/claude-agent-sdk@${version}':\n    resolution: {integrity: sha512-aGVsbG8=}\n`);
+  return { installedLockPath, sdkEntrypoint: join(sdk, 'sdk.mjs') };
+}
+
+for (const removed of [false, true]) {
+  test(`Worker upgrades move bundled Claude SDK selections even when the old release is removed: ${removed}`, async t => {
+    const f = await fixture(t);
+    const releases = join(f.root, 'versions');
+    const first = join(releases, `1.0.0-${'a'.repeat(64)}`);
+    const second = join(releases, `1.1.0-${'b'.repeat(64)}`);
+    const third = join(releases, `1.2.0-${'c'.repeat(64)}`);
+    await standaloneSdk(first, '0.3.284');
+    const binary = join(f.bin, 'claude');
+    await copyFile('/usr/bin/true', binary);
+    await refreshWorkflowSelection({ ...f.options, release: first });
+    if (removed) await rm(first, { recursive: true });
+    for (const [release, version] of [[second, '0.3.285'], [third, '0.3.286']]) {
+      const sdk = await standaloneSdk(release, version);
+      await refreshWorkflowSelection({ ...f.options, release, environment: { PATH: '' } });
+      const selected = JSON.parse(await readFile(f.path, 'utf8'));
+      assert.deepEqual(selected.claude, { binary, ...sdk });
+      assert.equal(selected.appMcpLauncher, join(release, 'artifacts/graphql-mcp.mjs'));
+      assert.match(await readFile(selected.claude.sdkEntrypoint, 'utf8'), new RegExp(version));
+    }
+  });
+}
+
+test('Worker upgrades preserve an explicitly selected external Claude SDK and CLI', async t => {
+  const f = await fixture(t);
+  const release = join(f.root, 'versions', `1.1.0-${'b'.repeat(64)}`);
+  await standaloneSdk(release, '0.3.285');
+  const external = await standaloneSdk(join(f.root, 'external-sdk'), '0.3.284');
+  const binary = join(f.bin, 'selected-claude');
+  await copyFile('/usr/bin/true', binary);
+  const claude = { binary, ...external };
+  await writeFile(f.path, JSON.stringify({ schemaVersion: 1, claude,
+    appMcpLauncher: join(release, 'artifacts/graphql-mcp.mjs') }), { mode: 0o600 });
+  await refreshWorkflowSelection({ ...f.options, release });
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, claude);
+});
+
+test('an invalid replacement SDK is reported without replacing a selected Claude installation', async t => {
+  const f = await fixture(t);
+  const first = join(f.root, 'versions', `1.0.0-${'a'.repeat(64)}`);
+  const second = join(f.root, 'versions', `1.1.0-${'b'.repeat(64)}`);
+  const sdk = await standaloneSdk(first, '0.3.284');
+  await copyFile('/usr/bin/true', join(f.bin, 'claude'));
+  await refreshWorkflowSelection({ ...f.options, release: first });
+  const replacement = await standaloneSdk(second, '0.3.285');
+  await writeFile(replacement.installedLockPath, 'packages: {}');
+  const errors = [];
+  await refreshWorkflowSelection({ ...f.options, release: second, reportError: error => errors.push(error) });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /integrity is unavailable/);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')).claude, { binary: join(f.bin, 'claude'), ...sdk });
+});
