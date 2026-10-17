@@ -44,6 +44,8 @@ appendFileSync(process.env.CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '
     CI_EXPECTED_DURATION_MS: '', TEST_RESULTS_OUTPUT: '', CI_STATE: join(checkout, 'state'),
     DURATIONS_OUTPUT: join(checkout, 'durations.json'),
     FOREMAN_CODE_CI_CLIS_PREFIX: '', FOREMAN_CODE_CI_TYPECHECK_CACHE: '',
+    // The outer CI watchdog's progress channel would add reporter flags to the recorded command.
+    CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '', CI_REPOSITORY_ROOT: '',
   } })
   return { run, calls }
 }
