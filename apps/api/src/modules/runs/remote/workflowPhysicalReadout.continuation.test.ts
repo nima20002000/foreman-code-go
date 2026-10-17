@@ -1,4 +1,7 @@
 import { expect, it, vi } from 'vitest'
+import { Hash } from 'node:crypto'
+import { DEVICE_HISTORY_PAGE_BYTES } from '@foreman-code/contracts/device-application'
+import { RemoteReceiptPageSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import type { NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
 import { REMOTE_PHYSICAL_CONTINUATION_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
 import { deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
@@ -6,12 +9,24 @@ import { physicalFixture } from './__tests__/installedWorkflowHost.js'
 import { nativeHistoryPageSource, pageNativeHistory } from './nativeHistoryPage.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { decodeResultCopies } from './executionResultCodec.js'
+import { InstalledWorkflowResponsePages, readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import {
   InstalledWorkflowPhysicalReadouts,
   pagePhysicalReadout,
   readPhysicalReadout,
   remoteWorkflowSourceDigest,
 } from './workflowPhysicalReadout.js'
+
+function observeSnapshotHashing() {
+  const update = vi.spyOn(Hash.prototype, 'update')
+  return {
+    bytes: () => update.mock.calls.reduce((total, [data]) => {
+      const size = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength
+      return total + (size > DEVICE_HISTORY_PAGE_BYTES ? size : 0)
+    }, 0),
+    close: () => update.mockRestore(),
+  }
+}
 
 async function fixture() {
   const f = await physicalFixture()
@@ -208,4 +223,73 @@ it('finishes history metadata paging while the live session cursor advances', as
   expect(pages).toBeGreaterThan(1)
   expect(history.nextCursor).not.toBe('session:1500')
   expect({ ...first.history, ...decodeResultCopies(fields) as object }).toEqual(nativeHistoryPageSource(first))
+})
+
+it('hashes a physical snapshot once while serving every continuation page', async () => {
+  const f = await fixture()
+  const hashing = observeSnapshotHashing()
+  try {
+    const selected = await f.readouts.read(f.selector)
+    const first = pagePhysicalReadout(selected)
+    if (!('kind' in first)) throw new Error('Expected a paged physical readout')
+    let pages = 0
+    const recovered = await readPhysicalReadout(first, async metadata => {
+      pages++
+      return pagePhysicalReadout(await f.readouts.read({ ...f.selector, metadata }), metadata)
+    })
+    expect(recovered).toEqual(selected)
+    expect(pages).toBeGreaterThan(3)
+    // One producer hash and one consumer integrity check, independent of page count.
+    expect(hashing.bytes()).toBe(2 * first.metadata.byteSize)
+  } finally {
+    hashing.close()
+    await f.close()
+  }
+})
+
+it.each([1024 * 1024, 2 * 1024 * 1024])('hashes receipt pages in linear work for %i output bytes', async size => {
+  const f = await physicalFixture()
+  const pages = new InstalledWorkflowResponsePages()
+  const receipt = { ...f.readout.receipt, phase: 'confirmed_terminal',
+    terminal: { kind: 'completed', closureEvidenceDigest: 'a'.repeat(64),
+      result: { outcome: 'succeeded', output: { text: 'r'.repeat(size) } } } }
+  const frame = { method: 'status' as const, intent: f.intent, placement: f.placement }
+  const hashing = observeSnapshotHashing()
+  try {
+    const raw = pages.page({ status: 'known', receipt }, frame, f.context.binding) as { receipt: unknown }
+    const first = RemoteReceiptPageSchema.parse(raw.receipt)
+    let continuations = 0
+    const recovered = await readRemoteReceiptResponse(raw, f.intent, async request => {
+      continuations++
+      return pages.read({ ...frame, method: 'receipt-continuation', ...request }, f.context.binding)
+    })
+    expect(recovered).toEqual({ status: 'known', receipt })
+    expect(continuations).toBeGreaterThan(3)
+    expect(hashing.bytes()).toBe(2 * first.metadata.byteSize)
+  } finally {
+    hashing.close()
+    pages.clear()
+    await f.sqlConnection.close()
+  }
+})
+
+it.each([256 * 1024, 1024 * 1024])('hashes history metadata in linear work for %i output bytes', async size => {
+  const result = { outcome: 'succeeded' as const, output: { text: 'm'.repeat(size) } }
+  const history = { events: [], pendingInteractions: [], terminalResult: result,
+    terminalTurn: { correlationId: 'execution:execution', providerId: 'original-turn', result } }
+  const hashing = observeSnapshotHashing()
+  try {
+    const first = pageNativeHistory(history).page.metadata!
+    let pages = 0
+    const recovered = await readJsonContinuation(first, async metadata => {
+      pages++
+      return pageNativeHistory(history, undefined, metadata).page.metadata!
+    })
+    expect(decodeResultCopies(recovered)).toEqual({ pendingInteractions: [], terminalResult: result,
+      terminalTurn: history.terminalTurn })
+    expect(pages).toBeGreaterThan(3)
+    expect(hashing.bytes()).toBe(2 * first.byteSize)
+  } finally {
+    hashing.close()
+  }
 })
