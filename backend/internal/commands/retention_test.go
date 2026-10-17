@@ -110,7 +110,7 @@ func TestRetentionLimitsEachSweepToOneHundredReceipts(t *testing.T) {
 
 func TestRetentionDoesNotCountConcurrentRevisionChanges(t *testing.T) {
 	store := &memoryRetentionStore{
-		rows: []commands.ExpiringReceipt{oldReceipt("changed"), oldReceipt("unchanged")},
+		rows:    []commands.ExpiringReceipt{oldReceipt("changed"), oldReceipt("unchanged")},
 		changed: map[string]bool{"changed": true},
 	}
 	removed, err := commands.PruneCompletedCommandReceipts(t.Context(), store, retentionNow())
