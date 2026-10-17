@@ -333,6 +333,7 @@ async function removeObsoleteWorkerVersions(root, stateDirectory, retained = [])
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
+  await retainWorkflowSdkRelease(stateDirectory, keep);
   for (const entry of await readdir(versions, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(entry.name)) continue;
     const path = join(versions, entry.name);
@@ -341,6 +342,24 @@ async function removeObsoleteWorkerVersions(root, stateDirectory, retained = [])
     await rm(path, { recursive: true, force: true });
   }
   await syncDirectory(versions);
+}
+
+// Offline updates can prune before the running Worker validates and publishes its replacement SDK selection.
+async function retainWorkflowSdkRelease(stateDirectory, keep) {
+  const path = join(stateDirectory, 'workflow-runtime.json');
+  let info;
+  try { info = await lstat(path); }
+  catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077)
+    || info.nlink !== 1 || info.size > 65_536) throw new WorkerError('workflow_selection_invalid');
+  const selection = JSON.parse(await readFile(path, 'utf8'));
+  if (selection?.schemaVersion !== 1) throw new WorkerError('workflow_selection_invalid');
+  for (const path of [selection.claude?.sdkEntrypoint, selection.claude?.installedLockPath]) {
+    if (typeof path === 'string' && isAbsolute(path)) keep.add(path);
+  }
 }
 
 async function retainUpdateReferences(value, keep, hashes) {

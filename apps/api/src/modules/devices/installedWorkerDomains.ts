@@ -79,7 +79,7 @@ import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurati
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
 import { probeComputerAccounts, systemPorts } from '../computers/accountProbe.js'
-import { inspectInstalledClaude } from '../harnesses/installedClaudeInspection.js'
+import { inspectInstalledClaudeInventory } from '../harnesses/installedClaudeInspection.js'
 import { createInstalledWorkerProfileChecks } from '../harnesses/installedWorkerProfileChecks.js'
 import { DomainError } from '../errors.js'
 import { jobContainerNonEntryObserved } from '../jobs/executorJournal.js'
@@ -640,7 +640,7 @@ async function configureWorkerComputers(composition: InstalledWorkerComposition)
       const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: refreshed,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
-      const claude = await inspectInstalledClaude({ binding: context.binding, configuration: refreshed,
+      const claude = await inspectInstalledClaudeInventory({ binding: context.binding, configuration: refreshed,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
