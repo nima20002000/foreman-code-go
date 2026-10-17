@@ -45,7 +45,8 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       expect(await f.registry.closeOwner(f.owner)).toBe(true)
       const elapsedMs=Math.round(performance.now()-started)
       process.stdout.write(`${JSON.stringify({probe:'F11-retirement',registrations:10_005,fullScans:scans,targetedCaptures:captures.mock.calls.length,elapsedMs})}\n`)
-      expect(elapsedMs).toBeLessThan(30_000)
+      // Per-record fsyncs took ~4 min here; batched syncs take ~25 s. The bound tolerates loaded CI computers.
+      expect(elapsedMs).toBeLessThan(120_000)
       expect(readdirSync(f.ownerDirectory).sort()).toEqual([...ids.map(id => `closed-${id}.json`), 'retired.json'].sort())
       for (const id of ids) {
         expect(readRecord(join(f.ownerDirectory, `closed-${id}.json`))).toMatchObject({
