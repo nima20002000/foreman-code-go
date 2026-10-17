@@ -94,6 +94,7 @@ it.each([false, true])('admits a thinking-only next turn through the production 
       clientCorrelationId: nativeCorrelation(conversation.id, 'next-turn') })) events.push(event)
     expect(events).toEqual([])
     expect(prepareFiles).toHaveBeenCalledTimes(fileInputs ? 1 : 0)
+    if (fileInputs) expect(frames.find(frame => frame.method === 'conversation.start-turn')).toMatchObject({ fileInputs: true })
     expect(frames.filter(frame => frame.method === 'conversation.start-turn')).toHaveLength(1)
     expect(frames.find(frame => frame.method === 'conversation.open')).toMatchObject({
       mode: 'attach', binding, configuration: f.configuration,
@@ -179,5 +180,9 @@ it.each(['codex', 'claude'] as const)('exposes journal-only %s creation recovery
       conversationId: conversation.id, workflowId: binding.owner.workflowId, workflowNodeId: binding.owner.workflowNodeId,
       workingDirectory: binding.workingDirectory, correlationId: operationId })).resolves.toEqual(f.session)
     expect(methods).toEqual(['conversation.status'])
+    await expect(manager.reconcileSessionCreation!({ kind: 'agent-chat', configuration: f.configuration,
+      conversationId: conversation.id, workflowId: binding.owner.workflowId, workflowNodeId: binding.owner.workflowNodeId,
+      workingDirectory: binding.workingDirectory, correlationId: 'another-creation' })).rejects.toThrow()
+    expect(methods).toEqual(['conversation.status', 'conversation.status'])
   } finally { await manager.dispose?.(); await production.close() }
 })

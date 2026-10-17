@@ -20,6 +20,7 @@ import { SessionControlStore } from '../src/modules/conversations/sessionControl
 async function creation(kind: 'operator' | 'agent', fork = false, harness: 'codex' | 'claude' = 'codex',
   selection: 'fresh' | 'worker-profile' | 'main-profile' | 'no-profile' = 'worker-profile') {
   const f = workerConversationFixture(kind, harness)
+  if (kind === 'operator' && harness === 'claude') f.binding.appMcpAccess = 'scoped'
   if (selection === 'no-profile') delete f.configuration.harnessProfileSelection
   if (selection === 'main-profile') {
     f.configuration.harnessProfileSelection!.target.hostRef = { kind: 'main', mainId: f.connection.mainId }
@@ -102,12 +103,15 @@ async function creation(kind: 'operator' | 'agent', fork = false, harness: 'code
     async close() { await manager.dispose(); await bridge.close(); await host.shutdown() } }
 }
 
-it.each(['codex', 'claude'] as const)('recovers %s Operator creation with saved preferences after losing Main memory', async harness => {
+it.each([['codex', false], ['claude', false], ['claude', true]] as const)(
+  'recovers %s Operator creation after losing Main memory (session already bound: %s)', async (harness, bound) => {
   const f = await creation('operator', false, harness)
   if (!('operatorId' in f.configuration)) throw new Error('Operator configuration required')
   const owner = operator()
   const stored = memoryConversation(f.configuration, owner.id, f.id)
   Object.assign(stored.row, { active_request_id: f.requestId, active_phase: harness === 'claude' ? 'submitting' : 'creating', turn_state: 'uncertain' })
+  if (bound) Object.assign(stored.row, { native_session_id: f.session.nativeSessionId,
+    provider_version: f.session.providerVersion, active_phase: 'ready' })
   stored.repository.createSessionControls = () => f.controls
   const submissions: unknown[] = []
   stored.repository.submittedMessage = async (_id, _requestId, receipt) => {
@@ -125,8 +129,9 @@ it.each(['codex', 'claude'] as const)('recovers %s Operator creation with saved 
   try {
     await chat.reconcileActive()
     expect(stored.row.native_session_id).toBe(f.session.nativeSessionId)
+    expect(stored.row.last_error).toBeNull()
     expect(stored.finishResults).toHaveLength(1)
-    expect(f.methods).toContain('conversation.status')
+    expect(f.methods).toContain(bound ? 'conversation.reconcile' : 'conversation.status')
     expect(f.creates()).toBe(1)
     expect((await f.journal.read(f.binding))?.creation?.inputHash).toBe(commandInputHash(harness === 'claude'
       ? { mode: 'initial-turn', correlationId: f.correlationId }
@@ -183,6 +188,7 @@ it.each([['codex', 'fresh'], ['codex', 'worker-profile'], ['codex', 'main-profil
   } as unknown as PostgresAgentChatRepository
   const pool = { query: async (sql: string, values: unknown[]) => {
     if (fork && values[0] === 'execution') return { rows: [{ reference: f.source }] }
+    if (sql.includes("payload->>'ownerPrincipalId' as principal_id")) return { rows: [] }
     return f.controlsPool.query(sql, values)
   } } as unknown as pg.Pool
   const workflows = { getAgentConfiguration: async () => configuration,
@@ -199,11 +205,11 @@ it.each([['codex', 'fresh'], ['codex', 'worker-profile'], ['codex', 'main-profil
     await chat.recover()
     expect(row.record.sessionUnavailable).toBeUndefined()
     expect(row.native_session_id).toBe(f.session.nativeSessionId)
+    expect(errors).toEqual([])
     expect(results).toHaveLength(1)
     const initialTurn = harness === 'claude' && !fork
     expect(results[0]?.outcome).toBe(initialTurn ? 'succeeded' : 'failed')
     expect(submissions).toEqual(initialTurn ? [f.submission] : [])
-    expect(errors).toEqual([])
     expect(f.methods).toContain('conversation.status')
     expect(f.creates()).toBe(1)
   } finally { await chat.shutdown(); await f.close() }

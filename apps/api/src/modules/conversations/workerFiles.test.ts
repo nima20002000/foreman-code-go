@@ -55,7 +55,8 @@ async function fixture(options: { repeatCopies?: boolean; scopedOperator?: boole
     }
   const lease = bridge.capture({
     request: { method: 'conversation.start-turn', binding: f.binding, session: f.session,
-      prompt: 'Read the attached notes.', correlationId: 'message' }, current, channel,
+      prompt: 'Read the attached notes.', correlationId: 'message',
+      ...(options.scopedOperator ? { fileInputs: true } : {}) }, current, channel,
     callbacks: { submitted: async () => {}, files: prepareFiles },
   })
   await lease.request()
@@ -168,7 +169,7 @@ it('acknowledges repeated transfer frames without duplicating bytes or replacing
   } finally { await f.close() }
 })
 
-it('rejects file authority on read-only leases and on management-MCP sessions', async () => {
+it('rejects file authority on read-only leases and on Operator turns without file admission', async () => {
   for (const requestKind of ['read', 'scoped'] as const) {
     const f = workerConversationFixture('operator')
     const bridge = new MainWorkerConversationBridge()
