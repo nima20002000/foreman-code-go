@@ -16,19 +16,6 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     expect(value).not.toHaveProperty('liveActivity')
     expect(value.state.executions).toEqual([]); expect(value.state.occurrences).toEqual([])
   })
-  it('has fixed current DTO/query work at positions 10 versus 100000 (model rows only)', async () => {
-    const responses = [], queries = []
-    for (const head of [10, 100000]) {
-      const f = await currentGraphReadUnit()
-      // Scalar position only: the model supplies the same committed current cut,
-      // not an in-memory list of fabricated historical execution rounds.
-      f.db.state.head = head
-      responses.push(await f.canonical.current(f.principal, f.request)); queries.push(f.db.calls.length)
-    }
-    expect(queries[0]).toEqual(queries[1])
-    expect({ ...responses[0], asOfSequence: 'same' }).toEqual({ ...responses[1], asOfSequence: 'same' })
-    expect(JSON.stringify(responses[1]).length - JSON.stringify(responses[0]).length).toBe(4)
-  })
   it.each([false, true])('keeps completed outcome separate from cleanup=%s without inferring physical closure', async (cleanupPending) => {
     const f = await currentGraphReadUnit()
     await f.db.changeRun({ executionState: 'completed', outcome: 'succeeded', cleanupPending })

@@ -23,7 +23,7 @@ describe('activity persistence transaction boundaries', () => {
     const value = await new PostgresAgentChatRepository(pool).state('conversation')
     expect(value).toMatchObject({ row: { id: 'conversation' }, turns: [], messages: [], activeStartedAt: null, activityPage: { activities: [] } })
   })
-  it('checks native identity inside the same locked mutation transaction', async () => {
+  it('returns no mutation for a missing owner and releases the transaction', async () => {
     let released = false
     const client = { query: async () => ({ rows: [], rowCount: 0 }), release: () => { released = true } }
     const pool = { connect: async () => client, query: async () => { throw new Error('Mutation escaped transaction') } } as unknown as pg.Pool

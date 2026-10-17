@@ -11,10 +11,13 @@ import { deferred } from '../../../../test/helpers/deferred.js'
 /** A preparation whose native thread creation is held until the test releases it. */
 async function preparing() {
   const f = await constructionFixture()
+  const request = new AbortController()
+  f.context.signal = request.signal
   const entered = deferred(), release = deferred()
-  const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async () => {
+  const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockImplementation(async (_input, signal) => {
     entered.resolve()
     await release.promise
+    signal?.throwIfAborted()
     return f.session
   })
   vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
@@ -36,6 +39,7 @@ async function preparing() {
     connectionEpoch: randomUUID() }
   /** The device link drops: no session is live and the next Main authority request fails in flight. */
   const drop = () => {
+    request.abort(new DeviceConnectionError('transport'))
     f.currentBinding.mockReturnValue(undefined)
     f.linkLostAt.mockReturnValue(Date.now())
     const authority = f.readMain.getMockImplementation()!

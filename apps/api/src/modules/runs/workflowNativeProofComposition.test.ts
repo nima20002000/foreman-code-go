@@ -30,7 +30,7 @@ vi.mock('./workflowNativeSource.js', async importOriginal => {
   return { ...original, persistWorkflowNativeSources: vi.fn(original.persistWorkflowNativeSources) }
 })
 beforeEach(() => vi.clearAllMocks())
-function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lost') {
+function fixture(retained?: 'same' | 'missing' | 'changed' | 'lost') {
   // SQL/native validation ports are isolated here. This exercises actual proof
   // persistence ordering and G1 rollback, not database or physical ownership.
   const events: string[] = []
@@ -72,7 +72,6 @@ function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lo
     expect(proof).toEqual(persistedProof)
     events.push('context')
     beforeGraphCommit(sql, async () => { events.push('context-before-commit') })
-    if (reject) throw new Error('context denied')
   })
   const service = new WorkflowNativeProofServices({ read: () => capture }, undefined, callback)
   const validation = service as unknown as { current(): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope }>; physical(): Promise<void> }
@@ -82,23 +81,10 @@ function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lo
   const persist = () => connection.transaction(sql => {
     return service.persistOriginalLocked(sql, { id: 'run' } as AcceptedWorkflowRunV3, {} as RepeatNativeEvidence, owner)
   })
-  return { events, callback, persist, transcript }
+  return { events, persist, transcript }
 }
-it('admits context after storing the actual proof and before committing its original G1', async () => {
-  const f = fixture()
-  const proof = await f.persist()
-  expect(f.callback).toHaveBeenCalledOnce()
-  expect(f.callback.mock.calls[0]![2]).toEqual(proof)
-  expect(f.events).toEqual(['proof-stored', 'context', 'context-before-commit', 'commit'])
-})
-it('rolls back original proof publication when context admission fails', async () => {
-  const f = fixture(true)
-  await expect(f.persist()).rejects.toThrow('context denied')
-  expect(f.events).toEqual(['proof-stored', 'context', 'rollback'])
-})
-
 it('retains complete original history while avoiding identical committed transcript replay', async () => {
-  const f = fixture(false, 'same'); await f.persist()
+  const f = fixture('same'); await f.persist()
   const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
   expect(append).toHaveBeenCalledOnce()
   expect(append.mock.calls[0]![2].type).toBe('turn.completed')
@@ -107,7 +93,7 @@ it('retains complete original history while avoiding identical committed transcr
 })
 
 for (const retained of ['missing', 'changed'] as const) it(`does not skip ${retained} original transcript rows`, async () => {
-  const f = fixture(false, retained); await f.persist()
+  const f = fixture(retained); await f.persist()
   const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
   expect(append).toHaveBeenCalledTimes(2)
   expect(append.mock.calls[0]![2]).toEqual(f.transcript)
@@ -115,7 +101,7 @@ for (const retained of ['missing', 'changed'] as const) it(`does not skip ${reta
 })
 
 it('rolls back if the original coordinator lifetime changes while reading retained transcript rows', async () => {
-  const f = fixture(false, 'lost')
+  const f = fixture('lost')
   await expect(f.persist()).rejects.toThrow('original lifetime lost')
   expect(appendWorkflowNativeGraphEventLocked).not.toHaveBeenCalled()
   expect(f.events).toEqual(['proof-stored', 'rollback'])

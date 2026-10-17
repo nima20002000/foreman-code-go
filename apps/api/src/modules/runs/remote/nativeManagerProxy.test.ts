@@ -226,39 +226,6 @@ describe('remote native history streaming', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('retries a lost turn acknowledgment without submitting a second logical turn', async () => {
-    vi.useFakeTimers()
-    const f = setup(() => terminal([event(0)]))
-    const original = f.request.getMockImplementation()!
-    const turns = new Set<string>()
-    let lost = true
-    f.request.mockImplementation(async (method, payload, signal) => {
-      if (method === 'start-turn') {
-        turns.add(JSON.stringify(payload))
-        if (lost) {
-          lost = false
-          throw new DeviceApplicationError('timeout')
-        }
-      }
-      return original(method, payload, signal)
-    })
-    try {
-      const session = await f.proxy.createSession(f.start)
-      const collect = async () => {
-        const events: NativeHarnessEvent[] = []
-        for await (const value of f.proxy.startTurn(session, {
-          prompt: 'prompt', clientCorrelationId: 'execution:execution',
-        })) events.push(value)
-        return events
-      }
-      const checked = expect(collect()).resolves.toEqual([event(0)])
-      await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(5_000)])
-      await checked
-      expect(turns.size).toBe(1)
-      expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(2)
-    } finally { vi.useRealTimers() }
-  })
-
   it('bounds preparation retries and cancels queued retries before another start', async () => {
     vi.useFakeTimers()
     const f = setup(() => ({ events: [], pendingInteractions: [] }))

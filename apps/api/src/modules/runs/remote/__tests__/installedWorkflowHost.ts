@@ -156,7 +156,7 @@ export async function sourceFixture(relativeCwd='', options: {
 }
 
 export async function runningInstalledFixture(phase: 'generation' | 'approval wait' = 'generation',
-  fixtureOptions: { retainReviewer?: boolean; artifactOutputKeys?: string[];
+  fixtureOptions: { retainReviewer?: boolean; deferTurn?: boolean; artifactOutputKeys?: string[];
     mainNow?: () => number;
     mcp?: { request: WorkerMcpRelay['request']; onSessionStart(input: NativeSessionStart): Promise<void> } } = {}) {
   const { artifactOutputKeys } = fixtureOptions
@@ -384,8 +384,10 @@ export async function runningInstalledFixture(phase: 'generation' | 'approval wa
     await host.close()
     throw error
   }
-  await call('start-turn', { prompt: 'original prompt', correlationId: 'execution:execution' })
-  await turnEntered
+  if (!fixtureOptions.deferTurn) {
+    await call('start-turn', { prompt: 'original prompt', correlationId: 'execution:execution' })
+    await turnEntered
+  }
   const initialStatus = await log.status(f.intent.operationId)
   if (initialStatus.status !== 'known') throw new Error('Missing original native status')
   const stop = async () => {
