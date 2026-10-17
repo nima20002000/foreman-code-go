@@ -6,6 +6,8 @@ import { runningInstalledFixture } from './__tests__/installedWorkflowHost.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { readJsonContinuation } from './jsonContinuation.js'
 import { decodeResultCopies } from './executionResultCodec.js'
+import { pageNativeHistory, readNativeHistoryMetadata } from './nativeHistoryPage.js'
+import { readPhysicalReadout, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 
 it.each(['receipt bytes', 'physical hashing'] as const)(
   'reuses the first installed history observation for metadata pages: %s', async measure => {
@@ -59,3 +61,42 @@ it.each(['receipt bytes', 'physical hashing'] as const)(
       await f.host.close()
     }
   })
+
+it('builds status physical evidence without reserving an unread metadata download', async () => {
+  const f = await runningInstalledFixture()
+  const result = { outcome: 'succeeded' as const, output: { text: 'status-result' + 'x'.repeat(3 * 1024 * 1024) } }
+  try {
+    f.finish('succeeded', result.output)
+    await f.settled
+    const downloads = Array.from({ length: 5 }, (_, index) => pageNativeHistory({
+      events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded',
+        output: { text: `reader-${index}` + 'x'.repeat(3 * 1024 * 1024) } },
+    }).page.metadata!)
+    for (let index = 0; index < 2; index++) {
+      const reply = await f.call('status')
+      const status = RemoteOperationStatusSchema.parse(await readRemoteReceiptResponse(reply.payload, f.intent,
+        async request => (await f.call('receipt-continuation', request)).payload))
+      expect(status.status).toBe('known')
+      if (status.status !== 'known') throw new Error('Expected completed status')
+      expect(status.receipt.terminal?.result).toEqual(result)
+      const selector = { receiptSequence: status.receipt.sequence,
+        sourceDigest: remoteWorkflowSourceDigest({ type: 'boundary' }) }
+      const readout = await readPhysicalReadout((await f.call('physical-readout', selector)).payload,
+        async metadata => (await f.call('physical-readout', { ...selector, metadata })).payload)
+      expect(readout.history?.terminalTurn?.result).toEqual(result)
+    }
+    for (const first of downloads) {
+      const fields = await readJsonContinuation(first, async request => readNativeHistoryMetadata(request))
+      expect(decodeResultCopies(fields)).toHaveProperty('terminalResult')
+    }
+    const history = await f.call('history', { afterSequence: -1, correlationId: 'execution:execution' })
+    const raw = await readRemoteReceiptResponse(history.payload, f.intent,
+      async request => (await f.call('receipt-continuation', request)).payload) as { page: unknown }
+    const page = DeviceHistoryPageSchema.parse(raw.page)
+    expect(page.metadata).toBeDefined()
+    const fields = await readJsonContinuation(page.metadata!, async request => readNativeHistoryMetadata(request))
+    expect(decodeResultCopies(fields)).toMatchObject({ terminalTurn: { result } })
+  } finally {
+    await f.host.close()
+  }
+})
