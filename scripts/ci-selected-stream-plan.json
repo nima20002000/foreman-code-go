@@ -1,0 +1,13 @@
+{
+  "source": "d7ef062a2664bff0d2f1c37b19bc96e9fb43782b",
+  "phase": "red",
+  "testFile": "src/clients/streams.close.test.ts",
+  "caseNames": [
+    "closes an observed live HTTP stream without turning its owned cancellation into a failure",
+    "preserves an external cancellation even when it has the same text as an intentional close"
+  ],
+  "typeRoots": [
+    "src/clients/streams.ts",
+    "src/clients/streams.close.test.ts"
+  ]
+}
