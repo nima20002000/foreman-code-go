@@ -30,7 +30,7 @@ it('admits a thinking-only next turn through the production Worker channel witho
     nativeOwner: f.nativeOwner, revision: 1, closed: false, closing: false, turns: [first],
     compactions: [], desiredPreferences: null, appliedPreferences: null }
   const owner = { id: 'human', name: 'Human', audience: 'operator', delegated_from: null,
-    grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
+    grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel'], scope: {} }],
     expires_at: new Date(Date.now() + 600_000), revoked_at: null }
   const conversation = { id: binding.owner.conversationId, kind: 'operator', owner_principal_id: owner.id,
     operator_configuration_version_id: accepted.id, active_request_id: 'next-turn',
