@@ -13,34 +13,34 @@ import (
 )
 
 type runtimeLaunchRequest struct {
-	argv []string
+	argv    []string
 	purpose string
-	reply chan runtimeLaunchResponse
+	reply   chan runtimeLaunchResponse
 }
 
 type runtimeLaunchResponse struct {
 	process jobs.RuntimeProcess
-	err error
+	err     error
 }
 
 type runtimeCloseRequest struct {
-	id string
+	id           string
 	contextError error
-	reply chan error
+	reply        chan error
 }
 
 type fakeGuardedRuntime struct {
 	launches chan runtimeLaunchRequest
-	closes chan runtimeCloseRequest
-	closed chan struct{}
+	closes   chan runtimeCloseRequest
+	closed   chan struct{}
 }
 
 func newGuardedRuntime(t *testing.T) *fakeGuardedRuntime {
 	t.Helper()
 	port := &fakeGuardedRuntime{
 		launches: make(chan runtimeLaunchRequest, 8),
-		closes: make(chan runtimeCloseRequest, 8),
-		closed: make(chan struct{}),
+		closes:   make(chan runtimeCloseRequest, 8),
+		closed:   make(chan struct{}),
 	}
 	t.Cleanup(func() { close(port.closed) })
 	return port
@@ -82,27 +82,27 @@ func (port *fakeGuardedRuntime) CloseLaunch(ctx context.Context, id string) erro
 
 type fakeNativeExit struct {
 	code *int
-	err error
+	err  error
 }
 
 type fakeRuntimeProcess struct {
-	id string
-	stdout io.ReadCloser
-	stderr io.ReadCloser
-	exit chan fakeNativeExit
+	id        string
+	stdout    io.ReadCloser
+	stderr    io.ReadCloser
+	exit      chan fakeNativeExit
 	observing chan struct{}
 }
 
 func runtimeProcess(id, stdout, stderr string) *fakeRuntimeProcess {
 	return &fakeRuntimeProcess{id: id,
-		stdout: io.NopCloser(strings.NewReader(stdout)),
-		stderr: io.NopCloser(strings.NewReader(stderr)),
-		exit: make(chan fakeNativeExit, 1),
+		stdout:    io.NopCloser(strings.NewReader(stdout)),
+		stderr:    io.NopCloser(strings.NewReader(stderr)),
+		exit:      make(chan fakeNativeExit, 1),
 		observing: make(chan struct{}),
 	}
 }
 
-func (process *fakeRuntimeProcess) LaunchID() string { return process.id }
+func (process *fakeRuntimeProcess) LaunchID() string      { return process.id }
 func (process *fakeRuntimeProcess) Stdout() io.ReadCloser { return process.stdout }
 func (process *fakeRuntimeProcess) Stderr() io.ReadCloser { return process.stderr }
 func (process *fakeRuntimeProcess) Wait(ctx context.Context) (*int, error) {
@@ -117,7 +117,7 @@ func (process *fakeRuntimeProcess) Wait(ctx context.Context) (*int, error) {
 
 type commandResult struct {
 	value jobs.RuntimeCommandResult
-	err error
+	err   error
 }
 
 func startRuntimeCommand(run func() (jobs.RuntimeCommandResult, error)) <-chan commandResult {
@@ -183,9 +183,9 @@ func TestRuntimeCommandReturnsNativeOutputAfterClosure(t *testing.T) {
 
 func TestRuntimeCommandReplyBudgetIncludesBothStreams(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		stdout string
-		stderr string
+		name     string
+		stdout   string
+		stderr   string
 		overflow bool
 	}{
 		{"exact limit", strings.Repeat("o", 32768), strings.Repeat("e", 32768), false},

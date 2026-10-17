@@ -15,19 +15,19 @@ import (
 )
 
 const (
-	RuntimeAttachmentPurpose = "attachment"
-	RuntimeControlPurpose = "control"
-	RuntimeWaitPurpose = "wait"
-	RuntimeControlReplyBytes = 65536
+	RuntimeAttachmentPurpose     = "attachment"
+	RuntimeControlPurpose        = "control"
+	RuntimeWaitPurpose           = "wait"
+	RuntimeControlReplyBytes     = 65536
 	DefaultRuntimeControlTimeout = 30 * time.Second
 )
 
 var (
-	ErrRuntimeControlDeadline = errors.New("Job runtime control deadline exceeded")
+	ErrRuntimeControlDeadline    = errors.New("Job runtime control deadline exceeded")
 	ErrRuntimeControlReplyBudget = errors.New("Job control reply exceeded budget")
-	ErrRuntimeExitUnconfirmed = errors.New("Original Job runtime exit unconfirmed")
-	ErrInvalidRuntimeArgv = errors.New("Invalid Job runtime argv")
-	ErrRuntimeLaunchUnavailable = errors.New("Original guarded Job launch unavailable")
+	ErrRuntimeExitUnconfirmed    = errors.New("Original Job runtime exit unconfirmed")
+	ErrInvalidRuntimeArgv        = errors.New("Invalid Job runtime argv")
+	ErrRuntimeLaunchUnavailable  = errors.New("Original guarded Job launch unavailable")
 )
 
 // RuntimeProcess is the process view returned by a guarded launch. Wait reports
@@ -67,13 +67,13 @@ type GuardedRuntimePort interface {
 // returned separately as errors.
 type RuntimeCommandResult struct {
 	ExitCode int
-	Stdout string
+	Stdout   string
 }
 
 // RuntimeCommandRunner serializes control commands through physical closure.
 // A long-running wait has its own native owner and does not block controls.
 type RuntimeCommandRunner struct {
-	port GuardedRuntimePort
+	port    GuardedRuntimePort
 	control chan struct{}
 }
 
@@ -133,12 +133,12 @@ func validateRuntimeLaunch(ctx context.Context, port GuardedRuntimePort, argv []
 
 type runtimeExit struct {
 	code *int
-	err error
+	err  error
 }
 
 type runtimeReply struct {
-	mu sync.Mutex
-	bytes int
+	mu     sync.Mutex
+	bytes  int
 	stdout strings.Builder
 }
 

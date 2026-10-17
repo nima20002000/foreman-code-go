@@ -74,9 +74,9 @@ func (reader *nativeChunkReader) Read(buffer []byte) (int, error) {
 
 func TestRuntimeCommandPreservesNativeChunkUTF8Replacement(t *testing.T) {
 	for _, fixture := range []struct {
-		name string
+		name   string
 		chunks [][]byte
-		want string
+		want   string
 	}{
 		{"separate invalid bytes", [][]byte{{0xff, 0xfe}}, "\uFFFD\uFFFD"},
 		{"truncated sequence", [][]byte{{0xe2, 0x82}}, "\uFFFD"},
