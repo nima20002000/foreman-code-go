@@ -13,7 +13,7 @@ import { RemoteWorkflowPhysicalReadoutSchema, RemoteWorkflowPhysicalReadoutTrans
   type RemoteResultDictionary, type RemoteWorkflowPhysicalReadout,type RemoteWorkflowPhysicalAck } from '@foreman-code/contracts/remote-workflow-physical'
 import { DEVICE_HISTORY_PAGE_BYTES, DEVICE_JSON_CONTINUATION_LIMIT,
   type DeviceJsonContinuationRequest } from '@foreman-code/contracts/device-application'
-import { pageJsonContinuation, readJsonContinuation } from './jsonContinuation.js'
+import { createJsonContinuationPager, readJsonContinuation } from './jsonContinuation.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { NativeLaunchObservation, NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { DomainError } from '../../errors.js'
@@ -31,11 +31,18 @@ import { WorkflowPhysicalReadoutSnapshots, type PhysicalReadoutSelector } from '
 const unavailable = (): never => { throw new DomainError('REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', 'The original installed native source and physical observations are unavailable.', 409) }
 const physicalRetentionLimit = DEVICE_JSON_CONTINUATION_LIMIT * 4
 const physicalReadoutLifetimeMs = 60_000
+// The snapshot store keeps these immutable objects alive only for their observation window.
+const physicalReadoutPages = new WeakMap<RemoteWorkflowPhysicalReadout, ReturnType<typeof createJsonContinuationPager>>()
 export function pagePhysicalReadout(readout: RemoteWorkflowPhysicalReadout, metadata?: DeviceJsonContinuationRequest) {
+  const retained = physicalReadoutPages.get(readout)
+  if (retained) return { kind: 'result-continuation' as const, metadata: retained(metadata) }
   if (!metadata && Buffer.byteLength(JSON.stringify(readout)) <= DEVICE_HISTORY_PAGE_BYTES) return readout
   const dictionary = encodeResultCopies(readout, physicalResultPaths(readout))
-  return { kind: 'result-continuation' as const, metadata: pageJsonContinuation(dictionary, metadata,
-    { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT }) }
+  const page = createJsonContinuationPager(Buffer.from(JSON.stringify(dictionary)),
+    { maxBytes: REMOTE_PHYSICAL_CONTINUATION_LIMIT })
+  const result = { kind: 'result-continuation' as const, metadata: page(metadata) }
+  physicalReadoutPages.set(readout, page)
+  return result
 }
 export async function readPhysicalReadout(raw: unknown,
   read: (metadata: DeviceJsonContinuationRequest) => Promise<unknown>, signal?: AbortSignal) {

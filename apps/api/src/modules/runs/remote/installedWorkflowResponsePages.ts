@@ -6,7 +6,7 @@ import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contra
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RemoteReceiptPageSchema, type RemoteReceiptPage,
   type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
-import { pageJsonContinuationBytes, readJsonContinuation } from './jsonContinuation.js'
+import { createJsonContinuationPager, readJsonContinuation } from './jsonContinuation.js'
 import { DomainError } from '../../errors.js'
 
 type Response = Record<string, unknown>
@@ -35,6 +35,7 @@ function replaceReceipt(raw: unknown, receipt: unknown): unknown {
 export class InstalledWorkflowResponsePages {
   private readonly transfers = new Map<string, {
     bytes: Buffer
+    page: ReturnType<typeof createJsonContinuationPager>
     intent: DispatchIntent
     placement: AcceptedNodePlacement
     binding: DeviceSessionBinding
@@ -57,14 +58,16 @@ export class InstalledWorkflowResponsePages {
     const receipt = RemoteOperationReceiptSchema.parse(status.receipt)
     if (!isDeepStrictEqual(receipt.intent, frame.intent)) throw new Error('Receipt transfer owner changed')
     const bytes = Buffer.from(JSON.stringify(receipt))
-    const metadata = pageJsonContinuationBytes(bytes)
+    const pager = createJsonContinuationPager(bytes)
+    const metadata = pager()
     for (const [id, transfer] of this.transfers) if (transfer.expiresAt <= Date.now()) this.remove(id)
     // Least recently read first: a transfer that is still being read stays retained.
     while (this.retainedBytes + bytes.byteLength > retainedBytesLimit || this.transfers.size >= 128) {
       this.remove(this.transfers.keys().next().value!)
     }
     const transferId = randomUUID()
-    this.transfers.set(transferId, { bytes, intent: structuredClone(frame.intent), placement: structuredClone(frame.placement),
+    this.transfers.set(transferId, { bytes, page: pager,
+      intent: structuredClone(frame.intent), placement: structuredClone(frame.placement),
       binding: structuredClone(binding), sequence: receipt.sequence, expiresAt: Date.now() + retentionMs })
     this.retainedBytes += bytes.byteLength
     const page = RemoteReceiptPageSchema.parse({ kind: 'receipt-page', transferId,
@@ -81,7 +84,7 @@ export class InstalledWorkflowResponsePages {
       || !isDeepStrictEqual(retained.placement, frame.placement) || retained.sequence !== frame.receiptSequence) {
       throw new DomainError('conflict', 'Receipt transfer owner or revision changed', 409)
     }
-    const metadata = pageJsonContinuationBytes(retained.bytes, frame.metadata)
+    const metadata = retained.page(frame.metadata)
     // A served page is reader progress: renew the retention and evict idle transfers before this one.
     retained.expiresAt = Date.now() + retentionMs
     this.transfers.delete(frame.transferId)
