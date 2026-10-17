@@ -115,6 +115,46 @@ async function approvalFixture() {
 }
 
 describe('native approval response interleavings', () => {
+  it('reserves an idle lifecycle callback before reporting response availability', async () => {
+    const f = await approvalFixture()
+    const sending = f.manager.respond(f.session, f.pending.turn.nativeRequestId!, f.option)
+    const outcome = Promise.allSettled([sending])
+    try {
+      expect(await f.manager.inspectResponseAvailability(f.session, {
+        nativeRequestId: f.pending.turn.nativeRequestId!, nativeRequestType: f.pending.nativeRequestType,
+        expectedNativeTurnId: f.pending.turn.nativeTurnId!,
+      })).toMatchObject({ state: 'recovery_required', reason: 'response_in_flight' })
+      expect(await f.manager.pending(f.session)).toBeUndefined()
+    } finally {
+      await f.close()
+      await outcome
+    }
+  })
+
+  it('proves an ordered submitted command history without a reservation or response digest', async () => {
+    const f = await approvalFixture()
+    const sending = f.manager.respond(f.session, f.pending.turn.nativeRequestId!, f.option)
+    try {
+      await f.responseEntered.promise
+      f.releaseResponse.resolve()
+      await f.readSubmitted()
+      f.resolveRequest()
+      f.completeCommand()
+      await sending
+      const history = await f.manager.history(f.session)
+      const events = history.events.filter(event => event.type !== 'interaction.submitting')
+        .map(event => {
+          const copy = structuredClone(event)
+          if (copy.type === 'interaction.submitted') delete copy.payload.responseDigest
+          return copy
+        })
+      expect(matchingDeliveryEvidence(f.interaction, f.session, { ...history, events })).toMatchObject({
+        source: 'provider_history', nativeRequestId: f.pending.turn.nativeRequestId,
+        optionId: f.option.optionId, semantic: f.option.semantic,
+      })
+    } finally { await f.close() }
+  })
+
   it('delivers a response queued behind an in-flight history reconciliation exactly once', async () => {
     const f = await approvalFixture()
     const reading = f.manager.reconcile(f.session, 'turn')
@@ -179,12 +219,17 @@ describe('native approval response interleavings', () => {
           source: 'provider_history', nativeRequestId: f.pending.turn.nativeRequestId,
           optionId: f.option.optionId, semantic: f.option.semantic,
         })
-        for (const type of ['interaction.pending', 'interaction.submitting', 'interaction.submitted',
+        for (const type of ['interaction.pending', 'interaction.submitted',
           'interaction.resolved', 'item.completed']) {
           expect(matchingDeliveryEvidence(f.interaction, f.session, {
             ...history, events: history.events.filter(event => event.type !== type),
           })).toBeUndefined()
         }
+        const withoutReservation = matchingDeliveryEvidence(f.interaction, f.session, {
+          ...history, events: history.events.filter(event => event.type !== 'interaction.submitting'),
+        })
+        if (ordering === 'before-write-callback') expect(withoutReservation).toBeUndefined()
+        else expect(withoutReservation).toMatchObject({ optionId: f.option.optionId, semantic: f.option.semantic })
         expect(matchingDeliveryEvidence({ ...f.interaction, selectedOptionId: 'other-choice' },
           f.session, history)).toBeUndefined()
         for (const payload of [{ optionId: 'other-choice' }, { semantic: 'deny' }, { responseDigest: 'other-response' }]) {
