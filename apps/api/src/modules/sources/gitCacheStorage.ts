@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { SOURCE_GIT_CACHE_LIMITS, GitCacheStorageSchema, type GitCacheStorage }
   from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
-import { anchored, identity, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
+import { anchored, identity, lockOpenFile, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
 import { measureRetainedDirectory } from './retainedDirectoryUsage.js'
 import { writeSourceClaim } from './quotaClaims.js'
+import { SourceError } from './manifest.js'
 import type { GitProcessOptions, GitProcessResult } from './gitProcess.js'
 
 type GitRunner = (args: string[], options: GitProcessOptions) => Promise<GitProcessResult>
@@ -93,21 +93,16 @@ async function processStart(pid: number): Promise<string | null> {
   }
 }
 
-/** The inherited open file description stays locked until the final Git descendant closes it. */
+/** Preserve the Git cache's public error code for flock failures. */
 async function lockTransfer(file: FileHandle, options: { nonBlocking?: boolean } = {}): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/flock', ['--exclusive', ...(options.nonBlocking ? ['--nonblock'] : []), '3'], {
-      stdio: ['ignore', 'ignore', 'ignore', file.fd],
-    })
-    let failure: Error | undefined
-    child.once('error', error => { failure = error })
-    child.once('close', code => {
-      if (failure) reject(failure)
-      else if (code === 0) resolve(true)
-      else if (options.nonBlocking && code === 1) resolve(false)
-      else reject(new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer ownership locking failed.', 409))
-    })
-  })
+  try {
+    return await lockOpenFile(file, options)
+  } catch (error) {
+    if (error instanceof SourceError && error.code === 'SOURCE_CLAIM_LOCK_FAILED') {
+      throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer ownership locking failed.', 409)
+    }
+    throw error
+  }
 }
 
 type TransferOwner = { pid?: unknown; started?: unknown; lifetimeLock?: unknown; staging?: unknown }
@@ -135,10 +130,9 @@ async function liveReservations(root: FileHandle): Promise<number> {
         // An interrupted write cannot have launched a Git child.
       }
       const running = typeof owner.pid === 'number' && await processStart(owner.pid) === owner.started
-      // PID-only records cannot establish that detached children closed; keep their charge after an upgrade.
       const active = owner.lifetimeLock === true
         ? running || !await lockTransfer(file, { nonBlocking: true })
-        : typeof owner.pid === 'number' && typeof owner.started === 'string'
+        : running
       if (active) live++
       else {
         await removeAbandonedStaging(root, owner)
