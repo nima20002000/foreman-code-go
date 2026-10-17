@@ -10,6 +10,19 @@ import { cloudService } from './cloudService.testSupport.js'
 import { confirmCancellation, fixture } from './cloud.testSupport.js'
 import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
 
+function confirmCircleCiCancellation(f: Awaited<ReturnType<typeof fixture>>) {
+  const original = f.ports.run.bind(f.ports)
+  vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
+    if (file === 'circleci' && args[0] === 'run' && args[1] === 'get'
+      && f.circle.canceled.includes(args[2]!)) {
+      return { code: 0, stderr: '', stdout: JSON.stringify({
+        phase: 'ended', current_outcome: 'canceled', workflows: [],
+      }) }
+    }
+    return original(file, args, options)
+  })
+}
+
 it.each([false, true])('keeps a first-pass CircleCI file failure in Main when its retest passes: report=%s', async reported => {
   const f = await fixture({}, { provider: 'circleci' })
   const runId = randomUUID()
@@ -159,7 +172,7 @@ it.each([false, true])('settles CircleCI cancellation when nothing is active, lo
   expect(await confirmCancellation(f, runId))
     .toMatchObject({ operation: 'cancel', run: { state: 'canceled', finishedAt: expect.any(String) } })
   expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
-  expect(f.circle.canceled).toHaveLength(1)
+  expect(f.circle.canceled).toEqual(lookupEnded ? ['run-1', 'run-1'] : ['run-1'])
   expect(f.circle.triggered).toHaveLength(1)
 })
 
@@ -385,6 +398,7 @@ describe('GitHub Actions CI on a public mirror', () => {
 
   it('retries a CircleCI pipeline with no workflow and follows only the replacement workflow', async () => {
     const f = await fixture({}, { provider: 'circleci' })
+    confirmCircleCiCancellation(f)
     f.circle.phantoms = 1
     const runId = randomUUID()
     const start = { operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
@@ -408,6 +422,7 @@ describe('GitHub Actions CI on a public mirror', () => {
 
   it.each(['github', 'circleci'] as const)('requeues %s after three dispatches create no workflow', async provider => {
     const f = await fixture({}, { provider })
+    if (provider === 'circleci') confirmCircleCiCancellation(f)
     f.circle.phantoms = Number.POSITIVE_INFINITY
     const runId = randomUUID()
     const start = { operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
@@ -837,12 +852,12 @@ describe('GitHub Actions CI on a public mirror', () => {
       expect(canceled).toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
       if (canceled.operation !== 'cancel') throw new Error('Expected a cancel reply')
       expectCliRunMessage(canceled.run, 'Canceled.')
-      expect(f.circle.canceled).toEqual(['run-1'])
+      expect(f.circle.canceled).toEqual(['run-1', 'run-1'])
       expect(await f.reopen().handle({ operation: 'cancel', runId }))
         .toMatchObject({ run: { state: 'canceled' } })
       f.advance(4_000)
       expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'canceled' } })
-      expect(f.circle.canceled).toEqual(['run-1'])
+      expect(f.circle.canceled).toEqual(['run-1', 'run-1'])
       expect(f.circle.triggered).toHaveLength(1)
     },
   )

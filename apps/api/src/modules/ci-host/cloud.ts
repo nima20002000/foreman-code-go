@@ -2,7 +2,7 @@ import { updateOperationalFailure } from '../diagnostics/operationalFailures.js'
 import { failedReadObservation, successfulReadObservation } from '../diagnostics/readObservation.js'
 import type { ReadObservation } from '@foreman-code/contracts'
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import type pg from 'pg'
@@ -60,6 +60,19 @@ type Mirrors = (workspaceId: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
+const mirrorOperations = new Map<string, Promise<unknown>>()
+
+async function serializeMirror<T>(mirror: string, work: () => Promise<T>): Promise<T> {
+  const previous = mirrorOperations.get(mirror) ?? Promise.resolve()
+  const operation = previous.then(work, work)
+  mirrorOperations.set(mirror, operation)
+  try {
+    return await operation
+  } finally {
+    if (mirrorOperations.get(mirror) === operation) mirrorOperations.delete(mirror)
+  }
+}
+
 /** The snapshot Main last pushed as each mirror's main. Main is the mirrors' only writer of main, so the next publication
  * builds on it instead of fetching it back from GitHub. */
 const pushedMains = new Map<string, string>()
@@ -152,8 +165,23 @@ export class CloudCi {
   async publishMirror(input: CiMirrorInput): Promise<void> {
     const mirror = this.accountMirror(input.mirror)
     if (!mirror) return
-    await this.publish(input.repository, mirror, input.commit,
-      input.defaultBranch, input.baseCommit, input.durations ?? {}, false)
+    const branch = input.baseCommit ? `ci/${input.commit}-${input.baseCommit}` : `ci/${input.commit}`
+    const reservations = publishingBranches.get(mirror) ?? new Set<string>()
+    const reservation = `${randomUUID()}\n${branch}`
+    reservations.add(reservation)
+    publishingBranches.set(mirror, reservations)
+    const maintenance = mirrorMaintenance.get(this.mirrorKey(input.repository, mirror))
+    if (maintenance?.cleanup) {
+      maintenance.keep.add(branch)
+      maintenance.keep.add(`ci-default/${input.commit}`)
+    }
+    try {
+      await this.publish(input.repository, mirror, input.commit,
+        input.defaultBranch, input.baseCommit, input.durations ?? {}, false)
+    } finally {
+      reservations.delete(reservation)
+      if (!reservations.size) publishingBranches.delete(mirror)
+    }
   }
 
   /** This org's copy of a workspace mirror: the same repository name under the org's GitHub owner; null when the org
@@ -605,7 +633,14 @@ export class CloudCi {
         if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
         return this.reconcileLookupFailure(run, error)
       }
-      if (await this.provider.find(run)) return this.save({ ...run, state: 'running', workflowStarted: true })
+      const status = await this.provider.status(run)
+      if (!status.done) {
+        return this.save({ ...run,
+          message: `${this.provider.label} cancellation is unconfirmed; waiting before retrying dispatch.` })
+      }
+      if (status.conclusion !== 'cancelled') {
+        return this.save({ ...run, state: 'running', workflowStarted: true })
+      }
     }
     const retry = run.dispatch && run.dispatch.attempts < MAX_DISPATCH_ATTEMPTS
     const message = `${this.provider.label} created no workflow within 75 seconds. `
@@ -676,22 +711,18 @@ export class CloudCi {
         activeRuns = { ...activeRuns, ids }
       }
       const publications = this.publications(run.repository, run.mirror)
-      const publicationKeys = new Map<string, string[]>()
-      for (const key of publications.keys()) {
-        const [commit, , baseCommit] = key.split('\n')
-        const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
-        const keys = publicationKeys.get(branch) ?? []
-        keys.push(key)
-        publicationKeys.set(branch, keys)
-      }
       const reserved = mirrorMaintenance.get(this.mirrorKey(run.repository, run.mirror))!.keep
       await pruneMirrorBranches({ mirror: run.mirror, activeRuns,
         roots: [this.root, join(this.root, '..', 'github'), join(this.root, '..', 'circleci')],
         // Starts during this sweep stay protected even after their reservation becomes a persisted ticket.
         keep: () => reserved,
+        withRemovalLock: remove => serializeMirror(run.mirror, remove),
         beforeRemove: branches => {
-          for (const branch of branches) {
-            for (const key of publicationKeys.get(branch) ?? []) publications.delete(key)
+          const removed = new Set(branches)
+          for (const key of publications.keys()) {
+            const [commit, , baseCommit] = key.split('\n')
+            const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
+            if (removed.has(branch) || removed.has(`ci-default/${commit}`)) publications.delete(key)
           }
         },
         git: async args => {
@@ -708,6 +739,12 @@ export class CloudCi {
    * that splits its files on the runner (`exact`) needs a snapshot with exactly its learned durations; any other start
    * only orders its files by them, so it reuses whichever snapshot of the commit is already there. */
   private async publish(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
+    baseCommit: string | undefined, durations: CiDurations, exact: boolean) {
+    return serializeMirror(mirror, () => this.publishLocked(repository, mirror, commit,
+      defaultBranch, baseCommit, durations, exact))
+  }
+
+  private async publishLocked(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
     baseCommit: string | undefined, durations: CiDurations, exact: boolean) {
     const prefix = `${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n`
     const key = `${prefix}${canonicalJson(durations)}`
@@ -1202,7 +1239,8 @@ export class CloudCi {
     let stopped = discoveryComplete && !run.dispatch?.uncertain && (ids.size > 0 || !run.dispatch?.attempts)
     for (const providerRunId of ids) {
       const attempt = { ...run, providerRunId }
-      if (!canceled.has(providerRunId)) {
+      // CircleCI can accept cancellation before the pipeline has created any workflows.
+      if (!canceled.has(providerRunId) || this.provider.id === 'circleci') {
         await this.provider.cancel(attempt)
         canceled.add(providerRunId)
         run = await this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled] } })
