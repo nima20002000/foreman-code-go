@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
@@ -14,17 +14,25 @@ const { tsImport } = await import(require.resolve('tsx/esm/api'));
 const { enrollWorkerCode, pairingErrorMessage } = await tsImport('../src/enrollment.mjs', import.meta.url);
 const { ensurePairedManagedSetup } = await tsImport('../src/managedSetup.mjs', import.meta.url);
 const { inspectManagedInstallation, pairingTarget } = await tsImport('../src/managedInstallation.mjs', import.meta.url);
+const { openPrivateRoot } = await tsImport('../../api/src/modules/sources/privateFilesystem.ts', import.meta.url);
 const { qualifyApprovedRootAllowlist } = await tsImport('../../api/src/modules/sources/rootAttestation.ts', import.meta.url);
 const { encodeWorkerEnrollmentCode } = await tsImport('../../../packages/contracts/src/deviceSetup.ts', import.meta.url);
 const { loadOrCreateWorkerIdentity, persistWorkerPairing, loadWorkerPairing, publicKeyFingerprint,
   mainEnrollmentProofMessage } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
 
-async function fixture(t) {
+async function fixture(t, { aliasedHome = false } = {}) {
   t.after(mockHostMounts(t.mock, persistentHostMounts));
   const parent = join(homedir(), '.cache', 'foreman-tmp');
   await mkdir(parent, { recursive: true });
-  const home = await mkdtemp(join(parent, 'worker-re-enroll-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  const directory = await mkdtemp(join(parent, 'worker-re-enroll-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let home = directory;
+  if (aliasedHome) {
+    const target = join(await realpath(directory), 'home');
+    await mkdir(target, { mode: 0o700 });
+    home = join(directory, 'home-alias');
+    await symlink(target, home);
+  }
   const stateDirectory = join(home, 'state');
   const identity = await loadOrCreateWorkerIdentity(stateDirectory);
   const key = generateKeyPairSync('ed25519');
@@ -141,4 +149,30 @@ test('enrollment reports incomplete setup while retaining accepted pairing and o
   assert.deepEqual(JSON.parse(await readFile(join(f.stateDirectory, 'job-runtime.json'), 'utf8')), installed.runtime);
   const bootstrap = JSON.parse(await readFile(join(f.stateDirectory, 'ci-runtime-installation.json'), 'utf8'));
   assert.deepEqual(bootstrap.target, pairingTarget(f.previous));
+});
+
+test('re-pairing adopts a canonical runtime through a symlinked home and keeps private roots canonical', async t => {
+  const f = await fixture(t, { aliasedHome: true });
+  const canonicalHome = await realpath(f.home);
+  const canonicalState = await realpath(f.stateDirectory);
+  const installed = await provisionRuntime({ ...f, home: canonicalHome, stateDirectory: canonicalState });
+  await assert.rejects(openPrivateRoot(f.stateDirectory), { code: 'SOURCE_FILESYSTEM_UNSUPPORTED' });
+  const pairing = { ...f.previous, authorizationRevision: 3, credential: 'b'.repeat(64) };
+  await persistWorkerPairing(f.stateDirectory, pairing);
+  const options = { stateDirectory: f.stateDirectory, pairing, home: f.home,
+    inspectInstallation: (installation, home) => inspectManagedInstallation(installation, home,
+      { readQuota: installed.readQuota }) };
+  const result = await ensurePairedManagedSetup(options);
+  assert.equal(result.state, 'ready', result.message);
+  assert.equal(result.migrated, true);
+  const bootstrap = JSON.parse(await readFile(join(f.stateDirectory, 'ci-runtime-installation.json'), 'utf8'));
+  assert.deepEqual(bootstrap.target, pairingTarget(pairing));
+  assert.equal(bootstrap.runtime.descriptor.runtimeRoot, installed.runtime.descriptor.runtimeRoot);
+  const approved = JSON.parse(await readFile(join(f.stateDirectory, 'approved-roots.json'), 'utf8'));
+  for (const path of [approved.managedRuntimeRoot, ...approved.bases.map(base => base.canonicalPath)]) {
+    assert.equal(path, await realpath(path));
+    const root = await openPrivateRoot(path, false);
+    await root.close();
+  }
+  assert.equal((await ensurePairedManagedSetup(options)).state, 'ready');
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { installVersion, stageRunningVersion } from '../src/installation.mjs';
@@ -80,28 +80,35 @@ test('update staging migrates an installed pinned Companion launcher and preserv
   } finally { await unlock(); }
 });
 
-test('updater startup migrates a pinned launcher left by an older updater', async t => {
-  const parent = join(homedir(), '.cache/foreman-tmp');
-  await mkdir(parent, { recursive: true });
-  const base = await mkdtemp(join(parent, 'companion-startup-'));
-  t.after(() => rm(base, { recursive: true, force: true }));
-  const root = join(base, 'app');
-  const stateDirectory = join(base, 'state');
-  await mkdir(stateDirectory, { mode: 0o700 });
-  const options = { root, stateDirectory, facts, expected, updatePolicy: async () => true };
-  const previous = await installVersion({ ...options, ...await artifact(base, '1.0.0') });
-  const launcher = join(root, 'graphql-companion');
-  await writeFile(launcher, `#!/bin/sh\nexec '${process.execPath}' '${previous.directory}/src/companion.mjs' "$@"\n`,
-    { mode: 0o700 });
-  const installed = await installVersion({ ...options, ...await artifact(base, '1.1.0') });
-  const unlock = await acquireWorkerLock(stateDirectory);
-  try {
-    const updater = await new WorkerUpdater({ stateDirectory, facts, version: installed.version,
-      manifestSha256: installed.manifestSha256, releaseDirectory: installed.directory,
-      assertStateOwnership: unlock.assertOwned }).initialize();
-    t.after(() => updater.close());
-    const result = spawnSync(launcher, ['doctor'], { encoding: 'utf8', timeout: 2000 });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).version, '1.1.0');
-  } finally { await unlock(); }
-});
+for (const aliasedHome of [false, true]) {
+  test(`updater startup migrates a pinned launcher with ${aliasedHome ? 'a symlinked' : 'a canonical'} home`, async t => {
+    const parent = join(homedir(), '.cache/foreman-tmp');
+    await mkdir(parent, { recursive: true });
+    const directory = await realpath(await mkdtemp(join(parent, 'companion-startup-')));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, 'home');
+    await mkdir(home, { mode: 0o700 });
+    const alias = join(directory, 'home-alias');
+    await symlink(home, alias);
+    const base = aliasedHome ? alias : home;
+    const root = join(base, 'app');
+    const stateDirectory = join(base, 'state');
+    await mkdir(stateDirectory, { mode: 0o700 });
+    const options = { root, stateDirectory, facts, expected, updatePolicy: async () => true };
+    const previous = await installVersion({ ...options, ...await artifact(base, '1.0.0') });
+    const launcher = join(root, 'graphql-companion');
+    await writeFile(launcher, `#!/bin/sh\nexec '${process.execPath}' '${previous.directory}/src/companion.mjs' "$@"\n`,
+      { mode: 0o700 });
+    const installed = await installVersion({ ...options, ...await artifact(base, '1.1.0') });
+    const unlock = await acquireWorkerLock(stateDirectory);
+    try {
+      const updater = await new WorkerUpdater({ stateDirectory, facts, version: installed.version,
+        manifestSha256: installed.manifestSha256, releaseDirectory: installed.directory,
+        assertStateOwnership: unlock.assertOwned }).initialize();
+      t.after(() => updater.close());
+      const result = spawnSync(launcher, ['doctor'], { encoding: 'utf8', timeout: 2000 });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).version, '1.1.0');
+    } finally { await unlock(); }
+  });
+}
