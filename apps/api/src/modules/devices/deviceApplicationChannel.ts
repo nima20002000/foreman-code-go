@@ -13,7 +13,7 @@ import { RemoteExecutionRpcRequestSchema, WorkerConversationRpcRequestSchema } f
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
-import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
+import { DeviceConnectionError, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket, type DeviceMessageIterator } from './deviceWire.js'
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
@@ -36,6 +36,7 @@ export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
 export interface DeviceApplicationRequestOptions {
   signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number; priority?: DeviceRequestPriority
   uploadTimeoutMs?: number
+  onUploadStarted?(): void
   onUploaded?(): void
   onUploadProgress?(acknowledgedBytes: number): void
 }
@@ -302,7 +303,9 @@ export class DeviceApplicationChannel {
     // Observe rejection immediately while the request bytes are still uploading.
     void result.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     try {
-      await this.sendPacket(id, namespace, version, 'request', payload, options.bytes, abort.signal, admission)
+      await this.sendPacket(id, namespace, version, 'request', payload, options.bytes, abort.signal, {
+        ...admission, ...(options.onUploadStarted ? { onUploadStarted: options.onUploadStarted } : {}),
+      })
       uploading = false
       if (options.uploadTimeoutMs !== undefined) {
         clearTimeout(timer)
@@ -405,7 +408,7 @@ export class DeviceApplicationChannel {
   }
   private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'],
     payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal,
-    admission: { stop: boolean; observation?: boolean; priority?: DeviceRequestPriority } = { stop: false }) {
+    admission: { stop: boolean; observation?: boolean; priority?: DeviceRequestPriority; onUploadStarted?(): void } = { stop: false }) {
     this.current()
     const { stop } = admission
     const extension = this.extensions.find((item) => item.namespace === namespace)!
@@ -445,6 +448,7 @@ export class DeviceApplicationChannel {
         ...(kind === 'request' && admission.observation
           && this.negotiated(namespace, true).observationAdmission === true
           ? { admission: 'observation' as const } : {}) })
+      admission.onUploadStarted?.()
       const packet = bytes ? Buffer.concat([json, Buffer.from(bytes)]) : json
       // Short calls share one window so a later MCP request cannot bypass waiting short requests.
       const binaryMcp = bytes !== undefined && namespace === WORKER_MCP_EXTENSION.namespace
@@ -628,8 +632,8 @@ export class DeviceApplicationChannel {
       assembly.abort.abort()
     }
   }
-  run(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> { return this.track(this.runInternal(iterator, heartbeatMs)) }
-  private async runInternal(iterator: AsyncIterator<string>, heartbeatMs: number): Promise<void> {
+  run(iterator: DeviceMessageIterator, heartbeatMs: number): Promise<void> { return this.track(this.runInternal(iterator, heartbeatMs)) }
+  private async runInternal(iterator: DeviceMessageIterator, heartbeatMs: number): Promise<void> {
     let lastHeartbeat = Date.now(), timer: ReturnType<typeof setInterval> | undefined
     const worker = this.options.side === 'worker'
     if (worker) {
@@ -645,12 +649,20 @@ export class DeviceApplicationChannel {
       }
       ping(); timer = setInterval(ping, heartbeatMs)
     }
+    const heartbeatBudgetMs = heartbeatMs * (worker ? 2 : 1)
+    let heartbeatTimer: ReturnType<typeof setTimeout>
+    const checkHeartbeat = () => {
+      const remaining = lastHeartbeat + heartbeatBudgetMs - Date.now()
+      if (remaining <= 0) this.close(new DeviceConnectionError('timeout'))
+      else heartbeatTimer = setTimeout(checkHeartbeat, remaining)
+    }
+    heartbeatTimer = setTimeout(checkHeartbeat, heartbeatBudgetMs)
     try {
-      while (!this.abort.signal.aborted) {
-        const next = await nextFrame(iterator, this.abort.signal, Math.max(1, lastHeartbeat + heartbeatMs * (worker ? 2 : 1) - Date.now()))
-        if (next.done) throw new DeviceConnectionError('transport', this.options.socket.closeDetail ?? 'peer closed the link')
+      // Application assemblies already reserve bounded receive capacity before any chunks arrive.
+      // Drain frames synchronously so a coalesced upload window does not occupy the handshake queue.
+      await iterator.consume(text => {
         const observedAt = new Date().toISOString()
-        const frame = readFrame(next.value)
+        const frame = readFrame(text)
         if (frame.type === (worker ? 'pong' : 'ping')) {
           if (frame.connectionEpoch !== this.binding.connectionEpoch) throw new DeviceConnectionError('malformed-frame')
           lastHeartbeat = Date.now()
@@ -667,9 +679,17 @@ export class DeviceApplicationChannel {
         } else if (frame.type === 'blocked') throw new DeviceConnectionError(classify(frame.code))
         else this.receive(frame)
         this.current(); this.options.onObservedFrame?.(observedAt)
-      }
+      }, this.abort.signal)
       if (this.failure) throw this.failure
-    } catch (error) { this.close(error instanceof Error ? error : new DeviceConnectionError('transport')); throw error } finally { if (timer) clearInterval(timer); this.close() }
+      throw new DeviceConnectionError('transport', this.options.socket.closeDetail ?? 'peer closed the link')
+    } catch (error) {
+      this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
+      throw error
+    } finally {
+      clearTimeout(heartbeatTimer)
+      if (timer) clearInterval(timer)
+      this.close()
+    }
   }
   close(error: Error = new DeviceConnectionError('transport')) {
     if (this.abort.signal.aborted) return

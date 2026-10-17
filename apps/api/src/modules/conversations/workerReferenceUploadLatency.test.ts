@@ -5,6 +5,7 @@ import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { WORKER_MCP_EXTENSION, decodeWorkerMcpRequest } from '@foreman-code/contracts/worker-mcp-relay'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { DeviceApplicationChannel, extensionDescriptors } from '../devices/deviceApplicationChannel.js'
+import { workerMcpUploadCeilingMs } from '../devices/workerMcpDeadline.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
 import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
 import { workerConversationFixture } from './workerFixtures.test-support.js'
@@ -23,15 +24,32 @@ class LatencySocket extends EventEmitter {
   dropChunks = false
   bytesPerSecond = Infinity
   lastAcknowledgedAt: number | undefined
+  lastAdmittedAt: number | undefined
+  coalesce = false
+  largestBatchBytes = 0
+  private batch: string[] = []
   private availableAt = 0
   constructor(private readonly latencyMs: number) { super() }
   send(text: string) {
     const frame = JSON.parse(text) as { type: string; offset?: number }
     if (this.dropChunks && frame.type === 'application-chunk') return
+    if (this.coalesce) {
+      this.batch.push(text)
+      if (this.batch.length === 1) setTimeout(() => {
+        const batch = this.batch.splice(0)
+        this.largestBatchBytes = Math.max(this.largestBatchBytes,
+          batch.reduce((total, item) => total + Buffer.byteLength(item), 0))
+        for (const item of batch) {
+          if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(item), false)
+        }
+      }, this.latencyMs)
+      return
+    }
     const deliver = () => {
       if (this.closed || this.peer?.closed) return
-      if (this.peer && frame.type === 'application-ack' && (frame.offset ?? 0) > 0) {
-        this.peer.lastAcknowledgedAt = Date.now()
+      if (this.peer && frame.type === 'application-ack') {
+        if (frame.offset === 0) this.peer.lastAdmittedAt = Date.now()
+        else this.peer.lastAcknowledgedAt = Date.now()
       }
       this.peer?.emit('message', Buffer.from(text), false)
     }
@@ -109,7 +127,13 @@ async function prepare(toolDurationMs: number, latencyMs = 50) {
   return { relay, receivedAt: () => receivedAt, received: () => received, calls: () => calls,
     stallUpload: () => { workerRaw.dropChunks = true },
     limitUpload: (bytesPerSecond: number) => { workerRaw.bytesPerSecond = bytesPerSecond },
-    lastAcknowledgedAt: () => workerRaw.lastAcknowledgedAt }
+    lastAcknowledgedAt: () => workerRaw.lastAcknowledgedAt,
+    lastAdmittedAt: () => workerRaw.lastAdmittedAt,
+    coalesceFrames: () => { mainRaw.coalesce = true; workerRaw.coalesce = true },
+    largestBatchBytes: () => workerRaw.largestBatchBytes,
+    occupyCapacity: () => worker.request(WORKER_MCP_EXTENSION.namespace, { operation: 'occupied' }, {
+      bytes: Buffer.alloc(WORKER_MCP_EXTENSION.maxBinaryBytes), uploadTimeoutMs: workerMcpUploadCeilingMs,
+    }) }
 }
 
 function referenceCall(byteSize: number) {
@@ -162,7 +186,10 @@ it('cancels a stalled upload within its own budget before running the tool', asy
   let timedOut = false
   const checked = expect(pending.catch(error => { timedOut = true; throw error }))
     .rejects.toMatchObject({ code: 'timeout' })
-  await vi.advanceTimersByTimeAsync(14_999)
+  await vi.advanceTimersByTimeAsync(200)
+  const admittedAt = f.lastAdmittedAt()!
+  expect(admittedAt).toBeGreaterThan(Date.now() - 200)
+  await vi.advanceTimersByTimeAsync(admittedAt + 14_999 - Date.now())
   expect(timedOut).toBe(false)
   await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(1)])
   await checked
@@ -203,4 +230,69 @@ it('times out fifteen seconds after the last acknowledged progress when an uploa
   expect(await pending).toMatchObject({ code: 'timeout' })
   expect(settledAt! - lastAcknowledgedAt).toBe(15_000)
   expect(f.calls()).toBe(0)
+})
+
+
+it('preserves the Worker link when a full upload window arrives in one socket callback', async () => {
+  const f = await prepare(0)
+  f.coalesceFrames()
+  const call = referenceCall(2 * 1024 * 1024)
+  const checked = expect(f.relay.request(call)).resolves.toMatchObject({ statusCode: 200 })
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(20_000)])
+  await checked
+  expect(f.largestBatchBytes()).toBeGreaterThan(65_536)
+  expect(f.received()).toEqual(call)
+  const followUp = expect(f.relay.request({ jsonrpc: '2.0', id: 2, method: 'ping' }))
+    .resolves.toMatchObject({ statusCode: 200 })
+  await vi.advanceTimersByTimeAsync(1000)
+  await followUp
+})
+
+it('lets a queued reference wait for upload capacity without consuming its idle budget', async () => {
+  const f = await prepare(0)
+  f.limitUpload(1_000_000)
+  const first = expect(f.relay.request(referenceCall(20 * 1024 * 1024))).resolves.toMatchObject({ statusCode: 200 })
+  await vi.advanceTimersByTimeAsync(500)
+  const call = referenceCall(20 * 1024 * 1024)
+  const second = expect(f.relay.request(call)).resolves.toMatchObject({ statusCode: 200 })
+  await Promise.allSettled([first, second, vi.advanceTimersByTimeAsync(90_000)])
+  await first
+  await second
+  expect(f.received()).toEqual(call)
+  expect(f.calls()).toBe(2)
+})
+
+it('still rejects an upload when its bounded capacity wait expires', async () => {
+  const f = await prepare(0)
+  f.stallUpload()
+  const occupied = f.occupyCapacity().catch((error: unknown) => error)
+  await vi.advanceTimersByTimeAsync(500)
+  const started = Date.now()
+  let settledAt: number | undefined
+  const pending = f.relay.request(referenceCall(2 * 1024 * 1024)).catch((error: unknown) => {
+    settledAt = Date.now()
+    return error
+  })
+  await vi.advanceTimersByTimeAsync(44_999)
+  expect(settledAt).toBeUndefined()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(await pending).toMatchObject({ code: 'backpressure', reason: 'upload_capacity_timeout' })
+  expect(settledAt! - started).toBe(45_000)
+  expect(f.calls()).toBe(0)
+  void occupied
+})
+
+it('lets a queued upload wait for a bulk request slot before starting its idle budget', async () => {
+  const f = await prepare(20_000)
+  const occupied = Array.from({ length: 4 }, () => expect(f.relay.request(referenceCall(1024 * 1024)))
+    .resolves.toMatchObject({ statusCode: 200 }))
+  await vi.advanceTimersByTimeAsync(3000)
+  expect(f.calls()).toBe(4)
+  const call = referenceCall(2 * 1024 * 1024)
+  const queued = expect(f.relay.request(call)).resolves.toMatchObject({ statusCode: 200 })
+  await Promise.allSettled([...occupied, queued, vi.advanceTimersByTimeAsync(60_000)])
+  await Promise.all(occupied)
+  await queued
+  expect(f.received()).toEqual(call)
+  expect(f.calls()).toBe(5)
 })
