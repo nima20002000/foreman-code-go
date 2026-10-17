@@ -22,16 +22,15 @@ export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.en
   for (const key of Object.keys(environment)) {
     if (isControllerEnvironmentVariable(key)) delete environment[key]
   }
-  // Explicit runtime configuration delivery: this location contains no credential.
-  environment.FOREMAN_CODE_APP_MCP_DIRECTORY = appMcpDirectory(source)
   return environment
 }
 
-/** Installed native entries may reference either token spelling; deliver only the admitted token. */
-export function appMcpTokenEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/** Deliver the admitted token in both native spellings together with its bridge location. */
+export function appMcpTokenEnvironment(source: NodeJS.ProcessEnv, runtimeEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const token = readProductEnvironment(source, 'MCP_TOKEN')
   if (token === undefined) return source
-  return { ...source, FOREMAN_CODE_MCP_TOKEN: token, GRAPHQL_MCP_TOKEN: token }
+  return { ...source, FOREMAN_CODE_MCP_TOKEN: token, GRAPHQL_MCP_TOKEN: token,
+    FOREMAN_CODE_APP_MCP_DIRECTORY: appMcpDirectory(runtimeEnvironment) }
 }
 
 /** Keep a native CLI's helper lookups on the same installation as its executable. */

@@ -73,7 +73,7 @@ export function queryOptions(ctx: ClaudeManagerContext, start: NativeSessionStar
     throw new HarnessExecutionError('CLAUDE_ENVIRONMENT_INVALID',
       'The Claude environment cannot contain database credentials.')
   }
-  const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment), preferences)
+  const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment, process.env), preferences)
   const instructions = agentInstructionBundle(configuration)
   const systemPrompt = sessionStartSystemPrompt(start)?.value.text
   if (!instructions && !systemPrompt) return { ...sdkOptions, env: scoped }

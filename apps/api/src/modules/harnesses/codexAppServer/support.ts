@@ -69,7 +69,7 @@ export function safeEnvironment(input?: NativeSessionStart['environment'], scope
       environment[key] = value
     }
   }
-  return appMcpTokenEnvironment(environment)
+  return appMcpTokenEnvironment(environment, process.env)
 }
 export function validateEnvironmentOwner(input: NativeSessionStart, requiredVariable?: string): void {
   if (input.environment && input.environment.agentId !== ownerId(input)) {
