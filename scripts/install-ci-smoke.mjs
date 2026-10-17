@@ -105,6 +105,11 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token,
           if (!isDeepStrictEqual(result.run.computer?.hostRef, computer.hostRef)) {
             throw new Error(`CI smoke ${ticketId} ran on a different computer.`)
           }
+          // Execution settles before report collection; only collected results can prove which file ran.
+          if (result.run.collection === 'pending') {
+            await delay(pollMs, undefined, { signal })
+            continue
+          }
           const { tests } = await request(`${root}/${ticketId}/tests`, { step: `test results ${ticketId}` })
           const file = tests?.files.find(file => file.file === smokeFile)
           if (!file?.tests.some(test => test.status === 'passed') || tests.summary.failed !== 0) {
