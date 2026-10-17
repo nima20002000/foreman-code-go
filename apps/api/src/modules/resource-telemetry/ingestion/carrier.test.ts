@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import type { CollectionChallenge, TelemetryCollectedBatch, TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
+import { TELEMETRY_LIMITS, type CollectionChallenge, type TelemetryCollectedBatch, type TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
 import { createMainResourceTelemetryBindings, createWorkerResourceTelemetryExtension, mainResourceTelemetryExtension, remoteTelemetryContext, startRemoteTelemetrySession } from './carrier.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { ResourceTelemetryService } from './service.js'
@@ -79,6 +79,77 @@ function setup(options: { delayFirstSample?: boolean; bindingReaderThrows?: bool
     revoke() { authorized = false }, change(value: DeviceSessionBinding | null) { current = value } }
 }
 afterEach(() => vi.useRealTimers())
+it('retries a transient attachment lookup at the collection interval without reconnecting', async () => {
+  vi.useFakeTimers()
+  const s = setup()
+  const original = s.service.ports.sessions.active
+  const active = vi.spyOn(s.service.ports.sessions, 'active')
+    .mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }))
+    .mockImplementation(original)
+  const starting = startRemoteTelemetrySession({ service: s.service, binding,
+    signal: s.lifetime.signal, request: s.request })
+  const outcome = starting.then(session => ({ session, error: undefined }),
+    (error: unknown) => ({ session: undefined, error }))
+  try {
+    await vi.advanceTimersByTimeAsync(TELEMETRY_LIMITS.intervalMs - 1)
+    expect(active).toHaveBeenCalledTimes(1)
+    expect(s.request).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await outcome
+    expect(result.error).toBeUndefined()
+    expect(s.request).toHaveBeenCalledTimes(1)
+    expect(await s.service.availableComputerMemory({
+      hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+      applicationInstallationId: binding.workerInstallationId, bootId: binding.bootId,
+      keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
+    }, s.lifetime.signal)).toBe(1)
+  } finally {
+    s.lifetime.abort()
+    await (await outcome).session?.close()
+    await s.worker.close()
+    await s.service.close()
+  }
+})
+
+it('stops attachment retries when the connection lifetime ends', async () => {
+  vi.useFakeTimers()
+  const s = setup()
+  const active = vi.spyOn(s.service.ports.sessions, 'active')
+    .mockRejectedValue(Object.assign(new Error('statement timeout'), { code: '57014' }))
+  const starting = startRemoteTelemetrySession({ service: s.service, binding,
+    signal: s.lifetime.signal, request: s.request })
+  const outcome = starting.then(() => undefined, (error: unknown) => error)
+  await vi.advanceTimersByTimeAsync(0)
+  s.lifetime.abort(new Error('connection closed'))
+  try {
+    expect(await outcome).toEqual(new Error('connection closed'))
+    await vi.advanceTimersByTimeAsync(TELEMETRY_LIMITS.intervalMs)
+    expect(active).toHaveBeenCalledTimes(1)
+    expect(s.request).not.toHaveBeenCalled()
+  } finally {
+    await s.worker.close()
+    await s.service.close()
+  }
+})
+
+it('keeps attachment authorization denials terminal', async () => {
+  vi.useFakeTimers()
+  const s = setup()
+  s.revoke()
+  const active = vi.spyOn(s.service.ports.sessions, 'active')
+  try {
+    await expect(startRemoteTelemetrySession({ service: s.service, binding,
+      signal: s.lifetime.signal, request: s.request })).rejects.toThrow('authorization')
+    await vi.advanceTimersByTimeAsync(TELEMETRY_LIMITS.intervalMs)
+    expect(active).toHaveBeenCalledTimes(1)
+    expect(s.request).not.toHaveBeenCalled()
+  } finally {
+    s.lifetime.abort()
+    await s.worker.close()
+    await s.service.close()
+  }
+})
+
 describe('authenticated W07 passive telemetry carrier', () => {
   it.each([false, true])('keeps collecting after a retired binding delivers a late sample (reader throws: %s)', async bindingReaderThrows => {
     vi.useFakeTimers()
