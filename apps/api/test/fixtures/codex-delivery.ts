@@ -26,7 +26,7 @@ export async function deliveryFixture() {
       qualify: fixtureQualification,
       assertUnchanged: async () => undefined,
       transport: (...args) => {
-        args[7] = 500
+        args[7] = 10_000
         return new CodexStdioTransport(...args)
       },
       id: randomUUID,

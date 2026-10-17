@@ -27,6 +27,15 @@ describe('Codex creation and prompt write boundaries', () => {
   beforeEach(async () => { f = await deliveryFixture() })
   afterEach(async () => { await f.close() })
 
+  it('accepts a delayed session reply without treating creation as uncertain', async () => {
+    const manager = f.makeManager()
+    await f.flag('late-thread-start')
+    const session = await manager.createSession(chatInput(f.directory))
+    assert.equal(session.harness, 'codex')
+    assert.equal((await f.wire('thread/start')).length, 1)
+    assert.equal((await f.wire('turn/start')).length, 0)
+  })
+
   it('refuses workflow credentials in chat before creating a thread', async () => {
     const manager = f.makeManager()
     await assert.rejects(manager.createSession(input(f.directory)), (error: unknown) => {
@@ -128,7 +137,12 @@ describe('Codex creation and prompt write boundaries', () => {
 
   it('retains a late prompt rejection only for its correlation without inventing a turn', async () => {
     const journalPath = join(f.directory, 'native-journal')
-    const manager = f.makeManager(undefined, {}, { responseJournal: new NativeResponseJournal(journalPath) })
+    const manager = f.makeManager(undefined, {
+      transport: (...args) => {
+        args[7] = 500
+        return new CodexStdioTransport(...args)
+      },
+    }, { responseJournal: new NativeResponseJournal(journalPath) })
     const source = chatInput(f.directory)
     const session = await manager.createSession(source)
     await assert.rejects(collect(manager.startTurn(session, { prompt: 'late-reject', clientCorrelationId: 'rejected' })),
@@ -264,7 +278,12 @@ describe('Codex creation and prompt write boundaries', () => {
     let allocations = 0
     const admitted = createAdmittedNativeManager('codex', async () => {
       allocations++
-      return { manager: f.makeManager() }
+      return { manager: f.makeManager(undefined, {
+        transport: (...args) => {
+          args[7] = 500
+          return new CodexStdioTransport(...args)
+        },
+      }) }
     })
     await assert.rejects(admitted.manager.reconcileSessionCreation!(source))
     assert.equal(allocations, 0)
@@ -286,7 +305,12 @@ describe('Codex creation and prompt write boundaries', () => {
   })
 
   it('retains a late definitive creation rejection until cleanup and reconciliation', async () => {
-    const manager = f.makeManager()
+    const manager = f.makeManager(undefined, {
+      transport: (...args) => {
+        args[7] = 500
+        return new CodexStdioTransport(...args)
+      },
+    })
     const source = chatInput(f.directory)
     await f.flag('late-reject-thread-start')
     await assert.rejects(manager.createSession(source), boundary('session_creation', 'unknown'))

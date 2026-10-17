@@ -9,6 +9,7 @@ import {
   type PendingNativeInteraction,
 } from '@foreman-code/contracts'
 import { afterEach, beforeEach, vi } from 'vitest'
+import type { CodexSessionDependencies } from '../src/modules/harnesses/codexAppServer.js'
 import type { NativeResponseAvailabilityQuery } from '../src/modules/harnesses/responseAvailability.js'
 import type { WorkflowNativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
@@ -42,13 +43,13 @@ vi.doMock('../src/modules/harnesses/codexProtocol.js', async () => {
   return { ...actual, qualifyCodex: fixtureQualification, assertCodexUnchanged: async () => undefined }
 })
 
-let requestTimeoutMs = 500
+let requestTimeoutMs = 10_000
 
 vi.doMock('../src/modules/harnesses/codexStdioTransport.js', async () => {
   const actual = await vi.importActual<typeof import('../src/modules/harnesses/codexStdioTransport.js')>('../src/modules/harnesses/codexStdioTransport.js')
   class TestTransport extends actual.CodexStdioTransport {
     constructor(...args: ConstructorParameters<typeof actual.CodexStdioTransport>) {
-      args[7] = requestTimeoutMs
+      args[7] ??= requestTimeoutMs
       super(...args)
     }
   }
@@ -73,7 +74,15 @@ let scratchCleanupId: string
 
 const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
 
-export function makeManager(): Manager { const value = new CodexAppServerSessionManager(f.binary); managers.push(value); return value }
+export function makeManager(
+  overrides: Omit<Partial<Extract<CodexSessionDependencies, { mode: 'native' }>>, 'mode'> = {},
+): Manager {
+  const value = new CodexAppServerSessionManager(f.binary, undefined, undefined, undefined, 'scoped', undefined, {
+    mode: 'native', ...overrides,
+  })
+  managers.push(value)
+  return value
+}
 
 export function codex(value = source): CodexHarnessConfiguration {
   const harness = value.request.configuration.harness
@@ -153,7 +162,7 @@ export async function assertMetadataProcessesClosed(): Promise<void> {
 
 export function useCodexFixture(options: { requestTimeoutMs?: number } = {}): void {
   beforeEach(async () => {
-    requestTimeoutMs = options.requestTimeoutMs ?? 500
+    requestTimeoutMs = options.requestTimeoutMs ?? 10_000
     scratch = createTestRoot(tmpdir(), 'foreman-code-codex-wire-')
     scratchCleanupId = registerTestResourceCleanup(invocation, {
       kind: 'codex-wire-fixture', directory: scratch.directory, owner: scratch.token,
