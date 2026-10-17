@@ -38,7 +38,7 @@ describe('disposable test resources', () => {
   it.each(['/postgres', '/graphql_test_unit'])(
     'rejects alternate servers, credentials and socket or search-path overrides for %s', pathname => {
     const serverUrl = new URL(pathname, testAdminUrl).toString()
-    expect(requireTestServerUrl(serverUrl).port).toBe('55439')
+    expect(requireTestServerUrl(serverUrl).port).toBe(new URL(testAdminUrl).port)
     const alternatePortUrl = new URL(serverUrl)
     alternatePortUrl.port = alternatePortUrl.port === '32768' ? '32769' : '32768'
     for (const value of [
