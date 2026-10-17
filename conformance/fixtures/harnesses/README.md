@@ -33,7 +33,12 @@ A scenario always begins with fresh counters.
 
 A turn may supply `answer`, `jsonAnswer`, a real native `failure`, or a
 `holdUntilFile` control filename. Holds remain interruptible and read only the
-owned `codexDirectory/control` directory. Native `tools` execute in order, through
+owned `codexDirectory/control` directory. An optional `holdTerminalUntilFile`
+emits the answer as an actual native `item/agentMessage/delta`, then waits up to
+25 seconds for its owned control file before publishing final history and the
+terminal result. The dedicated browser-stream case must observe and fully assert
+that provisional delta before release; HTTP readback cannot replace this delivery
+evidence. Timeout and interruption retain actual failures. Native `tools` execute in order, through
 the actual declared callback. Each tool has `name`, `arguments`, and an optional
 `saveAs` binding. An object such as `{"$ref":"copy/value/artifactId"}` resolves
 against the exact parsed JSON in the tool response's first `inputText` item. Path

@@ -5,6 +5,8 @@ import {
 } from '@foreman-code/contracts/wave25'
 import { assertResponse } from '../../assertions.js'
 import type { Scenario } from '../../scenario.js'
+import { readCoverage } from '../http/support.js'
+import { assertRunInspectionReadbacks, runInspectionMcpClaims } from '../mcp/runInspection.js'
 import { httpCoverage } from '../smoke/support.js'
 import { createExecutableWorkflow } from './authoring.js'
 import { workflowDigest } from './digest.js'
@@ -15,16 +17,14 @@ const publicRun = '/api/management/workspaces/:workspaceId/runs/:runId'
 export const ordinaryWorkflowScenarios: Scenario[] = [
   {
     id: 'workflow.ordinary-native-completion',
-    title: 'An ordinary saved workflow starts Codex and retains exact inputs, result and immutable pins',
-    lane: 'E', timeoutMs: 120_000,
+    title: 'An ordinary saved workflow retains exact native inputs, results and immutable pins across authorized HTTP and MCP reads',
+    lane: 'E', authentication: 'operator', timeoutMs: 180_000,
     covers: [
       { surface: 'workflow', name: 'ordinary', case: 'success' },
       httpCoverage('POST', '/api/management/workspaces/:workspaceId/workflows/:workflowId/runs', 'success'),
-      httpCoverage('GET', `${publicRun}/record`, 'success'),
-      httpCoverage('GET', `${publicRun}/executions`, 'success'),
-      httpCoverage('GET', `${publicRun}/executions/:executionId`, 'success'),
-      httpCoverage('GET', `${publicRun}/executions/:executionId/bindings`, 'success'),
-      httpCoverage('GET', `${publicRun}/version`, 'success'),
+      ...['record', 'executions', 'executions/:executionId', 'executions/:executionId/bindings', 'version']
+        .flatMap(suffix => readCoverage(`${publicRun}/${suffix}`)),
+      ...runInspectionMcpClaims,
     ],
     async run(ctx) {
       const fixture = await createExecutableWorkflow(ctx, { name: 'Ordinary workflow' })
@@ -60,7 +60,7 @@ export const ordinaryWorkflowScenarios: Scenario[] = [
       })
       const inputDigest = workflowDigest(acceptedInput)
       const detailResponse = await ctx.http.request('GET', `${path}/executions/${execution.executionId}`)
-      RunExecutionDetailSchema.parse(detailResponse.body)
+      const detail = RunExecutionDetailSchema.parse(detailResponse.body)
       assertResponse(detailResponse, { status: 200, body: {
         run: runSummary, execution,
         acceptedInput: { digest: inputDigest, value: acceptedInput },
@@ -68,16 +68,20 @@ export const ordinaryWorkflowScenarios: Scenario[] = [
         reportedResult: result,
       } })
       const bindingsResponse = await ctx.http.request('GET', `${path}/executions/${execution.executionId}/bindings`)
-      RunExecutionBindingsPageSchema.parse(bindingsResponse.body)
+      const bindings = RunExecutionBindingsPageSchema.parse(bindingsResponse.body)
       assertResponse(bindingsResponse, { status: 200, body: {
         scope, executionId: execution.executionId, inputDigest, items: [], pageInfo: { nextCursor: null },
       } })
       const versionResponse = await ctx.http.request('GET', `${path}/version`)
-      RunVersionDetailSchema.parse(versionResponse.body)
+      const version = RunVersionDetailSchema.parse(versionResponse.body)
       assertResponse(versionResponse, { status: 200, body: { scope, version: fixture.saved.version } })
       assertResponse(await ctx.http.request('GET', `/api/management/workspaces/${run.workspaceId}/runs`), {
         status: 200, body: { items: [completed.run], pageInfo: { nextCursor: null } },
       })
+      const readback = { record: completed, executions: list, execution: detail, bindings, version }
+      await assertRunInspectionReadbacks(ctx, readback)
+      await ctx.target.restart()
+      await assertRunInspectionReadbacks(ctx, readback)
     },
   },
 ]

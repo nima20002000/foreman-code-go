@@ -19,6 +19,7 @@ export interface CodexTurnScript {
   failure?: string
   codexErrorInfo?: 'internalServerError'
   holdUntilFile?: string
+  holdTerminalUntilFile?: string
   interaction?: {
     method: 'item/tool/requestUserInput' | 'item/commandExecution/requestApproval'
     params: Record<string, unknown>

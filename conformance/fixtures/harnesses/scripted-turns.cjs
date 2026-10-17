@@ -2,7 +2,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
-const { selectTurnScript, runTurnScript } = require('./scripted-plans.cjs')
+const { selectTurnScript, runTurnScript, presentThenHoldTerminal } = require('./scripted-plans.cjs')
 const { createMcpTurn } = require('./scripted-mcp.cjs')
 
 function readOptional(file, fallback) {
@@ -182,10 +182,16 @@ function createScriptedTurns({ root, send, complete, loadThread, store }) {
         callTool: (name, argumentsValue) => requestTool(owner, turn, name, argumentsValue, operation),
         requestInteraction: (method, parameters) => requestInteraction(owner, turn, method, parameters, operation) }))
     }
-    void run().then(answer => {
+    void run().then(async answer => {
+      await presentThenHoldTerminal(root, plan, operation, () => {
+        // A genuine native provisional notification precedes final history. No
+        // public frame or accepted receipt is synthesized by this fixture.
+        send({ method: 'item/agentMessage/delta', params: { threadId: owner.id, turnId: turn.id,
+          itemId: `answer-${turn.id}`, delta: answer } })
+      })
       const native = loadThread(owner.id)?.turns.find(value => value.id === turn.id)
       if (!operation.cancelled && native?.status === 'inProgress') complete(owner.id, turn.id, 'completed', answer)
-    }, error => {
+    }).catch(error => {
       if (!operation.cancelled) complete(owner.id, turn.id, 'failed', '', nativeFailure(error))
     }).finally(() => active.delete(key))
     return true
