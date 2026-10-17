@@ -8,6 +8,7 @@ import { Readable } from 'node:stream'
 import { writeGoTestResults } from './ci-go-test-results.mjs'
 import { ciTestResults } from './ci-test-results.mjs'
 
+process.umask(0o077)
 const plan = JSON.parse(await readFile('scripts/ci-affected-go-plan.json', 'utf8'))
 const checkout = process.cwd()
 const originalHome = await realpath(homedir())
