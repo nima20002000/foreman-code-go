@@ -1,0 +1,34 @@
+{
+  "source": "037c680325a27f3f114797e376434897d68f34fa",
+  "ownerDeclaredSource": "c22b983e39c67e00741d2894e96307d5652e5b51",
+  "sourceTree": "e2e2b6975a21b3aab27dd49363435ad191953a6a",
+  "package": "./internal/runs/handoffs",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/runs/handoffs/ancestry.go",
+    "internal/runs/handoffs/ancestry_test.go",
+    "internal/runs/handoffs/doc.go",
+    "internal/runs/handoffs/joins.go",
+    "internal/runs/handoffs/joins_test.go",
+    "internal/runs/handoffs/reader_test.go",
+    "internal/runs/handoffs/returns.go",
+    "internal/runs/handoffs/returns_test.go"
+  ],
+  "unitFlags": [],
+  "unitRoots": [
+    "TestParentRequestIDFollowsContinuationAncestry",
+    "TestParentRequestIDWithoutSingleParent",
+    "TestParentRequestIDRejectsConflictingAncestry",
+    "TestParentRequestIDRequiresLinkedRecords",
+    "TestRoundIDPreservesRoundBoundaries",
+    "TestRoundIDAllowsSharedAncestorsAcrossJoinBranches",
+    "TestRoundIDRejectsConflicts",
+    "TestRoundIDRequiresScopedRequestAncestry",
+    "TestRoundIDMissingSavedEdgeDoesNotCreateReverseRound",
+    "TestAncestryReadersPropagateReadErrors",
+    "TestAncestryReadersRespectCancellation",
+    "TestJoinReadyRequiresExactSelectedEdges",
+    "TestResolveReturnRequestID"
+  ],
+  "unitPattern": "^(TestParentRequest|TestRoundID|TestAncestryReaders|TestJoinReady|TestResolveReturn)"
+}
