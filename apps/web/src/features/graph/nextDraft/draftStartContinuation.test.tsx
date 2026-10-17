@@ -1,4 +1,4 @@
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
@@ -12,6 +12,9 @@ import { currentWorkflowFixture } from '../../../shared/mocks/currentWorkflow'
 import { beginSessionChange, finishSessionChange } from '../../../shared/api/sessionBoundary'
 import { useGraphDraftStore } from '../store'
 import { clearBoardStartStorage, readBoardStart } from '../../workflow-board/startOutbox'
+import { WorkflowBoardContext } from '../../workflow-board/context'
+import { RunActivityPanel } from '../../workflow-board/RunActivityPanel'
+import { boardRunListKey } from '../../workflow-board/keys'
 import { boardStartClient } from '../../workflow-board/startClient'
 import * as startPreflight from '../../workflow-board/startPreflight'
 import { fixture } from './core.cases'
@@ -99,6 +102,42 @@ function setup() {
   }
 }
 
+async function showRuns(h: ReturnType<typeof setup>) {
+  let admitted = false
+  const reads: string[] = []
+  server.use(http.get('*/api/management/workspaces/workspace/runs', ({ request }) => {
+    const workflowId = new URL(request.url).searchParams.get('workflowId')!
+    reads.push(workflowId)
+    return HttpResponse.json({ items: admitted && workflowId === 'workflow' ? [h.returnedRun] : [],
+      pageInfo: { nextCursor: null } })
+  }))
+  render(<QueryClientProvider client={h.client}>
+    {['workflow', 'unrelated-workflow'].map(workflowId => <section key={workflowId} aria-label={workflowId}>
+      <WorkflowBoardContext.Provider value={{ workspaceId: 'workspace', workflowId, inspection: {}, activeRuns: 0,
+        selectRun: h.selectRun, selectInspection: vi.fn(), openLocation: vi.fn(), openRuns: vi.fn() }}>
+        <RunActivityPanel summaries={[]} />
+      </WorkflowBoardContext.Provider>
+    </section>)}
+  </QueryClientProvider>)
+  await waitFor(() => {
+    expect(reads).toContain('workflow')
+    expect(reads).toContain('unrelated-workflow')
+    for (const workflowId of ['workflow', 'unrelated-workflow']) {
+      expect(h.client.getQueryState(boardRunListKey('workspace', workflowId))?.fetchStatus).toBe('idle')
+    }
+  })
+  const before = [...reads]
+  return {
+    admit: () => { admitted = true },
+    assertRefreshed: async () => {
+      const list = within(screen.getByRole('region', { name: 'workflow' }))
+      expect(await list.findByRole('button', { name: `Open Run ${h.returnedRun.id} · queued · pending` })).toBeVisible()
+      expect(reads.filter(id => id === 'workflow')).toHaveLength(before.filter(id => id === 'workflow').length + 1)
+      expect(reads.filter(id => id === 'unrelated-workflow')).toHaveLength(before.filter(id => id === 'unrelated-workflow').length)
+    },
+  }
+}
+
 it('continues an explicit Save and run once the same waiting intent is authoritatively saved', async () => {
   const h = setup()
   h.waitForSave()
@@ -128,18 +167,19 @@ it('acknowledges a delayed Start and refreshes Runs without replacing a newer Ac
   const h = setup()
   const reply = deferred<Awaited<ReturnType<typeof boardStartClient.start>>>()
   h.start.mockReturnValue(reply.promise)
-  const invalidate = vi.spyOn(h.client, 'invalidateQueries')
+  const runs = await showRuns(h)
   let pending!: Promise<unknown>
   act(() => { pending = h.result.current.start() })
   await waitFor(() => expect(h.start).toHaveBeenCalledOnce())
   h.selectAnotherRun()
+  runs.admit()
   await act(async () => {
     reply.resolve({ accepted: true, replayed: false, run: h.returnedRun })
     await pending
   })
   expect(h.selectRun).not.toHaveBeenCalled()
   expect(readBoardStart(key)).toBeUndefined()
-  expect(invalidate).toHaveBeenCalled()
+  await runs.assertRefreshed()
 })
 
 it('still selects the admitted Run when selection is unchanged', async () => {
@@ -175,17 +215,18 @@ it('acknowledges delayed Start recovery without replacing a later Activities sel
   expect(readBoardStart(key)).toBeDefined()
   const reply = deferred<Awaited<ReturnType<typeof boardStartClient.resolve>>>()
   const resolve = vi.spyOn(boardStartClient, 'resolve').mockReturnValue(reply.promise)
-  const invalidate = vi.spyOn(h.client, 'invalidateQueries')
+  const runs = await showRuns(h)
   let pending!: Promise<unknown>
   act(() => { pending = h.result.current.recoverStart() })
   await waitFor(() => expect(resolve).toHaveBeenCalledOnce())
   h.selectAnotherRun()
+  runs.admit()
   await act(async () => {
     reply.resolve({ status: 'accepted', run: h.returnedRun })
     await pending
   })
   expect(h.selectRun).not.toHaveBeenCalled()
   expect(readBoardStart(key)).toBeUndefined()
-  expect(invalidate).toHaveBeenCalled()
+  await runs.assertRefreshed()
   expect(h.start).toHaveBeenCalledOnce()
 })
