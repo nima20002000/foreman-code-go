@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { Failure } from './failure.js'
 import { AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE } from './sourceMaterialization.js'
 import { WORKER_MCP_EXTENSION } from './workerMcpLimits.js'
+export { WORKER_MCP_CHUNK_WINDOW } from './workerMcpLimits.js'
 
 /** Application namespaces share the authenticated W07 socket, never workflow authority. */
 export const DEVICE_APPLICATION_MAX_EXTENSIONS = 32

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { DeviceApplicationResult } from './deviceApplication.js'
+import { encodeWorkerMcpReference, decodeWorkerMcpReference } from './workerMcpReference.js'
 export { WorkerConversationMcpRequestSchema, WorkerConversationMcpAuthorizationSchema,
   type WorkerConversationMcpRequest } from './workerConversationMcp.js'
 import { DispatchIntentSchema, AcceptedNodePlacementSchema } from './nodePlacement.js'
@@ -94,6 +95,13 @@ export function encodeWorkerMcpRequest(raw: unknown): DeviceApplicationResult {
   const input = z.object({ body: z.json() }).passthrough().parse(raw)
   const encoded = new TextEncoder().encode(JSON.stringify(input))
   if (encoded.byteLength <= WORKER_MCP_EXTENSION.maxJsonBytes) return { payload: input }
+  const reference = encodeWorkerMcpReference(input)
+  if (reference) {
+    if (new TextEncoder().encode(JSON.stringify(reference.payload)).byteLength > WORKER_MCP_EXTENSION.maxJsonBytes) {
+      throw new Error('MCP request metadata exceeds its carrier limit')
+    }
+    return reference
+  }
   const { body, ...envelope } = input
   const bytes = new TextEncoder().encode(JSON.stringify(body))
   const payload = BinaryRequestSchema.parse({ ...envelope, bodyEncoding: 'utf8', bodyBytes: bytes.byteLength })
@@ -109,6 +117,10 @@ export function decodeWorkerMcpRequest(result: DeviceApplicationResult): unknown
       throw new Error('MCP binary request bytes are missing')
     }
     return result.payload
+  }
+  if (result.payload && typeof result.payload === 'object'
+    && 'bodyEncoding' in result.payload && result.payload.bodyEncoding === 'reference') {
+    return decodeWorkerMcpReference(result)
   }
   const metadata = BinaryRequestSchema.parse(result.payload)
   const { bodyBytes, bodyEncoding, ...envelope } = metadata

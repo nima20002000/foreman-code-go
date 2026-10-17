@@ -20,10 +20,15 @@ class LatencySocket extends EventEmitter {
   bufferedAmount = 0
   peer?: LatencySocket
   closed = false
+  dropChunks = false
+  constructor(private readonly latencyMs: number) { super() }
   send(text: string) {
-    setTimeout(() => {
+    if (this.dropChunks && (JSON.parse(text) as { type: string }).type === 'application-chunk') return
+    const deliver = () => {
       if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
-    }, 50)
+    }
+    if (this.latencyMs === 0) queueMicrotask(deliver)
+    else setTimeout(deliver, this.latencyMs)
   }
   close() {
     if (this.closed) return
@@ -33,11 +38,11 @@ class LatencySocket extends EventEmitter {
   }
 }
 
-async function prepare(toolDurationMs: number) {
-  vi.useFakeTimers()
+async function prepare(toolDurationMs: number, latencyMs = 50) {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   const fixture = workerConversationFixture()
-  const mainRaw = new LatencySocket()
-  const workerRaw = new LatencySocket()
+  const mainRaw = new LatencySocket(latencyMs)
+  const workerRaw = new LatencySocket(latencyMs)
   mainRaw.peer = workerRaw
   workerRaw.peer = mainRaw
   const mainSocket = adaptDeviceSocket(mainRaw)
@@ -90,7 +95,8 @@ async function prepare(toolDurationMs: number) {
   request: (namespace, payload, options) => worker.request(namespace, payload, options) })
   await vi.advanceTimersByTimeAsync(500)
   const relay = await preparing
-  return { relay, receivedAt: () => receivedAt, received: () => received, calls: () => calls }
+  return { relay, receivedAt: () => receivedAt, received: () => received, calls: () => calls,
+    stallUpload: () => { workerRaw.dropChunks = true } }
 }
 
 function referenceCall(byteSize: number) {
@@ -125,4 +131,27 @@ it('still times out tool execution after one hundred seconds without replaying t
   expect(settledAt! - f.receivedAt()!).toBeGreaterThanOrEqual(100_000)
   expect(settledAt! - f.receivedAt()!).toBeLessThan(100_200)
   expect(f.calls()).toBe(1)
+})
+
+it('keeps the socket buffer bounded when upload frames arrive in a burst', async () => {
+  const f = await prepare(0, 0)
+  const call = referenceCall(2 * 1024 * 1024)
+  const checked = expect(f.relay.request(call)).resolves.toMatchObject({ statusCode: 200 })
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(20_000)])
+  await checked
+  expect(f.received()).toEqual(call)
+})
+
+it('cancels a stalled upload within its own budget before running the tool', async () => {
+  const f = await prepare(0)
+  f.stallUpload()
+  const pending = f.relay.request(referenceCall(2 * 1024 * 1024))
+  let timedOut = false
+  const checked = expect(pending.catch(error => { timedOut = true; throw error }))
+    .rejects.toMatchObject({ code: 'timeout' })
+  await vi.advanceTimersByTimeAsync(14_999)
+  expect(timedOut).toBe(false)
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(1)])
+  await checked
+  expect(f.calls()).toBe(0)
 })

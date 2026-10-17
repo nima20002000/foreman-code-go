@@ -17,7 +17,7 @@ it('transfers full-size reference content as raw bytes and restores the original
   const request = referenceRequest(bytes.toString('base64'))
   const carrier = encodeWorkerMcpRequest(request)
   expect(carrier.bytes?.byteLength).toBe(MAX_FILE_BYTES)
-  expect(Buffer.from(carrier.bytes!)).toEqual(bytes)
+  expect(Buffer.compare(Buffer.from(carrier.bytes!), bytes)).toBe(0)
   expect(JSON.stringify(carrier.payload).length).toBeLessThan(1024)
   expect(decodeWorkerMcpRequest(carrier)).toEqual(request)
 })
