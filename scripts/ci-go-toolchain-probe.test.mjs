@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: claude at immutable source 0928f5392a24fc2aafea0cb0be0afb5bf7b4acc2.

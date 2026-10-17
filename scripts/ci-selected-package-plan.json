@@ -1,0 +1,29 @@
+{
+  "source": "0928f5392a24fc2aafea0cb0be0afb5bf7b4acc2",
+  "sourceTree": "c83000542baf9c093afdff14f7618df1c9aec305",
+  "package": "./internal/harnesses/claude",
+  "goFiles": [
+    "internal/harnesses/claude/bridge_integration_test.go",
+    "internal/harnesses/claude/client.go",
+    "internal/harnesses/claude/client_test.go",
+    "internal/harnesses/claude/protocol.go",
+    "internal/harnesses/claude/query.go",
+    "internal/harnesses/claude/sdk.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "nodeTests": [],
+  "nodeTestFile": "backend/bridge/claude/bridge.test.mjs",
+  "nodeSyntaxFiles": [
+    "backend/bridge/claude/bridge.test.mjs",
+    "backend/bridge/claude/claude-bridge.mjs",
+    "backend/bridge/claude/test-fixture/sdk.mjs"
+  ],
+  "testTimeout": "30s",
+  "integrationTimeout": "60s",
+  "integrationRequiresDatabase": false,
+  "mode": "checks-only",
+  "staticcheckTags": [
+    "integration"
+  ]
+}
