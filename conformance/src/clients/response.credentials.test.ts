@@ -17,7 +17,7 @@ function context(): ScenarioContext {
   }
 }
 
-async function failureOf(action: () => unknown | Promise<unknown>) {
+async function failureOf(action: () => unknown) {
   try {
     await action()
   } catch (error) {
@@ -101,6 +101,17 @@ describe('public HTTP credential diagnostics', () => {
       message: '[redacted] then [redacted]; useful trace remains.',
       details: { password: '[redacted]', token: '[redacted]', headers: '[redacted]' } } })
     expect(JSON.stringify(failure)).not.toContain('[[redacted]')
+  })
+
+  it('keeps a credential-shaped sensitive value fully redacted', async () => {
+    const secret = 'synthetic-private-prefix token=synthetic-private-tail'
+    const body = { error: { code: 'SYNTHETIC_WHOLE_VALUE', requestId: 'whole-value-request-17',
+      message: `Rejected ${secret}; useful public reason remains.`, details: { credential: secret } } }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(body, { status: 422 })))
+    const failure = await failureOf(() => createWorkspace(context(), 'Credential diagnostics'))
+    expect(JSON.parse(previewOf(failure))).toEqual({ error: { code: body.error.code, requestId: body.error.requestId,
+      message: 'Rejected [redacted]; useful public reason remains.', details: { credential: '[redacted]' } } })
+    assertAbsent(failure, ['synthetic-private-prefix', 'synthetic-private-tail'])
   })
 
   it('redacts escaped schema-cause credentials while retaining bounded useful context', async () => {

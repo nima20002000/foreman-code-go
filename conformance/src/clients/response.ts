@@ -63,23 +63,59 @@ function redactText(text: string, secrets: readonly string[]): string {
   const variants = [...new Set(secrets.flatMap(secret => [secret, JSON.stringify(secret).slice(1, -1)]))]
     .filter(secret => secret.length > 0).sort((left, right) => right.length - left.length)
   const known = variants.length === 0 ? null
-    : new RegExp(variants.map(secret => secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
-  // One replacement pass, longest match first: neither secret prefixes nor
-  // duplicates may expose a suffix or rescan an inserted redaction marker.
-  const redactKnown = (part: string): string => known === null ? part : part.replace(known, REDACTED)
+    : new RegExp(`(?=(${variants.map(secret => secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}))`, 'g')
   const labels = /\b(?:([a-z][a-z0-9_-]*)(?:\\*["'])?\s*[:=]\s*|(?:Bearer|Basic)\s+)/gi
+  interface Span { start: number; end: number }
+  function nextKnown(): Span | undefined {
+    const match = known?.exec(text)
+    if (!match?.[1]) return undefined
+    // A lookahead finds overlapping literal values without consuming their
+    // prefixes. Advance explicitly because the match itself has zero width.
+    known!.lastIndex = match.index + 1
+    return { start: match.index, end: match.index + match[1].length }
+  }
+  function nextCredential(): Span | undefined {
+    for (let match = labels.exec(text); match; match = labels.exec(text)) {
+      if (match[1] !== undefined && !sensitiveKey(match[1])) continue
+      const start = match.index + match[0].length
+      const end = credentialEnd(text, start, /cookie/i.test(match[1] ?? ''))
+      if (end === start) continue
+      labels.lastIndex = end
+      return { start, end }
+    }
+    return undefined
+  }
+
+  // Merge both kinds of spans over the original text. A credential label
+  // inside a known secret must not split it and expose its prefix or suffix.
+  // The two ordered cursors avoid retaining one span per input character.
+  let literal = nextKnown()
+  let credential = nextCredential()
+  let pending: Span | undefined
   let result = ''
   let cursor = 0
-  for (let match = labels.exec(text); match; match = labels.exec(text)) {
-    if (match[1] !== undefined && !sensitiveKey(match[1])) continue
-    const start = match.index + match[0].length
-    const end = credentialEnd(text, start, /cookie/i.test(match[1] ?? ''))
-    if (end === start) continue
-    result += redactKnown(text.slice(cursor, start)) + REDACTED
-    cursor = end
-    labels.lastIndex = end
+  function flush(span: Span): void {
+    result += text.slice(cursor, span.start) + REDACTED
+    cursor = span.end
   }
-  return result + redactKnown(text.slice(cursor))
+  while (literal || credential) {
+    let span: Span
+    if (literal && (!credential || literal.start <= credential.start)) {
+      span = literal
+      literal = nextKnown()
+    } else if (credential) {
+      span = credential
+      credential = nextCredential()
+    } else break
+    if (pending && span.start <= pending.end) pending.end = Math.max(pending.end, span.end)
+    else {
+      if (pending) flush(pending)
+      pending = span
+    }
+  }
+  if (pending) flush(pending)
+  // Redaction markers are added only after matching, never scanned as input.
+  return result + text.slice(cursor)
 }
 
 function boundedText(text: string, maximumBytes: number): { text: string; truncated: boolean } {
