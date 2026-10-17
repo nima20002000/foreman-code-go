@@ -65,7 +65,7 @@ it.each(['http', 'mcp'] as const)(
   },
 )
 
-it('refuses required discovery during backoff after a background request was rejected', async () => {
+it('refreshes required discovery during backoff without accelerating background retries', async () => {
   vi.useFakeTimers()
   const host = { kind: 'device' as const, mainId: 'fixture-main', deviceId: 'fixture-worker' }
   const failure = new DeviceApplicationAdmissionError()
@@ -80,13 +80,17 @@ it('refuses required discovery during backoff after a background request was rej
     await monitor.refresh()
     const result = await monitor.refreshHosts([host], new AbortController().signal)
       .then(() => ({ refreshed: true }), (error: unknown) => ({ error }))
-    expect(result).toMatchObject({ error: { code: 'HARNESS_INVENTORY_UNAVAILABLE' } })
-    expect(collectWorker).not.toHaveBeenCalled()
-    expect(request).toHaveBeenCalledOnce()
-    await vi.advanceTimersByTimeAsync(30_000)
-    await monitor.refreshHosts([host], new AbortController().signal)
+    expect(result).toEqual({ refreshed: true })
     expect(collectWorker).toHaveBeenCalledOnce()
     expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[1]![1]).toMatchObject({ priority: 'foreground' })
+    await monitor.refresh()
+    expect(request).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await monitor.refresh()
+    expect(collectWorker).toHaveBeenCalledTimes(2)
+    expect(request).toHaveBeenCalledTimes(3)
+    expect(request.mock.calls[2]![1]).toMatchObject({ priority: 'background' })
   } finally {
     await monitor.close()
   }

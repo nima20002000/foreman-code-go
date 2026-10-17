@@ -295,3 +295,33 @@ it('refreshes a required host with foreground admission while background discove
     expect(request).toHaveBeenCalledTimes(2)
   } finally { await monitor.close() }
 })
+
+
+it('does not retry failed shared discovery after a required-host caller cancels its wait', async () => {
+  const hostRef = { kind: 'device' as const, mainId: 'main', deviceId: 'worker' }
+  let failDiscovery!: (error: Error) => void
+  const discovery = new Promise<never>((_resolve, reject) => { failDiscovery = reject })
+  const request = vi.fn().mockReturnValueOnce(discovery).mockResolvedValue({ payload: {} })
+  const collectWorker = vi.fn(async () => {})
+  const registry = { installations: { list: () => [{ hostRef }] }, observeInstallations: () => {} }
+  const monitor = new HarnessInstallationMonitor(registry as never, {} as never,
+    () => ({ captureRequest: () => ({ binding: {}, request }) }) as never,
+    collectWorker, async () => {}, vi.fn())
+  const background = monitor.refresh()
+  const controller = new AbortController()
+  const waiting = monitor.refreshHosts([hostRef], controller.signal)
+    .then(() => ({ refreshed: true }), (error: unknown) => ({ error }))
+  try {
+    const canceled = new Error('Start preparation canceled')
+    controller.abort(canceled)
+    expect(await waiting).toEqual({ error: canceled })
+    failDiscovery(new DeviceApplicationError('timeout'))
+    await background
+    expect(request).toHaveBeenCalledOnce()
+    expect(collectWorker).not.toHaveBeenCalled()
+  } finally {
+    failDiscovery(new Error('Fixture closing'))
+    await background
+    await monitor.close()
+  }
+})
