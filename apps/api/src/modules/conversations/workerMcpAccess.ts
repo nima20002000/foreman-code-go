@@ -32,10 +32,10 @@ export async function prepareWorkerConversationMcp(input: {
       const payload = WorkerConversationMcpRequestSchema.parse({ ...fields, operation: 'conversation-mcp.request',
         body, ...(protocolVersion ? { protocolVersion } : {}) })
       const carrier = encodeWorkerMcpRequest(payload)
-      const response = await withWorkerMcpDeadline((relaySignal, onUploaded, onUploadProgress) => input.request(
+      const response = await withWorkerMcpDeadline((relaySignal, onUploaded, onUploadProgress, onUploadStarted) => input.request(
         WORKER_MCP_EXTENSION.namespace, carrier.payload, { signal: relaySignal, timeoutMs: deviceRequestTimeoutMs,
           ...(carrier.bytes ? { bytes: carrier.bytes, uploadTimeoutMs: workerMcpUploadCeilingMs } : {}),
-          onUploaded, onUploadProgress }),
+          onUploaded, onUploadProgress, onUploadStarted }),
       signal, { uploading: carrier.bytes !== undefined })
       signal.throwIfAborted()
       return WorkerMcpRelayResponseSchema.parse(decodeWorkerMcpResult(response))

@@ -45,10 +45,10 @@ export async function prepareWorkerApplicationAccess(channel: Pick<DeviceConnect
     const payload = WorkerMcpRelayRequestSchema.parse({ ...envelope(), operation: 'worker-mcp.request', body,
       ...(protocolVersion ? { protocolVersion } : {}) })
     const carrier = encodeWorkerMcpRequest(payload)
-    const response = await withWorkerMcpDeadline((relaySignal, onUploaded, onUploadProgress) => retryDeviceRequest(() => channel.request(WORKER_MCP_EXTENSION.namespace,
+    const response = await withWorkerMcpDeadline((relaySignal, onUploaded, onUploadProgress, onUploadStarted) => retryDeviceRequest(() => channel.request(WORKER_MCP_EXTENSION.namespace,
       carrier.payload, { signal: relaySignal, timeoutMs: deviceRequestTimeoutMs,
         ...(carrier.bytes ? { bytes: carrier.bytes, uploadTimeoutMs: workerMcpUploadCeilingMs } : {}),
-        onUploaded, onUploadProgress }),
+        onUploaded, onUploadProgress, onUploadStarted }),
     { retry: 'admission', signal: relaySignal }), requestSignal, { uploading: carrier.bytes !== undefined })
     requestSignal?.throwIfAborted()
     return WorkerMcpRelayResponseSchema.parse(decodeWorkerMcpResult(response))

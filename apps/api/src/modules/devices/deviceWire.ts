@@ -11,9 +11,13 @@ export class DeviceConnectionError extends Error {
     this.detail = detail
   }
 }
+export interface DeviceMessageIterator extends AsyncIterator<string> {
+  /** Hands the remaining stream to a synchronous reader, keeping coalesced frames out of the unread queue. */
+  consume(onMessage: (text: string) => void, signal: AbortSignal): Promise<void>
+}
 /** Adapter must install message/error/close handlers synchronously, before returning. */
 export interface DeviceSocket {
-  readonly messages: AsyncIterable<string>
+  readonly messages: { [Symbol.asyncIterator](): DeviceMessageIterator }
   readonly bufferedAmount: number
   /** Why the underlying socket ended, when it did (diagnostics only). */
   readonly closeDetail?: string | undefined
@@ -49,8 +53,10 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   let terminalFailure: DeviceConnectionError | undefined
   let wake: (() => void) | undefined
   let closeDetail: string | undefined
+  let consumer: ((text: string) => void) | undefined
+  let onFinish: (() => void) | undefined
   const cleanup = () => { raw.off('message', message); raw.off('error', error); raw.off('close', close) }
-  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; wake?.() }
+  const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; wake?.(); onFinish?.() }
   const close = (code?: unknown, reason?: unknown) => {
     closeDetail ??= `socket closed (${String(code ?? 'no code')}${reason && String(reason) ? `: ${String(reason)}` : ''})`
     finish(terminalFailure); cleanup()
@@ -63,9 +69,19 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
     if (ended) return
     if (binary === true || (!Buffer.isBuffer(data) && typeof data !== 'string')) { finish(new DeviceConnectionError('malformed-frame')); raw.close(); return }
     const text = String(data)
-    if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) {
-      closeDetail ??= `inbound frames not read in time (${queue.length} queued, ${queuedBytes + Buffer.byteLength(text)} bytes)`
+    const size = Buffer.byteLength(text)
+    if (size > DEVICE_FRAME_BYTES || !consumer
+      && (queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + size > DEVICE_BUFFER_BYTES)) {
+      closeDetail ??= `inbound frames not read in time (${queue.length} queued, ${queuedBytes + size} bytes)`
       finish(new DeviceConnectionError('backpressure', closeDetail)); raw.close(); return
+    }
+    if (consumer) {
+      try { consumer(text) }
+      catch (cause) {
+        finish(cause instanceof Error ? cause : new DeviceConnectionError('transport'))
+        raw.close()
+      }
+      return
     }
     if (text.includes('blocked')) {
       try { const frame = JSON.parse(text) as { type?: string; code?: string }; if (frame.type === 'blocked') terminalFailure = new DeviceConnectionError(['authentication', 'revoked', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(frame.code ?? '') ? frame.code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame') } catch { /* ignore: parser reports malformed JSON at consumption */ }
@@ -78,14 +94,48 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
     get closeDetail() { return closeDetail },
     send(text) { if (ended) throw new DeviceConnectionError('transport'); raw.send(text) },
     close() { closeDetail ??= 'closed by this side'; finish(); raw.close() },
-    messages: { async *[Symbol.asyncIterator]() {
-      try {
-        while (!ended) {
-          if (queue.length) { const text = queue.shift()!; queuedBytes -= Buffer.byteLength(text); yield text; continue }
-          await new Promise<void>((resolve) => { wake = resolve }); wake = undefined
-        }
-        if (failure) throw failure
-      } finally { finish(); raw.close() }
+    messages: { [Symbol.asyncIterator]() {
+      const iterator = (async function* () {
+        try {
+          while (!ended) {
+            if (queue.length) {
+              const text = queue.shift()!
+              queuedBytes -= Buffer.byteLength(text)
+              yield text
+              continue
+            }
+            await new Promise<void>((resolve) => { wake = resolve })
+            wake = undefined
+          }
+          if (failure) throw failure
+        } finally { finish(); raw.close() }
+      })()
+      return {
+        next: () => iterator.next(),
+        return: () => iterator.return(undefined),
+        async consume(onMessage, signal) {
+          const abort = () => finish()
+          const finished = new Promise<void>(resolve => { onFinish = resolve })
+          consumer = onMessage
+          signal.addEventListener('abort', abort, { once: true })
+          try {
+            if (signal.aborted) abort()
+            while (queue.length) {
+              const text = queue.shift()!
+              queuedBytes -= Buffer.byteLength(text)
+              onMessage(text)
+            }
+            if (!ended) await finished
+            if (failure) throw failure
+          } finally {
+            consumer = undefined
+            onFinish = undefined
+            signal.removeEventListener('abort', abort)
+            finish()
+            raw.close()
+          }
+        },
+      }
     } },
   }
 }
