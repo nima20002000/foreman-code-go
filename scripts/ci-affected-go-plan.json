@@ -1,0 +1,23 @@
+{
+  "source": "d36d2cab073c88bdf19ffecf84cbabdf19799cb5",
+  "package": "./internal/settings",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/settings/versions.go",
+    "internal/settings/versions_test.go",
+    "internal/settings/versions_integration_test.go"
+  ],
+  "unitRoots": [
+    "TestSettingWriteRejectsInvalidRevisionBeforeStorage"
+  ],
+  "unitPattern": "^TestSettingWriteRejectsInvalidRevisionBeforeStorage$",
+  "integration": true,
+  "integrationRoots": [
+    "TestSettingVersionsSurviveReopenAndPreserveHistory",
+    "TestSettingRevisionConflictLeavesCurrentAndHistoryUnchanged",
+    "TestSettingWritesShareSuppliedTransactionAndRollbackTogether",
+    "TestConcurrentSettingCreatesHaveOneRevisionWinner",
+    "TestSettingWriteCancellationDoesNotPersistAVersion"
+  ],
+  "integrationPattern": "^(TestSettingVersionsSurviveReopenAndPreserveHistory|TestSettingRevisionConflictLeavesCurrentAndHistoryUnchanged|TestSettingWritesShareSuppliedTransactionAndRollbackTogether|TestConcurrentSettingCreatesHaveOneRevisionWinner|TestSettingWriteCancellationDoesNotPersistAVersion)$"
+}
