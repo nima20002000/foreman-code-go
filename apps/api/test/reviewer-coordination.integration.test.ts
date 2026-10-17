@@ -1,3 +1,4 @@
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { withTransaction } from '../src/infrastructure/transaction.js'
 import type { ReviewJob } from '@foreman-code/contracts'
 import { describe, expect, it, vi, afterEach } from 'vitest'
@@ -80,8 +81,11 @@ describe.skipIf(!postgresEnabled)('review queue eligibility with persisted lease
   it('rejects a lease that expires after the read while waiting for its writer lane and rolls back', async () => {
     const f = await routedApprovalFixture()
     let transition: Promise<unknown> | undefined
+    let laneId: string | undefined
+    const coordination = new PostgresInteractionCoordinationRepository(f.db.pool)
     try {
       const lane = (await f.coordination.getLane('codex', f.reviewer.nativeSessionId!))!
+      laneId = lane.id
       await f.coordination.claimLane(lane.id, lane.revision, f.reviewerId, 'writer-token',
         new Date(Date.now() + 60_000).toISOString(), 'transition')
       const job = await f.coordination.claimReviewJob(f.job.id, 'worker', 'job-token',
@@ -93,7 +97,7 @@ describe.skipIf(!postgresEnabled)('review queue eligibility with persisted lease
       await withTransaction(f.db.pool, async client => {
         await client.query('select id from native_session_lanes where id=$1 for update', [lane.id])
         const pid = (await client.query('select pg_backend_pid() as pid')).rows[0].pid
-        transition = expect(f.coordination.transitionReviewJob(job.id, 'job-token', 'acknowledged', {
+        transition = expect(coordination.transitionReviewJob(job.id, 'job-token', 'acknowledged', {
           writerFence: { id: lane.id, token: 'writer-token' },
         })).rejects.toMatchObject({ code: 'REVIEW_JOB_LEASE_LOST' })
         // Blocking on the writer lane proves the initial job ownership read succeeded.
@@ -111,8 +115,12 @@ describe.skipIf(!postgresEnabled)('review queue eligibility with persisted lease
       await transition
       expect((await f.db.pool.query('select * from review_jobs where id=$1', [job.id])).rows).toEqual(before)
     } finally {
-      await transition
-      await f.close()
+      try {
+        await transition
+      } finally {
+        if (laneId) await coordination.releaseLane(laneId, 'writer-token', { observedStatus: 'idle' })
+        await f.close()
+      }
     }
   })
 

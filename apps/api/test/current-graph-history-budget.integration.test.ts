@@ -17,6 +17,8 @@ it.skipIf(!postgresEnabled)('keeps the real current HTTP response bounded as per
     expect(before.statusCode, before.body).toBe(200)
     const initial = RepeatGraphCurrentV3Schema.parse(before.json())
     expect(Buffer.byteLength(before.body)).toBeLessThan(16 * 1024)
+    const initialActivityCount = (await db.pool.query(
+      'select count(*)::integer as count from run_activity where run_id=$1', [t.run.id])).rows[0].count
     await db.pool.query(`insert into run_activity(run_id,source,kind,occurred_at,payload)
       select $1,'backend','result_recorded',now(),jsonb_build_object('text',repeat('Retained activity ',100))
       from generate_series(1,252)`, [t.run.id])
@@ -29,7 +31,7 @@ it.skipIf(!postgresEnabled)('keeps the real current HTTP response bounded as per
       }
     }))
     expect((await db.pool.query('select count(*)::integer as count from run_activity where run_id=$1',
-      [t.run.id])).rows[0].count).toBe(252)
+      [t.run.id])).rows[0].count).toBe(initialActivityCount + 252)
     expect((await db.pool.query('select count(*)::integer as count from runs where workflow_id=$1',
       [t.scope.workflowId])).rows[0].count).toBe(62)
     const after = await read()
