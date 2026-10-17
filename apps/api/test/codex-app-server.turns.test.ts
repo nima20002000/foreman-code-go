@@ -6,7 +6,7 @@ import { describe, it } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { assertOriginalWorkflowTerminal } from '../src/modules/interactions/workflowTerminalSource.js'
-import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
+import { CodexStdioTransport, type JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import {
   calls,
   collect,
@@ -38,8 +38,7 @@ import {
 } from './codex-app-server.test-support.js'
 
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
-  // Healthy child-process RPCs need room for scheduling and fixture disk writes under load.
-  useCodexFixture({ requestTimeoutMs: 5_000 })
+  useCodexFixture()
 
   it('F03: rejected second start restores the previous completed result and permits another turn', async () => {
     const session = await manager.createSession(source)
@@ -401,6 +400,12 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('F12: a late turn ID remains correlated after timeout and cancellation reaches it', async () => {
+    setManager(makeManager({
+      transport: (...args) => {
+        args[7] = 500
+        return new CodexStdioTransport(...args)
+      },
+    }))
     const session = await manager.createSession(source)
     await flag('hold-turn-start')
     const events = collect(manager.startTurn(session, { prompt: 'wait', clientCorrelationId: 'late' }))
@@ -414,6 +419,12 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
   })
 
   it('F12: an uncertain thread/start is never duplicated, and its late identity is recoverable', async () => {
+    setManager(makeManager({
+      transport: (...args) => {
+        args[7] = 500
+        return new CodexStdioTransport(...args)
+      },
+    }))
     await flag('hold-thread-start')
     await assertCode(manager.createSession(source), 'CODEX_APP_SERVER_TIMEOUT')
     await assertCode(manager.createSession(source), 'CODEX_SESSION_CREATION_UNCERTAIN')
