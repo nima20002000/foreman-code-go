@@ -57,7 +57,9 @@ export async function startPostgres(options: {
     }
   } catch (error) {
     try { await postgres.stop() }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'PostgreSQL startup and cleanup failed') }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'PostgreSQL startup and cleanup failed', { cause: cleanupError })
+    }
     throw error
   }
 }

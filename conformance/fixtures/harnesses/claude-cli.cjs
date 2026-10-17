@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global process */
 // Metadata for the explicitly selected fake SDK. No native commands execute.
 if (process.argv[2] === '--version') {
   process.stdout.write('2.1.284 (Claude Code)\n')

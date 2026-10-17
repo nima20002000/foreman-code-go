@@ -20,6 +20,13 @@ export interface ExecutableWorkflowOptions {
   configureGraph?(definition: WorkflowDefinitionV3): WorkflowDefinitionV3
 }
 
+/** Shared workflow nodes permit either name or label; Agent authoring requires a name. */
+export function fixtureAgentName(node: ReturnType<typeof makeCurrentWorkflowFixture>['version']['definition']['nodes'][number]): string {
+  const name = node.name ?? node.label
+  assert.ok(name, 'The shared Agent fixture node must have a name or label.')
+  return name
+}
+
 /** All identities and immutable pins are accepted by the public authoring API. */
 export async function createExecutableWorkflow(ctx: ScenarioContext, options: ExecutableWorkflowOptions) {
   const { created: workspace } = await createWorkspace(ctx, options.name, ctx.scenarioDirectory)
@@ -27,7 +34,7 @@ export async function createExecutableWorkflow(ctx: ScenarioContext, options: Ex
   const fixture = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'single')
   const agents: Awaited<ReturnType<typeof createCodexAgent>>[] = []
   for (const node of fixture.version.definition.nodes) {
-    agents.push(await createCodexAgent(ctx, workspaceId, { id: node.agentId, name: node.name,
+    agents.push(await createCodexAgent(ctx, workspaceId, { id: node.agentId, name: fixtureAgentName(node),
       ...(options.configuration === undefined ? {} : { configuration: options.configuration }) }))
   }
   const agentPins = Object.fromEntries(agents.map(({ agent }) => {

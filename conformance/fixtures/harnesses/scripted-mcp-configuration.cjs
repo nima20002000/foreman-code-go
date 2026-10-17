@@ -1,4 +1,3 @@
-/* global require, module, process, URL */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Adjacent native fixture extension. */
 const fs = require('node:fs')
 const path = require('node:path')
