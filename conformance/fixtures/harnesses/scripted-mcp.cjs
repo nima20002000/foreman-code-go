@@ -1,4 +1,3 @@
-/* global require, module */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Adjacent native fixture extension. */
 const { isDeepStrictEqual } = require('node:util')
 const { readMcpConfiguration, toolEnabled } = require('./scripted-mcp-configuration.cjs')

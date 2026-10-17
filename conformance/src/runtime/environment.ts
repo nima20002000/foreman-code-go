@@ -92,7 +92,9 @@ export async function createIsolatedEnvironment(
     }
   } catch (error) {
     try { await removeOwnedDirectory(directory, token) }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Conformance directory setup and cleanup failed') }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Conformance directory setup and cleanup failed', { cause: cleanupError })
+    }
     throw error
   }
 }

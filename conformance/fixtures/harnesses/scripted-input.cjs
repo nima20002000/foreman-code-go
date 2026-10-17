@@ -1,4 +1,3 @@
-/* global require, module, Buffer */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Inspect actual native fixture input. */
 const fs = require('node:fs')
 const path = require('node:path')

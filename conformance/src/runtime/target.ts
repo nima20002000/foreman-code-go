@@ -213,7 +213,9 @@ export async function startTarget(options: TargetOptions): Promise<TargetSession
     }
   } catch (error) {
     try { await closeResources() }
-    catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Target setup and cleanup failed') }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Target setup and cleanup failed', { cause: cleanupError })
+    }
     throw error
   }
 }

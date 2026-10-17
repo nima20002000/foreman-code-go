@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { ApiError } from '@foreman-code/contracts'
 import type {
   AgentDefaultsUpdateInputSchema,
   AgentDefaultsUpdateResultSchema,
@@ -26,7 +27,7 @@ interface SettingRoundTrip {
     | typeof AgentDefaultsUpdateInputSchema | typeof WorkflowDefaultsUpdateInputSchema
   resultSchema: typeof GeneralSettingsUpdateResultSchema | typeof PromptSettingUpdateResultSchema
     | typeof AgentDefaultsUpdateResultSchema | typeof WorkflowDefaultsUpdateResultSchema
-  revisionConflict?: { message: string; details?: unknown }
+  revisionConflict?: Pick<ApiError, 'message' | 'details'>
 }
 
 export function versionedSettingScenario(setting: SettingRoundTrip): Scenario {
