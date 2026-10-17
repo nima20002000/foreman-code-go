@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, open, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { WorkerError } from './diagnostics.mjs';
 
@@ -17,8 +17,16 @@ export async function migratePinnedCompanionLauncher(root) {
   }
   const script = await readFile(launcher, 'utf8');
   const pinned = /'([^'\n]+)\/versions\/\d+\.\d+\.\d+-[a-f0-9]{64}\/src\/companion\.mjs'/g;
+  const canonicalRoot = await realpath(root);
+  const pinnedRoots = new Map();
+  for (const [, installedRoot] of script.matchAll(pinned)) {
+    if (!pinnedRoots.has(installedRoot)) {
+      pinnedRoots.set(installedRoot, await realpath(installedRoot));
+    }
+  }
   const migrated = script.replace(pinned, (entry, installedRoot) =>
-    installedRoot === root ? `'${join(root, 'current/src/companion.mjs')}'` : entry);
+    pinnedRoots.get(installedRoot) === canonicalRoot
+      ? `'${join(canonicalRoot, 'current/src/companion.mjs')}'` : entry);
   if (migrated === script) return;
   const temporary = `${launcher}.${randomUUID()}`;
   try {

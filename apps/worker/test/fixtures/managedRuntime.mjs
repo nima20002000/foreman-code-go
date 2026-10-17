@@ -7,6 +7,7 @@ const image = `sha256:${digest}`;
 
 /** Filesystem and installation inputs only; this fixture never qualifies a runtime. */
 export async function managedRuntimeFixture({ home, state, pairing, worker }) {
+  home = await realpath(home);
   const base = join(home, '.local/share/foreman-code/ci-verification');
   const runtimeRoot = join(base, 'volume/managed');
   const policyId = randomUUID();
