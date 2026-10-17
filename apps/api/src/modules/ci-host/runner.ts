@@ -678,7 +678,9 @@ export class HostCiRunner {
     this.repositoryQueues.set(repository, pending)
     await previous
     try {
-      return await work()
+      const clone = join(this.root, 'git', ...repository.split('/'))
+      await mkdir(clone, { recursive: true, mode: 0o700 })
+      return await withHostCiRunLock(clone, work)
     } finally {
       release()
       if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
@@ -733,7 +735,8 @@ export class HostCiRunner {
         await this.git(['init', '--quiet', clone], clone, signal)
         await this.git(['remote', 'add', 'origin', `https://github.com/${request.repository}.git`], clone, signal)
       } catch (error) {
-        await rm(clone, { recursive: true, force: true })
+        // Keep the directory inode stable while other runners wait for its repository lock.
+        await rm(join(clone, '.git'), { recursive: true, force: true })
         throw error
       }
     }
@@ -1203,12 +1206,15 @@ export class HostCiRunner {
     if (!meta.cleaned) {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
       if (existsSync(join(directory, 'src'))) {
-        if (!(await stat(join(directory, 'src/.git')).catch(fallbackOnMissing(null)))?.isDirectory()) {
-          await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
-            { cwd: clone, env: this.environment })
-        }
-        await rm(join(directory, 'src'), { recursive: true, force: true })
-        await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
+        const standalone = (await stat(join(directory, 'src/.git')).catch(fallbackOnMissing(null)))?.isDirectory()
+        await this.withRepository(meta.repository, async () => {
+          if (!standalone) {
+            await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
+              { cwd: clone, env: this.environment })
+          }
+          await rm(join(directory, 'src'), { recursive: true, force: true })
+          await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
+        })
       }
       await rm(join(directory, 'tmp'), { recursive: true, force: true })
     }
