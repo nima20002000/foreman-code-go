@@ -67,16 +67,36 @@ function resolveReferences(value, values, depth = 0) {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveReferences(item, values, depth + 1)]))
 }
 
-async function waitForRelease(root, filename, operation) {
+function releaseControlPath(root, filename) {
   if (typeof filename !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(filename)) {
     throw new Error('Native turn release must name one owned control file.')
   }
-  const file = path.join(root, 'control', filename)
-  while (!fs.existsSync(file)) {
+  return path.join(root, 'control', filename)
+}
+
+async function waitForRelease(root, filename, operation, timeoutMs) {
+  const file = releaseControlPath(root, filename)
+  const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs
+  for (;;) {
     if (operation.cancelled) throw new Error('Scripted native turn was interrupted.')
+    operation.controller?.signal.throwIfAborted()
+    if (Date.now() >= deadline) throw new Error(`Native terminal release timed out after ${timeoutMs} ms: ${filename}`)
+    if (fs.existsSync(file)) break
     await new Promise(resolve => setTimeout(resolve, 20))
   }
   if (!fs.lstatSync(file).isFile()) throw new Error('Native release control is not a regular file.')
+}
+
+/** Native provisional text is presented before final history/result publication.
+ * The caller still owns the real terminal transition after this bounded wait. */
+async function presentThenHoldTerminal(root, plan, operation, present) {
+  if (plan?.holdTerminalUntilFile === undefined) return
+  const filename = plan.holdTerminalUntilFile
+  releaseControlPath(root, filename)
+  if (operation.cancelled) throw new Error('Scripted native turn was interrupted.')
+  operation.controller?.signal.throwIfAborted()
+  present()
+  await waitForRelease(root, filename, operation, 25_000)
 }
 
 async function runToolCalls(entries, values, operation, call) {
@@ -124,4 +144,4 @@ async function runTurnScript({ root, input, plan, operation, callTool, callMcpTo
   return plan.answer ?? 'Conformance scripted native turn completed.'
 }
 
-module.exports = { selectTurnScript, runTurnScript }
+module.exports = { selectTurnScript, runTurnScript, presentThenHoldTerminal }
