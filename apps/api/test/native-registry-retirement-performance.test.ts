@@ -7,7 +7,7 @@ import { describe,expect,it,vi } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeRegistryProjection,type NativeLaunchObservation } from '../src/modules/harnesses/recovery/registryObservation.js'
 import { bootIdentity,processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
-import { privateDirectory,writeRecord } from '../src/modules/harnesses/recovery/storage.js'
+import { privateDirectory,readRecord,writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 
 function fixture() {
   const root=mkdtempSync(join(tmpdir(), 'native-retirement-')),owner='original-retirement-test-owner'
@@ -45,7 +45,14 @@ describe.skipIf(process.platform!=='linux')('bounded original native retirement 
       expect(await f.registry.closeOwner(f.owner)).toBe(true)
       const elapsedMs=Math.round(performance.now()-started)
       process.stdout.write(`${JSON.stringify({probe:'F11-retirement',registrations:10_005,fullScans:scans,targetedCaptures:captures.mock.calls.length,elapsedMs})}\n`)
+      expect(elapsedMs).toBeLessThan(30_000)
       expect(readdirSync(f.ownerDirectory).sort()).toEqual([...ids.map(id => `closed-${id}.json`), 'retired.json'].sort())
+      for (const id of ids) {
+        expect(readRecord(join(f.ownerDirectory, `closed-${id}.json`))).toMatchObject({
+          owner: f.owner, launchId: id, lifecycle: 'closed',
+          closureEvidence: expect.stringMatching(/^(native_not_started|linux_boot_changed)$/),
+        })
+      }
       expect(scans).toBeLessThanOrEqual(1)
       expect(captures).toHaveBeenCalledTimes(10_005)
       const event=await pending
