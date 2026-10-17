@@ -52,6 +52,7 @@ export async function readPhysicalReadout(raw: unknown,
 }
 export function hasNativeClosure(observation: NativeLaunchObservation): boolean {
   return observation.lifecycle === 'closed' && (observation.closureEvidence === 'cgroup_v2_empty'
+    || observation.closureEvidence === 'cgroup_v2_removed'
     || observation.closureEvidence === 'linux_boot_changed'
     || observation.closureEvidence === 'native_exit_removed_cgroup')
 }

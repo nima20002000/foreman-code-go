@@ -304,6 +304,7 @@ class InstalledWorkflowHostRuntime {
   private journalOpening: Promise<RemoteOperationJournal> | undefined
   private closing = false
   private shutdown: Promise<void> | undefined
+  private readonly operationLocks = new Map<string, Promise<void>>()
   private readonly construction = new Map<string, {
     binding: Readonly<DeviceSessionBinding>
     intent: DispatchIntent
@@ -869,7 +870,8 @@ class InstalledWorkflowHostRuntime {
     }
     const controller = new AbortController()
     const signal = AbortSignal.any([this.signal, context.signal, controller.signal])
-    const task = this.constructOwned(context,intent,placement,action,signal,renewal)
+    const task = this.withOperationLock(intent.executionId,
+      () => this.constructOwned(context,intent,placement,action,signal,renewal))
     this.construction.set(intent.executionId, {
       binding: structuredClone(context.binding),
       intent: structuredClone(intent),
@@ -897,10 +899,41 @@ class InstalledWorkflowHostRuntime {
     await Promise.allSettled([pending.task])
     // Construction may have finished while Stop was admitted; its resident uses the ordinary cleanup path.
     if (this.operations.has(frame.intent.executionId)) return undefined
-    return recoverInstalledWorkflowReply({ frame, binding: context.binding, journal: log,
-      recovery: this.recovery, registry: this.registry, physical: this.physical,
-      signal: context.signal, lifetimeSignal: this.signal, assertCurrent: () => this.current(context.binding),
-      authorize: async action => { await authorize(frame.intent, frame.placement, action, context.signal) } })
+    return this.withOperationLock(frame.intent.executionId, async () => {
+      if (this.operations.has(frame.intent.executionId) || this.construction.has(frame.intent.executionId)) return undefined
+      return recoverInstalledWorkflowReply({ frame, binding: context.binding, journal: log,
+        recovery: this.recovery, registry: this.registry, physical: this.physical,
+        signal: context.signal, lifetimeSignal: this.signal, assertCurrent: () => this.current(context.binding),
+        authorize: async action => { await authorize(frame.intent, frame.placement, action, context.signal) } })
+    })
+  }
+
+  private async withOperationLock<T>(executionId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.operationLocks.get(executionId)
+    let release!: () => void
+    const lock = new Promise<void>(resolve => { release = resolve })
+    this.operationLocks.set(executionId, lock)
+    try {
+      await previous
+      return await work()
+    } finally {
+      release()
+      if (this.operationLocks.get(executionId) === lock) this.operationLocks.delete(executionId)
+    }
+  }
+
+  private recoverUnowned(frame: RemoteExecutionRpcRequest, context: DeviceExtensionContext) {
+    return this.withOperationLock(frame.intent.executionId, async () => {
+      // Journal reads can outlive construction; only an unowned operation needs cold recovery.
+      const resident = this.operations.get(frame.intent.executionId)
+      if (this.construction.has(frame.intent.executionId) || resident && !resident.preparationRecovery) return undefined
+      return recoverInstalledWorkflowReply({ frame, binding: context.binding,
+        journal: await this.journal(), recovery: this.recovery, registry: this.registry, physical: this.physical,
+        signal: context.signal, lifetimeSignal: this.signal, assertCurrent: () => this.current(context.binding),
+        authorize: async action => {
+          await workerExecutionAuthorizer(this.forBinding(context.binding))(frame.intent, frame.placement, action)
+        } })
+    })
   }
 
   /** A preparation keeps its original host and journal entry when only the transport session changed. */
@@ -1189,10 +1222,7 @@ class InstalledWorkflowHostRuntime {
         }
         if ((!resident || resident.preparationRecovery) && (this.journalOpening
           || this.recovery.hasCapture(frame.intent.operationId) || await this.hasRetainedJournal())) {
-          const recovered = await recoverInstalledWorkflowReply({ frame, binding: context.binding,
-            journal: await this.journal(), recovery: this.recovery, registry: this.registry, physical: this.physical, signal: context.signal, lifetimeSignal: this.signal,
-            assertCurrent: () => this.current(context.binding),
-            authorize: async action => { await workerExecutionAuthorizer(this.forBinding(context.binding))(frame.intent, frame.placement, action) } })
+          const recovered = await this.recoverUnowned(frame, context)
           if (recovered) return recovered
         }
         if (this.journalOpening && await(await this.journalOpening).isRetired(frame.intent.operationId)) {
