@@ -238,7 +238,8 @@ test('selects installed Claude with its actual SDK integrity metadata without re
   assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
   assert.equal((await stat(f.path)).ino, info.ino);
   await refreshWorkflowSelection(f.options);
-  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), selection);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), { ...selection,
+    codexBinary: join(f.bin, 'codex'), expectedVersion: 'codex-cli 0.162.0', payloadPaths: [] });
 });
 
 for (const defect of ['symlink', 'hardlink', 'public']) {
@@ -263,4 +264,28 @@ test('lost Worker ownership prevents selection publication', async t => {
   await assert.rejects(refreshWorkflowSelection({ ...f.options,
     assertStateOwnership: () => { throw new Error('Worker ownership lost'); } }), /Worker ownership lost/);
   await assert.rejects(readFile(f.path), { code: 'ENOENT' });
+});
+
+test('discovers Claude installed after Codex while preserving the selected Codex installation', async t => {
+  const f = await fixture(t);
+  const binary = join(f.bin, 'codex');
+  await nativeCodex(binary);
+  await refreshWorkflowSelection(f.options);
+  const previous = JSON.parse(await readFile(f.path, 'utf8'));
+  const sdkDirectory = join(f.release,
+    'node_modules/.pnpm/@anthropic-ai+claude-agent-sdk@0.3.284/node_modules/@anthropic-ai/claude-agent-sdk');
+  await mkdir(sdkDirectory, { recursive: true });
+  await writeFile(join(sdkDirectory, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk',
+    version: '0.3.284', main: 'sdk.mjs' }));
+  await writeFile(join(sdkDirectory, 'sdk.mjs'), 'export {};');
+  await mkdir(join(f.release, 'node_modules/@anthropic-ai'), { recursive: true });
+  await symlink(sdkDirectory, join(f.release, 'node_modules/@anthropic-ai/claude-agent-sdk'));
+  const lock = join(f.release, 'node_modules/.pnpm/lock.yaml');
+  await writeFile(lock, "packages:\n  '@anthropic-ai/claude-agent-sdk@0.3.284':\n    resolution: {integrity: sha512-aGVsbG8=}\n");
+  await copyFile('/usr/bin/true', join(f.bin, 'claude'));
+  await chmod(join(f.bin, 'claude'), 0o700);
+  await refreshWorkflowSelection(f.options);
+  assert.deepEqual(JSON.parse(await readFile(f.path, 'utf8')), { ...previous, claude: {
+    binary: join(f.bin, 'claude'), installedLockPath: lock, sdkEntrypoint: join(sdkDirectory, 'sdk.mjs'),
+  } });
 });

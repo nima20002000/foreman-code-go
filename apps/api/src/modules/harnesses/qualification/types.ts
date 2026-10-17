@@ -17,6 +17,7 @@ export interface QualificationSuiteInput {
   /** Model for the live turn (global harness default); null means the harness's own default. */
   model: string | null
   reasoningEffort?: string | undefined
+  environment?: NodeJS.ProcessEnv
   /** Disposable directory owned by this run; deleted afterwards by the caller. */
   workDirectory: string
   signal: AbortSignal

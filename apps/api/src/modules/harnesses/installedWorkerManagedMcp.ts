@@ -6,6 +6,8 @@ import { appLauncherPath, installManagedLauncher } from './appMcpLauncher.js'
 import { CodexMcpConnections } from './codexMcpConnections.js'
 import { ClaudeMcpConnections } from './claudeMcpConnections.js'
 import { WorkerManagedMcp } from './workerManagedMcp.js'
+import type { ResolvedProviderAccount } from '../provider-accounts/service.js'
+import { managedProviderEnvironment } from './providerAccountRuntime.js'
 import { DomainError } from '../errors.js'
 import { installedHarnessSelection, readInstalledWorkflowConfiguration,
   type InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
@@ -29,10 +31,12 @@ export function createInstalledWorkerManagedMcp(input: {
   availableConfiguration(): InstalledWorkflowConfigurationLocation | null
   registry: NativeProcessRegistry
   launcherSource?: URL | undefined
+  account?: ResolvedProviderAccount
 }) {
-  const home = process.env.HOME ?? homedir()
-  const codexFile = join(process.env.CODEX_HOME ?? join(home, '.codex'), 'config.toml')
-  const claudeFile = join(process.env.CLAUDE_CONFIG_DIR ?? home, '.claude.json')
+  const environment = input.account ? managedProviderEnvironment(process.env, input.account, 'codex') : process.env
+  const home = environment.HOME ?? homedir()
+  const codexFile = join(environment.CODEX_HOME ?? join(home, '.codex'), 'config.toml')
+  const claudeFile = join(environment.CLAUDE_CONFIG_DIR ?? home, '.claude.json')
   const inspectedFiles = new Set([codexFile, claudeFile])
   let observedRevision: string | undefined
   let readyRevision: string | undefined
@@ -69,7 +73,7 @@ export function createInstalledWorkerManagedMcp(input: {
     if (!selection) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Codex is not installed on this computer.', 409)
     const owner = `managed-mcp:codex:${randomUUID()}`
     const adapter = new CodexMcpConnections(selection.binary, input.stateDirectory,
-      input.registry.scope(owner), installLauncher)
+      input.registry.scope(owner), installLauncher, environment)
     try {
       return await work(adapter)
     } finally {
@@ -97,7 +101,7 @@ export function createInstalledWorkerManagedMcp(input: {
     const configuration = await readInstalledWorkflowConfiguration(input.availableConfiguration())
     const harnesses: ('codex' | 'claude')[] = []
     if (configuration && installedHarnessSelection(configuration)) harnesses.push('codex')
-    if (configuration?.claude) harnesses.push('claude')
+    if (configuration?.claude && !input.account) harnesses.push('claude')
     if (!harnesses.length) return
     const before = await revision()
     if (before === readyRevision) return
@@ -108,7 +112,21 @@ export function createInstalledWorkerManagedMcp(input: {
     // Only cache the configuration observed by native readback; edits racing setup retry normally.
     if (after === observedRevision) readyRevision = after
   }
-  return { worker, ensureReady(options: { signal?: AbortSignal } = {}) {
+  const accounts = new Map<string, { ensureReady(options: { signal?: AbortSignal }): Promise<void> }>()
+  return { worker, ensureReady(options: { signal?: AbortSignal; account?: ResolvedProviderAccount } = {}): Promise<void> {
+    if (options.account) {
+      const key = fingerprint(options.account)
+      let selected = accounts.get(key)
+      if (!selected) {
+        selected = createInstalledWorkerManagedMcp({ ...input,
+          stateDirectory: join(input.stateDirectory, 'managed-account-mcp', options.account.accountId),
+          account: options.account })
+        accounts.set(key, selected)
+      }
+      const accountSetup = selected
+      return mkdir(join(input.stateDirectory, 'managed-account-mcp', options.account.accountId),
+        { recursive: true, mode: 0o700 }).then(() => accountSetup.ensureReady(options.signal ? { signal: options.signal } : {}))
+    }
     const task = active.then(() => ensureReady(options), () => ensureReady(options))
     active = task
     return task

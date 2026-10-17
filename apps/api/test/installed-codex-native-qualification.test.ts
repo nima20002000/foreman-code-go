@@ -60,7 +60,7 @@ async function fixture(harness: 'codex' = 'codex') {
     return nativeQualification(value.configuration, harness === 'codex' ? `codex-cli ${version}` : version)
   })
   const qualifier = createInstalledNativeQualifier({ harness, binding, trustedCurrentBinding: () => current, inspect, registry,
-    workingRoot: directory, environment: { PATH: '/usr/bin' }, checkConfiguration,
+    workingRoot: directory, environment: { PATH: '/usr/bin', CODEX_HOME: join(directory, 'account') }, checkConfiguration,
     suite: { harness, revision: `${harness}-live-4`, run }, probe: () => probe })
   return { directory, binary, binding, value, checkId, qualifier, registry, probe, run, checkConfiguration, installation,
     setBinding: (next: typeof binding) => { current = next } }
@@ -271,4 +271,20 @@ describe('Main retention through existing authorized idempotent profile check', 
       expect(f.append).not.toHaveBeenCalled()
     } finally { await f.checks.close(); await release(f) }
   })
+})
+
+
+it('passes the selected account environment to native qualification scenarios', async () => {
+  const f = await fixture()
+  const run = f.run.getMockImplementation()!
+  f.run.mockImplementation(async input => {
+    if (input.environment?.CODEX_HOME !== join(f.directory, 'account')) {
+      return { checks: [{ id: 'thread-start', passed: false, detail: 'Default account signed out' }], evidence: {} }
+    }
+    return run(input)
+  })
+  try {
+    await expect(f.qualifier.qualify(f.value, { checkId: f.checkId, signal: new AbortController().signal }))
+      .resolves.toMatchObject({ qualified: true, authenticated: true })
+  } finally { await release(f) }
 })

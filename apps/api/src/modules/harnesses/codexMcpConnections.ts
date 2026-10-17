@@ -20,9 +20,10 @@ export function codexMcpOwnership(layers: unknown[], userLayer: Record<string, u
 export class CodexMcpConnections implements NativeMcpAdapter {
   constructor(private readonly binary: string | (() => string), private readonly directory: string,
     private readonly processRecovery?: NativeProcessRecovery,
-    private readonly installLauncher: (signal: AbortSignal) => Promise<void> = installAppLauncher) {}
+    private readonly installLauncher: (signal: AbortSignal) => Promise<void> = installAppLauncher,
+    private readonly environment: NodeJS.ProcessEnv = process.env) {}
   private async control<T>(work: (transport: CodexStdioTransport, binary: string, environment: NodeJS.ProcessEnv) => Promise<T>, signal: AbortSignal): Promise<T> {
-    const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
+    const environment: NodeJS.ProcessEnv = { ...this.environment, NO_COLOR: '1' }
     for (const key of Object.keys(environment)) if (/^(?:GRAPHQL_|FOREMAN_CODE_|OPERATOR_|DATABASE_URL$|TEST_DATABASE_URL$|PGPASSWORD$)/.test(key)) delete environment[key]
     const binary = typeof this.binary === 'string' ? this.binary : this.binary()
     const qualified = await qualifyCodex(binary, this.directory, environment, true, signal)

@@ -163,16 +163,9 @@ export async function refreshWorkflowSelection({ stateDirectory, release = relea
     const exists = await managedEntryExists(state, 'workflow-runtime.json');
     const previous = exists ? await readInstalledWorkflowConfiguration(location) : null;
     const retained = await retainedSelection(previous, environment, release, signal);
-    if (retained) {
-      signal.throwIfAborted();
-      assertStateOwnership();
-      if (!isDeepStrictEqual(retained, previous)) {
-        await publishManagedJson(state, 'workflow-runtime.json', retained);
-      }
-      return location;
-    }
     const selections = await Promise.allSettled([
-      codexSelection(environment, signal), claudeSelection(environment, release, signal),
+      retained?.codexBinary ? Promise.resolve(null) : codexSelection(environment, signal),
+      retained?.claude ? Promise.resolve(null) : claudeSelection(environment, release, signal),
     ]);
     for (const result of selections) {
       if (result.status === 'rejected') reportError(result.reason);
@@ -181,6 +174,14 @@ export async function refreshWorkflowSelection({ stateDirectory, release = relea
     const codex = selections[0].status === 'fulfilled' ? selections[0].value : null;
     const claude = selections[1].status === 'fulfilled' ? selections[1].value : null;
     assertStateOwnership();
+    if (retained) {
+      const configuration = InstalledWorkflowConfigurationSchema.parse({ ...retained,
+        ...(codex ?? {}), ...(claude ? { claude } : {}) });
+      if (!isDeepStrictEqual(configuration, previous)) {
+        await publishManagedJson(state, 'workflow-runtime.json', configuration);
+      }
+      return location;
+    }
     if (!codex && !claude) {
       if (exists) {
         await unlink(anchored(state, 'workflow-runtime.json'));

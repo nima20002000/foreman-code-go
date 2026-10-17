@@ -19,6 +19,7 @@ import { NativeConfigurationService } from '../harnesses/nativeConfiguration.js'
 import { discoverClaudeMetadata } from '../harnesses/claudeSdk/metadata.js'
 import { claudeSettingSupport } from '../harnesses/claudeSdk/nativeConfiguration.js'
 import { DomainError } from '../errors.js'
+import type { ResolvedProviderAccount } from './service.js'
 import { LocalProviderCredentials } from './localCredentials.js'
 import { NativeProviderAccountCommands } from './nativeCommands.js'
 import { NativeProviderAccountOperations } from './nativeOperations.js'
@@ -31,6 +32,7 @@ export function createInstalledWorkerAccounts(input: {
   stateDirectory: string; configuration: InstalledWorkflowConfigurationLocation | null
   current(): Readonly<DeviceSessionBinding>
   registry: NativeProcessRegistry
+  prepareAccount?(account: ResolvedProviderAccount): Promise<void>
   target: import('@foreman-code/contracts/device-resources').DeviceProvisioningTarget
   request(namespace: string, payload: unknown): Promise<DeviceApplicationResult>
 }): Omit<WorkerAccountOperationPorts, 'current'> | undefined {
@@ -156,7 +158,8 @@ export function createInstalledWorkerAccounts(input: {
       throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The original Main account binding is unavailable.', 409)
     }
   }
-  const accounts = workerProviderAccountResolver({ current: input.current, resolve, native, validate })
+  const accounts = workerProviderAccountResolver({ current: input.current, resolve, native, validate,
+    ...(input.prepareAccount ? { prepareAccount: input.prepareAccount } : {}) })
   const factories = new NativeHarnessFactories({ codexBinary: '', accounts, instances, installations, selectAccount: selection.selectAccount,
     auxiliaryRecovery: role => input.registry.scope(`${role}:${randomUUID()}`),
     admitRecovery: recovery => { Object.assign(recovery, input.registry.reserveLaunch(recovery.owner)) },
@@ -174,6 +177,7 @@ export function createInstalledWorkerAccounts(input: {
     if (failures.length) throw new AggregateError(failures, 'Worker account cleanup remains unconfirmed.')
   }
   return { native, resolve, validate,
+    ...(input.prepareAccount ? { prepareAccount: input.prepareAccount } : {}),
     async provision(raw) {
       const account = ProviderAccountSchema.parse(raw)
       if (!account.binding) throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE', 'The Worker slot binding is unavailable.', 409)

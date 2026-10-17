@@ -163,7 +163,7 @@ export function hostCiDirectory() {
 export class HostCiRunner {
   private readonly preparing = new Map<string, Promise<void>>()
   private readonly starts = new Map<string, Promise<CiHostRun>>()
-  private readonly warmupAborts = new Map<string, AbortController>()
+  private readonly preparationAborts = new Map<string, AbortController>()
   private readonly reading = new Map<string, number>()
   private startQueue = Promise.resolve()
   private pendingRealStarts = 0
@@ -459,13 +459,13 @@ export class HostCiRunner {
     const existing = this.starts.get(request.runId)
     if (existing) return existing
     if (!request.warmup) this.pendingRealStarts++
-    if (request.warmup) this.warmupAborts.set(request.runId, new AbortController())
+    this.preparationAborts.set(request.runId, new AbortController())
     const pending = this.startRun(request).catch(error => {
       this.invalidateReadiness()
       throw error
     }).finally(() => {
       this.starts.delete(request.runId)
-      if (!this.preparing.has(request.runId)) this.warmupAborts.delete(request.runId)
+      if (!this.preparing.has(request.runId)) this.preparationAborts.delete(request.runId)
       if (!request.warmup) this.pendingRealStarts--
     })
     this.starts.set(request.runId, pending)
@@ -586,7 +586,7 @@ export class HostCiRunner {
 
   private async prepareRun(request: StartRequest, meta: RunMeta) {
     const directory = this.runDirectory(meta.runId)
-    const signal = this.warmupAborts.get(meta.runId)?.signal
+    const signal = this.preparationAborts.get(meta.runId)?.signal
     const allowance = { buildAllowancePercent: request.buildAllowancePercent ?? 100 }
     const ready = await withHostCiRunLock(directory, async () => {
       try {
@@ -651,7 +651,7 @@ export class HostCiRunner {
       }
     }).finally(() => {
       this.preparing.delete(meta.runId)
-      this.warmupAborts.delete(meta.runId)
+      this.preparationAborts.delete(meta.runId)
     })
     this.preparing.set(meta.runId, preparing)
     return this.refresh(request.runId)
@@ -688,7 +688,7 @@ export class HostCiRunner {
   }
 
   private async launchRun(meta: RunMeta) {
-    const signal = this.warmupAborts.get(meta.runId)?.signal
+    const signal = this.preparationAborts.get(meta.runId)?.signal
     const source = await this.withRepository(meta.repository, async () => {
       const current = await this.readMeta(meta.runId)
       if (current.state !== 'starting' || current.cancellationRequested) return
@@ -1264,11 +1264,12 @@ export class HostCiRunner {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
         // The first marker keeps the cancellation timestamp stable on retries.
       }
-      this.warmupAborts.get(runId)?.abort(new Error('Background CI preparation preempted.'))
+      this.preparationAborts.get(runId)?.abort(new Error('CI preparation canceled.'))
       if (!meta) return this.refresh(runId)
       if (meta.state === 'queued') {
         await withHostCiRunLock(directory, () => this.finish(runId, 'canceled', null, 'Canceled before execution.'))
       }
+      await this.starts.get(runId)
       await this.preparing.get(runId)
     }
     return this.refresh(runId)

@@ -24,7 +24,7 @@ export const codexQualificationSuite: QualificationSuite = {
   harness: 'codex', revision: 'codex-live-5',
   async run(input: NativeQualificationSuiteInput) {
     const signal = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
-    const environment = inheritedAgentEnvironment()
+    const environment = inheritedAgentEnvironment(input.environment)
     const evidence: Record<string, unknown> = { profile: input.profile, binarySha256: input.binarySha256, model: input.model }
     let protocol: ReturnType<typeof protocolFromBundle> | undefined
     let transport: CodexStdioTransport | undefined

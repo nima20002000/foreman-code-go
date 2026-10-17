@@ -7,12 +7,13 @@ import {
 } from '@foreman-code/contracts/provider-accounts'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionContext, DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
-import type { ProviderAccountResolver, ProviderAccountOperationNativePort } from './service.js'
+import type { ProviderAccountResolver, ProviderAccountOperationNativePort, ResolvedProviderAccount } from './service.js'
 import type { ProviderAccountNativeInput } from './nativeCommands.js'
 import { DomainError } from '../errors.js'
 
 export interface WorkerAccountOperationPorts {
   validate?(binding: ProviderAccountBinding): Promise<void>
+  prepareAccount?(account: ResolvedProviderAccount): Promise<void>
   provision?(account: ProviderAccount): Promise<ProviderAccount>
   native: ProviderAccountOperationNativePort
   current(): Readonly<DeviceSessionBinding>
@@ -32,7 +33,7 @@ export function assertWorkerProviderAccountBinding(binding: AcceptedProviderAcco
 }
 
 export function workerProviderAccountResolver(ports: Pick<WorkerAccountOperationPorts, 'current' | 'resolve'>
-  & Partial<Pick<WorkerAccountOperationPorts, 'native' | 'validate'>>): ProviderAccountResolver {
+  & Partial<Pick<WorkerAccountOperationPorts, 'native' | 'validate' | 'prepareAccount'>>): ProviderAccountResolver {
   return { async resolve(provider, accountId, options) {
     const binding = options?.acceptedBinding
     if (!binding || binding.kind !== 'slot' || binding.provider !== provider || binding.accountId !== accountId) {
@@ -52,8 +53,11 @@ export function workerProviderAccountResolver(ports: Pick<WorkerAccountOperation
       if (observed.subject?.subject !== binding.subject.subject) throw new DomainError(
         'PROVIDER_ACCOUNT_PRINCIPAL_UNAVAILABLE', 'The accepted Worker provider principal changed or is unproved.', 409)
     }
-    return { accountId: binding.accountId, homePath: input.homePath, authMode: input.account.authMode, binding,
+    const account = { accountId: binding.accountId, homePath: input.homePath, authMode: input.account.authMode, binding,
       ...(input.apiKey ? { apiKey: input.apiKey } : {}) }
+    if (provider === 'codex') await ports.prepareAccount?.(account)
+    assertWorkerProviderAccountBinding(binding, ports.current())
+    return account
   } }
 }
 

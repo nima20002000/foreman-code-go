@@ -8,7 +8,6 @@ import { HostHarnessProfileCheckRequestSchema, type HostHarnessOverride,
 import { DomainError } from '../errors.js'
 import { createClaudeCurrentPinResolver } from './claudeSdk/currentPin.js'
 import { qualifyClaudeNativeProfile } from './claudeSdk/nativeProfileQualification.js'
-import { CLAUDE_CLI_CANDIDATE_VERSION, CLAUDE_SDK_CANDIDATE_VERSION } from './claudeSdk/official.js'
 import { HarnessInstallationRegistry } from './installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from './instanceRegistry.js'
 import { inspectInstalledClaude, type InstalledClaudeTarget } from './installedClaudeInspection.js'
@@ -77,9 +76,6 @@ export function createInstalledClaudeQualifier(input: {
       environment: original.installation.launcher.environment,
       instanceRevision: value.instanceRevision, profilePath: configuration.configDirectory }, signal)
     if (current.status !== 'available') throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', current.reason, 409)
-    if (current.pin.sdkVersion !== CLAUDE_SDK_CANDIDATE_VERSION
-      || current.pin.cliVersion !== CLAUDE_CLI_CANDIDATE_VERSION) throw new DomainError(
-      'CLAUDE_VERSION_UNQUALIFIED', 'The installed SDK or CLI differs from the native qualification candidate.', 409)
     const instances = new HarnessInstanceRegistry(localHarnessDrivers)
     instances.reload([{ instanceId: value.instanceId, instanceRevision: value.instanceRevision,
       driverId: 'claude', enabled: value.enabled, configuration }])
