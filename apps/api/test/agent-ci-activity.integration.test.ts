@@ -1,3 +1,4 @@
+import { AgentReferenceManifestSchema } from '@foreman-code/contracts/files'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -311,6 +312,11 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const deniedToken = denied.environment.variables.GRAPHQL_MCP_TOKEN!
       const catalog = await graphRpc(f.app, deniedToken, 'tools/list')
       expect(catalog.error).toBeUndefined()
+      expect(catalog.result?.tools?.map(tool => tool.name)).toEqual(expect.arrayContaining([
+        'files.references_list', 'files.reference_read',
+      ]))
+      expect(AgentReferenceManifestSchema.parse(await f.value(deniedToken, 'files.references_list', {})))
+        .toMatchObject({ items: [], pageInfo: { nextCursor: null } })
       expect(catalog.result?.tools?.map(tool => tool.name)).not.toContain('ci_get')
       const blocked = await f.call(deniedToken, 'ci_get', input)
       expect(blocked.result?.isError).toBe(true)
