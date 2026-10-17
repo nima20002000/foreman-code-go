@@ -366,12 +366,22 @@ describe('host CI runner concurrent starts', () => {
 it.each([false, true])('fences cancellation during repository fetch across restart=%s', async restarted => {
   const fetch = barrier()
   const { root, runner, request, launches, ports } = await computer(undefined, 8, false, undefined, fetch.pause)
+  const command = ports.run
+  let preparationSignal: AbortSignal | undefined
+  ports.run = async (file, args, options) => {
+    if (file === 'git' && args.includes('fetch')) preparationSignal = options?.signal
+    return command(file, args, options)
+  }
   const canceler = restarted ? new HostCiRunner(root, ports) : runner
   const start = runner.handle(request)
   try {
     await fetch.entered
     await expect(canceler.handle({ operation: 'cancel', runId: request.runId }))
       .resolves.toMatchObject({ operation: 'cancel', run: { state: 'starting', finishedAt: null } })
+    expect(preparationSignal).toBeInstanceOf(AbortSignal)
+    expect(preparationSignal!.aborted).toBe(!restarted)
+    await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 1 })
+    await expect(runner.handle({ ...request, runId: randomUUID() })).rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
     expect(launches).toHaveLength(0)
     fetch.release()
     await expect(start).resolves.toMatchObject({ run: { state: 'canceled' } })

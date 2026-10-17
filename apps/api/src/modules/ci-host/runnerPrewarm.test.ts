@@ -180,11 +180,14 @@ it.each(['fetch', 'checkout'] as const)('cancels a stalled real CI %s and frees 
     next = f.runner.handle({ ...f.request, runId, warmup: false, suite: 'lint' })
     await vi.waitFor(() => expect(f.launches).toEqual([`foreman-ci-${runId}`]), { timeout: 1500 })
     expect(() => process.kill(pid!, 0)).toThrow()
-    await expect(cancel).resolves.toMatchObject({ run: { state: 'canceled' } })
+    // Acknowledgement can precede process closure; the read below checks final cancellation after it closes.
+    await expect(cancel).resolves.toMatchObject({ operation: 'cancel', run: { runId: f.request.runId } })
     await first
     await expect(f.runner.handle({ operation: 'read', runId: f.request.runId, afterOffset: 0, maxBytes: 100 }))
       .resolves.toMatchObject({ run: { state: 'canceled' } })
     await expect(next).resolves.toMatchObject({ run: { runId } })
+    await expect(f.runner.status()).resolves.toMatchObject({ slotsUsed: 1,
+      runs: expect.arrayContaining([expect.objectContaining({ runId: f.request.runId, state: 'canceled' })]) })
   } finally {
     for (const processId of [pid, childPid]) {
       if (processId === undefined) continue
