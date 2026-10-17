@@ -149,7 +149,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
     const activePath = join(root, 'Active snapshot'); await mkdir(activePath)
     const activeFolder = (await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.find((item) => item.path === activePath)!
     const snapshot = await seedAgent3(pool, activePath, makeCurrentWorkflowFixture(randomUUID(), 'single'))
-    await locations.set(owner.principal, 'http', { workspaceId: snapshot.run.workspaceId,
+    await locations.set(owner.principal, 'http', { workspaceId: snapshot.run.workspaceId, commandId: randomUUID(),
       expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: external })
     await expect(workspaces.storageFolders.delete(owner.principal, 'http', { commandId: randomUUID(), path: activePath, expectedIdentity: activeFolder.identity })).rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
     expect((await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.find((item) => item.path === activePath)?.deletion).toMatchObject({ status: 'protected', reason: 'active_run' })
