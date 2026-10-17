@@ -40,6 +40,7 @@ export function createInstalledWorkerAccounts(input: {
   const qualified = AccountIsolationQualificationsSchema.parse(raw).records
   if (!qualified.some(record => isDeepStrictEqual(record.target, input.target) && Date.parse(record.expiresAt) > Date.now())) return undefined
   const root = privateDirectory(join(input.stateDirectory, 'provider-account-slots'))
+  const journal = new NativeAccountJournal(join(root, 'operations'))
   const credentials = new LocalProviderCredentials(join(root, 'native'))
   const sdkEntrypoints = new Map<string, string>()
   const selections = new Map<string, RegistryHarnessSelection>()
@@ -125,22 +126,22 @@ export function createInstalledWorkerAccounts(input: {
       } else {
         options = await configurations.options('codex', binding)
       }
-      return { binding, generation: input.current().connectionGeneration, observedAt: options.checkedAt,
+      return { binding, generation: journal.accountGeneration(input.current()), observedAt: options.checkedAt,
         models: options.models.map(row => ({ ...row, name: row.name ?? row.id })), options }
     },
   })
   const workerSelection = { ...selection,
     async selected(value: Parameters<typeof selection.selected>[0]) {
       const selected = await selection.selected(value)
-      return selected ? { ...selected, generation: input.current().connectionGeneration } : null
+      return selected ? { ...selected, generation: journal.accountGeneration(input.current()) } : null
     },
     async discover(...value: Parameters<NonNullable<typeof selection.discover>>) {
       const discovered = await selection.discover!(...value)
-      return { ...discovered, generation: input.current().connectionGeneration }
+      return { ...discovered, generation: journal.accountGeneration(input.current()) }
     },
   }
   const native = new NativeProviderAccountOperations(new NativeProviderAccountCommands(workerSelection),
-    new NativeAccountJournal(join(root, 'operations')), input.registry, async value => {
+    journal, input.registry, async value => {
       const result = await input.request('provider-accounts-v1', { version: 1, kind: 'authorize', operation: value.operation })
       if (result.bytes !== undefined || !isDeepStrictEqual(result.payload, { allowed: true })) {
         throw new DomainError('ACCESS_DENIED', 'The original Main denied this authentication operation.', 403)

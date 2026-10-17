@@ -96,7 +96,9 @@ test('setup installs private repeatable launcher files and retains existing iden
   for (const path of [result.desktop, result.proposedService]) assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.equal(result.serviceActivation, 'not-requested');
   assert.equal(result.appMcpLauncher, join(f.home, '.local/share/graphql/mcp/launcher.mjs'));
-  assert.equal(await readFile(result.appMcpLauncher, 'utf8'), await readFile(join(f.artifact, 'artifacts/graphql-mcp.mjs'), 'utf8'));
+  const bridge = spawnSync(process.execPath, [result.appMcpLauncher], { encoding: 'utf8', timeout: 2000 });
+  assert.equal(bridge.status, 0, bridge.stderr);
+  assert.equal(bridge.stdout.trim(), 'fixture authenticated MCP bridge');
   assert.equal((await stat(result.appMcpLauncher)).mode & 0o777, 0o600);
   assert.equal((await stat(join(f.home, '.local/share/graphql/mcp'))).mode & 0o777, 0o700);
   await assert.rejects(readFile(join(f.home, '.config/systemd/user/graphql-worker.service')), { code: 'ENOENT' });

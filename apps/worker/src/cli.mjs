@@ -116,9 +116,6 @@ async function main() {
   const manifest = command === 'run' ? null : await prepareWorkerState(stateDirectory);
   if (command === 'pair') {
     await requirePrivateDirectory(stateDirectory);
-    // One selected main: never call enrollment to overwrite an existing pairing.
-    try { await readFile(`${stateDirectory}/pairing.json`); throw new WorkerError('already_paired'); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
     const identity = await loadOrCreateWorkerIdentity(stateDirectory);
     const result=args[3]==='--enrollment-stdin'?await enrollment.enrollWorkerCode({stateDirectory,identity,enrollmentCode:await import('./setupInput.mjs').then(module=>module.readPrivateEnrollmentCode()),appVersion:manifest.version}):await enrollment.enrollWorker({stateDirectory,identity,enrollmentFile:args[4],appVersion:manifest.version});
     console.log(JSON.stringify(result));
@@ -137,7 +134,7 @@ async function main() {
     runtime.stop().then(() => process.exit(0), () => { console.error('shutdown_timeout'); process.exit(1); });
   };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
-  if (runtime.managedSetup && runtime.managedSetup.state !== 'ready') {
+  if (runtime.managedSetup?.state === 'failed') {
     // The user service restarts failures; keep the authenticated status available between automatic retries.
     // A running Worker update must finish first: it may deliver the release that fixes setup.
     const retry = () => {

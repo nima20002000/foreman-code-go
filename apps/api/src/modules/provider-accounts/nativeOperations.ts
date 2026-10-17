@@ -212,6 +212,9 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
   async observeAuthentication(input: OperationInput): Promise<ProviderAccountNativeAuthenticationObservation> {
     const { record } = this.journal.reserve(input.operation)
     this.validate(input, record)
+    if (input.operation.cancelRequested && record.observation.state === 'outcome-unknown') {
+      return this.cancel(input, 'canceled')
+    }
     if (record.observation.nativeClosed) return structuredClone(record.observation)
     if (input.operation.cancelRequested) return this.cancel(input, 'canceled')
     if (this.residents.has(record.operation.id)) {
@@ -231,7 +234,13 @@ export class NativeProviderAccountOperations implements ProviderAccountOperation
   private async cancel(input: OperationInput, state: 'canceled' | 'expired') {
     const { record } = this.journal.reserve(input.operation)
     this.validate(input, record)
-    if (record.observation.nativeClosed) return structuredClone(record.observation)
+    if (record.observation.nativeClosed) {
+      if (record.observation.state === 'outcome-unknown') {
+        record.operation.cancelRequested = true
+        this.update(record, state, true)
+      }
+      return structuredClone(record.observation)
+    }
     record.operation.cancelRequested = true
     this.update(record, 'observing', false)
     try {
