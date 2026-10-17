@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { deferred } from './helpers/deferred.js'
+import { DomainError } from '../src/modules/errors.js'
 
 const principal: ManagementPrincipal = { id: 'actor', name: 'Actor', audience: 'operator', grants: [],
   expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
@@ -28,7 +29,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
     }>,
   }
   let receipt: { principal_id: unknown; input_hash: unknown; target_key: unknown; result: unknown } | undefined
-  let lockOwner: symbol | undefined
+  const lockOwners = new Map<unknown, symbol>()
   let commits = 0
   let lockRequests = 0
   const makeClient = () => {
@@ -37,13 +38,14 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
     return { release: releases, query: vi.fn(async (sql: string, values?: unknown[]) => {
       if (sql.includes('pg_try_advisory_lock(')) {
         if (++lockRequests === 2) secondLock.resolve()
+        const lockOwner = lockOwners.get(values?.[0])
         const locked = lockOwner === undefined || lockOwner === owner
-        if (locked) lockOwner = owner
+        if (locked) lockOwners.set(values?.[0], owner)
         return { rows: [{ locked }], rowCount: 1 }
       }
       if (sql.includes('pg_advisory_unlock(')) {
         if (options.failUnlock) throw new Error('unlock failed')
-        if (lockOwner === owner) lockOwner = undefined
+        if (lockOwners.get(values?.[0]) === owner) lockOwners.delete(values?.[0])
         state.unlocks++
       }
       if (sql.trimStart().startsWith('select') && sql.includes('from management_command_receipts')) {
@@ -80,7 +82,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
       return { rows: [], rowCount: 0 }
     }) }
   }
-  const pool = { options: {}, connect: async () => makeClient(), end, on: () => undefined }
+  const pool = { options: {}, connect: async () => makeClient(), query: makeClient().query, end, on: () => undefined }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return { ...pool } } as never)
   return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), releases, end, secondLock, state }
 }
@@ -166,5 +168,111 @@ describe('retained command preparation ownership', () => {
       .toEqual({ value: 'accepted', replayed: false })
     expect(f.releases).toHaveBeenCalledWith(expect.objectContaining({ message: 'unlock failed' }))
     expect(f.end).not.toHaveBeenCalled()
+  })
+})
+
+const preparedMutation = {
+  releaseDuringPreparation: true as const,
+  resourceLock: 'workspace:configuration',
+  validate: async () => true,
+}
+
+describe('command retries after concurrent preparation', () => {
+  it.each(['http', 'mcp'] as const)('returns the committed matching result after preparation fails (%s)', async source => {
+    const f = fixture()
+    const entered = deferred()
+    const resume = deferred()
+    let created = false
+    const perform = vi.fn(async () => {
+      created = true
+      return { id: 'created-agent' }
+    })
+    const prepare = vi.fn(async () => {
+      if (created) throw new DomainError('AGENT_ID_CONFLICT', 'The Agent ID already exists.', 409)
+    })
+    const replayResult = vi.fn((result: unknown) => result as { id: string })
+    const delayed = f.coordinator.execute({ ...command, source, preparedMutation, perform, replayResult,
+      prepare: async () => {
+        entered.resolve()
+        await resume.promise
+        await prepare()
+      },
+    })
+    const outcome = delayed.then(value => ({ value }), (error: unknown) => ({ error }))
+    await entered.promise
+    const winner = await f.coordinator.execute({ ...command, source, preparedMutation, prepare, perform })
+    expect(winner).toEqual({ value: { id: 'created-agent' }, replayed: false })
+    resume.resolve()
+    expect(await outcome).toEqual({ value: { value: winner.value, replayed: true } })
+    expect(prepare).toHaveBeenCalledTimes(2)
+    expect(perform).toHaveBeenCalledOnce()
+    expect(replayResult).toHaveBeenCalledExactlyOnceWith(winner.value)
+    expect(f.state.receiptWrites).toBe(1)
+    expect(f.state.audits.map(audit => audit.outcome)).toEqual(['succeeded'])
+  })
+
+  it('preserves and audits preparation failure when no retry committed', async () => {
+    const f = fixture()
+    const failure = new DomainError('REVISION_CONFLICT', 'Settings changed.', 409)
+    const perform = vi.fn()
+    const prepare = vi.fn(async () => { throw failure })
+    await expect(f.coordinator.execute({ ...command, preparedMutation, prepare, perform })).rejects.toBe(failure)
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(perform).not.toHaveBeenCalled()
+    expect(f.state.receiptWrites).toBe(0)
+    expect(f.state.audits).toEqual([{
+      principalId: principal.id,
+      source: command.source,
+      action: command.operation,
+      targetKey: command.targetKey,
+      outcome: 'failed',
+      details: { commandId: command.commandId, code: failure.code },
+    }])
+  })
+
+  it.each(['payload', 'targetKey'] as const)('rejects a concurrent receipt with different %s', async field => {
+    const f = fixture()
+    const entered = deferred()
+    const resume = deferred()
+    const perform = vi.fn(async () => 'accepted')
+    const delayed = f.coordinator.execute({ ...command, preparedMutation, perform, prepare: async () => {
+      entered.resolve()
+      await resume.promise
+      throw new DomainError('REVISION_CONFLICT', 'Settings changed.', 409)
+    } })
+    const outcome = delayed.catch((error: unknown) => error)
+    await entered.promise
+    await f.coordinator.execute({ ...command,
+      ...(field === 'payload' ? { payload: { expectedRevision: 2 } } : { targetKey: 'other-workspace' }),
+      preparedMutation, prepare: async () => undefined, perform,
+    })
+    resume.resolve()
+    expect(await outcome).toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
+    expect(perform).toHaveBeenCalledOnce()
+    expect(f.state.receiptWrites).toBe(1)
+  })
+
+  it('denies a committed result if authorization is revoked during preparation', async () => {
+    const f = fixture()
+    const entered = deferred()
+    const resume = deferred()
+    let revoked = false
+    const denied = new DomainError('FORBIDDEN', 'Authority revoked.', 403)
+    const authorize = vi.fn(async () => { if (revoked) throw denied })
+    const perform = vi.fn(async () => 'accepted')
+    const delayed = f.coordinator.execute({ ...command, preparedMutation, authorize, perform, prepare: async () => {
+      entered.resolve()
+      await resume.promise
+      throw new DomainError('REVISION_CONFLICT', 'Settings changed.', 409)
+    } })
+    const outcome = delayed.catch((error: unknown) => error)
+    await entered.promise
+    await f.coordinator.execute({ ...command, preparedMutation, prepare: async () => undefined, perform })
+    revoked = true
+    resume.resolve()
+    expect(await outcome).toBe(denied)
+    expect(authorize).toHaveBeenCalledTimes(2)
+    expect(perform).toHaveBeenCalledOnce()
+    expect(f.state.receiptWrites).toBe(1)
   })
 })
