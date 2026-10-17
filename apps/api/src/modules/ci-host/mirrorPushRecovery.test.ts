@@ -193,3 +193,51 @@ it('retains the only snapshot ref while pruning stale branches during a pending 
     await start
   }
 })
+
+it.each([
+  { stderr: ' ! [remote rejected] SNAPSHOT -> REF (failed)\nerror: failed to push some refs' },
+  { stderr: 'remote: fatal error in commit_refs\n ! [remote rejected] SNAPSHOT -> REF (failure)\nerror: failed to push some refs' },
+])('retries a CircleCI dispatch push that GitHub rejects transiently while many parts push at once', async ({ stderr }) => {
+  const f = await fixture({}, { provider: 'circleci' })
+  await f.cloud.publishMirror(publication(f.commit))
+  const snapshot = f.mirrorGit('rev-parse', 'main')
+  const runId = randomUUID()
+  const workflowRef = `ci/${f.commit}-${runId}`
+  const git = f.git.git
+  let pushes = 0
+  f.git.git = async (args, options) => {
+    if (args[0] === 'push' && args.includes(`${snapshot}:refs/heads/${workflowRef}`) && ++pushes === 1) {
+      return { code: 1, stdout: '', stderr: stderr.replace('SNAPSHOT', snapshot).replace('REF', workflowRef) }
+    }
+    return git(args, options)
+  }
+
+  await expect(f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' }))
+    .resolves.toMatchObject({ run: { state: 'running', provenance: { workflowCommit: snapshot, workflowRef } } })
+  expect(pushes).toBe(2)
+  expect(f.mirrorGit('rev-parse', workflowRef)).toBe(snapshot)
+  expect(f.circle.triggered).toHaveLength(1)
+})
+
+it('stops retrying a CircleCI dispatch push that GitHub keeps failing', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  await f.cloud.publishMirror(publication(f.commit))
+  const snapshot = f.mirrorGit('rev-parse', 'main')
+  const runId = randomUUID()
+  const workflowRef = `ci/${f.commit}-${runId}`
+  const git = f.git.git
+  let pushes = 0
+  f.git.git = async (args, options) => {
+    if (args[0] === 'push' && args.includes(`${snapshot}:refs/heads/${workflowRef}`)) {
+      pushes++
+      return { code: 1, stdout: '', stderr: ` ! [remote rejected] ${snapshot} -> ${workflowRef} (failed)\nerror: failed to push some refs` }
+    }
+    return git(args, options)
+  }
+
+  await expect(f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })).rejects.toThrow('(failed)')
+  expect(pushes).toBe(3)
+  expect(f.circle.triggered).toHaveLength(0)
+})
