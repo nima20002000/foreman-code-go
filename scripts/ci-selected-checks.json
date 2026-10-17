@@ -1,0 +1,429 @@
+{
+  "source": "0e40b1dbe160f02c88e94a3508e3fafcd3213bea",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "requiredExports": [
+    ".",
+    "./device-application",
+    "./device-connection",
+    "./device-identity",
+    "./device-identity-node",
+    "./device-tls-node",
+    "./files",
+    "./interaction-activity",
+    "./management",
+    "./operator-chat",
+    "./product-environment",
+    "./remote-execution-rpc",
+    "./schedules",
+    "./wave25"
+  ],
+  "exportSourceRoots": [
+    "src/index.ts",
+    "src/deviceApplication.ts",
+    "src/deviceConnection.ts",
+    "src/deviceIdentity.ts",
+    "src/deviceIdentityNode.ts",
+    "src/deviceTlsNode.ts",
+    "src/files.ts",
+    "src/interaction-activity.ts",
+    "src/management/index.ts",
+    "src/operatorChat.ts",
+    "src/productEnvironment.mjs",
+    "src/remoteExecutionRpc.ts",
+    "src/schedules.ts",
+    "src/wave25/index.ts"
+  ],
+  "groups": {
+    "qconf": [
+      {
+        "name": "required-contracts-exports",
+        "cwd": "packages/contracts",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--target",
+          "ES2022",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--types",
+          "node",
+          "--strict",
+          "--skipLibCheck",
+          "--allowJs",
+          "--declaration",
+          "--sourceMap",
+          "--rootDir",
+          "src",
+          "--outDir",
+          "dist",
+          "--listEmittedFiles",
+          "src/index.ts",
+          "src/deviceApplication.ts",
+          "src/deviceConnection.ts",
+          "src/deviceIdentity.ts",
+          "src/deviceIdentityNode.ts",
+          "src/deviceTlsNode.ts",
+          "src/files.ts",
+          "src/interaction-activity.ts",
+          "src/management/index.ts",
+          "src/operatorChat.ts",
+          "src/productEnvironment.mjs",
+          "src/remoteExecutionRpc.ts",
+          "src/schedules.ts",
+          "src/wave25/index.ts"
+        ],
+        "dependencySetup": true
+      },
+      {
+        "name": "qconf-changed32-lint",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "eslint",
+          "fixtures/harnesses/claude-cli.cjs",
+          "fixtures/harnesses/claude-sdk/mcp.mjs",
+          "fixtures/harnesses/scripted-input.cjs",
+          "fixtures/harnesses/scripted-mcp-configuration.cjs",
+          "fixtures/harnesses/scripted-mcp.cjs",
+          "fixtures/harnesses/scripted-plans.cjs",
+          "fixtures/harnesses/scripted-turns.cjs",
+          "src/clients/mcp.test.ts",
+          "src/clients/workerConnection.test.ts",
+          "src/clients/workerConnection.ts",
+          "src/harnesses/claudeMcp.test.mjs",
+          "src/harnesses/scriptedMcpFailures.test.mjs",
+          "src/runtime/environment.test.ts",
+          "src/runtime/environment.ts",
+          "src/runtime/postgres.test.ts",
+          "src/runtime/postgres.ts",
+          "src/runtime/target.test.ts",
+          "src/runtime/target.ts",
+          "src/scenarios/http/versioned-setting.ts",
+          "src/scenarios/streams/operatorTurn.ts",
+          "src/scenarios/streams/operatorTurnState.ts",
+          "src/scenarios/workflows/authoring.test.ts",
+          "src/scenarios/workflows/authoring.ts",
+          "src/scenarios/workflows/handoff.ts",
+          "src/scenarios/workflows/handoffInput.test.ts",
+          "src/scenarios/workflows/handoffInput.ts",
+          "src/scenarios/workflows/inspection.test.ts",
+          "src/scenarios/workflows/inspection.ts",
+          "src/scenarios/workflows/interaction.ts",
+          "src/scenarios/workflows/interactionRead.ts",
+          "src/scenarios/workflows/repeat.ts",
+          "src/scenarios/workflows/schedule.ts",
+          "--max-warnings",
+          "0"
+        ]
+      },
+      {
+        "name": "qconf-ci-fixes-8af86af-types",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/runtime/environment.test.ts",
+          "src/runtime/environment.ts",
+          "src/runtime/postgres.test.ts",
+          "src/runtime/postgres.ts",
+          "src/runtime/target.test.ts",
+          "src/runtime/target.ts",
+          "src/scenarios/workflows/authoring.test.ts",
+          "src/scenarios/workflows/authoring.ts"
+        ],
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-ci-fixes-8af86af-regressions",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/runtime/environment.test.ts",
+          "src/runtime/postgres.test.ts",
+          "src/runtime/target.test.ts",
+          "src/scenarios/workflows/authoring.test.ts"
+        ],
+        "reportKind": "vitest",
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-settings-ec7d594-types",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/scenarios/http/versioned-setting.ts",
+          "src/scenarios/http/settings.ts"
+        ],
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-fixture-followup-types",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/clients/workerConnection.ts",
+          "src/clients/workerConnection.test.ts"
+        ],
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-fixture-followup-regressions",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/clients/workerConnection.test.ts",
+          "src/harnesses/claudeMcp.test.mjs",
+          "src/harnesses/scriptedMcpFailures.test.mjs"
+        ],
+        "reportKind": "vitest",
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-public-c1cc738-types",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "tsc",
+          "--noEmit",
+          "--target",
+          "ES2023",
+          "--module",
+          "NodeNext",
+          "--moduleResolution",
+          "NodeNext",
+          "--strict",
+          "--noUncheckedIndexedAccess",
+          "--exactOptionalPropertyTypes",
+          "--skipLibCheck",
+          "--types",
+          "node",
+          "src/clients/mcp.test.ts",
+          "src/scenarios/streams/operatorTurn.ts",
+          "src/scenarios/streams/operatorTurnState.ts",
+          "src/scenarios/workflows/handoff.ts",
+          "src/scenarios/workflows/handoffInput.test.ts",
+          "src/scenarios/workflows/handoffInput.ts",
+          "src/scenarios/workflows/inspection.test.ts",
+          "src/scenarios/workflows/inspection.ts",
+          "src/scenarios/workflows/interaction.ts",
+          "src/scenarios/workflows/interactionRead.ts",
+          "src/scenarios/workflows/repeat.ts",
+          "src/scenarios/workflows/schedule.ts"
+        ],
+        "needsContracts": true
+      },
+      {
+        "name": "qconf-public-c1cc738-helper-regressions",
+        "cwd": "conformance",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "vitest",
+          "run",
+          "src/scenarios/workflows/inspection.test.ts",
+          "src/scenarios/workflows/handoffInput.test.ts",
+          "src/clients/mcp.test.ts"
+        ],
+        "reportKind": "vitest",
+        "needsContracts": true
+      }
+    ],
+    "scripts": [
+      {
+        "name": "syntax-scripts/ci-go-toolchain.sh",
+        "cwd": ".",
+        "program": "bash",
+        "args": [
+          "-n",
+          "scripts/ci-go-toolchain.sh"
+        ]
+      },
+      {
+        "name": "syntax-scripts/ci-go-toolchain-module.mjs",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "--check",
+          "scripts/ci-go-toolchain-module.mjs"
+        ]
+      },
+      {
+        "name": "syntax-scripts/ci-go-toolchain.test.mjs",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "--check",
+          "scripts/ci-go-toolchain.test.mjs"
+        ]
+      },
+      {
+        "name": "syntax-scripts/ci-suite-go.test.mjs",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "--check",
+          "scripts/ci-suite-go.test.mjs"
+        ]
+      },
+      {
+        "name": "syntax-scripts/test-support/go-ci-fixture.mjs",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "--check",
+          "scripts/test-support/go-ci-fixture.mjs"
+        ]
+      },
+      {
+        "name": "go-changed4-lint",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-go-toolchain-module.mjs",
+          "scripts/ci-go-toolchain.test.mjs",
+          "scripts/ci-suite-go.test.mjs",
+          "scripts/test-support/go-ci-fixture.mjs"
+        ]
+      },
+      {
+        "name": "go-installer-regressions",
+        "cwd": ".",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-go-toolchain.test.mjs"
+        ],
+        "reportKind": "node"
+      },
+      {
+        "name": "six-go-consumer-fixtures",
+        "cwd": ".",
+        "program": "node",
+        "args": [
+          "--test",
+          "--test-name-pattern=^(?:a\\ short\\ private\\ runtime\\ executes\\ CommonJS\\ HOME\\ tools\\ and\\ binds\\ Unix\\ sockets\\ outside\\ repository\\ module\\ scope|preparation\\ reuses\\ the\\ pinned\\ cache\\ and\\ never\\ starts\\ a\\ database\\ for\\ Go\\ unit\\ tests|a\\ failed\\ Go\\ archive\\ checksum\\ never\\ installs\\ or\\ executes\\ the\\ downloaded\\ content|Go\\ unit\\ is\\ red\\ for\\ failed\\ tests\\ even\\ when\\ no\\ result\\ output\\ was\\ requested|Go\\ unit\\ is\\ red\\ for\\ zero\\ tests\\ even\\ when\\ no\\ result\\ output\\ was\\ requested|host\\ root\\ integration\\ ignores\\ legacy\\ TS\\ file\\ arguments\\ and\\ publishes\\ the\\ legacy\\ result\\ aliases)$",
+          "scripts/ci-suite-go.test.mjs"
+        ],
+        "reportKind": "node",
+        "selectedCaseNames": [
+          "a short private runtime executes CommonJS HOME tools and binds Unix sockets outside repository module scope",
+          "preparation reuses the pinned cache and never starts a database for Go unit tests",
+          "a failed Go archive checksum never installs or executes the downloaded content",
+          "Go unit is red for failed tests even when no result output was requested",
+          "Go unit is red for zero tests even when no result output was requested",
+          "host root integration ignores legacy TS file arguments and publishes the legacy result aliases"
+        ]
+      },
+      {
+        "name": "postgres-corrected-lint",
+        "cwd": ".",
+        "program": "corepack",
+        "args": [
+          "pnpm",
+          "exec",
+          "node",
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-postgres-toolchain.test.mjs"
+        ]
+      },
+      {
+        "name": "postgres-corrected-regressions",
+        "cwd": ".",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-postgres-toolchain.test.mjs"
+        ],
+        "reportKind": "node"
+      }
+    ]
+  }
+}
