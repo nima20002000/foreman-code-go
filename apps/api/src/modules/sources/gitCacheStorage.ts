@@ -54,12 +54,12 @@ async function measureStorage(root: FileHandle, signal?: AbortSignal): Promise<G
   }
 }
 
-function boundedArgs(args: string[], index: number): string[] {
+function boundedArgs(args: string[], index: number, fetchDepth: string[]): string[] {
   const command = args[index]!
   const flags = command === 'clone'
     ? ['--no-local', '--no-checkout', '--depth=1', '--single-branch', '--no-tags']
     : ['--no-auto-maintenance', '--recurse-submodules=no',
-      ...(args.slice(index + 1).includes('origin') ? ['--depth=1'] : [])]
+      ...(args.slice(index + 1).includes('origin') ? fetchDepth : [])]
   // A single pack and its index fit the reserved transfer budget under the inherited per-file kernel limit.
   return ['-c', 'fetch.unpackLimit=1', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
     '-c', 'fetch.writeCommitGraph=false', '-c', 'pack.writeReverseIndex=false', '-c', 'fetch.uriprotocols=',
@@ -232,12 +232,12 @@ async function releaseTransfer(root: FileHandle, name: string,
 
 type StorageLock = <T>(work: () => Promise<T>, options?: { signal?: AbortSignal }) => Promise<T>
 interface CacheTransfer {
-  root: FileHandle; args: string[]; index: number; command: string; target: string; common: string
+  root: FileHandle; cacheRoot: string; args: string[]; index: number; command: string; target: string; common: string
   createdTarget: boolean; options: GitProcessOptions; run: GitRunner; lockFd?: number
 }
 
 async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLock): Promise<GitProcessResult> {
-  const { root, args, index, command, target, common, createdTarget, options, run, lockFd } = input
+  const { root, cacheRoot, args, index, command, target, common, createdTarget, options, run, lockFd } = input
   const reservation = await lockStorage(async () => {
     await recoverFetches(root, command === 'fetch' ? common : undefined)
     return reserveTransfer(root, options.signal, {
@@ -247,7 +247,13 @@ async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLoc
   let completedStaging: string | undefined
   let result: GitProcessResult | undefined
   try {
-    result = await run(boundedArgs(args, index), { ...options,
+    const fetchDepth: string[] = []
+    if (command === 'fetch' && inside(cacheRoot, common)) {
+      const shallow = await run(['rev-parse', '--is-shallow-repository'], options)
+      if (shallow.code !== 0) return shallow
+      if (shallow.stdout.trim() === 'true') fetchDepth.push('--depth=1')
+    }
+    result = await run(boundedArgs(args, index, fetchDepth), { ...options,
       maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, transferLockFd: reservation.guard.fd,
       ...(lockFd !== undefined ? { lockFd } : {}),
     })
@@ -299,7 +305,7 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
         createdTarget = true
       }
     }
-    const input = { root, args, index, command, target, common, createdTarget, options, run }
+    const input = { root, cacheRoot, args, index, command, target, common, createdTarget, options, run }
     if (command === 'clone') {
       return await runReservedTransfer(input, (work, lockOptions) => withPrivateDirectoryLock(root, work, lockOptions))
     }
