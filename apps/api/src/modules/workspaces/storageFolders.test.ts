@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -13,8 +14,7 @@ const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: '
   expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null,
   grants: [{ actions: ['workspaces:read', 'workspaces:archive', 'workspace_locations:read', 'workspace_locations:provision'], scope: {} }] }
 
-it.each(['continuing run', 'active chat'])
-  ('protects a storage folder used by %s during discovery and deletion', async source => {
+it.each(['continuing run', 'active chat'])('protects a storage folder used by %s during discovery and deletion', async source => {
     const parent = join(homedir(), '.cache', 'foreman-tmp')
     await mkdir(parent, { recursive: true })
     const root = await mkdtemp(join(parent, 'storage-protection-'))
@@ -42,7 +42,7 @@ it.each(['continuing run', 'active chat'])
     active = true
     const protectedFolder = (await folders.list(principal, {})).items[0]!
     expect(protectedFolder.deletion).toMatchObject({ status: 'protected', reason: 'active_run' })
-    await expect(folders.delete(principal, 'mcp', { path, expectedIdentity: discovered.identity }))
+    await expect(folders.delete(principal, 'mcp', { commandId: randomUUID(), path, expectedIdentity: discovered.identity }))
       .rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
     expect(await readFile(join(path, 'work.txt'), 'utf8')).toBe('active work')
   })

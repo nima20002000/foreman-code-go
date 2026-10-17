@@ -24,13 +24,18 @@ it.each([true, false])('uses native behavior qualification for newer Claude vers
   const value: HostHarnessOverride = { instanceId: randomUUID(), instanceRevision: '1', revision: 1,
     target, driverId: 'claude', presetId: 'claude', enabled: true, configuration,
     configurationFingerprint: commandInputHash(configuration), qualification: 'unqualified' }
-  const installed = { binding: connection, target, sdk: { entrypoint: '/installed/sdk.mjs' }, installation: {
+  const installed: InstalledClaudeTarget = { binding: connection, target,
+    sdk: { entrypoint: '/installed/sdk.mjs', installedLockPath: '/installed/pnpm-lock.yaml' }, installation: {
     hostRef: target.hostRef, harnessInstallationId: target.harnessInstallationId,
     installationFingerprint: target.installationFingerprint, driverId: 'claude', driverRevision: '1',
     protocolRevision: 'sdk', environmentGeneration: 'environment', connectionGeneration: 'connection',
-    launcher: { status: 'installed', fingerprint: target.installationFingerprint, resolvedLauncher: '/installed/claude', environment: { path: '/usr/bin' }, payloadFingerprints: [] },
+    launcher: { status: 'installed', requested: '/installed/claude', fingerprint: target.installationFingerprint,
+      resolvedLauncher: '/installed/claude', interpreter: null, diagnostics: [],
+      checkedAt: '2026-01-01T00:00:00.000Z', payloadFingerprints: [],
+      environment: { path: '/usr/bin', cwd: '/installed', provenance: 'worker', generation: 'environment' } },
+    observedVersion: null, authenticated: null, compatible: null, qualified: false,
     installed: true, claudeSdk: { version: '0.4.0', integrity: 'sha512-fixture' },
-  } } as InstalledClaudeTarget
+  } }
   const pin = { sdkVersion: '0.4.0', cliVersion: '2.2.0' }
   native.inspect.mockResolvedValue({ currentTarget: installed })
   native.resolve.mockResolvedValue({ status: 'available', pin })

@@ -58,11 +58,11 @@ async function checkFolders(folders: WorkspaceStorageFolders, owner: ManagementP
   const unused = listed.items.find(item => item.path === unusedPath)!
   const active = listed.items.find(item => item.path === activePath)!
   expect(unused.deletion).toEqual({ status: 'available' })
-  expect((await folders.delete(owner, 'http', { path: unusedPath, expectedIdentity: unused.identity })).value)
+  expect((await folders.delete(owner, 'http', { commandId: randomUUID(), path: unusedPath, expectedIdentity: unused.identity })).value)
     .toEqual({ path: unusedPath })
   await expect(lstat(unusedPath)).rejects.toMatchObject({ code: 'ENOENT' })
   expect.soft(active.deletion).toMatchObject({ status: 'protected', reason: 'active_run' })
-  await expect(folders.delete(owner, 'http', { path: activePath, expectedIdentity: active.identity }))
+  await expect(folders.delete(owner, 'http', { commandId: randomUUID(), path: activePath, expectedIdentity: active.identity }))
     .rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
   expect((await lstat(activePath)).isDirectory()).toBe(true)
   expect(await readFile(join(activePath, 'work.txt'), 'utf8')).toBe('Keep active work')
@@ -74,7 +74,9 @@ it.each(['queued Run', 'pending cleanup'])('protects a separately placed Agent d
   const saved = await workflows.current.read(principal, {
     workspaceId: f.fixture.run.workspaceId, workflowId: f.fixture.run.workflowId,
   })
-  const draft = await insertCurrentRunFixture(database.pool, f.fixture, saved, f.fixture.run.authorizationPrincipalId,
+  const authorizationPrincipalId = f.fixture.run.authorizationPrincipalId
+  if (!authorizationPrincipalId) throw new Error('Run fixture requires its authorization principal')
+  const draft = await insertCurrentRunFixture(database.pool, f.fixture, saved, authorizationPrincipalId,
     { insert: false })
   const mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
   const node = agentWorkflowNode(draft.version.definition.nodes[0])

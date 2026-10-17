@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { AgentConfigurationVersionSchema, type ResolvedSkill } from '@foreman-code/contracts'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema, type ResolvedSkill } from '@foreman-code/contracts'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
@@ -9,6 +9,7 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import type { NativeHarnessSessionManager, NativeSessionStart } from '../src/modules/harnesses/port.js'
 import { sessionStartConfiguration } from '../src/modules/harnesses/sessionStart.js'
 import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
+import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { eventually } from './helpers/agentChatF5.js'
 import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
@@ -38,9 +39,12 @@ it.each(['fork', 'recovery'] as const)('keeps the originating node skills during
     await db.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
       values($1,$2,$3,$4,1,$5::jsonb)`,
     [candidate.id, candidate.runId, candidate.workflowNodeId, candidate.agentId, JSON.stringify(candidate)])
-    const source = { ...candidate, state: 'completed' as const,
-      nativeSessionId: 'source-session', workingDirectory: db.directory, providerVersion: 'fixture' }
-    const runs = { getForWorkspace: async () => ({ ...saved.run, executionState: 'completed' as const }),
+    const source = HarnessExecutionSchema.parse({ ...candidate, state: 'completed',
+      nativeSessionId: 'source-session', workingDirectory: db.directory,
+      result: { outcome: 'succeeded', output: {} }, finishedAt: saved.createdAt })
+    const runs: Pick<PostgresRunRepository, 'getForWorkspace' | 'getExecution' | 'executionPages'> = {
+      getForWorkspace: async () => AcceptedWorkflowRunV3Schema.parse({ ...saved.run, executionState: 'completed',
+        outcome: 'succeeded', finishedAt: saved.createdAt }),
       getExecution: async () => source, async *executionPages() { yield [source] } }
     const repository = new PostgresAgentChatRepository(db.pool)
     const owner = await new PostgresAccessService(db.pool).issue({ name: 'Chat writer', audience: 'operator',
@@ -53,9 +57,10 @@ it.each(['fork', 'recovery'] as const)('keeps the originating node skills during
       const session = { harness: 'claude' as const, providerVersion: 'fixture', nativeSessionId: 'chat-session' }
       const capture = (operation: string, input: NativeSessionStart) => {
         prompts.push({ operation, text: agentInstructionBundle(sessionStartConfiguration(input))!.text,
-          delivered: input.kind === 'agent-chat' && input.instructionsDelivered })
+          delivered: input.kind === 'agent-chat' && input.instructionsDelivered === true })
         return session
       }
+      // Only the native lifecycle operations exercised by fork and recovery are supplied.
       const native = {
         harness: 'claude',
         capabilities: async () => ({ provider: 'claude', providerVersion: 'fixture', persistentSessions: true,
@@ -71,7 +76,7 @@ it.each(['fork', 'recovery'] as const)('keeps the originating node skills during
         dispose: async () => undefined,
       } satisfies Partial<NativeHarnessSessionManager>
       const service = new AgentChatService(db.pool, repository, new PostgresOperatorConversationRepository(db.pool),
-        new PostgresWorkflowRepository(db.pool), runs, () => native as NativeHarnessSessionManager, db.directory)
+        new PostgresWorkflowRepository(db.pool), runs, () => native as unknown as NativeHarnessSessionManager, db.directory)
       services.push(service)
       return service
     }

@@ -34,7 +34,7 @@ it.each([
     : { ...f.principal, id: 'denied', grants: [] } } as unknown as PostgresAccessService
   registerGraphqlMcp(app, { access, operator: { computerGitHub, commands: f.commands } as unknown as OperatorServices })
   const call = async (token: string, target = f.target) => {
-    const { operation: _operation, ...argumentsForRequest } = request
+    const argumentsForRequest = 'loginId' in request ? { loginId: request.loginId } : {}
     const response = await app.inject({ method: 'POST', url: '/mcp',
       headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
       payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name,
