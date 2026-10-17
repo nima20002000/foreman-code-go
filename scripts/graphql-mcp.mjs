@@ -2,6 +2,7 @@
 // Routes contain only a credential digest, never the credential itself.
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { request } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
@@ -48,7 +49,7 @@ function bridgeError(error, deliveryStage) {
     message: 'The owning app returned an invalid MCP response. Read back the original command before retrying a write; it may have been committed.',
     data: { kind: 'invalid_response', delivery: 'indeterminate' } }
   const unsent = deliveryStage === 'dispatched'
-    && ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(error?.cause?.code)
+    && ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(error?.code ?? error?.cause?.code)
   if (deliveryStage !== 'preflight' && !unsent) return { code: -32000,
     message: 'The MCP response was interrupted or incomplete. Read back the original command before retrying a write; it may have been committed.',
     data: { kind: 'indeterminate_delivery', delivery: 'indeterminate' } }
@@ -109,6 +110,16 @@ async function readRoute() {
   return route
 }
 
+/** The installed launcher is standalone; Node HTTP avoids fetch's separate five-minute header deadline. */
+function postMcp(url, { headers, body, signal, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const outgoing = request(url, { method: 'POST', headers, signal, timeout: timeoutMs }, resolve)
+    outgoing.once('error', reject)
+    outgoing.once('timeout', () => outgoing.destroy(new DOMException('MCP HTTP request timed out.', 'TimeoutError')))
+    outgoing.end(body)
+  })
+}
+
 async function forwardAttempt(message, controller, timeoutMs, emit = output) {
   let requestSignal
   let deliveryStage = 'preflight'
@@ -131,16 +142,20 @@ async function forwardAttempt(message, controller, timeoutMs, emit = output) {
     requestSignal = controller ? AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
       : AbortSignal.timeout(timeoutMs)
     deliveryStage = 'dispatched'
-    const response = await fetch(url, { method: 'POST', redirect: 'error',
+    const response = await postMcp(url, { timeoutMs,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': protocolVersion },
       body: JSON.stringify(message), signal: requestSignal })
     deliveryStage = 'response'
-    if (!response.ok) {
-      await response.body?.cancel()
-      throw httpFailure(response.status)
+    const status = response.statusCode
+    if (status < 200 || status >= 300) {
+      response.destroy()
+      throw httpFailure(status)
     }
-    if ((response.status === 202 || response.status === 204) && !expectsReply) return
+    if ((status === 202 || status === 204) && !expectsReply) {
+      response.resume()
+      return
+    }
     const publish = (value) => {
       if (controller?.signal.aborted || terminalReceived) return
       const terminal = expectsReply && value?.id === message.id
@@ -154,11 +169,14 @@ async function forwardAttempt(message, controller, timeoutMs, emit = output) {
       emit(value)
       if (terminal) terminalReceived = true
     }
-    if (response.headers.get('content-type')?.includes('application/json')) publish(await response.json())
-    else {
+    if (response.headers['content-type']?.includes('application/json')) {
+      const chunks = []
+      for await (const chunk of response) chunks.push(chunk)
+      publish(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    } else {
       let buffer = ''
       const decoder = new TextDecoder()
-      for await (const chunk of response.body) {
+      for await (const chunk of response) {
         buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, '\n')
         let boundary
         while ((boundary = buffer.indexOf('\n\n')) !== -1) {
