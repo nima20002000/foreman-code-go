@@ -1,3 +1,4 @@
+import { closeSync, fstatSync } from 'node:fs'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -6,13 +7,16 @@ import { openPrivateRoot } from './privateFilesystem.js'
 import { sourceFileWriter } from './sourceFileWriter.js'
 import { sourceSha256 } from './manifest.js'
 
-const state = vi.hoisted(() => ({ missingHelper: false, failedDataWait: false }))
+const state = vi.hoisted(() => ({ missingHelper: false, failedDataWait: false, files: [] as number[] }))
 vi.mock('./sourceTreeFlush.js', async original => {
   const actual = await original<typeof import('./sourceTreeFlush.js')>()
   return { flushSourceTree: async (...args: Parameters<typeof actual.flushSourceTree>) => {
     if (state.missingHelper) return false
     if (state.failedDataWait && args[2].mode === 'qualify') return true
-    if (state.failedDataWait && args[2].mode === 'data') throw new Error('Data writeback failed')
+    if (state.failedDataWait && args[2].mode === 'data') {
+      state.files = [...args[2].files]
+      throw new Error('Data writeback failed')
+    }
     return actual.flushSourceTree(...args)
   } }
 })
@@ -20,6 +24,7 @@ const roots: string[] = []
 afterEach(async () => {
   state.missingHelper = false
   state.failedDataWait = false
+  state.files = []
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
@@ -52,7 +57,20 @@ it('rejects failed data waits before publishing completion and closes owned writ
   try {
     await writer.write(f.tree, f.entry, f.bytes)
     await expect(writer.finish()).rejects.toThrow('Data writeback failed')
-    writer.close()
+    expect(state.files).toHaveLength(1)
+    for (const file of state.files) {
+      expect(() => fstatSync(file)).toThrow(expect.objectContaining({ code: 'EBADF' }))
+    }
     expect(await readFile(join(f.root, f.entry.path))).toEqual(f.bytes)
-  } finally { writer.close(); await f.tree.close() }
+  } finally {
+    writer.close()
+    for (const file of state.files) {
+      try { fstatSync(file) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EBADF') continue
+        throw error
+      }
+      closeSync(file)
+    }
+    await f.tree.close()
+  }
 })

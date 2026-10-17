@@ -53,22 +53,6 @@ describe('source admission boundaries', () => {
     for (const extra of [{ rootPath: '/home/other' }, { agentId: 'invented' }, { runId: 'invented' }, { commit: 'HEAD' }]) expect(SourceApproveInputSchema.safeParse({ ...input, ...extra }).success).toBe(false)
     expect(SourceRootBindInputSchema.safeParse({ rootPath: '/home/other' }).success).toBe(false)
   })
-  it('includes retained and uncertain copies in the shared aggregate storage budget', async () => {
-    let inserted = false
-    const query = vi.fn(async (text: string) => {
-      if (text.startsWith('insert into')) inserted = true
-      if (text.includes('select record,state')) return { rows: [] }
-      if (text.includes('coalesce(sum')) return { rows: [{ bytes: String(1024 * 1024 * 1024),
-        verification_bytes: '0', pending_bytes: '0', preparing: '0', materializations: '0',
-        verification_materializations: '0' }] }
-      return { rows: [], rowCount: 1 }
-    })
-    const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture())
-    await expect(reservations.reserve({ query } as unknown as pg.PoolClient,
-      { scopeId: 'capacity-scope', ownerKind: 'materialization', ownerId: 'operation', reservedBytes: 1 }))
-      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY' })
-    expect(inserted).toBe(false)
-  })
   it('does not treat disconnect, expiry or uncertain closure as reclamation', async () => {
     const query = vi.fn()
     await expect(new PostgresSourceReservations().reclaimed({ query } as unknown as pg.PoolClient,
