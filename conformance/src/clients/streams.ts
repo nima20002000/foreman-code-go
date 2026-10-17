@@ -144,6 +144,7 @@ export async function openBrowserStream(options: {
     throw new Error('Browser streams must use their fresh loopback server.')
   }
   const lifetime = new AbortController()
+  const closeReason = new Error('Browser stream closed by its scenario.')
   const signal = options.signal ? AbortSignal.any([lifetime.signal, options.signal]) : lifetime.signal
   const headers = new Headers(options.headers)
   headers.set('accept', 'text/event-stream')
@@ -161,8 +162,12 @@ export async function openBrowserStream(options: {
   const frames = readSseFrames(response.body)
   return { status: response.status, headers: response.headers, frames,
     async close() {
-      lifetime.abort(new Error('Browser stream closed by its scenario.'))
-      await frames.return(undefined)
+      lifetime.abort(closeReason)
+      try { await frames.return(undefined) }
+      catch (error) {
+        // Only this stream's intentional close is normal cleanup; other failures remain observable.
+        if (error !== closeReason) throw error
+      }
     },
   }
 }
