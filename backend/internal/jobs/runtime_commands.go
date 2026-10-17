@@ -23,12 +23,35 @@ const (
 )
 
 var (
-	ErrRuntimeControlDeadline    = errors.New("Job runtime control deadline exceeded")
-	ErrRuntimeControlReplyBudget = errors.New("Job control reply exceeded budget")
-	ErrRuntimeExitUnconfirmed    = errors.New("Original Job runtime exit unconfirmed")
-	ErrInvalidRuntimeArgv        = errors.New("Invalid Job runtime argv")
-	ErrRuntimeLaunchUnavailable  = errors.New("Original guarded Job launch unavailable")
+	ErrRuntimeControlDeadline error = runtimeControlDeadlineFailure
+	ErrRuntimeControlReplyBudget error = runtimeControlReplyBudgetFailure
+	ErrRuntimeExitUnconfirmed error = runtimeExitUnconfirmedFailure
+	ErrInvalidRuntimeArgv error = invalidRuntimeArgvFailure
+	ErrRuntimeLaunchUnavailable error = runtimeLaunchUnavailableFailure
 )
+
+// runtimeCommandFailure identifies the fixed runtime failure conditions. Its
+// renderer preserves the frozen public diagnostics; the exported error values
+// remain distinct, comparable sentinels without a new diagnostic interface.
+type runtimeCommandFailure uint8
+
+const (
+	runtimeControlDeadlineFailure runtimeCommandFailure = iota
+	runtimeControlReplyBudgetFailure
+	runtimeExitUnconfirmedFailure
+	invalidRuntimeArgvFailure
+	runtimeLaunchUnavailableFailure
+)
+
+func (failure runtimeCommandFailure) Error() string {
+	return [...]string{
+		"Job runtime control deadline exceeded",
+		"Job control reply exceeded budget",
+		"Original Job runtime exit unconfirmed",
+		"Invalid Job runtime argv",
+		"Original guarded Job launch unavailable",
+	}[failure]
+}
 
 // RuntimeProcess is the process view returned by a guarded launch. Wait reports
 // the actual native provider exit, never a guardian/wrapper exit. A missing exit
