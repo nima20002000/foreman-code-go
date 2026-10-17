@@ -10,7 +10,7 @@ test('both CLIs provide static model-free help before argument, filesystem and r
   t.after(() => rm(directory, { recursive: true, force: true }));
   const source = join(directory, 'src'); await mkdir(source);
   // No manifest, contracts, enrollment or worker factory is present in this copy.
-  for (const name of ['cli.mjs', 'install-cli.mjs', 'diagnostics.mjs', 'runtime.mjs', 'installation.mjs', 'service.mjs']) {
+  for (const name of ['cli.mjs', 'install-cli.mjs', 'diagnostics.mjs', 'runtime.mjs', 'installation.mjs', 'service.mjs', 'companionLauncher.mjs']) {
     await copyFile(new URL(`../src/${name}`, import.meta.url), join(source, name));
   }
   const before = await readdir(directory);

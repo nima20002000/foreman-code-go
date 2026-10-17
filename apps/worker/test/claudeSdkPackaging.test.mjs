@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { WorkerArtifactManifestSchema } from '@foreman-code/contracts/worker-update';
 import * as packaging from '../../../scripts/worker-artifact-files.mjs';
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 
@@ -94,7 +95,7 @@ test('rejects a modified transitive SDK dependency rather than shipping unverifi
   await assert.rejects(packaging.copyClaudeSdkPackagesFromStore(f), /Package integrity mismatch/);
 });
 
-test('imports the repository-locked SDK from the standalone artifact with verified installed dependencies', async t => {
+test('ships the SDK runtime within artifact bounds and runs the selected installed executable', async t => {
   const require = createRequire(import.meta.url);
   const { parse } = require('yaml');
   const root = new URL('../../../', import.meta.url).pathname;
@@ -104,11 +105,47 @@ test('imports the repository-locked SDK from the standalone artifact with verifi
   t.after(() => rm(output, { recursive: true, force: true }));
   const packages = await packaging.copyClaudeSdkPackagesFromStore({ root, output, store, lock,
     decode: blob => new Unpackr({ useRecords: true, moreTypes: true }).unpack(blob) });
-  assert.ok(packages.some(entry => entry.name === '@anthropic-ai/sdk'));
-  assert.ok(packages.some(entry => entry.name === '@modelcontextprotocol/sdk'));
-  assert.ok(packages.some(entry => entry.name === '@anthropic-ai/claude-agent-sdk-linux-x64'));
+  const files = await packaging.artifactFiles(output);
+  WorkerArtifactManifestSchema.parse({ format: 1, version: '1.0.0', commit: 'a'.repeat(40),
+    lockfileSha256: 'b'.repeat(64), packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1,
+    target: { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' },
+    files: [...files, { path: 'src/cli.mjs', size: 0, sha256: 'c'.repeat(64) }] });
+  assert.deepEqual(packages.map(entry => entry.name), ['@anthropic-ai/claude-agent-sdk']);
+  assert.ok(packages.every(entry => /^sha512-/.test(entry.integrity) && /^[a-f0-9]{64}$/.test(entry.indexBlobSha256)));
+  assert.ok(files.every(file => !file.path.includes('/claude-agent-sdk-')));
   const entrypoint = createRequire(join(output, 'package.json')).resolve('@anthropic-ai/claude-agent-sdk');
   assert.ok((await realpath(entrypoint)).startsWith(`${output}/`));
   const sdk = await import(pathToFileURL(entrypoint).href);
   assert.equal(typeof sdk.query, 'function');
+  const executable = join(output, 'installed-claude.mjs');
+  await writeFile(executable, `
+import { createInterface } from 'node:readline';
+const lines = createInterface({ input: process.stdin });
+for await (const line of lines) {
+  const message = JSON.parse(line);
+  if (message.type === 'control_request') {
+    console.log(JSON.stringify({ type: 'control_response', response: {
+      subtype: 'success', request_id: message.request_id,
+      response: { commands: [], models: [], output_style: 'default', available_output_styles: ['default'] },
+    } }));
+  } else if (message.type === 'user') {
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+      duration_ms: 1, duration_api_ms: 0, num_turns: 1, result: 'selected installed executable',
+      session_id: 'fixture-session', total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [] }));
+  }
+}
+`);
+  const results = [];
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), 5000);
+  const query = sdk.query({ prompt: 'hello', options: { pathToClaudeCodeExecutable: executable,
+    executable: process.execPath, settingSources: [], env: { HOME: output, PATH: '' },
+    abortController } });
+  try {
+    for await (const message of query) results.push(message);
+  } finally {
+    clearTimeout(timer);
+    query.close();
+  }
+  assert.ok(results.some(message => message.type === 'result' && message.result === 'selected installed executable'));
 });

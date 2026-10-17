@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { join, dirname, resolve, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 
 export function committedWorkerInputPath(root, input) {
   const path = relative(root, resolve(root, input));
@@ -130,9 +131,34 @@ async function installedPackage(name, from) {
   }
 }
 
-function matchesWorkerPlatform(metadata) {
-  const matches = (values, expected) => !values || values.includes(expected);
-  return matches(metadata.os, 'linux') && matches(metadata.cpu, 'x64') && matches(metadata.libc, 'glibc');
+// The SDK's default entrypoint is bundled; declared peers and native CLI packages need not be runtime imports.
+async function claudeRuntimeFiles(root, sdk) {
+  const { build } = createRequire(new URL('../apps/worker/package.json', import.meta.url))('esbuild');
+  const entrypoint = createRequire(join(root, 'apps/api/package.json')).resolve(sdk);
+  const result = await build({ absWorkingDir: root, entryPoints: [entrypoint], bundle: true,
+    platform: 'node', format: 'esm', write: false, metafile: true });
+  const packages = new Map();
+  const names = new Set();
+  for (const input of Object.keys(result.metafile.inputs)) {
+    const path = await realpath(resolve(root, input));
+    const marker = '/node_modules/';
+    const offset = path.lastIndexOf(marker);
+    if (offset < 0) throw new Error(`SDK runtime module is outside an installed package: ${path}`);
+    const parts = path.slice(offset + marker.length).split('/');
+    const name = parts.slice(0, parts[0].startsWith('@') ? 2 : 1).join('/');
+    const source = join(path.slice(0, offset), 'node_modules', name);
+    const files = packages.get(source) ?? new Set();
+    files.add(relative(source, path));
+    packages.set(source, files);
+    names.add(name);
+  }
+  return { packages, names };
+}
+
+function runtimePackageFiles(files, modules) {
+  return new Map([...files].filter(([path]) => modules.has(path)
+    || path === 'package.json' || path.endsWith('/package.json')
+    || /(?:^|\/)(?:LICENSE|LICENCE|COPYING)(?:\.|$)/i.test(path) || /^README(?:\.|$)/i.test(path)));
 }
 
 async function writePackageFiles(destination, files) {
@@ -147,10 +173,15 @@ async function copyClaudeSdkPackages({ root, output, lock, record, decode }) {
   const sdk = '@anthropic-ai/claude-agent-sdk';
   const reference = lock.importers?.['apps/api']?.dependencies?.[sdk]?.version;
   if (typeof reference !== 'string') throw new Error('Locked Claude SDK dependency is unavailable.');
+  const runtime = await claudeRuntimeFiles(root, sdk);
   const hoisted = new Map();
   const copied = new Map();
   const packages = [];
   async function copy(name, reference, from, parent) {
+    if (!runtime.names.has(name)) return;
+    const source = await installedPackage(name, from);
+    const modules = runtime.packages.get(source);
+    if (!modules) return;
     const version = reference.split('(')[0];
     const key = `${name}@${reference}`;
     const metadata = lock.packages?.[`${name}@${version}`];
@@ -162,7 +193,6 @@ async function copyClaudeSdkPackages({ root, output, lock, record, decode }) {
       if (copied.get(destination) !== key) throw new Error(`Conflicting artifact dependency: ${name}`);
       return;
     }
-    const source = await installedPackage(name, from);
     const files = await regularFiles(source, { excludeNodeModules: true });
     const blob = record(`${integrity}\t${name}@${version}`);
     if (!(blob instanceof Uint8Array)) throw new Error(`Invalid package index blob: ${name}@${version}`);
@@ -174,21 +204,20 @@ async function copyClaudeSdkPackages({ root, output, lock, record, decode }) {
     if (supplementalLicense) {
       await writePackageFiles(join(output, 'artifacts/licenses'), new Map([['cfworker.txt', supplementalLicense]]));
     }
-    await writePackageFiles(destination, files);
+    const shipped = runtimePackageFiles(files, modules);
+    await writePackageFiles(destination, shipped);
     copied.set(destination, key);
     if (!hoisted.has(name)) hoisted.set(name, reference);
     packages.push({ name, version, integrity, indexBlobSha256: digest('sha256', blob),
-      path: relative(output, destination), files: files.size,
-      bytes: [...files.values()].reduce((sum, bytes) => sum + bytes.length, 0) });
+      path: relative(output, destination), files: shipped.size,
+      bytes: [...shipped.values()].reduce((sum, bytes) => sum + bytes.length, 0) });
     const snapshot = lock.snapshots?.[key];
     if (!snapshot) throw new Error(`Missing locked dependency graph: ${key}`);
     for (const [dependency, selected] of Object.entries(snapshot.dependencies ?? {})) {
       await copy(dependency, selected, source, destination);
     }
     for (const [dependency, selected] of Object.entries(snapshot.optionalDependencies ?? {})) {
-      const metadata = lock.packages?.[`${dependency}@${selected.split('(')[0]}`];
-      if (!metadata) throw new Error(`Missing locked optional dependency: ${dependency}`);
-      if (matchesWorkerPlatform(metadata)) await copy(dependency, selected, source, destination);
+      await copy(dependency, selected, source, destination);
     }
   }
   await copy(sdk, reference, join(root, 'apps/api'), output);
