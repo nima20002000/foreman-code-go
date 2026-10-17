@@ -573,7 +573,14 @@ export class CloudCi {
       })
       if (failed) return this.failPipeline(pending, { message: failed.message! })
     }
-    const providerRunId = await this.provider.dispatch(input)
+    let providerRunId: string | null
+    try {
+      providerRunId = await this.provider.dispatch(input)
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_DISPATCH_NOT_SENT')) throw error
+      return this.save({ ...pending, message: sanitizeCiText(error.message),
+        dispatch: { ...pending.dispatch!, uncertain: false, notSent: true } })
+    }
     return this.save({ ...pending, providerRunId, dispatch: { ...pending.dispatch!, uncertain: false }, dispatchHistory: [...pending.dispatchHistory ?? [],
       { at: pending.dispatch!.at, providerRunId }] })
   }
@@ -1242,7 +1249,9 @@ export class CloudCi {
     const ids = new Set([run.providerRunId, ...attempts, ...discovered].filter((id): id is string => Boolean(id)))
     const discoveryComplete = !run.dispatch?.attempts
       || this.ports.now().getTime() - Date.parse(run.cancellation!.at) >= CLOUD_START_TIMEOUT_MS
-    let stopped = discoveryComplete && !run.dispatch?.uncertain && (ids.size > 0 || !run.dispatch?.attempts)
+    const neverSubmitted = run.dispatch?.notSent && !history.length
+    let stopped = discoveryComplete && !run.dispatch?.uncertain
+      && (ids.size > 0 || !run.dispatch?.attempts || neverSubmitted)
     for (const providerRunId of ids) {
       const attempt = { ...run, providerRunId }
       if (!canceled.has(providerRunId)) {
