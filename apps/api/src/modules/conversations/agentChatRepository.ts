@@ -1,6 +1,8 @@
 import { admitSessionMessage } from './sessionControls/messageAdmission.js'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from '../workspaces/projectFolderCleanup.js'
+import { assertAgentChatDirectoryAvailable } from './agentChatDirectory.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -322,6 +324,7 @@ export class PostgresAgentChatRepository {
     assertCurrent?: (transaction: pg.PoolClient) => Promise<void>
   }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
     return withTransaction(this.pool, async (client) => {
+      await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`admission:workspace:${input.context.workspaceId}`])
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${input.key}`])
       let row = await this.byKey(input.key, client)
@@ -398,6 +401,7 @@ export class PostgresAgentChatRepository {
         await this.acceptAccount(client, row)
         created = true
       }
+      await assertAgentChatDirectoryAvailable(client, row.id)
       if (row.record.origin.kind === 'fresh' && !row.native_session_id && !row.record.startupDelivered
         && !row.record.sessionCreation && !row.record.systemPrompt) {
         const systemPrompt = await readSystemPromptSetting(client)
