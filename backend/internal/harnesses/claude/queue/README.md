@@ -19,11 +19,13 @@ TypeScript fixes were consulted.
   only the full buffer's last value, while no writer is waiting; it cannot pass a
   control or terminal event already queued by another producer.
 - Offer cancellation preserves its context cause and withdraws an unaccepted
-  value. Cancellation after queue acceptance does not relabel it as withdrawn.
+  value before a later admission, discard, or closure can settle that producer.
+  Cancellation after queue acceptance does not relabel it as withdrawn.
 - `Close(failure, false)` rejects waiting writers while preserving buffered
   events. Readers drain those events before receiving the terminal outcome.
-- `Discard`, and `Close(failure, true)`, release waiting writers successfully and
-  discard their values. This mirrors observer detachment in the frozen behavior.
+- `Discard`, and `Close(failure, true)`, release live waiting writers successfully
+  and discard their values. Writers canceled before that action keep their cause.
+  This mirrors observer detachment in the frozen behavior.
   **Offer success is only a queue outcome, never a native delivery receipt.**
 - `Reader.Detach` ends only that reader. A subsequent reader can continue, and a
   detached reader cannot release another reader's pending call.
@@ -38,12 +40,17 @@ chosen by this package.
 
 All tests are authored and unrun. No test, build, race, lint, formatter, syntax
 check, or generator was executed during authoring. This is a new isolated port;
-an absent package on the base is not a pre-fix behavioral red result. The prior
-Claude bridge red witness and corrected candidate remain unchanged.
+an absent package on the base is not a pre-fix behavioral red result. Peer review
+identified a cancellation-order defect in the initial implementation. The three
+public regressions are retained with that unchanged implementation at tests-only
+pre-fix commit `94dd12d581d9626f4b5d41af316c293936596f4f`, tree
+`5e01036f253ca71d2d74d8286f07315b78f21301`. Terminal CI must establish the actual
+red result there and the fixed result on the reviewed successor before merge.
+The prior Claude bridge red witness and corrected candidate remain unchanged.
 
 Only terminal-dispatched Foreman CI MCP may execute the affected checks. From
 `backend`, the sole affected package is `./internal/harnesses/claude/queue`.
-Run its 13 named public-interface tests with `go test -count=1`, and the six
+Run its 16 named public-interface tests with `go test -count=1`, and the nine
 concurrent offer/reader tests selected in the handoff's CI request with `-race`.
 Build, vet and staticcheck should name that package explicitly. Formatting is
 limited to `queue.go` and `queue_test.go`.

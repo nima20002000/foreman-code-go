@@ -9,38 +9,38 @@ import (
 )
 
 var (
-	ErrCapacity = errors.New("invalid Claude queue capacity")
-	ErrClosed = errors.New("Claude queue closed")
+	ErrCapacity     = errors.New("invalid Claude queue capacity")
+	ErrClosed       = errors.New("Claude queue closed")
 	ErrReaderExists = errors.New("Claude queue already has a reader")
 )
 
 // Queue retains at most capacity values. Additional offers wait in FIFO order.
 // Construct a Queue with New; its zero value is not ready for use.
 type Queue[T any] struct {
-	mu sync.Mutex
+	mu       sync.Mutex
 	capacity int
 	coalesce func(prior, next T) (T, bool)
-	values []T
-	writers []*writer[T]
-	reader *read[T]
-	ended bool
-	failure error
+	values   []T
+	writers  []*writer[T]
+	reader   *read[T]
+	ended    bool
+	failure  error
 }
 
 type writer[T any] struct {
-	value T
-	ctx context.Context
-	done chan struct{}
+	value   T
+	ctx     context.Context
+	done    chan struct{}
 	settled bool
-	err error
+	err     error
 }
 
 type read[T any] struct {
 	owner *Reader[T]
-	done chan struct{}
+	done  chan struct{}
 	value T
-	ok bool
-	err error
+	ok    bool
+	err   error
 }
 
 // New creates a queue with a positive retained capacity. A coalescer may replace
@@ -94,6 +94,7 @@ func (q *Queue[T]) admit(ctx context.Context, value T) (*writer[T], error) {
 	if q.ended {
 		return nil, q.closedError()
 	}
+	q.withdrawCanceledWriters()
 	if q.reader != nil {
 		pending := q.reader
 		q.reader = nil
@@ -122,6 +123,7 @@ func (q *Queue[T]) admit(ctx context.Context, value T) (*writer[T], error) {
 func (q *Queue[T]) Discard() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.withdrawCanceledWriters()
 	q.discard()
 }
 
@@ -135,14 +137,16 @@ func (q *Queue[T]) discard() {
 
 // Close preserves the first terminal outcome. Without discard, readers drain
 // retained values before receiving failure or end-of-stream, and waiting offers
-// fail. With discard, waiting offers are released successfully and no buffered
-// values remain. Either form prevents subsequent offers.
+// fail. With discard, live waiting offers are released successfully and no
+// buffered values remain. Completed cancellations retain their cause. Either
+// form prevents subsequent offers.
 func (q *Queue[T]) Close(failure error, discard bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.ended {
 		return
 	}
+	q.withdrawCanceledWriters()
 	q.ended, q.failure = true, failure
 	if discard {
 		q.discard()
@@ -173,6 +177,23 @@ func finishWriter[T any](w *writer[T], err error) {
 	close(w.done)
 }
 
+// A producer may not have observed its completed cancellation yet. Reconcile
+// pending cancellations before another operation settles or bypasses writers.
+// Accepted writers are no longer in this list and keep their original outcome.
+// The caller must hold q.mu.
+func (q *Queue[T]) withdrawCanceledWriters() {
+	remaining := q.writers[:0]
+	for _, w := range q.writers {
+		if err := context.Cause(w.ctx); err != nil {
+			finishWriter(w, err)
+			continue
+		}
+		remaining = append(remaining, w)
+	}
+	clear(q.writers[len(remaining):])
+	q.writers = remaining
+}
+
 func (q *Queue[T]) promoteWriter() {
 	for len(q.writers) > 0 {
 		w := q.writers[0]
@@ -191,7 +212,7 @@ func (q *Queue[T]) promoteWriter() {
 // Reader is a detachable iterator. Detach ends this reader without closing its
 // queue. A queue permits only one pending Next call across all its readers.
 type Reader[T any] struct {
-	queue *Queue[T]
+	queue    *Queue[T]
 	detached bool
 }
 
