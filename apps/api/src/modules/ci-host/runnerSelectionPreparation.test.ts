@@ -117,3 +117,49 @@ it.each([false, true])('Stop interrupts a selection fetch (explicit base: %s)', 
     await rm(f.root, { recursive: true, force: true })
   }
 })
+
+it.each([false, true])('Stop releases a queued preparation while selection still holds the repository (reopened runner: %s)',
+  async reopened => {
+    const f = await selectionFixture(false)
+    const other = reopened ? new HostCiRunner(join(f.root, 'runner'), f.ports, f.environment) : f.runner
+    const first = randomUUID()
+    const second = randomUUID()
+    const third = randomUUID()
+    let starting: ReturnType<HostCiRunner['handle']> | undefined
+    let canceling: ReturnType<HostCiRunner['handle']> | undefined
+    let following: ReturnType<HostCiRunner['handle']> | undefined
+    const completedBeforeRelease = (pending: Promise<unknown>) => Promise.race([
+      pending.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 500)),
+    ])
+    try {
+      await f.runner.handle({ ...f.request, runId: first })
+      await f.entered.promise
+      starting = other.handle({ ...f.request, runId: second, scope: 'full' })
+      await vi.waitFor(async () => expect(await other.status()).toMatchObject({ slotsUsed: 2 }))
+      expect(await completedBeforeRelease(starting), 'the second ticket must be waiting for repository access').toBe(false)
+
+      canceling = other.handle({ operation: 'cancel', runId: second })
+      expect(await completedBeforeRelease(Promise.all([canceling, starting])),
+        'Stop must settle preparation before the unrelated selection fetch exits').toBe(true)
+      await expect(starting).resolves.toMatchObject({ run: { state: 'canceled' } })
+      await expect(f.read(second)).resolves.toMatchObject({ run: { state: 'canceled' } })
+      await expect(other.status()).resolves.toMatchObject({ slotsUsed: 1,
+        runs: expect.arrayContaining([expect.objectContaining({ runId: first, state: 'starting' })]) })
+      await expect(readFile(f.lock, 'utf8')).resolves.toBe('live selection fetch')
+
+      following = other.handle({ ...f.request, runId: third, scope: 'full' })
+      expect(await completedBeforeRelease(following), 'the next ticket must still wait for the live fetch').toBe(false)
+      await expect(readFile(f.lock, 'utf8')).resolves.toBe('live selection fetch')
+      f.release.resolve()
+      await following
+      for (const runId of [first, third]) {
+        await vi.waitFor(async () => expect(await f.read(runId)).toMatchObject({ run: { state: 'running' } }))
+      }
+      await expect(f.read(second)).resolves.toMatchObject({ run: { state: 'canceled' } })
+    } finally {
+      f.release.resolve()
+      await Promise.all([starting, canceling, following])
+      await Promise.all([f.runner.beginDrain(), other.beginDrain()])
+      await rm(f.root, { recursive: true, force: true })
+    }
+  })
