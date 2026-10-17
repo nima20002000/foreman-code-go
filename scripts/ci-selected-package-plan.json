@@ -1,0 +1,16 @@
+{
+  "source": "6412709de51c0c10bd1e40b33ff6783ea9f2aae7",
+  "sourceTree": "16925c107dca77fed0b35251609e663b88f71dbc",
+  "package": "./internal/placement",
+  "goFiles": [
+    "internal/placement/http.go",
+    "internal/placement/http_test.go"
+  ],
+  "unitTests": [
+    "TestPlacementChoicesRejectQueryScopeOverrides",
+    "TestPlacementChoicesPreserveDiscoveryInputs",
+    "TestPlacementReadResponsesKeepPrivateCachePolicy"
+  ],
+  "integrationTests": [],
+  "expectedUnitNamedCount": 19
+}
