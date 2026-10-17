@@ -1,0 +1,63 @@
+{
+  "source": "cdca517354f9fa6e7e197495d8f4437261a4c81b",
+  "sourceHookSha256": "a4e0af0dc031390f6aa25fd3c21e6ae7c75e5de80efab70e7376822695aaef96",
+  "groups": {
+    "scripts": [
+      {
+        "name": "installer-bash-syntax",
+        "program": "bash",
+        "args": [
+          "-n",
+          "scripts/ci-go-toolchain.sh"
+        ]
+      },
+      {
+        "name": "affected-three-file-lint",
+        "program": "node",
+        "args": [
+          "apps/api/node_modules/eslint/bin/eslint.js",
+          "--config",
+          "apps/api/eslint.config.mjs",
+          "--max-warnings",
+          "0",
+          "scripts/ci-go-toolchain-probe.test.mjs",
+          "scripts/ci-go-toolchain.test.mjs",
+          "scripts/ci-suite-go.test.mjs"
+        ]
+      },
+      {
+        "name": "selected-0-ci-go-toolchain-probe.test",
+        "program": "node",
+        "args": [
+          "--test",
+          "scripts/ci-go-toolchain-probe.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 7
+      },
+      {
+        "name": "selected-1-ci-suite-go.test",
+        "program": "node",
+        "args": [
+          "--test",
+          "--test-name-pattern=^(?:backend\\ typecheck\\ runs\\ full\\ Go\\ build\\ and\\ vet\\ with\\ full\\ scope|backend\\ typecheck\\ runs\\ full\\ Go\\ build\\ and\\ vet\\ with\\ affected\\ scope|backend\\ typecheck\\ runs\\ full\\ Go\\ build\\ and\\ vet\\ with\\ omitted\\ scope|the\\ root\\ suite\\ uses\\ Go\\ checks\\ for\\ \\{\"CI_HOST_RUNNER\":\"1\"\\}|the\\ root\\ suite\\ uses\\ Go\\ checks\\ for\\ \\{\"FOREMAN_CODE_CI_HOST\":\"1\"\\}|the\\ root\\ suite\\ uses\\ Go\\ checks\\ for\\ \\{\"CI\":\"true\"\\}|the\\ root\\ suite\\ uses\\ Go\\ checks\\ for\\ \\{\"CI\":\"1\"\\}|the\\ root\\ suite\\ uses\\ Go\\ checks\\ for\\ \\{\"FOREMAN_CODE_CI_LOCAL\":\"1\"\\}|a\\ short\\ private\\ runtime\\ executes\\ CommonJS\\ HOME\\ tools\\ and\\ binds\\ Unix\\ sockets\\ outside\\ repository\\ module\\ scope)$",
+          "scripts/ci-suite-go.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 9
+      },
+      {
+        "name": "selected-2-ci-go-toolchain.test",
+        "program": "node",
+        "args": [
+          "--test",
+          "--test-name-pattern=^(?:a\\ failed\\ archive\\ download\\ uses\\ installed\\ go\\ with\\ authenticated\\ isolated\\ module\\ settings|a\\ failed\\ archive\\ download\\ uses\\ installed\\ go1\\.26\\.8\\ with\\ authenticated\\ isolated\\ module\\ settings|an\\ already\\ exact\\ installed\\ compiler\\ is\\ reused\\ without\\ switching\\ through\\ another\\ bootstrap|a\\ same\\-version\\-only\\ bootstrap\\ publishes\\ a\\ verified\\ owned\\ copy\\ with\\ installed\\-source\\ provenance|reused\\ Go\\ is\\ verified\\ again\\ after\\ staging\\ before\\ the\\ CI\\ cache\\ is\\ published|module\\ fallback\\ rejects\\ wrong\\ resulting\\ version\\ before\\ publishing\\ and\\ cleans\\ only\\ its\\ owned\\ cache|owned\\ module\\-cache\\ cleanup\\ failure\\ stays\\ red\\ and\\ preserves\\ the\\ invocation\\ directory\\ without\\ publishing|without\\ a\\ bootstrap\\ the\\ public\\ installer\\ authenticates\\ and\\ prepares\\ the\\ official\\ module\\ into\\ its\\ private\\ cache|a\\ pinned\\ module\\ compiler\\ with\\ the\\ wrong\\ version\\ is\\ rejected\\ and\\ its\\ private\\ staging\\ is\\ cleaned|installer\\ compiler\\ probes\\ isolate\\ and\\ clean\\ home,\\ telemetry\\ and\\ temporary\\ state\\ without\\ changing\\ caller\\ state)$",
+          "scripts/ci-go-toolchain.test.mjs"
+        ],
+        "reportKind": "node",
+        "expectedSelectedPassCount": 10
+      }
+    ]
+  },
+  "requiredExports": []
+}
