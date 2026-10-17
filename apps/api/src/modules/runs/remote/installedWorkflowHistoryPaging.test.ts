@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
-import { DeviceHistoryPageSchema } from '@foreman-code/contracts/device-application'
+import { DEVICE_JSON_CONTINUATION_BYTES, DeviceHistoryPageSchema } from '@foreman-code/contracts/device-application'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { runningInstalledFixture } from './__tests__/installedWorkflowHost.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
@@ -96,6 +96,42 @@ it('builds status physical evidence without reserving an unread metadata downloa
     expect(page.metadata).toBeDefined()
     const fields = await readJsonContinuation(page.metadata!, async request => readNativeHistoryMetadata(request))
     expect(decodeResultCopies(fields)).toMatchObject({ terminalTurn: { result } })
+  } finally {
+    await f.host.close()
+  }
+})
+
+it('retries installed history continuations without leaving an unread download reservation', async () => {
+  const f = await runningInstalledFixture()
+  const result = { outcome: 'succeeded' as const, output: { text: 'replayed-result' + 'x'.repeat(3 * 1024 * 1024) } }
+  try {
+    f.finish('succeeded', result.output)
+    await f.settled
+    const first = await f.call('history', { afterSequence: -1, correlationId: 'execution:execution' })
+    const raw = await readRemoteReceiptResponse(first.payload, f.intent,
+      async request => (await f.call('receipt-continuation', request)).payload) as { page: unknown; status: unknown }
+    const page = DeviceHistoryPageSchema.parse(raw.page)
+    const status = RemoteOperationStatusSchema.parse(raw.status)
+    if (!page.metadata || status.status !== 'known') throw new Error('Expected paged terminal history')
+    const fields = await readJsonContinuation(page.metadata, async metadata => {
+      const request = { metadata, receiptSequence: status.receipt.sequence,
+        afterSequence: page.nextAfterSequence, correlationId: 'execution:execution' }
+      const reply = await f.call('history', request)
+      if (metadata.offset === DEVICE_JSON_CONTINUATION_BYTES
+        || metadata.offset + DEVICE_JSON_CONTINUATION_BYTES >= page.metadata!.byteSize) {
+        expect((await f.call('history', request)).payload).toEqual(reply.payload)
+      }
+      return DeviceHistoryPageSchema.parse((reply.payload as { page: unknown }).page).metadata!
+    })
+    expect(decodeResultCopies(fields)).toMatchObject({ terminalTurn: { result } })
+    const downloads = Array.from({ length: 5 }, (_, index) => pageNativeHistory({
+      events: [], pendingInteractions: [], terminalResult: { outcome: 'succeeded',
+        output: { text: `after-replay-${index}` + 'x'.repeat(3 * 1024 * 1024) } },
+    }).page.metadata!)
+    for (const first of downloads) {
+      const fields = await readJsonContinuation(first, async request => readNativeHistoryMetadata(request))
+      expect(decodeResultCopies(fields)).toHaveProperty('terminalResult')
+    }
   } finally {
     await f.host.close()
   }

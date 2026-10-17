@@ -62,10 +62,12 @@ export const DEVICE_JSON_CONTINUATION_BYTES = 65_536
 export const DEVICE_JSON_CONTINUATION_LIMIT = 4_194_304
 export const DeviceJsonContinuationRequestSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/), offset: z.number().int().safe().nonnegative(),
+  downloadId: z.uuid().optional(),
 }).strict()
 export type DeviceJsonContinuationRequest = z.infer<typeof DeviceJsonContinuationRequestSchema>
 export const DeviceJsonContinuationSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
+  downloadId: z.uuid().optional(),
   byteSize: z.number().int().safe().positive().max(DEVICE_JSON_CONTINUATION_LIMIT),
   offset: z.number().int().safe().nonnegative(),
   data: z.string().min(1).max(Math.ceil(DEVICE_JSON_CONTINUATION_BYTES / 3) * 4),
