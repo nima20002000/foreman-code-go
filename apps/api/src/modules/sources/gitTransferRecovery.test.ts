@@ -1,17 +1,18 @@
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile, type FileHandle } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type Socket } from 'node:net'
 import { join } from 'node:path'
-import { expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { SOURCE_GIT_CACHE_LIMITS } from '@foreman-code/contracts/source-materialization'
 import { runGitWithCacheStorage } from './gitCacheStorage.js'
-import { runGitProcess, type GitProcessOptions } from './gitProcess.js'
+import { runGitProcess } from './gitProcess.js'
 import { ensureClone, ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { deferred } from '../../../test/helpers/deferred.js'
+import { fetchingApi, interruptedFetchWriter } from '../../../test/helpers/interruptedGitFetch.js'
 
 async function stop(child: ChildProcess) {
   if (child.exitCode !== null || child.signalCode !== null) return
@@ -142,166 +143,156 @@ async function recoveryFixture() {
   return { root, home, origin, environment, git, commit, first, ports, cache }
 }
 
-const fetchLocks = ['shallow.lock', 'FETCH_HEAD.lock', 'packed-refs.lock', 'refs/remotes/origin/main.lock']
+/** Locks and partial packs a killed fetch leaves in the common directory; Git closed each before it died. */
+const fetchArtifacts = { 'shallow.lock': 41, 'FETCH_HEAD.lock': 41, 'packed-refs.lock': 0,
+  'refs/remotes/origin/main.lock': 41, 'refs/foreman/ci/fetch/interrupted.lock': 41,
+  'objects/pack/tmp_pack_interrupted': 4096, 'objects/pack/tmp_idx_interrupted': 1024 }
 
-async function interruptedFetch(f: Awaited<ReturnType<typeof recoveryFixture>>, clone: string) {
-  const helper = join(f.root, 'interrupted-writer.mjs')
-  const socketName = `foreman-fetch-${randomUUID()}`
-  const server = createServer()
-  const connected = once(server, 'connection')
-  server.listen('\0' + socketName)
-  await once(server, 'listening')
-  await writeFile(helper, `
-    import { connect } from 'node:net';
-    import { open } from 'node:fs/promises';
-    const [common, socketName] = process.argv.slice(2);
-    const paths = ${JSON.stringify([...fetchLocks, 'objects/pack/tmp_pack_interrupted'])};
-    const files = [];
-    for (const name of paths) {
-      const file = await open(common + '/' + name, 'wx', 0o600);
-      await file.writeFile('interrupted fetch');
-      files.push(file);
-    }
-    const socket = connect('\\0' + socketName);
-    socket.on('connect', () => socket.write(String(process.pid)));
-    socket.on('data', () => process.exit(1));
-  `)
-  const run = (options: GitProcessOptions) => runGitProcess(['-c',
-    `alias.interrupted=!${process.execPath} ${helper}`, 'interrupted', join(clone, '.git'), socketName],
-  options, f.environment)
-  let active: Socket | undefined
-  const writer = async () => {
-    const [socket] = await connected as [Socket]
-    active = socket
-    await once(socket, 'data')
-    // Wait for persisted ownership before simulating Main's loss of its transfer.
-    await vi.waitFor(async () => {
-      const records = (await readdir(f.cache)).filter(name => name.endsWith('.artifacts'))
-      expect(records).toHaveLength(1)
-      const entries = (await readFile(join(f.cache, records[0]!), 'utf8')).trim().split('\n')
-      expect(new Set(entries.map(line => (JSON.parse(line) as { path: string }).path)).size)
-        .toBe(fetchLocks.length + 1)
-    })
-    return socket
-  }
-  return { run, writer, address: socketName, close: () => {
-    active?.write('exit')
-    active?.destroy()
-    server.close()
-  } }
+async function expectRemoved(common: string, names: string[]) {
+  for (const name of names) await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
 }
 
-it('removes only its failed fetch artifacts after its writers close and preserves published data', async () => {
+it('recovers a cancelled fetch’s unobserved locks on the next acquisition and preserves published data', async () => {
   const f = await recoveryFixture()
-  let socket: Socket | undefined
-  let running: Promise<unknown> | undefined
-  let interrupted: Awaited<ReturnType<typeof interruptedFetch>> | undefined
+  let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
   try {
     const signal = AbortSignal.timeout(30_000)
     const clone = await ensureCommit(f.ports, 'fixture/project', f.first, signal)
     const successor = await f.commit('successor')
     const common = join(clone, '.git')
     const before = await readFile(join(common, 'shallow'))
-    interrupted = await interruptedFetch(f, clone)
-    running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor], { cwd: clone, signal },
-      (args, options) => args.includes('fetch')
-        ? interrupted!.run(options) : runGitProcess(args, options, f.environment))
-    socket = await interrupted.writer()
-    socket.write('exit')
+    writer = await interruptedFetchWriter(f.root, common, fetchArtifacts)
+    const controller = new AbortController()
+    const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor],
+      { cwd: clone, signal: controller.signal },
+      (args, options) => runGitProcess(args.includes('fetch') ? writer!.args : args, options, f.environment))
+    await (await writer.started()).write()
+    controller.abort()
     await expect(running).resolves.toMatchObject({ code: 1 })
-    for (const name of [...fetchLocks, 'objects/pack/tmp_pack_interrupted']) {
-      await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
-    }
     expect(await readFile(join(common, 'shallow'))).toEqual(before)
     expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
+
     await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
     expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+    await expectRemoved(common, Object.keys(fetchArtifacts))
   } finally {
-    socket?.write('exit')
-    interrupted?.close()
-    await running
-    socket?.destroy()
+    writer?.close()
     await rm(f.root, { recursive: true, force: true })
   }
 })
 
-it('recovers only its recorded fetch artifacts after a restart and preserves replacement locks', async () => {
+it('recovers a fetch whose API died before its surviving writer created locks', async () => {
   const f = await recoveryFixture()
   let api: ChildProcess | undefined
-  let socket: Socket | undefined
-  let interrupted: Awaited<ReturnType<typeof interruptedFetch>> | undefined
+  let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
   try {
     const signal = AbortSignal.timeout(30_000)
     const clone = await ensureCommit(f.ports, 'fixture/project', f.first, signal)
     const successor = await f.commit('after restart')
-    interrupted = await interruptedFetch(f, clone)
-    const launcher = join(f.root, 'fetch-api.mjs')
-    await writeFile(launcher, `
-      import { runGitWithCacheStorage } from ${JSON.stringify(new URL('./gitCacheStorage.ts', import.meta.url).href)};
-      import { runGitProcess } from ${JSON.stringify(new URL('./gitProcess.ts', import.meta.url).href)};
-      const [cache, clone, helper, socketName] = process.argv.slice(2);
-      await runGitWithCacheStorage(cache, ['fetch', 'origin'],
-        { cwd: clone, signal: new AbortController().signal }, (args, options) => runGitProcess(
-          args.includes('fetch') ? ['-c', 'alias.interrupted=!' + process.execPath + ' ' + helper,
-            'interrupted', clone + '/.git', socketName] : args, options, process.env));
-    `)
-    const helper = join(f.root, 'interrupted-writer.mjs')
-    const address = interrupted.address
-    api = spawn(process.execPath, ['--import', 'tsx', launcher, f.cache, clone, helper, address],
-      { env: f.environment, stdio: ['ignore', 'ignore', 'inherit'] })
-    socket = await interrupted.writer()
+    const common = join(clone, '.git')
+    writer = await interruptedFetchWriter(f.root, common, fetchArtifacts)
+    api = await fetchingApi(f.root, f.cache, clone, writer.args, f.environment)
+    const transfer = await writer.started()
     await stop(api)
-    const exited = once(socket, 'close')
-    socket.write('exit')
-    await exited
-    const replacement = join(clone, '.git', 'refs', 'remotes', 'origin', 'main.lock')
-    await rm(replacement)
-    await writeFile(replacement, 'another writer', { flag: 'wx' })
+    await transfer.write()
+    await transfer.die()
+
+    // A fresh process keeps nothing from the lost API: only the cache and the repository remain.
     const system = systemGitWorktreePorts(f.environment)
     await expect(ensureCommit(system, 'fixture/project', successor, signal)).resolves.toBe(clone)
     expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
-    for (const name of [...fetchLocks.filter(name => name !== 'refs/remotes/origin/main.lock'),
-      'objects/pack/tmp_pack_interrupted']) {
-      await expect(readFile(join(clone, '.git', name))).rejects.toMatchObject({ code: 'ENOENT' })
-    }
-    expect(await readFile(replacement, 'utf8')).toBe('another writer')
+    await expectRemoved(common, Object.keys(fetchArtifacts))
+    expect((await readdir(f.cache)).filter(name => name.endsWith('.reservation'))).toEqual([])
   } finally {
     if (api) await stop(api)
-    socket?.write('exit')
-    socket?.destroy()
-    interrupted?.close()
+    writer?.close()
     await rm(f.root, { recursive: true, force: true })
   }
 })
 
-it.each(['before fetch', 'during failed fetch'] as const)(
-  'preserves another writer’s ref and shallow locks acquired %s', async phase => {
+/** An Agent's `git update-ref` in its linked worktree, paused in its reference-transaction hook with its locks held. */
+async function liveAgentWriter(root: string, worktree: string, environment: NodeJS.ProcessEnv, input: string) {
+  const hooks = join(root, 'agent-hooks')
+  await mkdir(hooks, { mode: 0o700 })
+  const address = `\0foreman-agent-writer-${randomUUID()}`
+  const helper = join(hooks, 'prepared.mjs')
+  await writeFile(helper, `
+    import { connect } from 'node:net';
+    const socket = connect(${JSON.stringify(address)});
+    socket.on('connect', () => socket.write('prepared'));
+    socket.on('data', () => process.exit(0));
+  `)
+  await writeFile(join(hooks, 'reference-transaction'),
+    `#!/bin/sh\n[ "$1" = prepared ] || exit 0\nexec '${process.execPath}' '${helper}'\n`, { mode: 0o700 })
+  const server = createServer()
+  server.listen(address)
+  await once(server, 'listening')
+  let socket: Socket | undefined
+  let child: ChildProcess | undefined
+  return {
+    async start() {
+      const connected = once(server, 'connection')
+      child = spawn('git', ['-c', `core.hooksPath=${hooks}`, 'update-ref', '--stdin'],
+        { cwd: worktree, env: environment, stdio: ['pipe', 'ignore', 'inherit'] })
+      child.stdin!.end(input)
+      ;[socket] = await connected as [Socket]
+      await once(socket, 'data')
+    },
+    async finish() {
+      const exited = once(child!, 'exit')
+      socket!.write('continue')
+      return (await exited)[0] as number | null
+    },
+    async close() {
+      socket?.destroy()
+      server.close()
+      if (child) await stop(child)
+    },
+  }
+}
+
+it.each(['before', 'during'] as const)(
+  'keeps the locks of an Agent Git writer started %s a cancelled fetch until it finishes, then recovers the fetch',
+  async phase => {
     const f = await recoveryFixture()
-    const writers: FileHandle[] = []
+    let writer: Awaited<ReturnType<typeof interruptedFetchWriter>> | undefined
+    let agent: Awaited<ReturnType<typeof liveAgentWriter>> | undefined
     try {
       const signal = AbortSignal.timeout(30_000)
       const clone = await ensureCommit(f.ports, 'fixture/project', f.first, signal)
+      const successor = await f.commit('successor')
       const common = join(clone, '.git')
-      const locks = [...fetchLocks, 'refs/heads/agent.lock']
-      const acquire = async () => {
-        for (const name of locks) {
-          const file = await open(join(common, name), 'wx')
-          writers.push(file)
-          await file.writeFile('live writer')
-        }
-      }
-      if (phase === 'before fetch') await acquire()
-      const result = await runGitWithCacheStorage(f.cache, ['fetch', 'origin'], { cwd: clone, signal },
-        async (args, options) => {
-          if (!args.includes('fetch')) return runGitProcess(args, options, f.environment)
-          if (phase === 'during failed fetch') await acquire()
-          return { code: 1, stdout: '', stderr: 'fetch failed' }
-        })
-      expect(result.code).toBe(1)
-      for (const name of locks) expect(await readFile(join(common, name), 'utf8')).toBe('live writer')
-      expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
+      const worktree = join(f.root, 'agent')
+      f.git(clone, 'worktree', 'add', '-q', '-b', 'foreman/agent', worktree, f.first)
+      f.git(clone, 'branch', 'foreman/obsolete', f.first)
+      agent = await liveAgentWriter(f.root, worktree, f.environment,
+        `create refs/remotes/origin/agent-push ${f.first}\ndelete refs/heads/foreman/obsolete\n`)
+      const agentLocks = ['refs/remotes/origin/agent-push.lock', 'refs/heads/foreman/obsolete.lock', 'packed-refs.lock']
+      const interrupted = { 'shallow.lock': 41, 'refs/foreman/ci/fetch/interrupted.lock': 41,
+        'objects/pack/tmp_pack_interrupted': 4096 }
+      writer = await interruptedFetchWriter(f.root, common, interrupted)
+      if (phase === 'before') await agent.start()
+      const controller = new AbortController()
+      const running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor],
+        { cwd: clone, signal: controller.signal },
+        (args, options) => runGitProcess(args.includes('fetch') ? writer!.args : args, options, f.environment))
+      await (await writer.started()).write()
+      if (phase === 'during') await agent.start()
+      controller.abort()
+      await expect(running).resolves.toMatchObject({ code: 1 })
+      // Recovery waits for the live writer instead of guessing which same-named locks are abandoned.
+      await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).rejects.toThrow()
+      for (const name of agentLocks) await expect(stat(join(common, name))).resolves.toBeTruthy()
+
+      expect(await agent.finish()).toBe(0)
+      expect(f.git(worktree, 'rev-parse', 'refs/remotes/origin/agent-push')).toBe(f.first)
+      expect(f.git(clone, 'branch', '--list', 'foreman/obsolete')).toBe('')
+      await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+      expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+      await expectRemoved(common, Object.keys(interrupted))
     } finally {
-      for (const writer of writers) await writer.close()
+      await agent?.close()
+      writer?.close()
       await rm(f.root, { recursive: true, force: true })
     }
   },
