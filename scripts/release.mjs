@@ -49,8 +49,9 @@ async function release(version, notesFile, gateTicket, rerunValues) {
       return 1
     }
   } else {
-    const failed = (await awaitTickets(call, workspaceId, groups.flatMap(group => group.tickets)))
-      .filter(run => run.state !== 'passed')
+    const finished = await awaitTickets(call, workspaceId, groups[0].tickets)
+    groups[0].tickets = finished.map(run => run.id)
+    const failed = finished.filter(run => run.state !== 'passed')
     if (failed.length) {
       console.error(`[release] No release: ${failed.map(run => `${run.suite} ticket ${run.id} ${run.state}`).join('; ')}`)
       return 1

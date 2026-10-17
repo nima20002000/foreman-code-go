@@ -13,7 +13,7 @@ const verifyScript = new URL('./verify-release-round.mjs', import.meta.url).path
 const workspaceId = 'workspace-release-test'
 
 /** A Main whose CI finishes every run at once; `outcome(run)` picks each run's final state. */
-async function fakeMain(t, outcome = () => 'passed') {
+async function fakeMain(t, outcome = () => 'passed', beforeWait = () => {}) {
   const runs = new Map(), groups = new Map(), calls = [], commands = new Map()
   const tools = {
     ci_run: input => {
@@ -37,6 +37,7 @@ async function fakeMain(t, outcome = () => 'passed') {
     ci_get: ({ ticketId, testStatus, waitUntil }) => {
       const run = runs.get(ticketId)
       if (!run) throw new Error('Unknown ticket.')
+      if (waitUntil) beforeWait(run, runs, groups)
       const group = groups.get(run.groupId).map(id => runs.get(id))
       return { run, logTail: '', partitions: group.length > 1 ? group : undefined,
         ...(waitUntil ? { wait: { status: 'settled' } } : {}),
@@ -114,6 +115,34 @@ test('a clean gate releases HEAD with every gate ticket recorded and pushes it',
   const verified = await run(verifyScript, ['HEAD'], work, main, env)
   assert.equal(verified.status, 0, verified.output)
 })
+
+for (const state of ['passed', 'failed']) {
+  test(`a fallback sibling that ${state} during the wait is included before creating a release`, async t => {
+    let added
+    const main = await fakeMain(t, () => 'passed', (run, runs, groups) => {
+      if (added) return
+      const original = groups.get(run.groupId).map(id => runs.get(id)).find(part => part.suite === 'integration')
+      added = { ...original, id: randomUUID(), partition: null, state }
+      runs.set(added.id, added)
+      groups.get(run.groupId).push(added.id)
+    })
+    const { work, git, env } = repository(t)
+    const tested = git('rev-parse', 'HEAD')
+    const result = await run(releaseScript, ['1.1.0'], work, main, env)
+    assert.ok(added)
+    if (state === 'failed') {
+      assert.equal(result.status, 1, result.output)
+      assert.equal(git('rev-parse', 'HEAD'), tested)
+      assert.equal(git('status', '--porcelain'), '')
+      assert.equal(git('rev-parse', 'origin/main'), tested)
+      return
+    }
+    assert.equal(result.status, 0, result.output)
+    const ids = git('log', '-1', '--format=%(trailers:key=Clean-Round,valueonly)').split('=')[1].split(',')
+    assert.deepEqual(ids.sort(), [...main.runs.keys()].sort())
+    assert.equal(git('rev-parse', 'origin/main'), git('rev-parse', 'HEAD'))
+  })
+}
 
 test('a release reuses the gate that already passed on HEAD instead of running another round', async t => {
   const main = await fakeMain(t)

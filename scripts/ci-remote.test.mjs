@@ -149,3 +149,31 @@ test('reads failure diagnostics only after the group has settled its result coll
   assert.deepEqual(waits.slice(0, 3), ['wait', 'wait', 'ci_logs_read'])
   assert.equal(waits.filter(name => name === 'wait').length, 2)
 })
+
+test('tracks fallback siblings added while a group wait is in flight', async t => {
+  t.mock.method(console, 'log', () => {})
+  t.mock.method(console, 'error', () => {})
+  const original = { id: 'original', suite: 'integration', state: 'passed', group: ['original'] }
+  const sibling = { id: 'fallback-sibling', suite: 'integration', state: 'failed' }
+  const runs = { original }
+  const calls = []
+  let enter, release
+  const entered = new Promise(resolve => { enter = resolve })
+  const released = new Promise(resolve => { release = resolve })
+  const read = reader(runs, calls)
+  const call = async (name, input) => {
+    if (input.waitUntil) {
+      enter()
+      await released
+    }
+    return read(name, input)
+  }
+  const waiting = awaitTickets(call, 'workspace', [original.id])
+  await entered
+  runs[sibling.id] = sibling
+  original.group.push(sibling.id)
+  release()
+  const finished = await waiting
+  assert.deepEqual(finished.map(run => [run.id, run.state]), [['original', 'passed'], ['fallback-sibling', 'failed']])
+  assert.ok(calls.some(call => call.name === 'ci_logs_read' && call.input.ticketId === sibling.id))
+})
