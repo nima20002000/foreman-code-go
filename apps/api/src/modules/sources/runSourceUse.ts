@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import pg from 'pg'
+import type pg from 'pg'
 import { componentLogger } from '../diagnostics/logger.js'
 
-type SourceUse = { pool: pg.Pool; client: pg.Client; snapshots: Set<string> }
+type SourceUse = { pool: pg.Pool; client: pg.PoolClient; snapshots: Set<string> }
 const preparing = new AsyncLocalStorage<SourceUse>()
 
 export function runSourceUseKey(snapshotId: string): string {
@@ -19,19 +19,20 @@ export async function retainRunSource(pool: pg.Pool, snapshotId: string): Promis
 
 /** Keep database references from capture through Run commit, including host I/O between transactions. */
 export async function withRunSourceUse<T>(pool: pg.Pool, workspaceId: string, work: () => Promise<T>): Promise<T> {
-  // A waiting Start must not occupy a pool slot needed by its own source preparation.
-  const client = new pg.Client(pool.options)
+  const client = await pool.connect()
   let failure: Error | undefined
-  client.on('error', error => {
+  const onError = (error: Error) => {
     failure = error
     componentLogger('db').error({ err: error, workspaceId }, 'Run source-use connection failed')
-  })
+  }
+  client.on('error', onError)
   try {
-    await client.connect()
     const result = await preparing.run({ pool, client, snapshots: new Set() }, work)
     if (failure) throw failure
     return result
   } finally {
-    await client.end()
+    client.removeListener('error', onError)
+    // Session locks must not survive in an idle pooled connection.
+    client.release(true)
   }
 }
