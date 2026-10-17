@@ -1,0 +1,656 @@
+{
+  "source": "0e40b1dbe160f02c88e94a3508e3fafcd3213bea",
+  "apiSourceTree": "3dcba8c46ebbcaf36d9b85669e62152e1758ece7",
+  "conformanceSourceTree": "b029487939061efe31c01c032bb35a9e99fac795",
+  "contractsSourceTree": "a96881b8b5c5014aa03b4d50a6a054d6df8aa8a3",
+  "dependencyMethod": "Static literal import/export/require closure including type imports and literal dynamic imports; metadata only, no source modules executed",
+  "requiredExports": {
+    ".": {
+      "source": "src/index.ts",
+      "outputs": [
+        "./dist/index.d.ts",
+        "./dist/index.js"
+      ]
+    },
+    "./activity": {
+      "source": "src/activity.ts",
+      "outputs": [
+        "./dist/activity.d.ts",
+        "./dist/activity.js"
+      ]
+    },
+    "./activity-text": {
+      "source": "src/activityText.ts",
+      "outputs": [
+        "./dist/activityText.d.ts",
+        "./dist/activityText.js"
+      ]
+    },
+    "./agent-chat": {
+      "source": "src/agentChat.ts",
+      "outputs": [
+        "./dist/agentChat.d.ts",
+        "./dist/agentChat.js"
+      ]
+    },
+    "./artifact-edges": {
+      "source": "src/artifactEdges.ts",
+      "outputs": [
+        "./dist/artifactEdges.d.ts",
+        "./dist/artifactEdges.js"
+      ]
+    },
+    "./browser-origin": {
+      "source": "src/browserOrigin.ts",
+      "outputs": [
+        "./dist/browserOrigin.d.ts",
+        "./dist/browserOrigin.js"
+      ]
+    },
+    "./build-computers": {
+      "source": "src/buildComputers.ts",
+      "outputs": [
+        "./dist/buildComputers.d.ts",
+        "./dist/buildComputers.js"
+      ]
+    },
+    "./byte-transfer": {
+      "source": "src/byteTransfer.ts",
+      "outputs": [
+        "./dist/byteTransfer.d.ts",
+        "./dist/byteTransfer.js"
+      ]
+    },
+    "./canonical-json": {
+      "source": "src/canonicalJson.ts",
+      "outputs": [
+        "./dist/canonicalJson.d.ts",
+        "./dist/canonicalJson.js"
+      ]
+    },
+    "./ci-import-graph": {
+      "source": "src/ciImportGraph.mjs",
+      "outputs": [
+        "./dist/ciImportGraph.d.mts",
+        "./dist/ciImportGraph.mjs"
+      ]
+    },
+    "./claude": {
+      "source": "src/claude.ts",
+      "outputs": [
+        "./dist/claude.d.ts",
+        "./dist/claude.js"
+      ]
+    },
+    "./claude-qualification": {
+      "source": "src/claudeQualification.ts",
+      "outputs": [
+        "./dist/claudeQualification.d.ts",
+        "./dist/claudeQualification.js"
+      ]
+    },
+    "./command-identity-node": {
+      "source": "src/commandIdentityNode.ts",
+      "outputs": [
+        "./dist/commandIdentityNode.d.ts",
+        "./dist/commandIdentityNode.js"
+      ]
+    },
+    "./computer-accounts": {
+      "source": "src/computerAccounts.ts",
+      "outputs": [
+        "./dist/computerAccounts.d.ts",
+        "./dist/computerAccounts.js"
+      ]
+    },
+    "./computer-activity": {
+      "source": "src/computerActivity.ts",
+      "outputs": [
+        "./dist/computerActivity.d.ts",
+        "./dist/computerActivity.js"
+      ]
+    },
+    "./computer-maintenance": {
+      "source": "src/computerMaintenance.ts",
+      "outputs": [
+        "./dist/computerMaintenance.d.ts",
+        "./dist/computerMaintenance.js"
+      ]
+    },
+    "./device-application": {
+      "source": "src/deviceApplication.ts",
+      "outputs": [
+        "./dist/deviceApplication.d.ts",
+        "./dist/deviceApplication.js"
+      ]
+    },
+    "./device-connection": {
+      "source": "src/deviceConnection.ts",
+      "outputs": [
+        "./dist/deviceConnection.d.ts",
+        "./dist/deviceConnection.js"
+      ]
+    },
+    "./device-identity": {
+      "source": "src/deviceIdentity.ts",
+      "outputs": [
+        "./dist/deviceIdentity.d.ts",
+        "./dist/deviceIdentity.js"
+      ]
+    },
+    "./device-identity-node": {
+      "source": "src/deviceIdentityNode.ts",
+      "outputs": [
+        "./dist/deviceIdentityNode.d.ts",
+        "./dist/deviceIdentityNode.js"
+      ]
+    },
+    "./device-resources": {
+      "source": "src/deviceResources.ts",
+      "outputs": [
+        "./dist/deviceResources.d.ts",
+        "./dist/deviceResources.js"
+      ]
+    },
+    "./device-setup": {
+      "source": "src/deviceSetup.ts",
+      "outputs": [
+        "./dist/deviceSetup.d.ts",
+        "./dist/deviceSetup.js"
+      ]
+    },
+    "./device-setup-node": {
+      "source": "src/deviceSetupNode.ts",
+      "outputs": [
+        "./dist/deviceSetupNode.d.ts",
+        "./dist/deviceSetupNode.js"
+      ]
+    },
+    "./device-tls-node": {
+      "source": "src/deviceTlsNode.ts",
+      "outputs": [
+        "./dist/deviceTlsNode.d.ts",
+        "./dist/deviceTlsNode.js"
+      ]
+    },
+    "./execution-authority": {
+      "source": "src/executionAuthority.ts",
+      "outputs": [
+        "./dist/executionAuthority.d.ts",
+        "./dist/executionAuthority.js"
+      ]
+    },
+    "./failure": {
+      "source": "src/failure.ts",
+      "outputs": [
+        "./dist/failure.d.ts",
+        "./dist/failure.js"
+      ]
+    },
+    "./files": {
+      "source": "src/files.ts",
+      "outputs": [
+        "./dist/files.d.ts",
+        "./dist/files.js"
+      ]
+    },
+    "./harness-qualification": {
+      "source": "src/harnessQualification.ts",
+      "outputs": [
+        "./dist/harnessQualification.d.ts",
+        "./dist/harnessQualification.js"
+      ]
+    },
+    "./harness-registry": {
+      "source": "src/harnessRegistry.ts",
+      "outputs": [
+        "./dist/harnessRegistry.d.ts",
+        "./dist/harnessRegistry.js"
+      ]
+    },
+    "./interaction-activity": {
+      "source": "src/interaction-activity.ts",
+      "outputs": [
+        "./dist/interaction-activity.d.ts",
+        "./dist/interaction-activity.js"
+      ]
+    },
+    "./job-admission": {
+      "source": "src/jobAdmission.ts",
+      "outputs": [
+        "./dist/jobAdmission.d.ts",
+        "./dist/jobAdmission.js"
+      ]
+    },
+    "./job-artifacts": {
+      "source": "src/jobArtifacts.ts",
+      "outputs": [
+        "./dist/jobArtifacts.d.ts",
+        "./dist/jobArtifacts.js"
+      ]
+    },
+    "./job-cancellation-recovery": {
+      "source": "src/jobCancellationRecovery.ts",
+      "outputs": [
+        "./dist/jobCancellationRecovery.d.ts",
+        "./dist/jobCancellationRecovery.js"
+      ]
+    },
+    "./job-inputs": {
+      "source": "src/jobInputs.ts",
+      "outputs": [
+        "./dist/jobInputs.d.ts",
+        "./dist/jobInputs.js"
+      ]
+    },
+    "./job-inputs-node": {
+      "source": "src/jobInputsNode.ts",
+      "outputs": [
+        "./dist/jobInputsNode.d.ts",
+        "./dist/jobInputsNode.js"
+      ]
+    },
+    "./job-output-transfer": {
+      "source": "src/jobOutputTransfer.ts",
+      "outputs": [
+        "./dist/jobOutputTransfer.d.ts",
+        "./dist/jobOutputTransfer.js"
+      ]
+    },
+    "./job-run-cleanup": {
+      "source": "src/jobRunCleanup.ts",
+      "outputs": [
+        "./dist/jobRunCleanup.d.ts",
+        "./dist/jobRunCleanup.js"
+      ]
+    },
+    "./job-runtime": {
+      "source": "src/jobRuntime.ts",
+      "outputs": [
+        "./dist/jobRuntime.d.ts",
+        "./dist/jobRuntime.js"
+      ]
+    },
+    "./job-verification": {
+      "source": "src/jobVerification.ts",
+      "outputs": [
+        "./dist/jobVerification.d.ts",
+        "./dist/jobVerification.js"
+      ]
+    },
+    "./job-verification-policy": {
+      "source": "src/jobVerificationPolicy.ts",
+      "outputs": [
+        "./dist/jobVerificationPolicy.d.ts",
+        "./dist/jobVerificationPolicy.js"
+      ]
+    },
+    "./job-verification-runtime": {
+      "source": "src/jobVerificationRuntime.ts",
+      "outputs": [
+        "./dist/jobVerificationRuntime.d.ts",
+        "./dist/jobVerificationRuntime.js"
+      ]
+    },
+    "./job-workflow": {
+      "source": "src/jobWorkflow.ts",
+      "outputs": [
+        "./dist/jobWorkflow.d.ts",
+        "./dist/jobWorkflow.js"
+      ]
+    },
+    "./jobs": {
+      "source": "src/jobs.ts",
+      "outputs": [
+        "./dist/jobs.d.ts",
+        "./dist/jobs.js"
+      ]
+    },
+    "./jobs-node": {
+      "source": "src/jobsNode.ts",
+      "outputs": [
+        "./dist/jobsNode.d.ts",
+        "./dist/jobsNode.js"
+      ]
+    },
+    "./local-client-node": {
+      "source": "src/localClientNode.ts",
+      "outputs": [
+        "./dist/localClientNode.d.ts",
+        "./dist/localClientNode.js"
+      ]
+    },
+    "./managed-mcp-channel": {
+      "source": "src/managedMcpChannel.ts",
+      "outputs": [
+        "./dist/managedMcpChannel.d.ts",
+        "./dist/managedMcpChannel.js"
+      ]
+    },
+    "./management": {
+      "source": "src/management/index.ts",
+      "outputs": [
+        "./dist/management/index.d.ts",
+        "./dist/management/index.js"
+      ]
+    },
+    "./node-placement": {
+      "source": "src/nodePlacement.ts",
+      "outputs": [
+        "./dist/nodePlacement.d.ts",
+        "./dist/nodePlacement.js"
+      ]
+    },
+    "./operator-chat": {
+      "source": "src/operatorChat.ts",
+      "outputs": [
+        "./dist/operatorChat.d.ts",
+        "./dist/operatorChat.js"
+      ]
+    },
+    "./operator-mcp": {
+      "source": "src/operatorMcp.ts",
+      "outputs": [
+        "./dist/operatorMcp.d.ts",
+        "./dist/operatorMcp.js"
+      ]
+    },
+    "./placement-readback": {
+      "source": "src/placementReadback.ts",
+      "outputs": [
+        "./dist/placementReadback.d.ts",
+        "./dist/placementReadback.js"
+      ]
+    },
+    "./product": {
+      "source": "src/product.ts",
+      "outputs": [
+        "./dist/product.d.ts",
+        "./dist/product.js"
+      ]
+    },
+    "./product-environment": {
+      "source": "src/productEnvironment.mjs",
+      "outputs": [
+        "./dist/productEnvironment.d.mts",
+        "./dist/productEnvironment.mjs"
+      ]
+    },
+    "./product-environment-node": {
+      "source": "src/productEnvironmentNode.mjs",
+      "outputs": [
+        "./dist/productEnvironmentNode.d.mts",
+        "./dist/productEnvironmentNode.mjs"
+      ]
+    },
+    "./production-maintenance": {
+      "source": "src/productionMaintenance.mjs",
+      "outputs": [
+        "./dist/productionMaintenance.d.mts",
+        "./dist/productionMaintenance.mjs"
+      ]
+    },
+    "./provider-accounts": {
+      "source": "src/providerAccounts.ts",
+      "outputs": [
+        "./dist/providerAccounts.d.ts",
+        "./dist/providerAccounts.js"
+      ]
+    },
+    "./remote-execution": {
+      "source": "src/remoteExecution.ts",
+      "outputs": [
+        "./dist/remoteExecution.d.ts",
+        "./dist/remoteExecution.js"
+      ]
+    },
+    "./remote-execution-entry-closure": {
+      "source": "src/remoteExecutionEntryClosure.ts",
+      "outputs": [
+        "./dist/remoteExecutionEntryClosure.d.ts",
+        "./dist/remoteExecutionEntryClosure.js"
+      ]
+    },
+    "./remote-execution-entry-closure-node": {
+      "source": "src/remoteExecutionEntryClosureNode.ts",
+      "outputs": [
+        "./dist/remoteExecutionEntryClosureNode.d.ts",
+        "./dist/remoteExecutionEntryClosureNode.js"
+      ]
+    },
+    "./remote-execution-rpc": {
+      "source": "src/remoteExecutionRpc.ts",
+      "outputs": [
+        "./dist/remoteExecutionRpc.d.ts",
+        "./dist/remoteExecutionRpc.js"
+      ]
+    },
+    "./remote-job-execution": {
+      "source": "src/remoteJobExecution.ts",
+      "outputs": [
+        "./dist/remoteJobExecution.d.ts",
+        "./dist/remoteJobExecution.js"
+      ]
+    },
+    "./remote-workflow-physical": {
+      "source": "src/remoteWorkflowPhysical.ts",
+      "outputs": [
+        "./dist/remoteWorkflowPhysical.d.ts",
+        "./dist/remoteWorkflowPhysical.js"
+      ]
+    },
+    "./resource-telemetry": {
+      "source": "src/resourceTelemetry.ts",
+      "outputs": [
+        "./dist/resourceTelemetry.d.ts",
+        "./dist/resourceTelemetry.js"
+      ]
+    },
+    "./run-snapshots": {
+      "source": "src/runSnapshots.ts",
+      "outputs": [
+        "./dist/runSnapshots.d.ts",
+        "./dist/runSnapshots.js"
+      ]
+    },
+    "./runtime-build-identity-node": {
+      "source": "src/runtimeBuildIdentityNode.mjs",
+      "outputs": [
+        "./dist/runtimeBuildIdentityNode.d.mts",
+        "./dist/runtimeBuildIdentityNode.mjs"
+      ]
+    },
+    "./runtime-identity-node": {
+      "source": "src/runtimeIdentityNode.ts",
+      "outputs": [
+        "./dist/runtimeIdentityNode.d.ts",
+        "./dist/runtimeIdentityNode.js"
+      ]
+    },
+    "./schedules": {
+      "source": "src/schedules.ts",
+      "outputs": [
+        "./dist/schedules.d.ts",
+        "./dist/schedules.js"
+      ]
+    },
+    "./selected-run-chat": {
+      "source": "src/selectedRunChat.ts",
+      "outputs": [
+        "./dist/selectedRunChat.d.ts",
+        "./dist/selectedRunChat.js"
+      ]
+    },
+    "./source-admission": {
+      "source": "src/sourceAdmission.ts",
+      "outputs": [
+        "./dist/sourceAdmission.d.ts",
+        "./dist/sourceAdmission.js"
+      ]
+    },
+    "./source-materialization": {
+      "source": "src/sourceMaterialization.ts",
+      "outputs": [
+        "./dist/sourceMaterialization.d.ts",
+        "./dist/sourceMaterialization.js"
+      ]
+    },
+    "./source-operations": {
+      "source": "src/sourceOperations.ts",
+      "outputs": [
+        "./dist/sourceOperations.d.ts",
+        "./dist/sourceOperations.js"
+      ]
+    },
+    "./subagents": {
+      "source": "src/subagents.ts",
+      "outputs": [
+        "./dist/subagents.d.ts",
+        "./dist/subagents.js"
+      ]
+    },
+    "./trusted-device-connection": {
+      "source": "src/trustedDeviceConnection.ts",
+      "outputs": [
+        "./dist/trustedDeviceConnection.d.ts",
+        "./dist/trustedDeviceConnection.js"
+      ]
+    },
+    "./wave25": {
+      "source": "src/wave25/index.ts",
+      "outputs": [
+        "./dist/wave25/index.d.ts",
+        "./dist/wave25/index.js"
+      ]
+    },
+    "./worker-artifact-content-node": {
+      "source": "src/workerArtifactContentNode.mjs",
+      "outputs": [
+        "./dist/workerArtifactContentNode.d.mts",
+        "./dist/workerArtifactContentNode.mjs"
+      ]
+    },
+    "./worker-mcp-relay": {
+      "source": "src/workerMcpRelay.ts",
+      "outputs": [
+        "./dist/workerMcpRelay.d.ts",
+        "./dist/workerMcpRelay.js"
+      ]
+    },
+    "./worker-native-output": {
+      "source": "src/workerNativeOutput.ts",
+      "outputs": [
+        "./dist/workerNativeOutput.d.ts",
+        "./dist/workerNativeOutput.js"
+      ]
+    },
+    "./workflow-artifact-result": {
+      "source": "src/workflowArtifactResult.ts",
+      "outputs": [
+        "./dist/workflowArtifactResult.d.ts",
+        "./dist/workflowArtifactResult.js"
+      ]
+    },
+    "./workflow-artifact-transfer": {
+      "source": "src/workflowArtifactTransfer.ts",
+      "outputs": [
+        "./dist/workflowArtifactTransfer.d.ts",
+        "./dist/workflowArtifactTransfer.js"
+      ]
+    },
+    "./workflow-artifact-transfer-node": {
+      "source": "src/workflowArtifactTransferNode.ts",
+      "outputs": [
+        "./dist/workflowArtifactTransferNode.d.ts",
+        "./dist/workflowArtifactTransferNode.js"
+      ]
+    },
+    "./workspace-bound-location": {
+      "source": "src/workspaceBoundLocation.ts",
+      "outputs": [
+        "./dist/workspaceBoundLocation.d.ts",
+        "./dist/workspaceBoundLocation.js"
+      ]
+    },
+    "./workspace-git": {
+      "source": "src/workspaceGit.ts",
+      "outputs": [
+        "./dist/workspaceGit.d.ts",
+        "./dist/workspaceGit.js"
+      ]
+    },
+    "./workspace-root-policies": {
+      "source": "src/workspaceRootPolicies.ts",
+      "outputs": [
+        "./dist/workspaceRootPolicies.d.ts",
+        "./dist/workspaceRootPolicies.js"
+      ]
+    },
+    "./worktree-settings": {
+      "source": "src/worktreeSettings.ts",
+      "outputs": [
+        "./dist/worktreeSettings.d.ts",
+        "./dist/worktreeSettings.js"
+      ]
+    }
+  },
+  "selections": [
+    {
+      "name": "five-settings",
+      "ids": [
+        "http.settings.agent-defaults",
+        "http.settings.workflow-defaults",
+        "http.settings.general",
+        "http.settings.system-prompt",
+        "http.settings.operator-initial-prompt"
+      ],
+      "args": [
+        "--import",
+        "tsx",
+        "src/main.ts",
+        "--target",
+        "ts",
+        "--scenario",
+        "http.settings.agent-defaults",
+        "--scenario",
+        "http.settings.workflow-defaults",
+        "--scenario",
+        "http.settings.general",
+        "--scenario",
+        "http.settings.system-prompt",
+        "--scenario",
+        "http.settings.operator-initial-prompt"
+      ]
+    },
+    {
+      "name": "six-native",
+      "ids": [
+        "streams.operator.native-order",
+        "workflow.work-handoff-accepted-return",
+        "workflow.native-input-resume-user-http",
+        "workflow.native-input-resume-operator-http",
+        "workflow.native-input-resume-operator-mcp",
+        "workflow.schedule-latest-save-native-admission"
+      ],
+      "args": [
+        "--import",
+        "tsx",
+        "src/main.ts",
+        "--target",
+        "ts",
+        "--scenario",
+        "streams.operator.native-order",
+        "--scenario",
+        "workflow.work-handoff-accepted-return",
+        "--scenario",
+        "workflow.native-input-resume-user-http",
+        "--scenario",
+        "workflow.native-input-resume-operator-http",
+        "--scenario",
+        "workflow.native-input-resume-operator-mcp",
+        "--scenario",
+        "workflow.schedule-latest-save-native-admission"
+      ]
+    }
+  ]
+}
