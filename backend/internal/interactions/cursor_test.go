@@ -56,13 +56,13 @@ func TestInteractionListCursorPreservesPrintableIdentifiers(t *testing.T) {
 
 func TestInteractionListCursorRejectsMalformedEncoding(t *testing.T) {
 	for name, cursor := range map[string]string{
-		"padding":                   "aW50ZXJhY3Rpb246YQ==",
+		"padding":                    "aW50ZXJhY3Rpb246YQ==",
 		"noncanonical trailing bits": "aW50ZXJhY3Rpb246YR",
-		"newline":                   "aW50ZXJhY3Rpb246\nYQ",
-		"carriage return":           "aW50ZXJhY3Rpb246\rYQ",
-		"space":                     "aW50ZXJhY3Rpb246 YQ",
-		"invalid alphabet":          "aW50ZXJhY3Rpb246Y+",
-		"invalid length":            "a",
+		"newline":                    "aW50ZXJhY3Rpb246\nYQ",
+		"carriage return":            "aW50ZXJhY3Rpb246\rYQ",
+		"space":                      "aW50ZXJhY3Rpb246 YQ",
+		"invalid alphabet":           "aW50ZXJhY3Rpb246Y+",
+		"invalid length":             "a",
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertInvalidInteractionListCursor(t, cursor)
