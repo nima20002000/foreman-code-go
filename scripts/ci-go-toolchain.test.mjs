@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { deflateRawSync } from 'node:zlib'
 
 const script = fileURLToPath(new URL('./ci-go-toolchain.sh', import.meta.url))
 const pins = JSON.parse(readFileSync(new URL('./ci-go-versions.json', import.meta.url), 'utf8'))
@@ -19,12 +21,21 @@ function record(tool) {
     toolchain: process.env.GOTOOLCHAIN, goenv: process.env.GOENV, gowork: process.env.GOWORK,
     flags: process.env.GOFLAGS, proxy: process.env.GOPROXY, sumdb: process.env.GOSUMDB,
     private: process.env.GOPRIVATE, noproxy: process.env.GONOPROXY, nosumdb: process.env.GONOSUMDB,
+    config: process.env.XDG_CONFIG_HOME, temp: process.env.TMPDIR, telemetry: process.env.TEST_TELEMETRY_DIR,
     insecure: process.env.GOINSECURE, published: fs.existsSync(process.env.FIXTURE_PUBLISHED) }) + '\n')
 }
 `
 const compilerProgram = recordProgram + String.raw`
 record('compiler')
 if (args.join(' ') !== 'env GOVERSION') throw new Error('Unexpected fixture compiler command')
+if (process.env.FIXTURE_PROBE_STATE === '1') {
+  const directories = [path.join(process.env.HOME, '.cache/go'),
+    process.env.TEST_TELEMETRY_DIR || path.join(process.env.XDG_CONFIG_HOME, 'go/telemetry'), process.env.TMPDIR]
+  for (const directory of directories) {
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(path.join(directory, 'fixture-probe-state'), 'compiler probe state')
+  }
+}
 console.log(process.env.FIXTURE_RESULT_VERSION || 'go' + process.env.FIXTURE_PINNED_GO)
 `
 const bootstrapProgram = recordProgram + String.raw`
@@ -109,7 +120,9 @@ function toolchainFixture(t, options = {}) {
   writeExecutable(join(commands, 'uname'), "console.log(process.argv[2] === '-s' ? 'Linux' : 'x86_64')\n")
   writeExecutable(join(commands, 'curl'), recordProgram + String.raw`
 record('curl')
-if (process.env.FIXTURE_ARCHIVE_RESPONSE === 'invalid') {
+if (args.at(-1).endsWith('.zip') && process.env.FIXTURE_MODULE_ZIP) {
+  fs.copyFileSync(process.env.FIXTURE_MODULE_ZIP, args[args.indexOf('--output') + 1])
+} else if (process.env.FIXTURE_ARCHIVE_RESPONSE === 'invalid') {
   fs.writeFileSync(args[args.indexOf('--output') + 1], 'invalid archive fixture')
 } else {
   console.error('fixture pinned archive download failed')
@@ -129,8 +142,8 @@ if (process.env.FIXTURE_ARCHIVE_RESPONSE === 'invalid') {
   delete env.NODE_TEST_CONTEXT
   return {
     directory, workspace, image, commands, cache, home, state, published, bootstrap,
-    run(extra = {}) {
-      const result = spawnSync(executablePath('bash'), [script, 'install'], {
+    run(extra = {}, entry = script) {
+      const result = spawnSync(executablePath('bash'), [entry, 'install'], {
         cwd: workspace, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20_000,
       })
       assert.ifError(result.error)
@@ -288,16 +301,178 @@ test('task and cache executables cannot replace an installed bootstrap', t => {
   fixture.bootstrap(taskBin)
   fixture.bootstrap(cacheBin, 'go1.26.8')
   const result = fixture.run({ PATH: [taskBin, cacheBin, fixture.image, fixture.commands].join(delimiter) })
-  assert.equal(result.status, 1, result.stderr)
-  assert.match(result.stderr, /no installed bootstrap Go is available/)
+  assert.equal(result.status, 22, result.stderr)
+  assert.match(result.stderr, /No installed bootstrap Go is available/)
+  assert.equal(fixture.calls().filter(call => call.tool === 'curl').at(-1).args.at(-1),
+    `https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go${pins.go.version}.linux-amd64.zip`)
   assert.equal(fixture.calls().some(call => call.tool === 'bootstrap'), false)
   assert.equal(existsSync(fixture.published), false)
 })
 
-test('an unavailable installed bootstrap leaves the failed archive attempt red', t => {
+test('an unavailable installed bootstrap and failed pinned module download leave the installer red', t => {
   const fixture = toolchainFixture(t, { bootstrap: false })
   const result = fixture.run()
-  assert.equal(result.status, 1, result.stderr)
-  assert.match(result.stderr, /no installed bootstrap Go is available/)
+  assert.equal(result.status, 22, result.stderr)
+  assert.match(result.stderr, /No installed bootstrap Go is available/)
+  assert.equal(fixture.calls().filter(call => call.tool === 'curl').length, 2)
   assert.equal(existsSync(fixture.published), false)
+})
+
+function crc32(bytes) {
+  let result = 0xffffffff
+  for (const byte of bytes) {
+    result ^= byte
+    for (let bit = 0; bit < 8; bit++) result = result >>> 1 ^ (result & 1 ? 0xedb88320 : 0)
+  }
+  return (result ^ 0xffffffff) >>> 0
+}
+
+function moduleZip(entries) {
+  const local = []
+  const central = []
+  let offset = 0
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name)
+    const bytes = Buffer.from(entry.body)
+    const compressed = entry.method === 0 ? bytes : deflateRawSync(bytes)
+    const header = Buffer.alloc(30)
+    header.writeUInt32LE(0x04034b50)
+    header.writeUInt16LE(20, 4)
+    header.writeUInt16LE(entry.method ?? 8, 8)
+    header.writeUInt32LE(crc32(bytes), 14)
+    header.writeUInt32LE(compressed.length, 18)
+    header.writeUInt32LE(bytes.length, 22)
+    header.writeUInt16LE(name.length, 26)
+    const record = Buffer.alloc(46)
+    record.writeUInt32LE(0x02014b50)
+    record.writeUInt16LE(0x0314, 4)
+    header.copy(record, 6, 4, 28)
+    record.writeUInt32LE(((entry.mode ?? 0o100644) << 16) >>> 0, 38)
+    record.writeUInt32LE(offset, 42)
+    local.push(header, name, compressed)
+    central.push(record, name)
+    offset += header.length + name.length + compressed.length
+  }
+  const directory = Buffer.concat(central)
+  const end = Buffer.alloc(22)
+  end.writeUInt32LE(0x06054b50)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
+  end.writeUInt32LE(directory.length, 12)
+  end.writeUInt32LE(offset, 16)
+  return Buffer.concat([...local, directory, end])
+}
+
+function moduleInstallerFixture(t, options = {}) {
+  const fixture = toolchainFixture(t, { bootstrap: false })
+  const scripts = join(fixture.workspace, 'scripts')
+  mkdirSync(scripts)
+  for (const name of ['ci-go-toolchain.sh', 'ci-go-toolchain-module.mjs']) {
+    cpSync(new URL(`./${name}`, import.meta.url), join(scripts, name))
+  }
+  const prefix = `golang.org/toolchain@v0.0.1-go${pins.go.version}.linux-amd64`
+  const entries = [
+    { name: `${prefix}/bin/go`, body: `#!${process.execPath}\n${compilerProgram}` },
+    { name: `${prefix}/bin/gofmt`, body: '#!/bin/sh\nexit 0\n', method: 0 },
+    { name: `${prefix}/pkg/tool/linux_amd64/compile`, body: 'fixture compiler support' },
+    { name: `${prefix}/lib/wasm/go_js_wasm_exec`, body: 'fixture exec wrapper' },
+    { name: `${prefix}/src/_go.mod`, body: 'module std\n' },
+    { name: `${prefix}/src/cmd/_go.mod`, body: 'module cmd\n' },
+    ...(options.entries ?? []),
+  ]
+  const zip = moduleZip(entries)
+  const hash = createHash('sha256')
+  for (const entry of [...entries].sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)))) {
+    hash.update(`${createHash('sha256').update(entry.body).digest('hex')}  ${entry.name}\n`)
+  }
+  const settings = structuredClone(pins)
+  settings.go.toolchainModules['linux-amd64'] = {
+    version: `v0.0.1-go${pins.go.version}.linux-amd64`, sum: `h1:${hash.digest('base64')}`,
+    zipSize: zip.length, zipSha256: createHash('sha256').update(zip).digest('hex'), ...options.pins,
+  }
+  writeFileSync(join(scripts, 'ci-go-versions.json'), JSON.stringify(settings))
+  const archive = join(fixture.directory, 'fixture-module.zip')
+  writeFileSync(archive, options.corrupt ? Buffer.from('corrupt module archive') : zip)
+  return { ...fixture, archive, entry: join(scripts, 'ci-go-toolchain.sh'),
+    install: extra => fixture.run({ FIXTURE_MODULE_ZIP: archive, ...extra }, join(scripts, 'ci-go-toolchain.sh')) }
+}
+
+test('without a bootstrap the public installer authenticates and prepares the official module into its private cache', t => {
+  const fixture = moduleInstallerFixture(t)
+  const result = fixture.install()
+  assert.equal(result.status, 0, result.stderr)
+  const calls = fixture.calls()
+  assert.equal(calls.some(call => call.tool === 'bootstrap'), false)
+  const download = calls.filter(call => call.tool === 'curl').at(-1)
+  assert.equal(download.args.at(-1), `https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go${pins.go.version}.linux-amd64.zip`)
+  assert.equal(download.goroot, undefined)
+  const compilers = calls.filter(call => call.tool === 'compiler')
+  assert.ok(compilers.length >= 2)
+  assert.ok(compilers.every(call => call.toolchain === 'local' && call.goroot.startsWith(fixture.cache)))
+  assert.equal(compilers.at(-1).goroot, fixture.published)
+  assert.equal(compilers.at(-1).published, true)
+  for (const file of ['bin/go', 'bin/gofmt', 'pkg/tool/linux_amd64/compile', 'lib/wasm/go_js_wasm_exec']) {
+    assert.equal(statSync(join(fixture.published, file)).mode & 0o777, 0o700)
+  }
+  assert.equal(statSync(fixture.published).mode & 0o777, 0o700)
+  assert.equal(statSync(join(fixture.published, 'src/go.mod')).mode & 0o777, 0o600)
+  assert.equal(readFileSync(join(fixture.published, 'src/go.mod'), 'utf8'), 'module std\n')
+  assert.equal(readFileSync(join(fixture.published, 'src/cmd/go.mod'), 'utf8'), 'module cmd\n')
+  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+  assert.equal(readFileSync(join(fixture.cache, 'modules/shared-module'), 'utf8'), 'shared module cache stays unchanged')
+  assert.equal(readFileSync(join(fixture.home, 'existing-state'), 'utf8'), 'original home stays unchanged')
+})
+
+for (const [name, options, message] of [
+  ['a ZIP size mismatch', { corrupt: true }, /Go toolchain ZIP size mismatch/],
+  ['a ZIP digest mismatch', { pins: { zipSha256: '0'.repeat(64) } }, /Go toolchain ZIP SHA256 mismatch/],
+  ['a module content digest mismatch', { pins: { sum: `h1:${'A'.repeat(43)}=` } }, /Go toolchain module h1 mismatch/],
+  ['a traversal entry', { entries: [{ name: `golang.org/toolchain@v0.0.1-go${pins.go.version}.linux-amd64/../outside`, body: 'invalid' }] }, /Unsafe Go toolchain ZIP path/],
+  ['a symlink entry', { entries: [{ name: `golang.org/toolchain@v0.0.1-go${pins.go.version}.linux-amd64/link`, body: '/tmp/elsewhere', mode: 0o120777 }] }, /only regular files and directories/],
+]) {
+  test(`the public installer rejects ${name} before any compiler runs or cache publication`, t => {
+    const fixture = moduleInstallerFixture(t, options)
+    const result = fixture.install()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, message)
+    assert.equal(fixture.calls().some(call => call.tool === 'compiler' || call.tool === 'bootstrap'), false)
+    assert.equal(existsSync(fixture.published), false)
+    assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+  })
+}
+
+test('a pinned module compiler with the wrong version is rejected and its private staging is cleaned', t => {
+  const fixture = moduleInstallerFixture(t)
+  const result = fixture.install({ FIXTURE_RESULT_VERSION: 'go1.27.1' })
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /Expected Go 1\.27\.2; compiler reports go1\.27\.1/)
+  assert.equal(existsSync(fixture.published), false)
+  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download)\./.test(name)), false)
+})
+
+test('installer compiler probes isolate and clean home, telemetry and temporary state without changing caller state', t => {
+  const fixture = moduleInstallerFixture(t)
+  const callerConfig = join(fixture.home, 'configuration')
+  const callerTelemetry = join(fixture.home, 'unrelated-telemetry')
+  for (const directory of [callerConfig, callerTelemetry]) {
+    mkdirSync(directory)
+    writeFileSync(join(directory, 'existing-state'), 'caller state')
+  }
+  const result = fixture.install({ FIXTURE_PROBE_STATE: '1', XDG_CONFIG_HOME: callerConfig,
+    TEST_TELEMETRY_DIR: callerTelemetry })
+  assert.equal(result.status, 0, result.stderr)
+  const probes = fixture.calls().filter(call => call.tool === 'compiler')
+  assert.ok(probes.length >= 2)
+  for (const probe of probes) {
+    for (const path of [probe.home, probe.config, probe.temp]) {
+      assert.equal(path.startsWith(`${fixture.cache}/toolchain-probe.`), true)
+      assert.equal(existsSync(path), false)
+    }
+    assert.equal(probe.telemetry, undefined)
+  }
+  assert.deepEqual(readdirSync(callerConfig), ['existing-state'])
+  assert.deepEqual(readdirSync(callerTelemetry), ['existing-state'])
+  assert.equal(existsSync(join(fixture.home, '.cache')), false)
+  assert.equal(existsSync(join(fixture.state, 'fixture-probe-state')), false)
+  assert.equal(readdirSync(fixture.cache).some(name => /^(install|toolchain-download|toolchain-probe)\./.test(name)), false)
 })

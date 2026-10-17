@@ -16,13 +16,14 @@ fs.appendFileSync(process.env.FIXTURE_CALLS, JSON.stringify({ tool, args, cwd: p
   postgresServiceFile: process.env.PGSERVICEFILE, postgresPasswordFile: process.env.PGPASSFILE,
   postgresBinaryDirectory: process.env.CONFORMANCE_POSTGRES_BIN_DIR, goBinary: process.env.CONFORMANCE_GO_BINARY,
   conformanceResults: process.env.CONFORMANCE_RESULTS_FILE, progressFile: process.env.CI_PROGRESS_FILE,
-  temporaryDirectory: process.env.TMPDIR, hostRunId: process.env.FOREMAN_CODE_CI_HOST_RUN_ID,
+  temporaryDirectory: process.env.TMPDIR, configDirectory: process.env.XDG_CONFIG_HOME,
+  hostRunId: process.env.FOREMAN_CODE_CI_HOST_RUN_ID,
   adminDatabase: process.env.FOREMAN_CODE_CI_TEST_ADMIN_URL,
   scope: process.env.SCOPE, goflags: process.env.GOFLAGS, target: process.env.CONFORMANCE_TARGET }) + '\\n');
 `
 
 const goProgram = prologue + `
-if (args[0] === 'env' && process.env.FIXTURE_VERIFY_RUNTIME_NODE === '1') {
+if (args[0] === 'build' && process.env.FIXTURE_VERIFY_RUNTIME_NODE === '1') {
   const executable = path.join(process.env.HOME, 'runtime-node');
   fs.writeFileSync(executable, "const fs = require('node:fs'); const path = require('node:path');"
     + "const socket = path.join(process.env.TMPDIR, 's'.repeat(70));"
@@ -188,7 +189,7 @@ export function goCiFixture(t, overrides = {}) {
     scripts: { conformance: 'fixture', typecheck: 'fixture', lint: 'fixture', test: 'fixture' },
   }))
   writeFileSync(join(directory, 'apps/web/heavy-tests.json'), JSON.stringify({ files: ['src/heavy.test.tsx'] }))
-  for (const name of ['ci-suite.sh', 'ci-runtime-state.sh', 'ci-root-suite.mjs', 'ci-go-toolchain.sh', 'ci-go-suite.sh', 'ci-go-versions.json',
+  for (const name of ['ci-suite.sh', 'ci-runtime-state.sh', 'ci-root-suite.mjs', 'ci-go-toolchain.sh', 'ci-go-toolchain-module.mjs', 'ci-go-suite.sh', 'ci-go-versions.json',
     'ci-go-prerequisites.mjs', 'ci-go-test-results.mjs', 'ci-conformance-suite.sh', 'ci-conformance-results.mjs',
     'ci-conformance-report.mjs', 'ci-conformance-gate.mjs', 'test-support/conformance-report-fixture.mjs',
     'ci-go-test-report.mjs', 'ci-report-io.mjs', 'ci-typecheck-cache.mjs',

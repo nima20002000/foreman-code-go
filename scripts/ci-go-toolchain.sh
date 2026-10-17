@@ -18,15 +18,27 @@ if (!/^\d+\.\d+\.\d+$/.test(pins.go.version) || !/^v\d+\.\d+\.\d+$/.test(pins.st
 }
 const checksum = pins.go.sha256[process.argv[3]]
 if (!/^[a-f0-9]{64}$/.test(checksum)) throw new Error('The Go archive checksum is missing for this platform.')
-console.log([pins.go.version, pins.staticcheck.version, checksum].join('\n'))
+const module = pins.go.toolchainModules?.[process.argv[3]]
+if (module && (module.version !== `v0.0.1-go${pins.go.version}.${process.argv[3]}`
+  || !/^h1:[A-Za-z0-9+/]{43}=$/.test(module.sum)
+  || !Number.isSafeInteger(module.zipSize) || module.zipSize <= 0
+  || !/^[a-f0-9]{64}$/.test(module.zipSha256))) {
+  throw new Error('The Go toolchain module must have separate exact version, h1, ZIP size and ZIP SHA256 pins.')
+}
+console.log([pins.go.version, pins.staticcheck.version, checksum,
+  module?.version ?? '-', module?.sum ?? '-', module?.zipSize ?? '-', module?.zipSha256 ?? '-'].join('\n'))
 NODE
   )" || return $?
   local values=()
   mapfile -t values <<< "$settings"
-  [ "${#values[@]}" = 3 ] || { echo 'Invalid Go toolchain configuration.' >&2; return 1; }
+  [ "${#values[@]}" = 7 ] || { echo 'Invalid Go toolchain configuration.' >&2; return 1; }
   ci_go_version="${values[0]}"
   ci_staticcheck_version="${values[1]}"
   ci_go_checksum="${values[2]}"
+  ci_go_module_version="${values[3]}"
+  ci_go_module_sum="${values[4]}"
+  ci_go_module_zip_size="${values[5]}"
+  ci_go_module_zip_checksum="${values[6]}"
   ci_go_platform="$platform"
   export FOREMAN_CODE_CI_GO_CACHE="$(realpath -m "${FOREMAN_CODE_CI_GO_CACHE:-$HOME/.cache/foreman-go}")"
   export GOROOT="$FOREMAN_CODE_CI_GO_CACHE/toolchains/go$ci_go_version"
@@ -40,12 +52,22 @@ NODE
   export GOOS=linux GOARCH="${platform#linux-}" CGO_ENABLED=1
 }
 
-ci_go_verify() {
-  local root="${1:-$GOROOT}" version
+ci_go_verify() (
+  local root="${1:-$GOROOT}" version invocation
   [ -x "$root/bin/go" ] || { echo 'Pinned Go is missing; run ci-suite.sh start or prepare.' >&2; return 1; }
-  version="$(GOROOT="$root" GOTOOLCHAIN=local "$root/bin/go" env GOVERSION)" || return $?
+  umask 077
+  invocation="$(mktemp -d "$FOREMAN_CODE_CI_GO_CACHE/toolchain-probe.XXXXXX")" || return $?
+  trap 'rm -rf "$invocation"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  mkdir -p "$invocation/home" "$invocation/config" "$invocation/cache" "$invocation/state" "$invocation/tmp" || return $?
+  # Even `go env` opens telemetry counters. GOENV=off alone does not isolate user configuration or telemetry state.
+  unset TEST_TELEMETRY_DIR
+  version="$(HOME="$invocation/home" XDG_CONFIG_HOME="$invocation/config" XDG_CACHE_HOME="$invocation/cache" \
+    XDG_STATE_HOME="$invocation/state" TMPDIR="$invocation/tmp" GOTMPDIR="$invocation/tmp" \
+    GOROOT="$root" GOTOOLCHAIN=local "$root/bin/go" env GOVERSION)" || return $?
   [ "$version" = "go$ci_go_version" ] || { echo "Expected Go $ci_go_version; compiler reports $version." >&2; return 1; }
-}
+)
 
 ci_go_bootstrap_candidates() {
   local directory candidate resolved repository state
@@ -90,11 +112,34 @@ ci_go_stage_toolchain() {
   ci_go_verify "$destination"
 }
 
+ci_go_prepare_from_module() (
+  set -euo pipefail
+  local destination="$1" invocation archive
+  if [ "$ci_go_module_version" = - ]; then
+    echo "No independently pinned Go toolchain module ZIP is available for $ci_go_platform." >&2
+    return 1
+  fi
+  invocation="$(mktemp -d "$FOREMAN_CODE_CI_GO_CACHE/toolchain-download.XXXXXX")"
+  trap 'rm -rf "$invocation"' EXIT
+  archive="$invocation/toolchain.zip"
+  # The ZIP digest is anchored to the controller's SDK/sumdb capture; it is not the tar digest or module h1.
+  unset GOROOT
+  echo "No installed bootstrap Go is available; downloading the pinned official toolchain module $ci_go_module_version." >&2
+  curl --fail --location --retry 3 --proto '=https' --proto-redir '=https' --output "$archive" \
+    "https://proxy.golang.org/golang.org/toolchain/@v/$ci_go_module_version.zip"
+  node "$(dirname "${BASH_SOURCE[0]}")/ci-go-toolchain-module.mjs" "$archive" "$destination" \
+    "golang.org/toolchain@$ci_go_module_version" "$ci_go_module_zip_size" "$ci_go_module_zip_checksum" "$ci_go_module_sum"
+  ci_go_verify "$destination"
+)
+
 ci_go_prepare_with_bootstrap() (
   set -euo pipefail
   local destination="$1" candidates invocation bootstrap='' candidate version root expected
   candidates="$(ci_go_bootstrap_candidates)"
-  [ -n "$candidates" ] || { echo 'Go archive download failed and no installed bootstrap Go is available.' >&2; return 1; }
+  if [ -z "$candidates" ]; then
+    ci_go_prepare_from_module "$destination"
+    return
+  fi
   invocation="$(mktemp -d "$FOREMAN_CODE_CI_GO_CACHE/toolchain-download.XXXXXX")"
   # Probing local compilers cannot populate a read-only module cache.
   trap 'rm -rf "$invocation"' EXIT
@@ -103,7 +148,7 @@ ci_go_prepare_with_bootstrap() (
   export GOTMPDIR="$TMPDIR" GO111MODULE=on
   export GOENV=off GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
   export GOPRIVATE= GONOPROXY= GONOSUMDB= GOINSECURE=
-  unset GOROOT
+  unset GOROOT TEST_TELEMETRY_DIR
   mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE" "$GOPATH" "$TMPDIR" "$invocation/path"
   cd "$invocation"
   while IFS= read -r candidate; do
@@ -150,6 +195,7 @@ ci_staticcheck_verify() {
 
 ci_go_install() (
   set -euo pipefail
+  umask 077
   ci_go_environment
   mkdir -p "$FOREMAN_CODE_CI_GO_CACHE/toolchains" "$GOCACHE" "$GOMODCACHE"
   # Build-computer parts can prepare the same cache concurrently.
