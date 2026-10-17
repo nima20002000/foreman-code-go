@@ -1,0 +1,12 @@
+{
+  "source": "c5bb9f61bf0a539c9dcb19de8ba534b70d558af7",
+  "sourceTree": "6661bb150b4862d2533720e83d93c419a917d0be",
+  "package": "./internal/interactions",
+  "goFiles": [
+    "internal/interactions/cursor_test.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "expectedUnitNamedCount": 30,
+  "mode": "format-only"
+}
