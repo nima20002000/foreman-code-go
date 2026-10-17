@@ -58,6 +58,17 @@ async function fixture() {
   return { root, ports, runner, control, request, read, source }
 }
 
+it('retains a Stop received before Start across a runner restart without launching', async () => {
+  const f = await fixture()
+  await expect(f.runner.handle({ operation: 'cancel', runId: f.request.runId }))
+    .resolves.toMatchObject({ operation: 'cancel', run: { state: 'canceled', runId: f.request.runId } })
+  const restarted = new HostCiRunner(f.root, f.ports, {})
+  await expect(restarted.handle(f.request))
+    .resolves.toMatchObject({ operation: 'start', run: { state: 'canceled', runId: f.request.runId } })
+  await expect(restarted.handle(f.read)).resolves.toMatchObject({ run: { state: 'canceled' } })
+  expect(f.control.launches).toBe(0)
+})
+
 it('accepts start metadata from newer Main releases while still validating known fields', async () => {
   const f = await fixture()
   await expect(f.runner.handle({ ...f.request, workspaceId: 'fixture-workspace', ciMirror: 'fixture/mirror',
