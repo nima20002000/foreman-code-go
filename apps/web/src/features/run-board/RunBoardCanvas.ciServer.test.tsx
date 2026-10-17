@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { CiRunJob } from '@foreman-code/contracts'
+import type { ActivitySnapshotV1, CiRunJob } from '@foreman-code/contracts'
 import { server } from '../../mocks/server'
 import { RunBoardCanvas } from './RunBoardCanvas'
 import { runA } from './testFixtures'
@@ -23,12 +23,12 @@ beforeEach(() => {
   server.use(http.get('*/api/management/workspaces/:workspaceId/runs/:runId/subagents', () =>
     HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })))
 })
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 // The Run's subagent overlay reads its selection from the router.
-async function mount() {
+async function mount(activitySnapshot?: ActivitySnapshotV1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const router = createRouter({ routeTree: createRootRoute({ component: () => <RunBoardCanvas snapshot={runA} /> }),
+  const router = createRouter({ routeTree: createRootRoute({ component: () => <RunBoardCanvas snapshot={runA} activitySnapshot={activitySnapshot} /> }),
     history: createMemoryHistory({ initialEntries: ['/'] }) })
   await router.load()
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
@@ -49,4 +49,24 @@ it('keeps the CI server on a saved Run Board when CI cannot be read', async () =
     HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'CI read denied' } }, { status: 403 })))
   await mount()
   expect(await screen.findByRole('button', { name: /^CI server, CI unavailable/ })).toBeVisible()
+})
+
+it.each(['idle', 'failed read'] as const)('discovers CI after an initial %s while the Run is active', async initial => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  let requested = false
+  server.use(http.get('*/api/management/workspaces/:workspaceId/ci', () => {
+    if (!requested && initial === 'failed read') return HttpResponse.json({
+      error: { code: 'UNAVAILABLE', message: 'Temporary interruption' } }, { status: 503 })
+    return HttpResponse.json({ runId: runA.runId, jobs: requested ? [job] : [], truncated: false })
+  }))
+  await mount({ schemaVersion: 1, scope: { kind: 'workflow_run', workspaceId: runA.workspaceId,
+    workflowId: runA.workflowId, runId: runA.runId, workflowVersionId: runA.workflowVersionId },
+    revision: '1', active: [], queued: [{ kind: 'run', workspaceId: runA.workspaceId,
+      workflowId: runA.workflowId, runId: runA.runId, workflowVersionId: runA.workflowVersionId }],
+    latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } })
+  await screen.findByRole('button', { name: initial === 'idle' ? /^CI server, Idle/ : /^CI server, CI unavailable/ })
+  requested = true
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+  fireEvent.click(screen.getByRole('button', { name: /^CI server, .*Open CI jobs/ }))
+  expect(await screen.findByRole('button', { name: /Show tests of unit/ })).toBeVisible()
 })
