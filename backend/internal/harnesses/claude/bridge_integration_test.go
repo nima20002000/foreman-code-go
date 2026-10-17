@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -350,6 +349,6 @@ func TestBridgeFakeSDKInterruptsAnActiveTurn(t *testing.T) {
 	}
 	_, result := nativeResult(t, bridge.ctx, query)
 	if string(result["is_error"]) != "true" || textValue(t, result["result"]) != "Interrupted." {
-		t.Fatal(fmt.Sprintf("interrupt result changed: %v", result))
+		t.Fatalf("interrupt result changed: %v", result)
 	}
 }
