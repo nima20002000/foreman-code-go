@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, tmpdir, userInfo } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { setTimeout as wait } from 'node:timers/promises'
@@ -37,7 +37,8 @@ export function snapshot(cwd = process.cwd()) {
 /** Use the installed bridge so credential routes and Worker relay renewal stay owned by the app. */
 async function scopedRequest(message) {
   const directory = environment.FOREMAN_CODE_APP_MCP_DIRECTORY ?? environment.GRAPHQL_APP_MCP_DIRECTORY
-    ?? join(homedir(), '.local', 'share', 'graphql', 'mcp')
+    // Provider accounts override HOME; the bridge belongs to the operating-system user.
+    ?? join(userInfo().homedir, '.local', 'share', 'graphql', 'mcp')
   const child = spawn(process.execPath, [join(directory, 'launcher.mjs')], { stdio: ['pipe', 'pipe', 'inherit'] })
   const lines = createInterface({ input: child.stdout })
   try {
@@ -71,8 +72,29 @@ async function scopedRequest(message) {
   }
 }
 
+function hasScopedCredential() {
+  return environment.FOREMAN_CODE_MCP_TOKEN !== undefined || environment.GRAPHQL_MCP_TOKEN !== undefined
+}
+
+function toolValue(name, result) {
+  const text = result.content?.[0]?.text ?? ''
+  let value
+  try {
+    value = text ? JSON.parse(text) : result.structuredContent
+  } catch (error) {
+    throw new Error(`${name}: ${text.slice(0, 400)}`, { cause: error })
+  }
+  if (result.isError) {
+    const code = value?.error?.code
+    const denied = code === 'ACCESS_DENIED' || typeof code === 'string' && code.startsWith('AUTH_')
+    throw Object.assign(new Error(`${name}: ${JSON.stringify(value).slice(0, 600)}`),
+      { retryable: !denied && value?.error?.details?.retryable === true })
+  }
+  return value?.value ?? value
+}
+
 export async function mcpClient(clientName = 'ci-remote') {
-  const scoped = environment.FOREMAN_CODE_MCP_TOKEN !== undefined || environment.GRAPHQL_MCP_TOKEN !== undefined
+  const scoped = hasScopedCredential()
   const base = environment.FOREMAN_CODE_MAIN_URL ?? 'http://127.0.0.1:3041'
   const tokenFile = environment.FOREMAN_CODE_OPERATOR_TOKEN_FILE
     ?? join(homedir(), '.local/share/foreman-code/production-operator.private.json')
@@ -115,12 +137,12 @@ export async function mcpClient(clientName = 'ci-remote') {
         if (!envelope) throw Object.assign(new Error(`Main returned no response for ${method}.`), { retryable: true })
         if (envelope.error) {
           const kind = envelope.error.data?.kind
-          const retryable = ['service_unavailable', 'transport', 'route_unavailable', 'timeout',
-            'indeterminate_delivery', 'invalid_response'].includes(kind)
+          const retryable = envelope.error.data?.retryable ?? ['service_unavailable', 'transport',
+            'route_unavailable', 'timeout', 'indeterminate_delivery', 'invalid_response', 'relay_unavailable'].includes(kind)
           throw Object.assign(new Error(`Main refused ${method}: ${JSON.stringify(envelope.error).slice(0, 400)}`),
             { retryable })
         }
-        return envelope.result
+        return method === 'tools/call' ? toolValue(params.name, envelope.result) : envelope.result
       } catch (error) {
         if (!retryableCall || !error.retryable || attempt === 3) {
           if (params?.name === 'ci_run' && error.retryable) {
@@ -135,14 +157,7 @@ export async function mcpClient(clientName = 'ci-remote') {
   }
   version = (await request('initialize', { protocolVersion: '2025-11-25', capabilities: {},
     clientInfo: { name: clientName, version: '1' } })).protocolVersion
-  return async (name, args) => {
-    const result = await request('tools/call', { name, arguments: args })
-    const text = result.content?.[0]?.text ?? ''
-    let value
-    try { value = text ? JSON.parse(text) : result.structuredContent } catch { throw new Error(`${name}: ${text.slice(0, 400)}`) }
-    if (result.isError) throw new Error(`${name}: ${JSON.stringify(value).slice(0, 600)}`)
-    return value?.value ?? value
-  }
+  return (name, args) => request('tools/call', { name, arguments: args })
 }
 
 /** A suite part by its name (typecheck-api), an integration partition by its number. */
@@ -195,6 +210,7 @@ export function requestedTestFiles(args, cwd = process.cwd()) {
  * keep running on CI. */
 export async function awaitTickets(call, workspaceId, tickets,
   { waitMs = Number(environment.FOREMAN_CODE_CI_WAIT_MS || 2 * 3_600_000) } = {}) {
+  const workspace = workspaceId === undefined ? {} : { workspaceId }
   const startedAt = Date.now(), states = new Map(), followed = new Set()
   for (;;) {
     // Main holds each read until every ticket of that group is terminal with its results collected, or for about a
@@ -204,7 +220,7 @@ export async function awaitTickets(call, workspaceId, tickets,
     for (const ticketId of tickets) {
       if (covered.has(ticketId)) continue
       const remainingSeconds = Math.ceil((waitMs - (Date.now() - startedAt)) / 1000)
-      const read = await call('ci_get', { workspaceId, ticketId, waitUntil: 'group-terminal',
+      const read = await call('ci_get', { ...workspace, ticketId, waitUntil: 'group-terminal',
         waitSeconds: Math.min(1800, Math.max(1, remainingSeconds)), logTail: false })
       if (!read.wait) throw new Error('Main answered ci_get without the requested group wait.')
       const group = read.partitions ?? [read.run]
@@ -222,7 +238,7 @@ export async function awaitTickets(call, workspaceId, tickets,
       for (const run of superseded) followed.add(run.id)
       const replacements = new Set()
       for (const replacement of new Set(superseded.map(run => run.supersededBy))) {
-        const next = await call('ci_get', { workspaceId, ticketId: replacement, logTail: false })
+        const next = await call('ci_get', { ...workspace, ticketId: replacement, logTail: false })
         for (const value of next.partitions ?? [next.run]) replacements.add(value.id)
         console.error(`[ci] superseded by a newer commit's ticket ${replacement}; following it`)
       }
@@ -238,11 +254,11 @@ export async function awaitTickets(call, workspaceId, tickets,
       return runs
     }
     for (const run of runs.filter(value => value.state !== 'passed')) {
-      const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => {
+      const log = await call('ci_logs_read', { ...workspace, ticketId: run.id, maxBytes: 65_536 }).catch(() => {
         console.error(`[ci] ci_logs_read for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
         return { text: '' }
       })
-      const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'], logTail: false }).catch(() => {
+      const read = await call('ci_get', { ...workspace, ticketId: run.id, testStatus: ['failed'], logTail: false }).catch(() => {
         console.error(`[ci] test results for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
         return {}
       })
@@ -252,7 +268,7 @@ export async function awaitTickets(call, workspaceId, tickets,
         const entry = history.get(`${file}\0${test}`)
         return entry?.runs ? ` (failed ${entry.failedRuns} of the last ${entry.runs} gate runs)` : ''
       }
-      const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
+      const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS| {2}error {2}|Error:|×|AssertionError/.test(line))
       console.log(`\n[ci] ${run.suite} ${partName(run)} ${run.state} (ticket ${run.id})${run.message ? `: ${run.message}` : ''}`)
       for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}${flaky(file.file, test.name)}`)
       console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
@@ -264,7 +280,7 @@ export async function awaitTickets(call, workspaceId, tickets,
 async function remote(suite, args) {
   const requested = requestedTestFiles(args)
   const call = await mcpClient()
-  const workspaceId = await workspaceFor(call)
+  const workspaceId = hasScopedCredential() ? undefined : await workspaceFor(call)
   const commit = snapshot()
   const selection = requested.length ? { scope: 'affected', files: requested, reason: 'Test files named on the command line.' }
     : environment.FOREMAN_CODE_CI_SCOPE === 'full' || git(['branch', '--show-current']) === 'main'
@@ -278,7 +294,8 @@ async function remote(suite, args) {
   await publish(commit)
   const partitions = suite === 'integration' && environment.FOREMAN_CODE_CI_PARTITIONS
     ? Number(environment.FOREMAN_CODE_CI_PARTITIONS) : undefined
-  const started = await call('ci_run', { workspaceId, suite, commit, scope: selection.scope,
+  const started = await call('ci_run', { ...(workspaceId === undefined ? {} : { workspaceId }),
+    suite, commit, scope: selection.scope,
     ...(selection.scope === 'affected' ? { files: selection.files } : {}),
     commandId: randomUUID(), ...(partitions ? { partitions } : {}) })
   const tickets = (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId)
