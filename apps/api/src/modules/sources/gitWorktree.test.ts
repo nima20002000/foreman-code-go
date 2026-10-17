@@ -1,5 +1,6 @@
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -32,7 +33,15 @@ setInterval(() => {}, 1000);\n`, { mode: 0o700 })
     const pid = Number(await readFile(marker, 'utf8'))
     lifetime.abort()
     expect((await task).code).not.toBe(0)
-    expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
+    let state = 'gone'
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+      state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]!
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    expect(() => process.kill(pid, 0), `Git state after acquisition returned: ${state}`)
+      .toThrow(expect.objectContaining({ code: 'ESRCH' }))
   } finally {
     lifetime.abort()
     await task
