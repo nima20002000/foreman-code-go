@@ -172,7 +172,6 @@ export function createRemoteAccountServices(input: {
         }
         observation = ProviderAccountObservationSchema.parse(result.payload)
         if (observation.bindingRevision !== binding.bindingRevision
-          || observation.generation !== captured.connectionGeneration
           || binding.subject && observation.subject?.subject !== binding.subject.subject) {
           throw new DomainError('PROVIDER_ACCOUNT_PRINCIPAL_UNAVAILABLE', 'The accepted Worker principal is unproved or changed.', 409)
         }

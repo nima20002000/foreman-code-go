@@ -9,6 +9,7 @@ import {
 } from '@foreman-code/contracts/resource-telemetry'
 import type { DeviceExtensionRegistration, DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
 import { resourceTelemetryExtension } from './ports.js'
+import type { TelemetryClock } from './ports.js'
 import { ResourceTelemetryService, TelemetryRejected } from './service.js'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
@@ -43,6 +44,22 @@ export const mainResourceTelemetryExtension: DeviceExtensionRegistration = { ...
 export const remoteTelemetryContext = (binding: Readonly<DeviceSessionBinding>): Extract<TrustedTelemetryContext, { kind: 'remote' }> =>
   ({ kind: 'remote', binding: { ...binding }, capability: RESOURCE_TELEMETRY_CAPABILITY })
 
+function waitForCollectionInterval(clock: TelemetryClock, signal: AbortSignal, issuedMono: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const elapsed = clock.monotonicMs() - issuedMono
+    const delay = elapsed >= TELEMETRY_LIMITS.intervalMs
+      ? TELEMETRY_LIMITS.intervalMs : TELEMETRY_LIMITS.intervalMs - Math.max(0, elapsed)
+    const timer = setTimeout(done, delay)
+    signal.addEventListener('abort', done, { once: true })
+    if (signal.aborted) done()
+  })
+}
+
 /** W07 owns the socket and authentication. This task owns only passive telemetry for that exact connection. */
 export async function startRemoteTelemetrySession(input: {
   service: ResourceTelemetryService; binding: Readonly<DeviceSessionBinding>; signal: AbortSignal
@@ -53,8 +70,23 @@ export async function startRemoteTelemetrySession(input: {
   const abort = () => lifetime.abort(input.signal.reason)
   input.signal.addEventListener('abort', abort, { once: true })
   if (input.signal.aborted) abort()
-  try { await input.service.handshake(context, randomUUID(), lifetime.signal) }
-  catch (error) { input.signal.removeEventListener('abort', abort); throw error }
+  try {
+    for (;;) {
+      lifetime.signal.throwIfAborted()
+      const issuedMono = input.service.ports.clock.monotonicMs()
+      try {
+        await input.service.handshake(context, randomUUID(), lifetime.signal)
+        break
+      } catch (error) {
+        if (lifetime.signal.aborted || !isTransientDatabaseOrSocketError(error)) throw error
+        logger.warn({ err: error }, 'Telemetry attachment database lookup failed; retrying at the next collection interval')
+        await waitForCollectionInterval(input.service.ports.clock, lifetime.signal, issuedMono)
+      }
+    }
+  } catch (error) {
+    input.signal.removeEventListener('abort', abort)
+    throw error
+  }
   const completion = (async () => {
     try {
       while (!lifetime.signal.aborted) {
@@ -85,13 +117,7 @@ export async function startRemoteTelemetrySession(input: {
             }
           }
         }
-        await new Promise<void>(resolve => {
-          const done = () => { clearTimeout(timer); lifetime.signal.removeEventListener('abort', done); resolve() }
-          const elapsed = input.service.ports.clock.monotonicMs() - issuedMono
-          const timer = setTimeout(done, elapsed >= TELEMETRY_LIMITS.intervalMs ? TELEMETRY_LIMITS.intervalMs : TELEMETRY_LIMITS.intervalMs - Math.max(0, elapsed))
-          lifetime.signal.addEventListener('abort', done, { once: true })
-          if (lifetime.signal.aborted) done()
-        })
+        await waitForCollectionInterval(input.service.ports.clock, lifetime.signal, issuedMono)
       }
     } catch (error) { if (!lifetime.signal.aborted) throw error }
     finally { abort(); input.signal.removeEventListener('abort', abort) }
