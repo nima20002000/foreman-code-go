@@ -1,0 +1,131 @@
+{
+  "source": "cc0775bc3e5923f4dbb39a015df37967037addc9",
+  "sourceTree": "e06f8aa5c8964b37efdca081893d349886698a52",
+  "package": "./internal/runs/handoffs",
+  "goFiles": [
+    "internal/runs/handoffs/activation.go",
+    "internal/runs/handoffs/activation_cancel_test.go",
+    "internal/runs/handoffs/activation_helpers_test.go",
+    "internal/runs/handoffs/activation_task.go",
+    "internal/runs/handoffs/activation_test.go",
+    "internal/runs/handoffs/doc.go"
+  ],
+  "unitTests": [
+    "TestActivationRunnerCanceledContextPrecedesEntryAndPinCheck",
+    "TestActivationRunnerCancellationRetainsInFlightEntryDrain",
+    "TestActivationRunnerCancellationDiscardsLateSuccessorsAndRetainsDrain",
+    "TestActivationRunnerCanceledWaitDoesNotCancelOwnedWork",
+    "TestActivationRunnerFailureReportsBeforeSiblingDrainWithoutCancelingIt",
+    "TestActivationRunnerPostCallbackCancellationPrecedesSuccessorValidation",
+    "TestActivationRunnerRequiresPortAndExplicitAllowance",
+    "TestActivationRunnerRejectsRunMismatchBeforeEntry",
+    "TestActivationRunnerPreservesCallbackContextAndIDs",
+    "TestActivationRunnerWaitsForWholeFrontierBeforeSuccessors",
+    "TestActivationRunnerRejectsDuplicateSuccessorsBeforeDispatch",
+    "TestActivationRunnerRejectsMissingActivationIDs",
+    "TestActivationRunnerKeepsSeparateSendsToSameActivation",
+    "TestActivationRunnerAllowsLaterReconciliationOfSameID",
+    "TestActivationRunnerEmptyBranchDoesNotEndSiblingProgress",
+    "TestActivationRunnerFreshInvocationDoesNotCacheCompletion",
+    "TestActivationRunnerUsesSuppliedSuperstepAllowance",
+    "TestActivationRunnerPreservesEntryAndExecutionErrors"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "skipKnownStaticcheck": "Known kernel/handoff ST1005 findings remain with Web owner; not requested",
+  "componentSource": "cc0775bc3e5923f4dbb39a015df37967037addc9",
+  "sourceProvenance": {
+    "components": [
+      {
+        "rawSource": "517ac5ef9d199c4afc718f351dc519de0909540c",
+        "coherentSource": "b4b95e0b47d9d9bc02b7a9abefd22c56810c8258",
+        "files": [
+          {
+            "path": "backend/internal/runs/kernel/README.md",
+            "raw": "484c7c2088fe8ae5f43b6f9dc2d2b5b06de20219",
+            "coherent": "484c7c2088fe8ae5f43b6f9dc2d2b5b06de20219"
+          },
+          {
+            "path": "backend/internal/runs/kernel/layout.go",
+            "raw": "5fdccaf7e83df8d1e17e682e5c81a845c9b8e821",
+            "coherent": "5fdccaf7e83df8d1e17e682e5c81a845c9b8e821"
+          },
+          {
+            "path": "backend/internal/runs/kernel/layout_test.go",
+            "raw": "88d3f6eaa1db3557c4688f63e3cdec44d46441e4",
+            "coherent": "88d3f6eaa1db3557c4688f63e3cdec44d46441e4"
+          },
+          {
+            "path": "backend/internal/runs/kernel/limiter.go",
+            "raw": "aa8f9ec16d26a121457e7a13b1ebb65f72736c69",
+            "coherent": "aa8f9ec16d26a121457e7a13b1ebb65f72736c69"
+          },
+          {
+            "path": "backend/internal/runs/kernel/limiter_test.go",
+            "raw": "1379a1e5ae3ca6eaa5c7ad82935a084695bfc605",
+            "coherent": "1379a1e5ae3ca6eaa5c7ad82935a084695bfc605"
+          },
+          {
+            "path": "backend/internal/runs/kernel/scheduler.go",
+            "raw": "3ccf0597bb9bbcdbd2292916e3149d78a4da1b5b",
+            "coherent": "3ccf0597bb9bbcdbd2292916e3149d78a4da1b5b"
+          },
+          {
+            "path": "backend/internal/runs/kernel/scheduler_outcome_test.go",
+            "raw": "8da028911ffe872fd216e0e1263e195696695bbd",
+            "coherent": "8da028911ffe872fd216e0e1263e195696695bbd"
+          },
+          {
+            "path": "backend/internal/runs/kernel/scheduler_test.go",
+            "raw": "b0cd2269aef1052fa2d1d1dee7ab9f8e418ed24f",
+            "coherent": "b0cd2269aef1052fa2d1d1dee7ab9f8e418ed24f"
+          }
+        ]
+      },
+      {
+        "rawSource": "cc0775bc3e5923f4dbb39a015df37967037addc9",
+        "coherentSource": "b4b95e0b47d9d9bc02b7a9abefd22c56810c8258",
+        "files": [
+          {
+            "path": "backend/internal/runs/handoffs/activation.go",
+            "raw": "e19d545feed943dbd863c7b38fb31da36781150e",
+            "coherent": "e19d545feed943dbd863c7b38fb31da36781150e"
+          },
+          {
+            "path": "backend/internal/runs/handoffs/activation_cancel_test.go",
+            "raw": "147650f8d505e3f07c7525323e3cfaccefc37b20",
+            "coherent": "147650f8d505e3f07c7525323e3cfaccefc37b20"
+          },
+          {
+            "path": "backend/internal/runs/handoffs/activation_helpers_test.go",
+            "raw": "f91f4e6363e0b5d8b30e84befcf3e1b40f792ad3",
+            "coherent": "f91f4e6363e0b5d8b30e84befcf3e1b40f792ad3"
+          },
+          {
+            "path": "backend/internal/runs/handoffs/activation_task.go",
+            "raw": "e170966599c698025e567c1e43cb5b5a2056c178",
+            "coherent": "e170966599c698025e567c1e43cb5b5a2056c178"
+          },
+          {
+            "path": "backend/internal/runs/handoffs/activation_test.go",
+            "raw": "10b8e780337f9068d6fe1fbe702ae9ec6c4c9431",
+            "coherent": "10b8e780337f9068d6fe1fbe702ae9ec6c4c9431"
+          },
+          {
+            "path": "backend/internal/runs/handoffs/doc.go",
+            "raw": "06dcc8b9c88ecbad3af8cfa7e22bae892aa15e7e",
+            "coherent": "06dcc8b9c88ecbad3af8cfa7e22bae892aa15e7e"
+          }
+        ]
+      }
+    ],
+    "identicalRegression": {
+      "path": "backend/internal/runs/kernel/scheduler_outcome_test.go",
+      "red": "8da028911ffe872fd216e0e1263e195696695bbd",
+      "rawCorrected": "8da028911ffe872fd216e0e1263e195696695bbd",
+      "coherent": "8da028911ffe872fd216e0e1263e195696695bbd"
+    }
+  },
+  "mode": "targeted"
+}
