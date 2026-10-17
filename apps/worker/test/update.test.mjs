@@ -147,6 +147,8 @@ async function until(predicate) {
 
 async function assertStalledUpdateRetry(t, { beforeDownload = async () => {} } = {}) {
   const f = await fixture(t);
+  const drainEntered = Promise.withResolvers();
+  let drainSignal;
   let releaseDrain;
   const blocked = new Promise(resolve => { releaseDrain = resolve; });
   let resumed = 0;
@@ -158,17 +160,31 @@ async function assertStalledUpdateRetry(t, { beforeDownload = async () => {} } =
       await beforeDownload();
       return f.options.fetchAsset(input);
     },
-    drain: () => stall ? blocked : Promise.resolve(), resume: () => { resumed++; },
+    drain: signal => {
+      drainSignal = signal;
+      drainEntered.resolve();
+      return stall ? blocked : Promise.resolve();
+    },
+    resume: () => { resumed++; },
     stage: async options => { installs++; return { directory: options.artifact }; },
     launchSupervisor: async () => { restarted++; } }).initialize();
   t.after(async () => { releaseDrain(); await updater.close(); });
+  // Real download and persisted writes must reach drain before the test advances the attempt clock.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const attempt = updater.start().then(() => 'completed', error => error);
-  await until(async () => {
-    const status = await updater.status();
-    assert.notEqual(status.state, 'failed', status.lastError ?? 'Update failed before drain.');
-    return status.state === 'draining';
-  });
-  const outcome = await Promise.race([attempt, wait(300).then(() => 'still draining')]);
+  await Promise.race([drainEntered.promise, attempt.then(outcome => {
+    assert.fail(`Update finished before drain: ${outcome.message ?? outcome}`);
+  })]);
+  assert.equal((await updater.status()).state, 'draining');
+  t.mock.timers.tick(149);
+  assert.equal(drainSignal.aborted, false);
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.state, 'draining');
+  assert.equal(resumed, 0);
+  assert.equal(installs, 0);
+  assert.equal(restarted, 0);
+  t.mock.timers.tick(1);
+  assert.equal(drainSignal.aborted, true);
+  const outcome = await attempt;
   assert.equal(outcome.code, 'worker_update_deadline_exceeded');
   const record = await readUpdateRecord(f.stateDirectory);
   assert.equal(record.status.state, 'failed');
