@@ -37,6 +37,7 @@ export interface DeviceApplicationRequestOptions {
   signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number; priority?: DeviceRequestPriority
   uploadTimeoutMs?: number
   onUploaded?(): void
+  onUploadProgress?(acknowledgedBytes: number): void
 }
 export interface CapturedDeviceApplicationRequest {
   binding: Readonly<DeviceSessionBinding>
@@ -50,6 +51,7 @@ interface Pending {
   abort: AbortController
   stop: boolean
   observation: boolean
+  onUploadProgress?(acknowledgedBytes: number): void
 }
 interface Assembly {
   namespace: string; kind: 'request' | 'response' | 'error'; jsonBytes: number; binaryBytes: number
@@ -281,7 +283,8 @@ export class DeviceApplicationChannel {
     const result = new Promise<DeviceApplicationResult>((resolve, fail) => {
       reject = fail
       this.pending.set(id, { namespace, resolve, reject: fail, abort,
-        stop: admission.stop, observation: admission.observation })
+        stop: admission.stop, observation: admission.observation,
+        ...(options.onUploadProgress ? { onUploadProgress: options.onUploadProgress } : {}) })
     })
     const cancel = () => { abort.abort(); reject(new DeviceApplicationError('cancelled')); this.trySendCancel(id) }
     options.signal?.addEventListener('abort', cancel, { once: true })
@@ -487,7 +490,9 @@ export class DeviceApplicationChannel {
       if (!receipts) return // Cancellation can race a chunk receipt; receipts acquire no authority.
       const ack = receipts.get(frame.offset)
       if (!ack) throw new DeviceConnectionError('malformed-frame')
-      ack.resolve(); return
+      ack.resolve()
+      if (frame.offset > 0) this.pending.get(id)?.onUploadProgress?.(frame.offset)
+      return
     }
     if (frame.type === 'application-cancel') {
       this.uploads.get(id)?.abort(); this.handlers.get(id)?.abort.abort(); this.replies.get(id)?.abort.abort()

@@ -5,7 +5,7 @@ import type { DeviceApplicationResult } from '@foreman-code/contracts/device-app
 import type { WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
 import { DomainError } from '../errors.js'
 import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
-import { withWorkerMcpDeadline, workerMcpUploadDeadlineMs } from '../devices/workerMcpDeadline.js'
+import { withWorkerMcpDeadline, workerMcpUploadCeilingMs } from '../devices/workerMcpDeadline.js'
 import type { DeviceApplicationRequestOptions } from '../devices/deviceApplicationChannel.js'
 
 export async function prepareWorkerConversationMcp(input: {
@@ -32,9 +32,10 @@ export async function prepareWorkerConversationMcp(input: {
       const payload = WorkerConversationMcpRequestSchema.parse({ ...fields, operation: 'conversation-mcp.request',
         body, ...(protocolVersion ? { protocolVersion } : {}) })
       const carrier = encodeWorkerMcpRequest(payload)
-      const response = await withWorkerMcpDeadline((relaySignal, onUploaded) => input.request(
+      const response = await withWorkerMcpDeadline((relaySignal, onUploaded, onUploadProgress) => input.request(
         WORKER_MCP_EXTENSION.namespace, carrier.payload, { signal: relaySignal, timeoutMs: deviceRequestTimeoutMs,
-          ...(carrier.bytes ? { bytes: carrier.bytes, uploadTimeoutMs: workerMcpUploadDeadlineMs } : {}), onUploaded }),
+          ...(carrier.bytes ? { bytes: carrier.bytes, uploadTimeoutMs: workerMcpUploadCeilingMs } : {}),
+          onUploaded, onUploadProgress }),
       signal, { uploading: carrier.bytes !== undefined })
       signal.throwIfAborted()
       return WorkerMcpRelayResponseSchema.parse(decodeWorkerMcpResult(response))
