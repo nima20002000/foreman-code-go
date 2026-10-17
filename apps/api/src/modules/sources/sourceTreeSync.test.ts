@@ -22,7 +22,17 @@ it('flushes an open directory after its path is renamed, including nested writes
     await mkdir(join(original, 'nested'), { mode: 0o700 })
     await writeFile(join(original, 'nested/source.txt'), 'verified bytes', { mode: 0o400 })
     await rename(original, moved)
+    const flushed: number[] = []
+    const prototype = Object.getPrototypeOf(tree)
+    const originalSync = prototype.sync
+    vi.spyOn(prototype, 'sync').mockImplementation(async function (this: typeof tree) {
+      await originalSync.call(this)
+      flushed.push((await this.stat()).ino)
+    })
     await syncSourceTree(tree, AbortSignal.timeout(5000))
+    expect(flushed).toEqual(await Promise.all([
+      join(moved, 'nested/source.txt'), join(moved, 'nested'), moved,
+    ].map(async path => (await stat(path)).ino)))
     expect(await readFile(join(moved, 'nested/source.txt'), 'utf8')).toBe('verified bytes')
   } finally { await tree.close() }
 })

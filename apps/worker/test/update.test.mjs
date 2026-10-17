@@ -298,13 +298,22 @@ test('a temporarily unavailable GitHub asset is retried without Main bytes, with
   const binaries = join(f.base, 'bin');
   const attempts = join(f.base, 'gh-attempts');
   await mkdir(binaries);
-  // A transient GitHub lookup failure recovers on the next download attempt.
+  const releaseLookup = join(binaries, 'release-lookup');
+  // Hold the lookup until the test has exercised the download watchdog clock.
+  await writeFile(join(binaries, 'lookup.mjs'), `import { watch, existsSync } from 'node:fs';
+const gate = process.argv[2];
+const watcher = watch(process.argv[3], () => {
+  if (existsSync(gate)) { watcher.close(); console.error('release not found'); process.exitCode = 1; }
+});
+if (existsSync(gate)) { watcher.close(); console.error('release not found'); process.exitCode = 1; }
+`);
   await writeFile(join(binaries, 'gh'), `#!/bin/sh\necho attempt >> '${attempts}'\n`
-    + `if [ "$(wc -l < '${attempts}')" -eq 1 ]; then echo 'release not found' >&2; exit 1; fi\n`
+    + `if [ "$(wc -l < '${attempts}')" -eq 1 ]; then exec node '${join(binaries, 'lookup.mjs')}' '${releaseLookup}' '${binaries}'; fi\n`
     + `exec cat '${archive}'\n`, { mode: 0o700 });
   const originalPath = process.env.PATH;
   process.env.PATH = `${binaries}:${originalPath}`;
   t.after(() => { process.env.PATH = originalPath; });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const scheduleTimeout = globalThis.setTimeout;
   // Keep production retry spacing while letting the fixture observe several retries quickly.
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
@@ -314,7 +323,17 @@ test('a temporarily unavailable GitHub asset is retried without Main bytes, with
     log: (msg, fields = {}) => logged.push({ msg, ...fields }) }).initialize();
   t.after(() => updater.close());
 
-  assert.equal(await updater.start(), 'Worker 1.1.0 restart is scheduled.');
+  const update = updater.start();
+  await until(async () => {
+    try { return (await readFile(attempts, 'utf8')).includes('attempt'); }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  });
+  t.mock.timers.tick(20);
+  await writeFile(releaseLookup, 'available');
+  await until(() => logged.some(entry => entry.retryMs));
+  assert.ok(logged.some(entry => /GitHub/.test(entry.msg) && /release not found/.test(entry.error ?? '')));
+  t.mock.timers.tick(5000);
+  assert.equal(await update, 'Worker 1.1.0 restart is scheduled.');
   const record = await readUpdateRecord(f.stateDirectory);
   assert.equal(record.status.state, 'restarting');
   assert.equal(record.downloadSource, 'github');
