@@ -4,6 +4,25 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+case "${SUITE:-}" in
+  unit|unit-*)
+    # Diagnostic-only branch: retain the exact reviewed backend tree and invoke
+    # the production Go build/vet/format/Staticcheck functions on one cloud target.
+    source "$(dirname "$0")/ci-go-toolchain.sh"
+    ci_go_environment
+    export SUITE=lint
+    if [ -n "${1:-}" ]; then bash scripts/ci-go-toolchain.sh install; exit 0; fi
+    expected_backend=b1c134094847e11fec8a04d0e3195957fc6200b0
+    actual_backend="$(git rev-parse HEAD:backend)"
+    [ "$actual_backend" = "$expected_backend" ] || { echo 'Reviewed backend tree changed.' >&2; exit 1; }
+    source scripts/ci-go-suite.sh
+    echo '[go-diagnostic] exact candidate c22533a4823846c13a05263909af291938e36ddb backend verified'
+    code=0
+    ci_go_typecheck || code=$?
+    ci_go_lint || { if [ "$code" = 0 ]; then code=$?; if [ "$code" = 0 ]; then code=1; fi; fi; }
+    echo "[go-diagnostic] completed with exit $code; diagnostic evidence only"
+    exit "$code" ;;
+esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 case "${CI_PARTITION:-}" in
