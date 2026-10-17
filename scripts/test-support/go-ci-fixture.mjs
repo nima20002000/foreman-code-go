@@ -194,6 +194,7 @@ export function goCiFixture(t, overrides = {}) {
     'ci-conformance-report.mjs', 'ci-conformance-gate.mjs', 'test-support/conformance-report-fixture.mjs',
     'ci-go-test-report.mjs', 'ci-report-io.mjs', 'ci-typecheck-cache.mjs',
     'ci-test-results.mjs', 'ci-unit-files.mjs', 'ci-progress-reporter.mjs', 'ci-node-test-reporter.mjs', 'ci-contracts.mjs',
+    'ci-affected-run.mjs', 'ci-files.mjs',
     'test-postgres-init.sql']) {
     // A copied CLI keeps its import.meta.url entry guard and repository root inside this fixture.
     mkdirSync(dirname(join(directory, 'scripts', name)), { recursive: true })

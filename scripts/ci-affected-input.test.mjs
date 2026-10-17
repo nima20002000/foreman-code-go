@@ -60,7 +60,7 @@ for (const [name, text, error] of [
   ['a directory', '["backend/runtime"]', /CI selection must contain existing repository files: backend\/runtime/],
   ['a symlink', '["scripts/linked.test.mjs"]', /CI selection must contain existing repository files: scripts\/linked\.test\.mjs/],
 ]) {
-  test(`affected CLI rejects ${name} before launching its full suite`, t => {
+  test(`affected CLI rejects ${name} before launching selected checks`, t => {
     const fixture = selectionFixture(t)
     fixture.select(text)
     const result = fixture.run(['--files-from', 'selected.json'])
@@ -102,23 +102,25 @@ for (const [args, error] of [
   })
 }
 
-for (const files of [[], repositoryFiles]) {
-  test(`a valid ${files.length}-file selection delegates full scope and preserves its failing exit`, t => {
+for (const files of [[], ['scripts/value.test.mjs']]) {
+  test(`a valid ${files.length}-file selection preserves its scope and failing exit`, t => {
     const fixture = selectionFixture(t)
     fixture.select(JSON.stringify(files))
     const result = fixture.run(['--files-from', 'selected.json'], { FIXTURE_EXIT: '7' })
-    assert.equal(result.status, 7, result.stderr)
-    assert.deepEqual(readFileSync(fixture.dispatched, 'utf8').trim().split('\n'),
-      ['unit', 'full', 'true', 'unset', 'unset', 'unset', 'unset'])
+    assert.equal(result.status, files.length ? 7 : 0, result.stderr)
+    if (files.length) {
+      assert.deepEqual(readFileSync(fixture.dispatched, 'utf8').trim().split('\n'),
+        ['unit-other', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
+    } else assert.equal(existsSync(fixture.dispatched), false)
   })
 }
 
-for (const spec of ['s:0,2', 'd:0.2', 'd:']) {
-  test(`a valid index selection delegates full scope: ${spec}`, t => {
+for (const spec of ['s:2', 'd:2']) {
+  test(`a valid index selection preserves selected scope: ${spec}`, t => {
     const fixture = selectionFixture(t)
     const result = fixture.run(['--indexes', spec])
     assert.equal(result.status, 0, result.stderr)
     assert.deepEqual(readFileSync(fixture.dispatched, 'utf8').trim().split('\n'),
-      ['unit', 'full', 'true', 'unset', 'unset', 'unset', 'unset'])
+      ['unit-other', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
   })
 }

@@ -16,14 +16,16 @@ export default async function* reportTests(events) {
       writeCiProgressEvent('finish', { kind: module ? 'module' : 'test', id: `${data.nesting}:${data.name}`,
         file: relative(process.env.CI_REPOSITORY_ROOT ?? process.cwd(), data.file), name: module ? '' : data.name })
     }
-    if (data.details?.type === 'suite' || data.details?.error?.failureType === 'subtestsFailed') continue
+    if (data.details?.type === 'suite' || data.details?.error?.failureType === 'subtestsFailed'
+      || module && type === 'test:pass') continue
     const name = data.file ?? 'unknown file'
-    const file = files.get(name) ?? { name, status: 'passed', assertionResults: [] }
+    const file = files.get(name) ?? { name, status: 'passed', duration: 0, assertionResults: [] }
     const skipped = data.skip !== undefined || data.todo !== undefined
     const status = skipped ? 'pending' : type === 'test:fail' ? 'failed' : 'passed'
     if (status === 'failed') file.status = 'failed'
     const error = data.details?.error
     const failure = error?.cause?.stack ?? error?.stack ?? error?.message
+    file.duration += data.details?.duration_ms ?? 0
     file.assertionResults.push({ fullName: data.name, status, duration: data.details?.duration_ms ?? null,
       ...(failure ? { failureMessages: [failure] } : {}) })
     files.set(name, file)
