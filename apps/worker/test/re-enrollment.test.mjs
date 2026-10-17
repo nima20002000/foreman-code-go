@@ -1,16 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mockHostMounts, persistentHostMounts } from './fixtures/hostMounts.mjs';
 import { acquireWorkerLock } from '../src/runtime.mjs';
+import { managedRuntimeFixture } from './fixtures/managedRuntime.mjs';
 
 const require = createRequire(new URL('../../api/package.json', import.meta.url));
 const { tsImport } = await import(require.resolve('tsx/esm/api'));
-const { enrollWorkerCode } = await tsImport('../src/enrollment.mjs', import.meta.url);
+const { enrollWorkerCode, pairingErrorMessage } = await tsImport('../src/enrollment.mjs', import.meta.url);
+const { ensurePairedManagedSetup } = await tsImport('../src/managedSetup.mjs', import.meta.url);
+const { inspectManagedInstallation, pairingTarget } = await tsImport('../src/managedInstallation.mjs', import.meta.url);
+const { qualifyApprovedRootAllowlist } = await tsImport('../../api/src/modules/sources/rootAttestation.ts', import.meta.url);
 const { encodeWorkerEnrollmentCode } = await tsImport('../../../packages/contracts/src/deviceSetup.ts', import.meta.url);
 const { loadOrCreateWorkerIdentity, persistWorkerPairing, loadWorkerPairing, publicKeyFingerprint,
   mainEnrollmentProofMessage } = await tsImport('../../../packages/contracts/src/deviceIdentityNode.ts', import.meta.url);
@@ -48,7 +52,7 @@ async function fixture(t) {
   };
   const enroll = () => enrollWorkerCode({ stateDirectory, identity, enrollmentCode: code(),
     appVersion: '1.0.0', home, post });
-  return { stateDirectory, previous, enrollment, registration, calls, enroll };
+  return { home, stateDirectory, previous, enrollment, registration, calls, enroll };
 }
 
 test('same-Main re-enrollment replaces revoked credentials and refreshes managed runtime bindings', async t => {
@@ -89,4 +93,52 @@ test('re-enrollment waits for the existing Worker to stop before sending the gra
     assert.deepEqual(f.calls, []);
     assert.deepEqual(await loadWorkerPairing(f.stateDirectory), f.previous);
   } finally { await unlock(); }
+});
+
+async function provisionRuntime(f) {
+  const setup = await ensurePairedManagedSetup({ stateDirectory: f.stateDirectory, pairing: f.previous, home: f.home });
+  assert.equal(setup.state, 'runtime-unavailable');
+  const installed = await managedRuntimeFixture({ home: f.home, state: f.stateDirectory,
+    pairing: f.previous, worker: { qualifyApprovedRootAllowlist } });
+  await writeFile(join(f.stateDirectory, 'ci-runtime-installation.json'), JSON.stringify({ schemaVersion: 1,
+    target: pairingTarget(f.previous), runtime: installed.runtime }), { mode: 0o600 });
+  return installed;
+}
+
+test('re-pairing adopts a stopped runtime with both bootstrap and executable configuration present', async t => {
+  const f = await fixture(t);
+  const installed = await provisionRuntime(f);
+  const pairing = { ...f.previous, authorizationRevision: 3, credential: 'b'.repeat(64) };
+  await persistWorkerPairing(f.stateDirectory, pairing);
+  const options = { stateDirectory: f.stateDirectory, pairing, home: f.home,
+    inspectInstallation: (installation, home) => inspectManagedInstallation(installation, home,
+      { readQuota: installed.readQuota }) };
+  const result = await ensurePairedManagedSetup(options);
+  assert.equal(result.state, 'ready', result.message);
+  assert.equal(result.migrated, true);
+  const bootstrap = JSON.parse(await readFile(join(f.stateDirectory, 'ci-runtime-installation.json'), 'utf8'));
+  assert.deepEqual(bootstrap.target, pairingTarget(pairing));
+  assert.equal(bootstrap.runtime.machine.imageDigest, installed.runtime.machine.imageDigest);
+  await assert.rejects(readFile(join(f.stateDirectory, 'job-runtime.json')), { code: 'ENOENT' });
+  assert.deepEqual(await loadWorkerPairing(f.stateDirectory), pairing);
+  assert.equal((await ensurePairedManagedSetup(options)).state, 'ready');
+});
+
+test('enrollment reports incomplete setup while retaining accepted pairing and original runtime selectors', async t => {
+  const f = await fixture(t);
+  const installed = await provisionRuntime(f);
+  await writeFile(installed.runtime.seedReceiptPath, '{"changed":true}', { mode: 0o600 });
+  await assert.rejects(f.enroll(), error => {
+    assert.equal(error.code, 'managed_setup_incomplete');
+    assert.match(pairingErrorMessage(error), /paired.*setup.*incomplete/i);
+    return true;
+  });
+  const pairing = await loadWorkerPairing(f.stateDirectory);
+  assert.equal(pairing.authorizationRevision, 3);
+  assert.equal(pairing.credential, 'b'.repeat(64));
+  const setup = JSON.parse(await readFile(join(f.stateDirectory, 'managed-setup.json'), 'utf8'));
+  assert.equal(setup.status.state, 'failed');
+  assert.deepEqual(JSON.parse(await readFile(join(f.stateDirectory, 'job-runtime.json'), 'utf8')), installed.runtime);
+  const bootstrap = JSON.parse(await readFile(join(f.stateDirectory, 'ci-runtime-installation.json'), 'utf8'));
+  assert.deepEqual(bootstrap.target, pairingTarget(f.previous));
 });
