@@ -7,7 +7,7 @@ import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateSt
 import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
 import { workerArtifactContentSha256 } from '../../../packages/contracts/src/workerArtifactContentNode.mjs';
 import { WorkerError, workerUpdateErrorMessage } from './diagnostics.mjs';
-import { validateManifest, stageRunningVersion } from './installation.mjs';
+import { validateManifest, stageRunningVersion, migrateReleaseCompanionLauncher } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
   recoverPendingWorkerUpdate, workerPointerMatches } from './updateSupervisor.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
@@ -146,6 +146,8 @@ export class WorkerUpdater {
       this.target = manifest.target;
       this.statusValue.target = this.target;
       this.statusValue.contentSha256 = this.contentSha256;
+      await migrateReleaseCompanionLauncher({ directory: this.options.releaseDirectory,
+        stateDirectory: this.options.stateDirectory, assertStateOwnership: this.options.assertStateOwnership });
     }
     const retained = await readUpdateRecord(this.options.stateDirectory);
     if (retained) {

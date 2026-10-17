@@ -29,6 +29,7 @@ const recoveryHints = {
   pairing_outcome_unknown: retryHint,
   pairing_persistence_failed: `The main may have accepted pairing but local persistence failed. Check state-directory access. ${retryHint}`,
   already_paired: 'Re-enrollment must use the existing Main and pinned identity.',
+  managed_setup_incomplete: 'The computer is paired, but managed runtime setup is incomplete. Read doctor for the setup failure and restart the Worker after resolving it.',
   worker_already_running: 'Stop the background Worker, then retry with the same enrollment code.',
 };
 
@@ -166,7 +167,8 @@ async function enrollWorkerInput({stateDirectory,identity,enrollment,appVersion,
     const pairing = { mainId: result.registration.mainId, deviceId: result.registration.deviceId,
       workerInstallationId: identity.workerInstallationId, keyRevision: result.registration.keyRevision,
       authorizationRevision: result.registration.authorizationRevision };
-    await ensurePairedManagedSetup({ stateDirectory, pairing, home, assertStateOwnership: unlock.assertOwned });
+    const setup = await ensurePairedManagedSetup({ stateDirectory, pairing, home, assertStateOwnership: unlock.assertOwned });
+    if (setup.state === 'failed') throw new WorkerError('managed_setup_incomplete', setup.message);
     return { mainId: result.registration.mainId, deviceId: result.registration.deviceId, workerInstallationId: identity.workerInstallationId, authorizationRevision: result.registration.authorizationRevision };
   } finally { await unlock(); }
 }
