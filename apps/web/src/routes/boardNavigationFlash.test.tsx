@@ -40,11 +40,16 @@ it('opens the saved workflow for authoring before any departure', async () => {
   clients.push(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
 
-  const authoring = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 8000 })
+  const authoring = await screen.findByLabelText('Workflow authoring', {}, { timeout: 8000 })
+  expect(authoring).toHaveRole('region')
   expect(within(authoring).getByRole('heading', { name: 'Research to review' })).toBeVisible()
-  expect(await within(authoring).findByRole('button', {
-    name: /^Researcher, .*starts the workflow.*Draft$/,
-  }, { timeout: 8000 })).toBeVisible()
+  const researcher = await within(authoring).findByLabelText(
+    /^Researcher, .*starts the workflow.*Draft$/, {}, { timeout: 8000 },
+  )
+  expect(researcher).toHaveRole('button')
+  expect(researcher).toBeVisible()
+  expect(within(authoring).getByLabelText('Editable workflow graph')).toBeVisible()
+  expect(router.state.location.pathname).toBe('/workspaces/workspace-1')
   expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
   expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
 })
