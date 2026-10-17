@@ -1,5 +1,5 @@
 import { AGENT_SNAPSHOT_MAX_BYTES } from '@foreman-code/contracts/source-materialization'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,10 +37,11 @@ export async function snapshotAgentWorktree(ports: Pick<GitWorktreePorts, 'git'>
     try {
       await git(['bundle', 'create', join(scratch, 'snapshot.bundle'), ref, `^${input.baseCommit}`])
     } finally { await ports.git(['update-ref', '-d', ref], { cwd: input.path, signal }) }
-    const bundle = await readFile(join(scratch, 'snapshot.bundle'))
-    if (bundle.length > AGENT_SNAPSHOT_MAX_BYTES) {
+    const bundlePath = join(scratch, 'snapshot.bundle')
+    if ((await stat(bundlePath)).size > AGENT_SNAPSHOT_MAX_BYTES) {
       throw new SourceError('SOURCE_SNAPSHOT_TOO_LARGE', 'These changes are too large to send for CI; push the branch instead.')
     }
+    const bundle = await readFile(bundlePath)
     return { commit, bundle }
   } finally { await rm(scratch, { recursive: true, force: true }) }
 }

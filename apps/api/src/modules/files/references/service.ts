@@ -50,14 +50,14 @@ export class FileReferenceService extends FileStorageService<PermanentFileScope>
       throw new DomainError('FILE_RANGE_INVALID', 'The offset is outside this immutable revision.', 416)
     }
     let stream: Readable
-    try { stream = await this.bytes.download(stored.storageKey, stored.value.revision) }
+    try { stream = await this.bytes.download(stored.storageKey, stored.value.revision, input) }
     catch (error) {
       if (error instanceof DomainError && error.code === 'FILE_BYTES_UNAVAILABLE') {
         return parseAgentFileReadResult(input, { status: 'unavailable', ref, reason: 'not_found' })
       }
       throw error
     }
-    const bytes = await readReferenceRange(stream, input.offset, input.length, stored.value.revision.byteSize)
+    const bytes = await readReferenceRange(stream, 0, input.length, stored.value.revision.byteSize - input.offset)
     return parseAgentFileReadResult(input, { status: 'ready', ...stored.value, readAt: this.now(),
       offset: input.offset, byteLength: bytes.length, contentBase64: bytes.toString('base64'),
       eof: input.offset + bytes.length === stored.value.revision.byteSize })
