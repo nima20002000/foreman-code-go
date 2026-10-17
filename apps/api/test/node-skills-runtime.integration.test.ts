@@ -26,11 +26,9 @@ it('delivers independent node skill additions and removals to concurrent native 
   right!.skills = { remove: ['common'], add: [reference(3)] }
   const finish = deferred()
   const instructions = new Map<string, string>()
-  const resumed = new Set<string>()
   const fixture = await codexApprovalRuntime('user', { fixture: f, skills, approvalPolicy: 'never',
     onRequest(executionId, method, params) {
       if (method === 'thread/start') instructions.set(executionId, String(params?.developerInstructions))
-      if (method === 'thread/resume') resumed.add(executionId)
     },
     workflowOutput: async executionId => {
       const execution = await fixture.runs.getExecution(executionId)
@@ -40,8 +38,8 @@ it('delivers independent node skill additions and removals to concurrent native 
   })
   let runtime: ReturnType<typeof fixture.compose> = fixture
   const started = Promise.allSettled([runtime.engine.start(f.run.id)])
-  const branchExecutions = () => fixture.db.pool.query<{ id: string; node: string; state: string }>(
-    `select id,workflow_node_id as node,record->>'state' as state from harness_executions
+  const branchExecutions = () => fixture.db.pool.query<{ id: string; node: string; state: string; attempt: number }>(
+    `select id,workflow_node_id as node,record->>'state' as state,attempt from harness_executions
       where run_id=$1 and workflow_node_id=any($2::text[]) order by workflow_node_id`,
     [f.run.id, [left!.id, right!.id]])
   try {
@@ -49,8 +47,8 @@ it('delivers independent node skill additions and removals to concurrent native 
       const rows = (await branchExecutions()).rows
       for (const row of rows) {
         const execution = await runtime.runs.getExecution(row.id)
-        expect(execution?.result, 'Node skill overrides must reach native execution without startup failure')
-          .not.toMatchObject({ outcome: 'failed' })
+        expect(execution?.result?.outcome, 'Node skill overrides must reach native execution without startup failure')
+          .not.toBe('failed')
       }
       return rows
     },
@@ -70,14 +68,26 @@ it('delivers independent node skill additions and removals to concurrent native 
     await started
     runtime = fixture.compose()
     await runtime.engine.reconcile(error => { throw error })
-    await readUntil(async () => resumed, ids => ids.has(leftId) && ids.has(rightId),
-      { timeoutMs: 10_000, description: 'both original native sessions reattached' })
-    expect(instructions.size).toBe(3)
+    // The replay transport has no detached process; restart retries these interrupted native attempts.
+    const retries = await readUntil(async () => (await branchExecutions()).rows.filter(row => row.attempt === 2),
+      rows => rows.length === 2 && rows.every(row => row.state === 'running' && instructions.has(row.id)),
+      { timeoutMs: 10_000, description: 'both recovered native branches running' })
+    for (const branch of branches) {
+      expect(await runtime.runs.getExecution(branch.id)).toMatchObject({ state: 'completed',
+        result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: true } } })
+      const retry = retries.find(row => row.node === branch.node)!
+      expect(instructions.get(retry.id)).toBe(instructions.get(branch.id))
+    }
+    expect(instructions.size).toBe(5)
     finish.resolve()
     const completed = await readUntil(() => runtime.runs.get(f.run.id), run => run?.executionState === 'completed',
       { timeoutMs: 10_000, description: 'recovered workflow completion' })
     expect(completed?.outcome).toBe('succeeded')
-    expect((await branchExecutions()).rows).toEqual(branches.map(row => ({ ...row, state: 'completed' })))
+    expect((await branchExecutions()).rows).toEqual(expect.arrayContaining(
+      [...branches, ...retries].map(row => ({ ...row, state: 'completed' }))))
+    for (const retry of retries) {
+      expect((await runtime.runs.getExecution(retry.id))?.result?.outcome).toBe('succeeded')
+    }
     expect((await runtime.workflows.getAgentConfiguration(configuration.id))?.assignedSkills)
       .toEqual([reference(0), reference(1)])
   } finally {
