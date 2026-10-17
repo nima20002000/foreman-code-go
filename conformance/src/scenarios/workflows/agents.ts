@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, type CodexHarnessConfiguration,
+  CodexHarnessConfigurationSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  DEFAULT_HARNESS_DEFAULTS, type CodexHarnessConfiguration,
 } from '@foreman-code/contracts'
 import { AgentCreateInputSchema, AgentMutationResultSchema } from '@foreman-code/contracts/management'
 import { assertResponse } from '../../assertions.js'
 import type { ScenarioContext } from '../../scenario.js'
+
+export function independentCodexSessions() {
+  return CodexHarnessConfigurationSchema.parse({ ...DEFAULT_HARNESS_DEFAULTS.codex,
+    advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, sessionPersistence: 'ephemeral' },
+  })
+}
 
 export async function createCodexAgent(
   ctx: ScenarioContext,

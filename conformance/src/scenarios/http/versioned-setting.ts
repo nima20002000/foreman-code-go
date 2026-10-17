@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto'
 import type {
+  AgentDefaultsUpdateInputSchema,
+  AgentDefaultsUpdateResultSchema,
   GeneralSettingsUpdateInputSchema,
   GeneralSettingsUpdateResultSchema,
   PromptSettingUpdateInputSchema,
   PromptSettingUpdateResultSchema,
+  WorkflowDefaultsUpdateInputSchema,
+  WorkflowDefaultsUpdateResultSchema,
 } from '@foreman-code/contracts/management'
 import { assertResponse } from '../../assertions.js'
+import type { Lane } from '../../reporting/types.js'
 import type { Scenario } from '../../scenario.js'
 import { assertApiError, httpCoverage } from '../smoke/support.js'
 import { assertProtectedRead, readCoverage } from './support.js'
@@ -13,18 +18,22 @@ import { assertProtectedRead, readCoverage } from './support.js'
 interface SettingRoundTrip {
   id: string
   title: string
+  lane?: Lane
   path: string
   initialValue: unknown
   updatedValue: unknown
   inputSchema: typeof GeneralSettingsUpdateInputSchema | typeof PromptSettingUpdateInputSchema
+    | typeof AgentDefaultsUpdateInputSchema | typeof WorkflowDefaultsUpdateInputSchema
   resultSchema: typeof GeneralSettingsUpdateResultSchema | typeof PromptSettingUpdateResultSchema
+    | typeof AgentDefaultsUpdateResultSchema | typeof WorkflowDefaultsUpdateResultSchema
+  revisionConflict?: { message: string; details?: unknown }
 }
 
 export function versionedSettingScenario(setting: SettingRoundTrip): Scenario {
   return {
     id: setting.id,
     title: setting.title,
-    lane: 'A2',
+    lane: setting.lane ?? 'A2',
     covers: [
       ...readCoverage(setting.path),
       httpCoverage('PUT', setting.path, 'success'),
@@ -49,9 +58,12 @@ export function versionedSettingScenario(setting: SettingRoundTrip): Scenario {
       assertApiError(await ctx.http.request('PUT', setting.path, {
         body: { ...input, value: setting.initialValue },
       }), 409, 'COMMAND_ID_CONFLICT', 'This command ID was already used with different input.')
+      const conflict = setting.revisionConflict ?? {
+        message: 'Defaults changed since they were read.', details: { currentRevision: 1 },
+      }
       assertApiError(await ctx.http.request('PUT', setting.path, {
         body: { ...input, commandId: randomUUID(), value: setting.initialValue },
-      }), 409, 'REVISION_CONFLICT', 'Defaults changed since they were read.', { currentRevision: 1 })
+      }), 409, 'REVISION_CONFLICT', conflict.message, conflict.details)
       await assertProtectedRead(ctx, setting.path, saved)
       await ctx.target.restart()
       await assertProtectedRead(ctx, setting.path, saved)

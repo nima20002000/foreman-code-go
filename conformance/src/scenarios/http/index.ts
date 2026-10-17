@@ -12,12 +12,23 @@ import { bugReportScenario } from './bug-reports.js'
 import { workflowVersionScenario } from './workflow-versions.js'
 import { agentScenario } from './agents.js'
 import { skillConsumerScenario } from './skill-consumers.js'
+import { authenticationScenarios } from './authentication.js'
+import { remoteExecutionSettingsScenario } from './remote-execution-settings.js'
+import { fileRetentionScenario } from './file-retention.js'
+import { fileReferenceScenarios } from './file-references.js'
+import { conversationFilesScenario } from './conversation-files.js'
+import { workspaceRootsScenario } from './workspace-roots.js'
 
 export const httpScenarios: Scenario[] = [
   workspaceMutationScenario,
   workspaceArchiveScenario,
   workspaceBatchArchiveScenario,
   ...settingsScenarios,
+  remoteExecutionSettingsScenario,
+  fileRetentionScenario,
+  ...fileReferenceScenarios,
+  conversationFilesScenario,
+  workspaceRootsScenario,
   workspaceDefaultsScenario,
   workflowMetadataScenario,
   workflowOrderScenario,
@@ -28,4 +39,5 @@ export const httpScenarios: Scenario[] = [
   workflowVersionScenario,
   agentScenario,
   skillConsumerScenario,
+  ...authenticationScenarios,
 ]

@@ -107,9 +107,9 @@ export const conversationMcpScenarios: Scenario[] = [
       assert.deepStrictEqual(await callTool(operator, 'operator_chat_delete', remove, DeleteOperatorConversationResponseSchema), deleted)
       await context.target.restart()
       assert.deepStrictEqual(await callTool(operator, 'operator_chat_restore', restore, DeleteOperatorConversationResponseSchema), restored)
-      assertValue(await callTool(operator, 'operator_chat_list', {}, ListOperatorConversationsResponseSchema), { conversations: [conversation] })
       const state = await callTool(operator, 'operator_chat_get', { conversationId: conversation.id }, GetOperatorConversationResponseSchema)
       assertEmptyOperatorState(state, conversation, 2)
+      assertValue(await callTool(operator, 'operator_chat_list', {}, ListOperatorConversationsResponseSchema), { conversations: [conversation] })
       assertResponse(await context.http.request('GET', `/api/operator/conversations/${conversation.id}`, {
         token: context.target.operatorToken!,
       }), { status: 200, body: state })

@@ -1,8 +1,10 @@
-/* global require, module, Buffer, process, setTimeout, clearTimeout */
+/* global require, module, Buffer, process, setTimeout, clearTimeout, AbortController */
 /* eslint @typescript-eslint/no-require-imports: "off" -- Adjacent native fixture extension. */
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
+const { selectTurnScript, runTurnScript } = require('./scripted-plans.cjs')
+const { createMcpTurn } = require('./scripted-mcp.cjs')
 
 function readOptional(file, fallback) {
   if (!fs.existsSync(file)) return fallback
@@ -16,7 +18,7 @@ function qualificationRequest(prompt) {
     commandId: match[4], scope: JSON.parse(match[5]) }
 }
 
-function ownedOutput(root, owner, output) {
+function ownedWorkspace(root, owner) {
   const configuration = readOptional(path.join(root, 'fixture-scope.json'), null)
   if (!configuration || !path.isAbsolute(configuration.directory)) throw new Error('Owned fixture scope is unavailable.')
   const directory = fs.realpathSync(configuration.directory)
@@ -25,6 +27,11 @@ function ownedOutput(root, owner, output) {
   if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error('Native workspace is outside the isolated fixture scope.')
   }
+  return cwd
+}
+
+function ownedOutput(root, owner, output) {
+  const cwd = ownedWorkspace(root, owner)
   if (!['workspaceWrite', 'dangerFullAccess'].includes(owner.settings.sandbox.type)) {
     throw new Error('The native sandbox is read-only; a file publication cannot write.')
   }
@@ -43,36 +50,92 @@ function jsonToolValue(response) {
   return JSON.parse(text.text)
 }
 
-function createScriptedTurns({ root, send, complete, loadThread }) {
+function nativeFailure(error) {
+  return { message: error.message, codexErrorInfo: error.codexErrorInfo ?? null,
+    additionalDetails: null, misalignment: null }
+}
+
+async function runWithMcp(options, run) {
+  const mcp = createMcpTurn(options)
+  let answer
+  let failure
+  try { answer = await run(mcp.call) }
+  catch (error) { failure = error }
+  try { await mcp.close() }
+  catch (cleanup) {
+    if (failure) throw new AggregateError([failure, cleanup], 'Native scripted turn and MCP transport cleanup failed.')
+    throw cleanup
+  }
+  if (failure) throw failure
+  return answer
+}
+
+function createScriptedTurns({ root, send, complete, loadThread, store }) {
   let sequence = 0
   const pending = new Map()
   const active = new Map()
   const threadFile = id => path.join(root, `script-thread-${createHash('sha256').update(id).digest('hex')}.json`)
   const registerThread = (owner, params, sourceId) => {
     const previous = sourceId ? readOptional(threadFile(sourceId), {}) : {}
-    const metadata = { dynamicTools: params.dynamicTools || previous.dynamicTools || [] }
+    const overrides = Object.fromEntries(Object.entries(params.config || {})
+      .filter(([key]) => key === 'mcp_servers' || key.startsWith('mcp_servers.')))
+    const metadata = { dynamicTools: params.dynamicTools || previous.dynamicTools || [],
+      mcpOverrides: { ...previous.mcpOverrides, ...overrides } }
     fs.writeFileSync(threadFile(owner.id), JSON.stringify(metadata), { mode: 0o600 })
   }
-  const requestTool = (owner, turn, name, argumentsValue, operation) => {
+  const nextRequestId = () => `conformance-native-${process.pid}-${++sequence}`
+  const recordItem = (threadId, turnId, item, completed) => {
+    const owner = loadThread(threadId)
+    const turn = owner?.turns.find(value => value.id === turnId)
+    if (!turn) throw new Error('Native scripted item has no durable turn.')
+    const index = turn.items.findIndex(value => value.id === item.id)
+    if (index === -1) turn.items.push(item)
+    else turn.items[index] = item
+    store(owner)
+    const timing = completed ? { completedAtMs: 2 } : { startedAtMs: 1 }
+    send({ method: completed ? 'item/completed' : 'item/started', params: { threadId, turnId, item, ...timing } })
+  }
+  const requestNative = (owner, turn, id, method, params, operation) => {
     if (operation.cancelled) return Promise.reject(new Error('Scripted native turn was interrupted.'))
-    const metadata = readOptional(threadFile(owner.id), {})
-    if (!metadata.dynamicTools?.some(tool => tool.name === name)) {
-      return Promise.reject(new Error(`Native dynamic tool is not declared: ${name}`))
-    }
-    if (owner.settings.sandbox.type === 'readOnly' && !['files_list', 'files_read'].includes(name)) {
-      return Promise.reject(new Error('A read-only native sandbox cannot execute a file mutation.'))
-    }
-    const id = `conformance-tool-${process.pid}-${++sequence}`
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         pending.delete(id)
-        reject(new Error(`Native dynamic tool response timed out: ${name}`))
-      }, 10_000)
+        reject(new Error(`Native response timed out: ${method}`))
+      }, 25_000)
       pending.set(id, { resolve, reject, timeout, threadId: owner.id, operation })
-      send({ id, method: 'item/tool/call', params: {
-        threadId: owner.id, turnId: turn.id, callId: id, tool: name, arguments: argumentsValue,
-      } })
+      send({ id, method, params: { ...params, threadId: owner.id, turnId: turn.id } })
     })
+  }
+  const requestTool = async (owner, turn, name, argumentsValue, operation) => {
+    if (operation.cancelled) throw new Error('Scripted native turn was interrupted.')
+    const metadata = readOptional(threadFile(owner.id), {})
+    if (!metadata.dynamicTools?.some(tool => tool.name === name)) {
+      throw new Error(`Native dynamic tool is not declared: ${name}`)
+    }
+    const id = nextRequestId()
+    const item = { type: 'dynamicToolCall', id, namespace: null, tool: name, arguments: argumentsValue,
+      status: 'inProgress', contentItems: null, success: null, durationMs: null }
+    recordItem(owner.id, turn.id, item, false)
+    const response = await requestNative(owner, turn, id, 'item/tool/call', {
+      callId: id, tool: name, arguments: argumentsValue,
+    }, operation)
+    if (!response || typeof response.success !== 'boolean' || !Array.isArray(response.contentItems)) {
+      throw new Error('Native dynamic tool returned an invalid response.')
+    }
+    recordItem(owner.id, turn.id, { ...item, status: response.success ? 'completed' : 'failed',
+      contentItems: response.contentItems, success: response.success, durationMs: 1 }, true)
+    return response
+  }
+  const requestInteraction = async (owner, turn, method, parameters, operation) => {
+    const id = nextRequestId()
+    const params = { itemId: id, ...parameters }
+    if (method === 'item/commandExecution/requestApproval') params.startedAtMs ??= 1
+    const response = await requestNative(owner, turn, id, method, params, operation)
+    if (method === 'item/tool/requestUserInput') {
+      recordItem(owner.id, turn.id, { type: 'functionCallOutput', id: params.itemId,
+        name: 'request_user_input', namespace: null, output: JSON.stringify(response) }, true)
+    }
+    return response
   }
   const qualify = async (owner, turn, request, operation) => {
     const output = ownedOutput(root, owner, request.output)
@@ -96,17 +159,35 @@ function createScriptedTurns({ root, send, complete, loadThread }) {
     }, operation))
     return 'The Markdown marker was read and the edited result was published through native file tools.'
   }
-  const startTurn = (owner, turn, prompt) => {
+  const startTurn = (owner, turn, prompt, input) => {
     const request = qualificationRequest(prompt)
-    if (!request) return false
+    let plan
+    try {
+      if (!request) plan = selectTurnScript(root, prompt)
+      if (request || plan) ownedWorkspace(root, owner)
+    }
+    catch (error) {
+      complete(owner.id, turn.id, 'failed', '', nativeFailure(error))
+      return true
+    }
+    if (!request && !plan) return false
     const key = `${owner.id}:${turn.id}`
-    const operation = { cancelled: false }
+    const operation = { cancelled: false, controller: new AbortController() }
     active.set(key, operation)
-    void qualify(owner, turn, request, operation).then(answer => {
+    const run = () => {
+      if (request) return qualify(owner, turn, request, operation)
+      const overrides = readOptional(threadFile(owner.id), {}).mcpOverrides || {}
+      return runWithMcp({ root, overrides, operation, nextRequestId,
+        recordItem: (item, completed) => recordItem(owner.id, turn.id, item, completed) },
+      callMcpTool => runTurnScript({ root, input, plan, operation, jsonToolValue, callMcpTool,
+        callTool: (name, argumentsValue) => requestTool(owner, turn, name, argumentsValue, operation),
+        requestInteraction: (method, parameters) => requestInteraction(owner, turn, method, parameters, operation) }))
+    }
+    void run().then(answer => {
       const native = loadThread(owner.id)?.turns.find(value => value.id === turn.id)
       if (!operation.cancelled && native?.status === 'inProgress') complete(owner.id, turn.id, 'completed', answer)
     }, error => {
-      if (!operation.cancelled) complete(owner.id, turn.id, 'failed', `Scripted native tool failure: ${error.message}`)
+      if (!operation.cancelled) complete(owner.id, turn.id, 'failed', '', nativeFailure(error))
     }).finally(() => active.delete(key))
     return true
   }
@@ -124,6 +205,7 @@ function createScriptedTurns({ root, send, complete, loadThread }) {
     const operation = active.get(`${threadId}:${turnId}`)
     if (!operation) return
     operation.cancelled = true
+    operation.controller.abort(new Error('Scripted native turn was interrupted.'))
     for (const [id, request] of pending) {
       if (request.operation !== operation) continue
       pending.delete(id)

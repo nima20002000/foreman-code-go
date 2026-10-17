@@ -91,8 +91,8 @@ export async function* readSseFrames(body: ReadableStream<Uint8Array>): AsyncGen
   }
 }
 
-export async function boundedBodyText(response: Response, maximumBytes = 8 * 1024 * 1024): Promise<string> {
-  if (!response.body) return ''
+export async function boundedBodyBytes(response: Response, maximumBytes = 8 * 1024 * 1024): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0)
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let bytes = 0
@@ -105,11 +105,15 @@ export async function boundedBodyText(response: Response, maximumBytes = 8 * 102
       if (bytes > maximumBytes) throw new Error('HTTP response exceeds the conformance byte bound.')
       chunks.push(chunk.value)
     }
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))
+    return Buffer.concat(chunks)
   } finally {
     try { if (!ended) await reader.cancel() }
     finally { reader.releaseLock() }
   }
+}
+
+export async function boundedBodyText(response: Response, maximumBytes = 8 * 1024 * 1024): Promise<string> {
+  return new TextDecoder('utf-8', { fatal: true }).decode(await boundedBodyBytes(response, maximumBytes))
 }
 
 export class StreamHttpError extends Error {

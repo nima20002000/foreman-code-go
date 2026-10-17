@@ -148,10 +148,11 @@ const replyThread = (owner, id, params) => {
   store(persisted)
   result(id, { ...persisted.settings, thread: params.excludeTurns ? { ...persisted, turns: [] } : persisted })
 }
-const complete = (threadId, turnId, status = 'completed', answer = `answer-${agent}`) => {
+const complete = (threadId, turnId, status = 'completed', answer = `answer-${agent}`, error = null) => {
   const owner = loadThread(threadId)
   const nativeTurn = owner.turns.find((entry) => entry.id === turnId)
   nativeTurn.status = status
+  if (error) nativeTurn.error = error
   nativeTurn.completedAt = 2
   nativeTurn.items.push(agentMessage(`answer-${nativeTurn.id}`, answer))
   owner.status = { type: 'idle' }
@@ -163,7 +164,7 @@ const complete = (threadId, turnId, status = 'completed', answer = `answer-${age
 }
 // Conformance may install an adjacent script; existing fixture runs keep their default behavior.
 const scriptedTurns = flag('scripted-turns.cjs')
-  ? require(path.join(root, 'scripted-turns.cjs')).createScriptedTurns({ root, send, complete, loadThread })
+  ? require(path.join(root, 'scripted-turns.cjs')).createScriptedTurns({ root, send, complete, loadThread, store })
   : undefined
 const approval = (pending, id) => {
   while (outstanding.has(id) && outstanding.get(id) !== pending) id += 10_000
@@ -343,7 +344,7 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const started = () => {
       const persistedTurn = loadThread(owner.id).turns.find((entry) => entry.id === nativeTurn.id)
       if (!flag('hold-turn-start-ack')) result(message.id, { turn: persistedTurn })
-      if (scriptedTurns?.startTurn(owner, nativeTurn, prompt)) return
+      if (scriptedTurns?.startTurn(owner, nativeTurn, prompt, params.input)) return
       const inputRequest = read('workflow-input.json', null)
       if (inputRequest) {
         const id = 900 + turnNumber

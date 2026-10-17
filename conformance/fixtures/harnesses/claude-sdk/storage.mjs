@@ -45,10 +45,9 @@ export function readScript(text) {
   let scripts
   try { scripts = JSON.parse(readFileSync(new URL('scripts.json', import.meta.url), 'utf8')) }
   catch (error) {
-    if (error.code === 'ENOENT') return { answer: 'Conformance assistant answer.' }
+    if (error.code === 'ENOENT') return undefined
     throw error
   }
   if (!Array.isArray(scripts)) throw new Error('Fake Claude scripts must be an array.')
   return scripts.find(script => typeof script.includes === 'string' && text.includes(script.includes))
-    ?? { answer: 'Conformance assistant answer.' }
 }

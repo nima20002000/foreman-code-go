@@ -37,4 +37,23 @@ describe('full response comparison', () => {
     expect(() => assertJson({ ...actual, content: { text: 'Changed result' } }, expected, rules)).toThrow()
     expect(actual.fileId).toBe('file-123')
   })
+
+  it('normalizes a named native request ID through the shared opaque ID contract', () => {
+    const actual = { nativeRequestId: 'session:turn:item/tool/requestUserInput:connection:1:string:rpcid', answer: 'retained' }
+    const expected = { nativeRequestId: '<opaque-id>', answer: 'retained' }
+    const rules = [{ pointer: '/body/nativeRequestId', kind: 'opaque-id' as const }]
+    expect(() => assertJson(actual, expected, rules)).not.toThrow()
+    expect(() => assertJson({ ...actual, answer: 'changed' }, expected, rules)).toThrow()
+    expect(() => assertJson({ ...actual, extra: true }, expected, rules)).toThrow()
+    expect(() => assertJson(actual, { ...expected, nativeRequestId: '<id>' },
+      [{ pointer: '/body/nativeRequestId', kind: 'id' }])).toThrow('Invalid id')
+  })
+
+  it('rejects empty, untrimmed, and object values for an opaque ID leaf', () => {
+    const expected = { nativeRequestId: '<opaque-id>' }
+    const rules = [{ pointer: '/body/nativeRequestId', kind: 'opaque-id' as const }]
+    for (const nativeRequestId of ['', '  ', ' native-id ', { id: 'native-id' }]) {
+      expect(() => assertJson({ nativeRequestId }, expected, rules)).toThrow('Invalid opaque-id')
+    }
+  })
 })

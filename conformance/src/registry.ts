@@ -3,6 +3,7 @@ import { mcpScenarios } from './scenarios/mcp/index.js'
 import { streamScenarios } from './scenarios/streams/index.js'
 import { httpScenarios } from './scenarios/http/index.js'
 import { workflowScenarios } from './scenarios/workflows/index.js'
+import { codecScenarios } from './scenarios/codecs/index.js'
 import type { Scenario } from './scenario.js'
 
 export { smokeScenarios }
@@ -11,4 +12,5 @@ export { smokeScenarios }
 // The required coverage inventories remain independent of this registration list.
 export const allScenarios: Scenario[] = [
   ...smokeScenarios, ...httpScenarios, ...mcpScenarios, ...streamScenarios, ...workflowScenarios,
+  ...codecScenarios,
 ]

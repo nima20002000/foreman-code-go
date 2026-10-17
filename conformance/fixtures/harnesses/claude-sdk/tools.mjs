@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { assistant } from './frames.mjs'
+import { callClaudeHttpTool } from './mcp.mjs'
+import { writeClaudeOwnedFile } from './native-tools.mjs'
 
 async function runHooks(options, event, input, signal) {
   for (const group of options.hooks?.[event] ?? []) {
@@ -14,7 +16,10 @@ async function runHooks(options, event, input, signal) {
 
 async function invokeTool(call, options, signal) {
   const matched = /^mcp__(.+?)__(.+)$/.exec(call.name)
-  if (!matched) return call.result ?? { content: [{ type: 'text', text: 'Scripted tool result.' }] }
+  if (!matched) {
+    if (call.name === 'Write') return writeClaudeOwnedFile(call.input, options, signal)
+    throw new Error(`Fake Claude built-in tool ${call.name} is not implemented.`)
+  }
   const [, serverName, toolName] = matched
   const server = options.mcpServers?.[serverName]
   if (!server) throw new Error(`Fake Claude did not receive MCP configuration for ${serverName}.`)
@@ -24,14 +29,7 @@ async function invokeTool(call, options, signal) {
     return tool.handler(call.input, { signal })
   }
   if (server.type !== 'http') throw new Error('Fake Claude supports only delivered HTTP and in-process SDK MCP servers.')
-  const response = await fetch(server.url, { method: 'POST', signal,
-    headers: { ...server.headers, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name: toolName, arguments: call.input } }) })
-  const text = await response.text()
-  const data = text.split('\n').find(line => line.startsWith('data:'))
-  const body = JSON.parse(data ? data.slice(5).trim() : text)
-  if (!response.ok || body.error || !body.result) throw new Error('Fake Claude MCP request failed.')
-  return body.result
+  return callClaudeHttpTool(serverName, server, toolName, call.input, signal)
 }
 
 export async function executeTool(state, message, call) {
@@ -40,6 +38,9 @@ export async function executeTool(state, message, call) {
     transcript_path: state.transcriptPath, tool_name: call.name, tool_input: call.input, tool_use_id: toolId }
   state.emit(assistant(state.session, message, [{ type: 'tool_use', id: toolId, name: call.name, input: call.input }], state.model))
   let allowed = await runHooks(state.options, 'PreToolUse', input, state.signal)
+  if (state.options.disallowedTools?.includes(call.name)) allowed = false
+  if (!call.name.startsWith('mcp__') && (!state.options.tools?.includes(call.name)
+    || typeof state.options.canUseTool !== 'function')) allowed = false
   if (allowed && state.options.canUseTool) {
     const decision = await state.options.canUseTool(call.name, call.input, { toolUseID: toolId,
       signal: state.signal, suggestions: [] })
@@ -47,11 +48,14 @@ export async function executeTool(state, message, call) {
     if (allowed && decision.updatedInput) call = { ...call, input: decision.updatedInput }
   }
   const output = allowed ? await invokeTool(call, state.options, state.signal) : { error: 'Tool request denied.' }
+  const succeeded = allowed && output?.isError !== true
   state.emit({ type: 'user', uuid: randomUUID(), session_id: state.session.sessionId, parent_tool_use_id: null,
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolId,
-      content: JSON.stringify(output), is_error: !allowed }] } })
-  if (allowed) await runHooks(state.options, 'PostToolUse', { ...input, tool_response: output }, state.signal)
-  return allowed
+      content: JSON.stringify(output), is_error: !succeeded }] } })
+  if (allowed) await runHooks(state.options, 'PostToolUse', { ...input, tool_input: call.input, tool_response: output }, state.signal)
+  // A provider may obey a prompt to finish after an actual policy denial. The
+  // error tool_result remains intact; tool failures are never reclassified.
+  return succeeded || !allowed && call.continueAfterDenial === true
 }
 
 export function tool(name, description, inputSchema, handler, annotations) {

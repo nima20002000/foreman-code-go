@@ -18,12 +18,18 @@ async function main(): Promise<void> {
   const scenarios = candidates.filter(scenario =>
     (options.lanes.length === 0 || options.lanes.includes(scenario.lane))
     && (options.scenarioIds.length === 0 || options.scenarioIds.includes(scenario.id)))
+  const http = checkHttpCoverage([...httpRoutes, ...runtimeHttpRoutes], allScenarios)
+  const behaviors = checkBehaviorCoverage(allScenarios)
+  const identity = await readRunIdentity(repoRoot)
   if (options.list) {
-    process.stdout.write(`${JSON.stringify({ kind: 'conformance-inventory', target: options.target,
-      scope: options.smoke ? 'smoke' : 'full', scenarios: scenarios.map(({ id, title, lane, covers }) => ({ id, title, lane, covers })) })}\n`)
+    process.stdout.write(`${JSON.stringify({ kind: 'conformance-inventory', ...identity, target: options.target,
+      scope: options.smoke ? 'smoke' : 'full',
+      scenarios: scenarios.map(({ id, title, lane, covers }) => ({ id, title, lane, covers })),
+      coverage: { scope: 'full-authored-registry', http, behaviors,
+        mcp: { status: 'not-run', reason: 'Live tools/list requires a running target in controller CI.' } },
+    })}\n`)
     return
   }
-  const identity = await readRunIdentity(repoRoot)
   const startedAt = new Date()
   const progress = new CiProgress(options.target)
   progress.suite('start')
@@ -34,8 +40,6 @@ async function main(): Promise<void> {
     onProgress: event => progress.scenario(event),
     onOutcome: outcome => { process.stdout.write(`${JSON.stringify({ kind: 'conformance-scenario', ...outcome })}\n`) },
   })
-  const http = checkHttpCoverage([...httpRoutes, ...runtimeHttpRoutes], allScenarios)
-  const behaviors = checkBehaviorCoverage(allScenarios)
   let mcp: LiveCoverageResult = { status: 'not-run', reason: 'A smoke or filtered run cannot establish complete coverage.' }
   const completeSelection = !options.smoke && options.lanes.length === 0 && options.scenarioIds.length === 0
   if (completeSelection) {

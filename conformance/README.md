@@ -52,7 +52,10 @@ is reported as an unexecuted setup failure for every selected scenario.
 
 CLI filters `--lane E,A1`, `--scenario workspace.create-replay-read`, `--smoke`,
 and `--target ts|go` select a diagnostic run. `--list` emits the authored selection
-without launching anything. Filters never establish full-suite acceptance, and
+without launching anything. Its coverage mapping records each requirement,
+source provenance and declaring scenario IDs, plus missing requirements by
+source family. This is authored metadata; live MCP remains explicitly not-run.
+Filters never establish full-suite acceptance, and
 empty selections always fail. `--output PATH` or `CONFORMANCE_RESULTS_FILE`
 selects the result path.
 
@@ -97,8 +100,12 @@ use shared contracts and placement bindings. An authored helper is not evidence
 that a remote execution scenario has run.
 
 The launcher stops its owned process groups and database before deleting its
-marked private root. A cleanup failure is retained as a failure and unsafe
-deletion is refused. Scenario assertion/setup failures do not omit later selected
+marked private root. Linux native guardians can have separate process groups;
+cleanup observes same-user process working directories under the owned root
+through `/proc` and waits for their exit. Surviving processes or unavailable
+ownership observations fail cleanup and retain the root for controller diagnosis.
+The launcher does not signal arbitrary discovered processes. A cleanup failure is
+retained as a failure and unsafe deletion is refused. Scenario assertion/setup failures do not omit later selected
 scenarios. Restart scenarios retain only their own fresh database/state while
 stopping and restarting their server.
 
@@ -169,11 +176,47 @@ requires success plus error/denial. Every live Operator MCP tool requires succes
 denied caller, and persisted readback. Each registered browser SSE route requires
 framing, order, and reconnect cases.
 
-The remaining required workflow groups are ordinary execution, finite repeat,
+The required workflow groups are ordinary execution, finite repeat,
 handoff/join, interactions/resume, retry, Stop, interval, schedule, Jobs, and
 kill/restart recovery. Required fixed-file codec groups are image resize/rotate,
 animated GIF/WebP, PDF read/append, and DOCX read/edit. The coverage checker keeps
 these requirements independent of the executable scenario registry.
+
+### Authored checkpoint
+
+The current reviewed registry contains 90 authored scenarios. These counts describe source
+inventory only; no execution, TS/Go pass rate, or completed coverage is claimed.
+
+| Group | Authored scenarios | Scope |
+| --- | ---: | --- |
+| Smoke | 24 | Three public scenarios for each of the eight lane tags |
+| HTTP | 31 | Workspace/settings/workflow metadata, files and retention, skills, bug reports, protected-route denials, and Main root binding |
+| MCP | 9 | Operator settings/conversations, workspaces, and paired-worker root configuration and directory readback |
+| Operator SSE | 4 | Snapshot framing, actual native ordering, reconnect, and invalid credentials |
+| Workflows | 13 | Ordinary execution, repeat early/limit exit, retry, Stop/new Start, interval checks, restart between settled checks, parallel join, work handoff, three native interaction/resume callers, and actual schedule admission |
+| Codecs | 9 | Fixed image, PDF and DOCX inputs with public file operations, native tools, complete readback, and independently decoded output |
+
+The Main root scenario adopts the installation's existing app-managed storage
+configuration and binds a real owned directory read-only. The worker directory
+scenario uses fresh pairing, TLS/WebSocket negotiation and actual filesystem
+enumeration, then checks reconnect and Main restart. Neither adds approval or
+grants, and directory operations do not establish installed-worker execution.
+
+The native App MCP fixture connects through the accepted configured transport
+and credentials. Public join, work-handoff, interaction/resume and scheduled-run
+scenarios drive that real protocol and assert accepted results and persisted
+readback. The workflow restart case kills Main between settled interval checks;
+in-flight native recovery remains outstanding. Native Codex and native Claude
+success remain independent required coverage gates; setup metadata cannot
+discharge either gate.
+
+The full HTTP inventory still contains 483 route/listener identities: 322 explicit mounts,
+159 generated HEAD variants, and two runtime listeners. Each identity requires
+success and error/denial, giving 966 outcome requirements. Complete HTTP, live
+MCP and Agent-chat browser SSE coverage remain outstanding. Genuine Jobs
+execution and in-flight native recovery also remain outstanding. The
+fixed codec scenarios author all eight required codec behavior groups, with real
+CI validation still required for every expectation.
 
 ## Current integration limits
 
@@ -187,6 +230,11 @@ Route remaining cross-owner work through the terminal controller:
   discovery, qualification, metadata and query construction, without removing
   qualification or changing the prototype permission model. The installed worker
   inspection/qualification path already forwards its selected entrypoint.
+- J/Q-CI: supply an already-authorized disposable runtime through supported
+  `job-queue.json` and `job-runtime.json` configuration, including actual host,
+  root, binary, runtime and seed pins. Genuine native qualification/admission
+  and durable Job process/output receipts remain required; scripted Agent
+  answers, invented proof, new grants or capability widening cannot replace them.
 - I: agree and provide Go administrative credential issuance corresponding to
   the TS `credential issue --audience operator --access manage|read-only` behavior.
   The launcher currently expects `foreman credential issue` and reports a real

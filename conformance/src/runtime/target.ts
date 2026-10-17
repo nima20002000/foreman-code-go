@@ -7,6 +7,7 @@ import { startProcess, waitUntilReady, type ManagedProcess } from './commands.js
 import { createIsolatedEnvironment, type IsolatedEnvironment } from './environment.js'
 import { startPostgres, type FreshPostgres } from './postgres.js'
 import { randomLoopbackPort } from './ports.js'
+import { waitForOwnedProcessesToExit } from './owned-processes.js'
 import { issueTestOperatorCredentials, type TestOperatorCredentials } from './credentials.js'
 import type { Target } from '../reporting/types.js'
 
@@ -116,6 +117,7 @@ async function cleanup(
   try { await database?.close() } catch (error) { failures.push(error) }
   // Retain owned state if a process could still be using it, with an explicit failure.
   if (failures.length) throw new AggregateError(failures, 'Conformance processes did not cleanly stop')
+  await waitForOwnedProcessesToExit(resources.directory)
   await resources.close()
 }
 
