@@ -32,7 +32,7 @@ async function computer(stall?: 'fetch' | 'checkout') {
   const ports: HostCiPorts = {
     cpus: 16, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
     run: async (file, args, options) => {
-      if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: '' }
+      if (file === 'git' && args.includes('rev-list')) return { code: 1, stdout: '', stderr: '' }
       const fetching = file === 'git' && args.includes('fetch')
       const checkingOut = file === 'git' && args.includes('worktree') && args.includes('add')
       if (!stalled && (stall === 'fetch' && fetching || stall === 'checkout' && checkingOut)) {

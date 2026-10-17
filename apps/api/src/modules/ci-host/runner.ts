@@ -741,7 +741,8 @@ export class HostCiRunner {
       }
     }
     const history = (request.scope ?? 'affected') === 'affected' && request.files === undefined
-    const missing = (await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`],
+    // A canceled fetch can leave the commit object without its tree or files; only a readable snapshot is present.
+    const missing = (await this.ports.run('git', ['rev-list', '--quiet', '--objects', '--no-walk', request.commit],
       { cwd: clone, env: this.environment, signal })).code !== 0
     // A complete clone that already holds the commit has its history: parts of one commit fetch it once.
     const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone, signal)).trim() === 'true'

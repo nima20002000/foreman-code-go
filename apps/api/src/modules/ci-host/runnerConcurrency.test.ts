@@ -60,7 +60,7 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
   const ports: HostCiPorts = { cpus: cpuCount, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
     run: async (file, args) => {
       if (file === 'gh') await beforeGithub?.()
-      if (file === 'git' && args.includes('cat-file') && beforeFetch) {
+      if (file === 'git' && args.includes('rev-list') && beforeFetch) {
         return { code: 1, stdout: '', stderr: 'Commit not fetched' }
       }
       if (file === 'git' && args.includes('fetch')) await beforeFetch?.()
@@ -103,7 +103,7 @@ describe('host CI runner concurrent starts', () => {
     const { runner, request, launches, ports } = await computer(undefined, 16, true, undefined, fetch.pause)
     const command = ports.run
     ports.run = async (file, args, options) => {
-      if (file === 'git' && args.includes('cat-file') && args.includes(`${'b'.repeat(40)}^{commit}`)) {
+      if (file === 'git' && args.includes('rev-list') && args.includes('b'.repeat(40))) {
         return { code: 0, stdout: '', stderr: '' }
       }
       return command(file, args, options)
@@ -161,7 +161,7 @@ describe('host CI runner concurrent starts', () => {
     let fetches = 0
     let present = false
     ports.run = async (file, args, options) => {
-      if (file === 'git' && args.includes('cat-file')) return { code: present ? 0 : 1, stdout: '', stderr: '' }
+      if (file === 'git' && args.includes('rev-list')) return { code: present ? 0 : 1, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('fetch')) {
         fetches++
         present = true
@@ -241,7 +241,7 @@ describe('host CI runner concurrent starts', () => {
     const { runner, request, ports, launches } = await computer()
     const command = ports.run
     ports.run = async (file, args, options) => {
-      if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: '' }
+      if (file === 'git' && args.includes('rev-list')) return { code: 1, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('fetch')) return { code: 1, stdout: '', stderr: 'Fetch failed' }
       return command(file, args, options)
     }
