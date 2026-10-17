@@ -68,22 +68,21 @@ export class ProviderAccountWorkerCarrier {
     if (!binding) throw new DomainError('PROVIDER_ACCOUNT_BINDING_UNAVAILABLE', 'The Worker account binding is unavailable.', 409)
     if (request.kind === 'status') {
       const observed = ProviderAccountObservationSchema.parse(result.payload)
-      if (observed.bindingRevision !== binding.bindingRevision || observed.generation !== connection.connectionGeneration) {
+      if (observed.bindingRevision !== binding.bindingRevision) {
         throw new DomainError('PROVIDER_ACCOUNT_OBSERVATION_STALE', 'The Worker observation belongs to another binding.', 409)
       }
       return observed
     }
     if (request.kind === 'models') {
       const observed = ProviderAccountModelsSchema.parse(result.payload)
-      if (!isDeepStrictEqual(observed.binding, binding) || observed.generation !== connection.connectionGeneration) {
+      if (!isDeepStrictEqual(observed.binding, binding)) {
         throw new DomainError('PROVIDER_ACCOUNT_OBSERVATION_STALE', 'The Worker models belong to another binding.', 409)
       }
       return observed
     }
     const observed = ProviderAccountNativeAuthenticationObservationSchema.parse(result.payload)
     if (!isDeepStrictEqual(observed.binding, binding) || observed.operationId !== request.operation.id
-      || observed.generation !== request.operation.generation
-      || (request.kind === 'prepare' && request.operation.generation !== connection.connectionGeneration)) {
+      || observed.generation !== request.operation.generation) {
       throw new DomainError('PROVIDER_AUTHENTICATION_STALE', 'The Worker result belongs to another operation.', 409)
     }
     return observed
