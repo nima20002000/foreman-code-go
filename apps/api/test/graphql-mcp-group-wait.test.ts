@@ -6,6 +6,9 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { afterEach, expect, it } from 'vitest'
 import { APP_MCP_TIMEOUTS, registerAppRoute } from '../src/modules/harnesses/appMcpLauncher.js'
+import { deviceRequestTimeoutMs } from '../src/modules/devices/deviceRequestRetry.js'
+import { deviceForegroundWaitMs } from '../src/modules/devices/deviceRequestQueue.js'
+import { workerMcpUploadCeilingMs } from '../src/modules/devices/workerMcpDeadline.js'
 
 const cleanup: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!() })
@@ -108,6 +111,26 @@ async function startBridge(endpoint: string, options: { clockScale?: number; cla
 
 const groupWait = (ticketId: string, waitSeconds: number) => ({ name: 'ci_get',
   arguments: { ticketId, waitUntil: 'group-terminal', waitSeconds, logTail: false } })
+
+it('allows a native reference call its queue, progressing upload and execution budgets', async () => {
+  const budgetMs = deviceRequestTimeoutMs + deviceForegroundWaitMs + workerMcpUploadCeilingMs + 100_000
+  const fake = await fakeEndpoint(() => ({ status: 200, delayMs: budgetMs / 100,
+    result: { content: [], structuredContent: { stored: true } } }))
+  const bridge = await startBridge(fake.endpoint, { clockScale: 100 })
+  const reply = await bridge.request(30, 'tools/call', { name: 'reference_file_add', arguments: {} })
+  expect(reply).toMatchObject({ result: { structuredContent: { stored: true } } })
+  expect(APP_MCP_TIMEOUTS.tool_timeout_sec * 1000).toBeGreaterThan(budgetMs)
+  expect(fake.calls).toHaveLength(1)
+})
+
+it('returns a stalled reference upload failure without retrying the write', async () => {
+  const failure = relayError('timeout', false)
+  const fake = await fakeEndpoint(() => ({ status: 200, error: failure, delayMs: 150 }))
+  const bridge = await startBridge(fake.endpoint, { clockScale: 100 })
+  const reply = await bridge.request(31, 'tools/call', { name: 'reference_file_add', arguments: {} })
+  expect(reply.error).toEqual(failure)
+  expect(fake.calls).toHaveLength(1)
+})
 
 it.each([
   { claudeTimeoutMs: undefined, stall: false },
