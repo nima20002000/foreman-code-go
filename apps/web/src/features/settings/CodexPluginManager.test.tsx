@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { harnessSettingsKeys } from '../../shared/api/harnessSettings'
+import { deferred } from '../../test/deferred'
 
 const revision = 'sha256:' + 'a'.repeat(64)
 const artifactIdentity = 'sha256:' + 'b'.repeat(64)
@@ -147,7 +148,7 @@ it('does not combine newer list revisions with delayed old details', async () =>
   const next = 'sha256:' + 'c'.repeat(64)
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })
-  const detailRequested = Promise.withResolvers<void>()
+  const detailRequested = deferred()
   server.use(
     http.get('/api/management/harnesses/codex/plugins', () => HttpResponse.json(listPayload(false, next))),
     http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
@@ -157,8 +158,8 @@ it('does not combine newer list revisions with delayed old details', async () =>
       return HttpResponse.json(detailPayload(false, next))
     }),
   )
-  const listUpdated = Promise.withResolvers<void>()
-  const disabled = Promise.withResolvers<void>()
+  const listUpdated = deferred()
+  const disabled = deferred()
   const install = screen.getByRole('button', { name: 'Install plugin' })
   const observer = new MutationObserver(() => {
     if (install.hasAttribute('disabled')) disabled.resolve()

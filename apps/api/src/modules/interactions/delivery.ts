@@ -68,7 +68,7 @@ function matchingCodexCommandExecution(
     || event.payload.responseDigest !== undefined
       && event.payload.responseDigest !== responseValueDigest(object(interaction.nativeResponse)?.response))) return undefined
   for (const submitted of submissions) {
-    const reserved = relevant.findLast((event) => event.connectionId === submitted.connectionId
+    const reserved = [...relevant].reverse().find((event) => event.connectionId === submitted.connectionId
       && event.sequence < submitted.sequence && event.type === 'interaction.submitting'
       && event.payload.nativeRequestId === interaction.nativeRequestId
       && event.payload.optionId === interaction.selectedOptionId)
