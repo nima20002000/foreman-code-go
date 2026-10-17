@@ -1,11 +1,13 @@
 // Emits the same report shape as Vitest so CI can merge results from both runners.
-import { relative } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { writeCiProgressEvent } from './ci-progress-reporter.mjs'
 
 export default async function* reportTests(events) {
   const files = new Map()
   for await (const { type, data } of events) {
-    const module = data.name === data.file || data.type === 'suite' || data.details?.type === 'suite'
+    const fileName = typeof data.name === 'string' && typeof data.file === 'string'
+      && resolve(data.name) === resolve(data.file)
+    const module = fileName || data.type === 'suite' || data.details?.type === 'suite'
     if (data.file && type === 'test:dequeue') {
       writeCiProgressEvent('start', { kind: module ? 'module' : 'test',
         id: `${data.nesting}:${data.name}`, file: relative(process.env.CI_REPOSITORY_ROOT ?? process.cwd(), data.file),
