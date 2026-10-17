@@ -93,6 +93,7 @@ export class HostCiService {
   private dispatchRequested = false
   private superseding: Promise<void> | undefined
   private readonly observingRuns = new Map<string, Promise<void>>()
+  private readonly cancelingTickets = new Map<string, Promise<{ run: CiRunRecord }>>()
   /** Observed runs whose execution is settled and whose logs and results are still being collected. */
   private readonly collectingRuns = new Set<string>()
   private observationOffset = 0
@@ -641,7 +642,18 @@ export class HostCiService {
     }
   }
 
-  private async cancelTicket(workspaceId: string, ticketId: string,
+  private cancelTicket(workspaceId: string, ticketId: string,
+    audit?: CiCancellation): Promise<{ run: CiRunRecord }> {
+    const pending = this.cancelingTickets.get(ticketId)
+    if (pending) return pending
+    // Cleanup and observations share one delivery while its executor reply is pending.
+    const cancellation = this.cancelTicketAttempt(workspaceId, ticketId, audit)
+      .finally(() => { this.cancelingTickets.delete(ticketId) })
+    this.cancelingTickets.set(ticketId, cancellation)
+    return cancellation
+  }
+
+  private async cancelTicketAttempt(workspaceId: string, ticketId: string,
     audit?: CiCancellation): Promise<{ run: CiRunRecord }> {
     let run = await this.read(ticketId, workspaceId)
     audit = run.cancellation ?? audit
@@ -652,7 +664,7 @@ export class HostCiService {
       const saved = await this.saveCancellation(`update ci_runs set state='canceled', host_key=null, record=$2::jsonb
         where id=$1 and state='queued' and record->>'supersededBy' is not distinct from $3`,
       [run.id, serializeCiJson(canceled), run.supersededBy ?? null], canceled, audit)
-      if (!saved.rowCount) return this.cancelTicket(workspaceId, ticketId, audit)
+      if (!saved.rowCount) return this.cancelTicketAttempt(workspaceId, ticketId, audit)
       return { run: canceled }
     }
     if (run.computer && ['starting', 'running'].includes(run.state)) {
@@ -663,7 +675,7 @@ export class HostCiService {
         const saved = await this.pool.query(`update ci_runs set record=$2::jsonb
           where id=$1 and state in ('starting','running') and record=$3::jsonb`,
         [run.id, JSON.stringify(pending), JSON.stringify(run)])
-        if (!saved.rowCount) return this.cancelTicket(workspaceId, ticketId, audit)
+        if (!saved.rowCount) return this.cancelTicketAttempt(workspaceId, ticketId, audit)
         run = pending
         audit = cancellation
       }
@@ -686,7 +698,7 @@ export class HostCiService {
     const current = await this.read(run.id, workspaceId)
     const reassigned = ['starting', 'running'].includes(current.state)
       && JSON.stringify(current.computer) !== JSON.stringify(run.computer)
-    if (current.state === 'queued' || reassigned) return this.cancelTicket(workspaceId, ticketId, audit)
+    if (current.state === 'queued' || reassigned) return this.cancelTicketAttempt(workspaceId, ticketId, audit)
     if ((audit || run.supersededBy) && ['starting', 'running'].includes(current.state)) {
       throw new DomainError('CI_CANCEL_PENDING', 'The build computer has not canceled the CI ticket.', 409)
     }
