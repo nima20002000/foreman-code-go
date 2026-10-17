@@ -1,5 +1,6 @@
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
+import { appMcpDirectory } from '@foreman-code/contracts/product-environment-node'
 import { accessSync, constants } from 'node:fs'
 import { delimiter, dirname, resolve } from 'node:path'
 
@@ -21,6 +22,8 @@ export function inheritedAgentEnvironment(source: NodeJS.ProcessEnv = process.en
   for (const key of Object.keys(environment)) {
     if (isControllerEnvironmentVariable(key)) delete environment[key]
   }
+  // Explicit runtime configuration delivery: this location contains no credential.
+  environment.FOREMAN_CODE_APP_MCP_DIRECTORY = appMcpDirectory(source)
   return environment
 }
 

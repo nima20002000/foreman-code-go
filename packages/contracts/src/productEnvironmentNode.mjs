@@ -1,7 +1,21 @@
 import { readFileSync } from 'node:fs'
 import process from 'node:process'
+import { userInfo } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { readProductEnvironment, resolveProductEnvironment } from './productEnvironment.mjs'
+
+/**
+ * Provider accounts may override HOME; the bridge belongs to the operating-system user.
+ * @param {NodeJS.ProcessEnv} [environment]
+ */
+export function appMcpDirectory(environment = process.env) {
+  const configured = readProductEnvironment(environment, 'APP_MCP_DIRECTORY')
+  if (configured !== undefined && !isAbsolute(configured)) {
+    throw new Error('FOREMAN_CODE_APP_MCP_DIRECTORY requires an absolute directory.')
+  }
+  return configured ?? join(userInfo().homedir, '.local', 'share', 'graphql', 'mcp')
+}
 
 /**
  * Select the custom env file before reading it; process settings retain precedence.

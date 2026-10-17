@@ -6,6 +6,7 @@ import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { inheritedAgentEnvironment } from '../apps/api/src/modules/harnesses/secrets.ts'
 
 const script = new URL('./ci-remote.mjs', import.meta.url).pathname
 
@@ -36,20 +37,36 @@ async function endpoint(t, audience, expectedWorkspace) {
     const message = JSON.parse(body)
     calls.push({ message, authorization: request.headers.authorization })
     let result = { protocolVersion: '2025-11-25' }
+    if (message.method === 'tools/list') {
+      const schema = { type: 'object', properties: {}, required: [] }
+      if (audience === 'operator') {
+        schema.properties.workspaceId = { type: 'string' }
+        schema.required.push('workspaceId')
+      }
+      result = message.params.cursor === 'ci-page'
+        ? { tools: [{ name: 'ci_run', inputSchema: schema }] }
+        : { tools: [{ name: 'ci_get', inputSchema: schema }], nextCursor: 'ci-page' }
+    }
     if (message.method === 'tools/call') {
       const { name, arguments: input } = message.params
-      const permitted = ['ci_run', 'ci_get', 'ci_logs_read'].includes(name)
-        && (audience === 'agent' ? !Object.hasOwn(input, 'workspaceId') : input.workspaceId === expectedWorkspace)
-      if (!permitted) {
-        result = { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: 'INVALID_REQUEST' } }) }] }
+      if (audience === 'operator' && name === 'workspace_list') {
+        result = { content: [{ type: 'text', text: JSON.stringify({ items: [{ workspace: { id: expectedWorkspace } }] }) }] }
+      } else if (audience === 'operator' && name === 'workspace_get') {
+        result = { content: [{ type: 'text', text: JSON.stringify({ workspace: { repository: { owner: 'example', name: 'project' } } }) }] }
       } else {
-        let value = { ticketId: 'fixture-ticket' }
-        if (name === 'ci_get') {
-          value = { run: { id: 'fixture-ticket', suite: 'unit', state: 'failed' },
-            wait: { status: 'settled' }, tests: { files: [] } }
+        const permitted = ['ci_run', 'ci_get', 'ci_logs_read'].includes(name)
+          && (audience === 'agent' ? !Object.hasOwn(input, 'workspaceId') : input.workspaceId === expectedWorkspace)
+        if (!permitted) {
+          result = { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: 'INVALID_REQUEST' } }) }] }
+        } else {
+          let value = { ticketId: 'fixture-ticket' }
+          if (name === 'ci_get') {
+            value = { run: { id: 'fixture-ticket', suite: 'unit', state: 'failed' },
+              wait: { status: 'settled' }, tests: { files: [] } }
+          }
+          if (name === 'ci_logs_read') value = { text: 'fixture failure' }
+          result = { content: [{ type: 'text', text: JSON.stringify(value) }] }
         }
-        if (name === 'ci_logs_read') value = { text: 'fixture failure' }
-        result = { content: [{ type: 'text', text: JSON.stringify(value) }] }
       }
     }
     response.setHeader('content-type', 'application/json')
@@ -61,6 +78,16 @@ async function endpoint(t, audience, expectedWorkspace) {
     server.closeAllConnections()
   }))
   return { calls, url: `http://127.0.0.1:${server.address().port}` }
+}
+
+function installBridge(root, url, token) {
+  const bridge = join(root, 'bridge')
+  mkdirSync(join(bridge, 'routes'), { recursive: true })
+  copyFileSync(new URL('./graphql-mcp.mjs', import.meta.url), join(bridge, 'launcher.mjs'))
+  writeFileSync(join(bridge, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`),
+    JSON.stringify({ endpoint: `${url}/mcp`, pid: process.pid,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), toolTimeoutMs: 300_000 }))
+  return bridge
 }
 
 function runCli(cwd, env) {
@@ -130,3 +157,61 @@ test('Operator CLI keeps its explicit workspace for admission, waits and diagnos
   assert.ok(tools.every(call => call.message.params.arguments.workspaceId === 'chosen-workspace'))
   assert.ok(server.calls.every(call => call.authorization === 'Bearer operator-fixture'))
 })
+
+for (const tokenName of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN']) {
+  for (const explicitWorkspace of [true, false]) {
+    test(`Operator chat CLI with ${tokenName} uses its advertised workspace schema (${explicitWorkspace ? 'explicit' : 'discovered'})`, async t => {
+      const fixture = repository(t)
+      if (!explicitWorkspace) {
+        execFileSync('git', ['-C', fixture.cwd, 'remote', 'set-url', '--push', 'origin', join(fixture.root, 'origin.git')])
+        execFileSync('git', ['-C', fixture.cwd, 'remote', 'set-url', 'origin', 'https://github.com/example/project.git'])
+      }
+      const server = await endpoint(t, 'operator', 'chosen-workspace')
+      const token = 'operator-chat-fixture'
+      const bridge = installBridge(fixture.root, server.url, token)
+      const env = { ...fixture.env, CI: '', FOREMAN_CODE_CI_LOCAL: '', FOREMAN_CODE_APP_MCP_DIRECTORY: bridge,
+        FOREMAN_CODE_MAIN_URL: 'http://127.0.0.1:9', FOREMAN_CODE_OPERATOR_TOKEN: 'unrelated-operator' }
+      for (const key of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN', 'GRAPHQL_APP_MCP_DIRECTORY', 'FOREMAN_CODE_WORKSPACE_ID']) delete env[key]
+      env[tokenName] = token
+      if (explicitWorkspace) env.FOREMAN_CODE_WORKSPACE_ID = 'chosen-workspace'
+      const result = await runCli(fixture.cwd, env)
+      assert.equal(result.code, 1, result.stderr)
+      assert.match(result.stderr, /unit FAILED/, result.stderr)
+      const tools = server.calls.filter(call => call.message.method === 'tools/call')
+      const ciCalls = tools.filter(call => call.message.params.name.startsWith('ci_'))
+      assert.deepEqual(ciCalls.map(call => call.message.params.name), ['ci_run', 'ci_get', 'ci_logs_read', 'ci_get'])
+      assert.ok(ciCalls.every(call => call.message.params.arguments.workspaceId === 'chosen-workspace'))
+      assert.deepEqual(tools.filter(call => !call.message.params.name.startsWith('ci_')).map(call => call.message.params.name),
+        explicitWorkspace ? [] : ['workspace_list', 'workspace_get'])
+      assert.ok(server.calls.every(call => call.authorization === `Bearer ${token}`))
+      assert.equal(server.calls.filter(call => call.message.method === 'tools/list').length, 2)
+    })
+  }
+}
+
+for (const directoryName of ['FOREMAN_CODE_APP_MCP_DIRECTORY', 'GRAPHQL_APP_MCP_DIRECTORY']) {
+  test(`Agent CLI retains the configured bridge from ${directoryName} across environment stripping and account HOME changes`, async t => {
+    const fixture = repository(t)
+    const server = await endpoint(t, 'agent')
+    const token = 'agent-runtime-fixture'
+    const bridge = installBridge(fixture.root, server.url, token)
+    const source = { ...fixture.env, CI: '', FOREMAN_CODE_CI_LOCAL: '',
+      HOME: join(fixture.root, 'provider-account'), FOREMAN_CODE_MAIN_URL: 'http://127.0.0.1:9',
+      FOREMAN_CODE_OPERATOR_TOKEN: 'controller-secret', DATABASE_URL: 'controller-database',
+      FOREMAN_CODE_APP_PRIVATE_KEY: 'controller-private-key' }
+    for (const key of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_APP_MCP_DIRECTORY', 'GRAPHQL_APP_MCP_DIRECTORY']) delete source[key]
+    source[directoryName] = bridge
+    const env = inheritedAgentEnvironment(source)
+    assert.equal(env.FOREMAN_CODE_APP_MCP_DIRECTORY, bridge)
+    assert.equal(env.GRAPHQL_APP_MCP_DIRECTORY, undefined)
+    for (const key of ['FOREMAN_CODE_OPERATOR_TOKEN', 'DATABASE_URL', 'FOREMAN_CODE_APP_PRIVATE_KEY']) assert.equal(env[key], undefined)
+    env.FOREMAN_CODE_MCP_TOKEN = token
+    const result = await runCli(fixture.cwd, env)
+    assert.equal(result.code, 1, result.stderr)
+    assert.match(result.stderr, /unit FAILED/, result.stderr)
+    const tools = server.calls.filter(call => call.message.method === 'tools/call')
+    assert.deepEqual(tools.map(call => call.message.params.name), ['ci_run', 'ci_get', 'ci_logs_read', 'ci_get'])
+    assert.ok(tools.every(call => !Object.hasOwn(call.message.params.arguments, 'workspaceId')))
+    assert.ok(server.calls.every(call => call.authorization === `Bearer ${token}`))
+  })
+}
