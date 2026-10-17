@@ -483,7 +483,7 @@ async function cutoverFixture(t, pendingMigrations) {
     ready: async value => {
       events.push('ready')
       assert.equal(running, true)
-      assert.equal(await production.readReleaseSelection(current), value)
+      assert.equal(await production.readReleaseSelection(current), await realpath(value))
     },
   }
   return { release, previousRelease, current, stateFile, steps, events,
@@ -496,7 +496,7 @@ for (const pending of [[], [3]]) {
     await production.runReleaseCutover(fixture)
     assert.deepEqual(fixture.events, ['pending migrations', 'stop', ...(pending.length ? ['migrate'] : []),
       'launcher', 'activate', 'enable', 'start', 'ready'])
-    assert.equal(await production.readReleaseSelection(fixture.current), fixture.release)
+    assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.release))
     assert.equal(fixture.running(), true)
     assert.equal(fixture.data(), pending.length ? 'after migration' : 'before migration')
     assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'ready')
@@ -512,7 +512,7 @@ test('a failed transactional migration keeps the previous release and saved data
   }
   await assert.rejects(production.runReleaseCutover(fixture), /migration failed/)
   assert.deepEqual(fixture.events, ['pending migrations', 'stop', 'migrate', 'stop', 'activate', 'start', 'ready'])
-  assert.equal(await production.readReleaseSelection(fixture.current), fixture.previousRelease)
+  assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.previousRelease))
   assert.equal(fixture.data(), 'before migration')
   assert.equal(fixture.running(), true)
   assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'recovered')
@@ -539,7 +539,7 @@ for (const pending of [[], [3]]) {
         }
       }
       await assert.rejects(production.runReleaseCutover(fixture), new RegExp(`${failure} failed`))
-      assert.equal(await production.readReleaseSelection(fixture.current), fixture.previousRelease)
+      assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.previousRelease))
       assert.equal(fixture.running(), true)
       assert.equal(fixture.data(), pending.length ? 'after migration' : 'before migration')
       const state = JSON.parse(await readFile(fixture.stateFile, 'utf8'))
@@ -569,7 +569,7 @@ for (const phase of ['migrating', 'migrated', 'checking-readiness']) {
     fixture.events.length = 0
     await production.recoverReleaseCutover(fixture)
     assert.deepEqual(fixture.events, ['stop', 'activate', 'start', 'ready'])
-    assert.equal(await production.readReleaseSelection(fixture.current), fixture.previousRelease)
+    assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.previousRelease))
     assert.equal(fixture.running(), true)
     assert.equal(fixture.data(), 'after migration')
     assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'recovered')
@@ -619,11 +619,11 @@ for (const failure of ['stop', 'application migration', 'checkpoint setup',
     assert.equal(fixture.running(), true)
     const migrated = !['stop', 'application migration', 'checkpoint setup'].includes(failure)
     assert.equal(fixture.data(), migrated ? 'after migration' : 'before migration')
-    assert.equal(await production.readReleaseSelection(fixture.current), fixture.previousRelease)
+    assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.previousRelease))
     assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'recovered')
     assert.equal((await stat(fixture.release)).isDirectory(), true)
     await production.runReleaseCutover(fixture)
-    assert.equal(await production.readReleaseSelection(fixture.current), fixture.release)
+    assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.release))
     assert.equal(fixture.data(), 'after migration')
     assert.equal(fixture.running(), true)
     assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'ready')
@@ -644,7 +644,7 @@ test('retains interrupted deployment details until code recovery succeeds on ret
   assert.equal((await stat(fixture.release)).isDirectory(), true)
   fixture.steps.activate = activate
   await production.recoverReleaseCutover(fixture)
-  assert.equal(await production.readReleaseSelection(fixture.current), fixture.previousRelease)
+  assert.equal(await production.readReleaseSelection(fixture.current), await realpath(fixture.previousRelease))
   assert.equal(fixture.running(), true)
   assert.equal(fixture.data(), 'before migration')
   assert.equal(JSON.parse(await readFile(fixture.stateFile, 'utf8')).phase, 'recovered')
@@ -1075,7 +1075,7 @@ test('pruning retries abandoned removals even when every release is retained', a
   await writeFile(join(abandoned, 'old-dependency'), 'old')
   const removals = []
   await pruneReleases(releases, [retained], { removeInBackground: path => removals.push(path) })
-  assert.deepEqual(removals, [abandoned])
+  assert.deepEqual(removals, [await realpath(abandoned)])
   assert.equal(await readFile(join(abandoned, 'old-dependency'), 'utf8'), 'old')
   assert.deepEqual(await readdir(releases), ['release-now'])
 })
@@ -1091,5 +1091,5 @@ test('pruning preserves a selected release inside an abandoned removal directory
   const removals = []
   await pruneReleases(releases, [], { removeInBackground: path => removals.push(path) })
   assert.deepEqual(removals, [])
-  assert.equal(await realpath(join(parent, 'current')), selected)
+  assert.equal(await realpath(join(parent, 'current')), await realpath(selected))
 })

@@ -45,8 +45,8 @@ export function createTestRoot(parent, prefix = 'graphql-test-') {
   if (parent === undefined) {
     parent = join(homedir(), '.cache', 'graphql-disposable-tests')
     mkdirSync(parent, { recursive: true, mode: 0o700 })
-    parent = realpathSync(parent)
   }
+  parent = realpathSync(parent)
   const directory = mkdtempSync(join(parent, prefix))
   const token = randomUUID()
   const owner = findParentTestRoot(directory)

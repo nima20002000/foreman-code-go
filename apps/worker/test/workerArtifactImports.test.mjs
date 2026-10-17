@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -94,7 +94,7 @@ async function assertBundledWatchdog(f, worker, suite) {
   // This is the command handed to the process launcher, not repository source text.
   const watchdog = / node '([^']+)' -- bash -c/.exec(command)?.[1];
   assert.ok(watchdog, 'The test command must run through the watchdog');
-  const location = relative(join(f.directory, 'release'), watchdog);
+  const location = relative(await realpath(join(f.directory, 'release')), watchdog);
   assert.ok(!isAbsolute(location) && !location.startsWith('..'), 'The helper must belong to the Worker artifact');
   const result = spawnSync(process.execPath, [watchdog, '--', process.execPath, '-e',
     "console.log('watched command completed')"], {

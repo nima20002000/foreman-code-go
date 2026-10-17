@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -32,7 +32,7 @@ function fixture(t, pathKind = 'direct') {
   copyFileSync(new URL('../packages/contracts/src/productEnvironment.mjs', import.meta.url),
     join(root, 'packages/contracts/src/productEnvironment.mjs'))
   assert.equal(spawnSync('git', ['init', '-q', root]).status, 0)
-  const common = join(root, '.git')
+  const common = realpathSync(join(root, '.git'))
   const state = join(common, 'graphql-heavy-jobs')
   for (const folder of ['queue', 'running']) mkdirSync(join(state, folder), { recursive: true })
   const env = { ...process.env, TMPDIR: base, FOREMAN_CODE_HEAVY_BASE_TMPDIR: root }
@@ -70,12 +70,12 @@ for (const pathKind of ['direct', 'symlinked']) {
         }
       }
       f.hook(`
-  const read = fs.readFileSync, list = fs.readdirSync
-  fs.readdirSync = (path, ...args) => path === '/proc' ? ['999999998'] : list(path, ...args)
-  fs.readFileSync = (path, ...args) => {
-    if (String(path).startsWith('/proc/999999998/')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
-    return read(path, ...args)
-  }`)
+const read = fs.readFileSync, list = fs.readdirSync
+fs.readdirSync = (path, ...args) => path === '/proc' ? ['999999998'] : list(path, ...args)
+fs.readFileSync = (path, ...args) => {
+  if (String(path).startsWith('/proc/999999998/')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
+  return read(path, ...args)
+}`)
       const result = f.run()
       assert.equal(result.status, 0, result.stderr || result.error?.message)
       assert.match(result.stdout, /replacement admitted/)
@@ -90,12 +90,12 @@ for (const pathKind of ['direct', 'symlinked']) {
     mkdirSync(worktree)
     const childScript = `process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)`
     const script = `
-  const { spawn } = require('node:child_process')
-  process.on('SIGTERM', () => {})
-  const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
-  child.once('message', () => console.log(child.pid))
-  setInterval(() => {}, 1000)
-  `
+const { spawn } = require('node:child_process')
+process.on('SIGTERM', () => {})
+const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+child.once('message', () => console.log(child.pid))
+setInterval(() => {}, 1000)
+`
     const child = spawn(process.execPath, ['-e', script], { cwd: worktree, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const exited = once(child, 'exit')
     t.after(async () => {
@@ -116,7 +116,6 @@ for (const pathKind of ['direct', 'symlinked']) {
     } catch (error) { if (error.code !== 'ENOENT') throw error }
     assert.ok(['gone', 'Z'].includes(state), `descendant remains ${state}`)
   })
-
 }
 
 test('ignores foreign and protected process environments without degrading token inspection', t => {
