@@ -299,15 +299,19 @@ it('counts a transfer reserved by another process against the shared cache budge
   expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
 
-it('reclaims the reservation of a process that is gone', async () => {
+it('keeps a live transfer charged even when its recorded process identity is obsolete', async () => {
   const held = await twoRepositories()
   const reservation = (await readdir(held.f.cache)).find(name => name.endsWith('.reservation'))!
   const path = join(held.f.cache, reservation)
   const gone = spawnSync(process.execPath, ['-e', ''])
   const owner = JSON.parse(await readFile(path, 'utf8')) as { pid: number }
   await writeFile(path, JSON.stringify({ ...owner, pid: gone.pid }))
+  try {
+    await expect(held.fetchOther()).rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  } finally {
+    held.release.resolve()
+    await held.slow
+  }
   await expect(held.fetchOther()).resolves.toBeTruthy()
-  held.release.resolve()
-  await held.slow
   expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
