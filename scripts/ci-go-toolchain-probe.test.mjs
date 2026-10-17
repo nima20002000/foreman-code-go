@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: jsonvalue at immutable source f6b3eaa0e62d8b79221638a135aace3459881bd6.

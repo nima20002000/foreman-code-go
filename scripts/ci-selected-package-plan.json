@@ -1,0 +1,235 @@
+{
+  "source": "f6b3eaa0e62d8b79221638a135aace3459881bd6",
+  "sourceTree": "5e581dee7e789a27eeddce84cece3af613b90f56",
+  "package": "./internal/jsonvalue",
+  "goFiles": [
+    "internal/canonicaljson/canonical.go",
+    "internal/canonicaljson/string.go",
+    "internal/canonicaljson/number.go",
+    "internal/canonicaljson/canonical_test.go",
+    "internal/canonicaljson/legacy.go",
+    "internal/canonicaljson/legacy_test.go",
+    "internal/jsonvalue/value.go",
+    "internal/jsonvalue/parser.go",
+    "internal/jsonvalue/scalars.go",
+    "internal/jsonvalue/parser_test.go"
+  ],
+  "unitTests": [
+    "TestParseReferenceVectors",
+    "TestUTF16IdentityPreservesDistinctValues",
+    "TestParseRequiresNormalizedUTF8",
+    "TestCanonicalReferenceVectors",
+    "TestGraphReferenceVectors",
+    "TestCanonicalGoContainerRepresentations",
+    "TestCanonicalGoNumberRepresentations",
+    "TestGraphRejectsNonJSONGoValues",
+    "TestNumericKeysFirstLegacyReferenceVectors"
+  ],
+  "integrationTests": [],
+  "referenceVectors": {
+    "frozen": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+    "frozenTree": "0b8843295e54ed7830bbb276e782a8eff028b349",
+    "frozenPackageBlob": "33f1295414654e648b75bcb7c5f6ff0c87c21179",
+    "frozenSparseObjects": [
+      "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+      "0b8843295e54ed7830bbb276e782a8eff028b349",
+      "59db4813ac18c3a1d2a1bd7006aece058fda1418",
+      "9658a0480650d19156982cbed01202c4ca0dae21",
+      "33f1295414654e648b75bcb7c5f6ff0c87c21179"
+    ],
+    "frozenSparsePack": "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",
+    "frozenSparsePackSha256": "4877e5b8cea8e5e5cf16915eb074a7d832e12d4692b1990199df2640f5f44fe0",
+    "sourceProvenance": {
+      "pr": 39,
+      "source": {
+        "schemaVersion": 1,
+        "repository": "nima20002000/foreman-code-go",
+        "base": "7fa547058109519a99c904493c916662fde6a474",
+        "baseTree": "4940336b1b5038d1b14a3add25118e13ed8aa121",
+        "frozenTS": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+        "candidate": "f6b3eaa0e62d8b79221638a135aace3459881bd6",
+        "candidateTree": "5e581dee7e789a27eeddce84cece3af613b90f56",
+        "changedFiles": [
+          {
+            "path": "backend/internal/canonicaljson/canonical.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "d823678553b54d30c050baddf4d4b6de41df13f5",
+            "sha256": "6ec2ff3ff10a1a1251deb1aececb88cfa692da944cfb07372d2a41022e43496a"
+          },
+          {
+            "path": "backend/internal/canonicaljson/string.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "0278fa30a7cca9ef945ed02f88db176b1037921e",
+            "sha256": "d1f343484319d4258bc0309fef23e555afa00d9fdb2fece9fa0c9dab6287868a"
+          },
+          {
+            "path": "backend/internal/canonicaljson/number.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "8a578866f4ca2724ca563798c3584220eed756ce",
+            "sha256": "a8a9b44fc886f53369f45f445106481e51b8c0c3dd9e891611087e00a60c9703"
+          },
+          {
+            "path": "backend/internal/canonicaljson/canonical_test.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "d54170100aaf43513241cd5970445b44ae2c73ba",
+            "sha256": "cf75656401598b78b0cd7814ce7689e072b74d18e002e8fd95fba72c049c5bc4"
+          },
+          {
+            "path": "backend/internal/canonicaljson/legacy.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "fc7cf24dd2adb15a88c7d9c243b7ec0da05de424",
+            "sha256": "b40d60d23327a3ee547ed8ded4dd5d165bb440e2d25a7f2d141e3ac7cf6a5c88"
+          },
+          {
+            "path": "backend/internal/canonicaljson/legacy_test.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "fb07c64c0598b8119e6ccc63e518d7c7cbc0ae0d",
+            "sha256": "c0a88168aa27efbe2228768aa0e171a3a6e47cef569919aea9fafdf44b1af4b4"
+          },
+          {
+            "path": "backend/internal/canonicaljson/README.md",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "6952f477ae22fff912b0ebf6273475faac9e3a10",
+            "sha256": "cbe62de53f3832427b4123a1c1f87249c86a301b9707bab8c5cb4e57dceca670"
+          },
+          {
+            "path": "scripts/go-contracts/canonical-vectors.ts",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "dd95520b8b21eeff0f35920d1372d46502d057d2",
+            "sha256": "ef8dd11ee40219579ff6b3ce895a5e14366020a2c0110bc3a5a7042aa8013729"
+          },
+          {
+            "path": "backend/internal/jsonvalue/value.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "a85bb869b7dcab0ed758fc126a3b8c3db93122aa",
+            "sha256": "8c2ad147333b36cfdec6611b9c7d6022e5ff6f7a21e7bdb5bd0c4d5efdcc2df0"
+          },
+          {
+            "path": "backend/internal/jsonvalue/parser.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "680ee7f3d43e4ffc6bd189519cd5ac2518630183",
+            "sha256": "06e7590129be3bd632e75bd60115f58adf73e332121e0bdedbb7fc9a1396c4e0"
+          },
+          {
+            "path": "backend/internal/jsonvalue/scalars.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "58920e97d0c548e970e630397394097ed8c8534d",
+            "sha256": "c1b6ca88377fcf6c9e4c4c4e7f6866c8d78028898f4e1af19259ce9abcba731a"
+          },
+          {
+            "path": "backend/internal/jsonvalue/parser_test.go",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "42d78aa00ebd5285a9316a8f0a2803076a1b47ad",
+            "sha256": "3804ca72b0d992b9a590f0c8a7676e8ea60e672cc3e411630b8c78953eae0502"
+          },
+          {
+            "path": "backend/internal/jsonvalue/README.md",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "5502fdc9fc915834c721d0b2099efae890e324e1",
+            "sha256": "d0434c828547af938d6754c57597b1fb008fa0bb5e4d480f0e618ab948d2f0cb"
+          },
+          {
+            "path": "scripts/go-contracts/json-vectors.mjs",
+            "mode": "100644",
+            "baseBlob": null,
+            "candidateBlob": "facf9a4351bb36f75bf94e23fe5c7e43823ede35",
+            "sha256": "e4a52c4cb56bc06bfa7ac40839d51b47a0d2ec0be99b553ec9ace7b728745acd"
+          }
+        ],
+        "verification": "authored; not executed in Web",
+        "publication": "none"
+      },
+      "cumulativeSupersedes": [
+        "3c1116f6e92e705bf90686cf8039c393de2daa83",
+        "2c825be1fe2e40d4288f3af5ceb3341e70a6eebe"
+      ],
+      "packages": [
+        "./internal/jsonvalue",
+        "./internal/canonicaljson"
+      ],
+      "goTestRoots": [
+        "TestParseReferenceVectors",
+        "TestUTF16IdentityPreservesDistinctValues",
+        "TestParseRequiresNormalizedUTF8",
+        "TestCanonicalReferenceVectors",
+        "TestGraphReferenceVectors",
+        "TestCanonicalGoContainerRepresentations",
+        "TestCanonicalGoNumberRepresentations",
+        "TestGraphRejectsNonJSONGoValues",
+        "TestNumericKeysFirstLegacyReferenceVectors"
+      ],
+      "formatFiles": [
+        "backend/internal/canonicaljson/canonical.go",
+        "backend/internal/canonicaljson/string.go",
+        "backend/internal/canonicaljson/number.go",
+        "backend/internal/canonicaljson/canonical_test.go",
+        "backend/internal/canonicaljson/legacy.go",
+        "backend/internal/canonicaljson/legacy_test.go",
+        "backend/internal/jsonvalue/value.go",
+        "backend/internal/jsonvalue/parser.go",
+        "backend/internal/jsonvalue/scalars.go",
+        "backend/internal/jsonvalue/parser_test.go"
+      ],
+      "scriptAnalysisFiles": [
+        "scripts/go-contracts/json-vectors.mjs",
+        "scripts/go-contracts/canonical-vectors.ts"
+      ],
+      "producers": [
+        {
+          "file": "scripts/go-contracts/json-vectors.mjs",
+          "args": [
+            "<actual-frozen-checkout>",
+            "<isolated-output>/json-vectors.json"
+          ],
+          "outcomes": 54,
+          "consumerEnv": "JSON_VALUE_VECTORS_FILE"
+        },
+        {
+          "file": "scripts/go-contracts/canonical-vectors.ts",
+          "runnerFlag": "--experimental-strip-types",
+          "args": [
+            "<isolated-output>/canonical-vectors.json"
+          ],
+          "consumerEnv": "CANONICAL_JSON_VECTORS_FILE"
+        },
+        {
+          "file": "scripts/go-contracts/canonical-vectors.ts",
+          "runnerFlag": "--experimental-strip-types",
+          "args": [
+            "<isolated-output>/canonical-legacy-vectors.json",
+            "--legacy"
+          ],
+          "consumerEnv": "CANONICAL_JSON_LEGACY_VECTORS_FILE"
+        }
+      ],
+      "limits": [
+        "No LocaleOrderLegacy implementation; locale captures are observations only",
+        "HTTP body adapter and retained depth10001 regression remain separate",
+        "No generated auth/domain types in this slice",
+        "Exact actual chosen runtime/source/tree/producer hashes/ticket artifacts must be bound by controller, fixture self-label is insufficient"
+      ]
+    }
+  },
+  "packages": [
+    "./internal/jsonvalue",
+    "./internal/canonicaljson"
+  ],
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "mode": "package"
+}
