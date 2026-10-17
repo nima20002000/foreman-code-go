@@ -30,7 +30,7 @@ func TestManagedBytesRejectsTemporaryAndOverlappingRoots(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := storage.Initialize(); err == nil || err.Error() != "File storage must be separate from temporary, workspace, and harness directories." {
+		if err := storage.Initialize(); err == nil || err.Error() != "file storage must be separate from temporary, workspace, and harness directories" {
 			t.Fatalf("temporary-root rejection = %v", err)
 		}
 	}
@@ -40,7 +40,7 @@ func TestManagedBytesRejectsTemporaryAndOverlappingRoots(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := storage.Initialize(); err == nil || err.Error() != "File storage must be separate from temporary, workspace, and harness directories." {
+		if err := storage.Initialize(); err == nil || err.Error() != "file storage must be separate from temporary, workspace, and harness directories" {
 			t.Fatalf("overlapping-root rejection = %v", err)
 		}
 	}
@@ -60,7 +60,7 @@ func TestManagedBytesRejectsSymlinkAndPublicDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Initialize(); err == nil || err.Error() != "File storage must not traverse symbolic links." {
+	if err := storage.Initialize(); err == nil || err.Error() != "file storage must not traverse symbolic links" {
 		t.Fatalf("symlink-root rejection = %v", err)
 	}
 	root := filepath.Join(parent, "public")
@@ -74,7 +74,7 @@ func TestManagedBytesRejectsSymlinkAndPublicDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Initialize(); err == nil || err.Error() != "File storage directories must be private, owned directories, not symbolic links." {
+	if err := storage.Initialize(); err == nil || err.Error() != "file storage directories must be private, owned directories, not symbolic links" {
 		t.Fatalf("public-directory rejection = %v", err)
 	}
 }
@@ -82,7 +82,7 @@ func TestManagedBytesRejectsSymlinkAndPublicDirectories(t *testing.T) {
 func TestManagedBytesRejectsHostPathsAsStorageKeys(t *testing.T) {
 	storage := byteStorage(t, 1024)
 	for _, key := range []string{"", "../escape", "/absolute", "UPPERCASE-1111-4111-8111-111111111111"} {
-		if err := storage.RemoveUnsent(key); err == nil || err.Error() != "Invalid internal storage key." {
+		if err := storage.RemoveUnsent(key); err == nil || err.Error() != "invalid internal storage key" {
 			t.Fatalf("invalid-key rejection = %v", err)
 		}
 	}

@@ -45,7 +45,7 @@ type FileByteStorage struct {
 
 func NewFileByteStorage(root string, maxBytes int64, excludedRoots []string) (*FileByteStorage, error) {
 	if !filepath.IsAbs(root) || maxBytes < 1 || maxBytes > maxSafeInteger {
-		return nil, errors.New("File storage requires an absolute directory and a positive byte limit.")
+		return nil, errors.New("file storage requires an absolute directory and a positive byte limit")
 	}
 	return &FileByteStorage{
 		root:          filepath.Clean(root),
@@ -81,7 +81,7 @@ func (storage *FileByteStorage) initialize() error {
 		}
 		excluded[index] = resolved
 		if overlaps(resolved, storage.root) {
-			return errors.New("File storage must be separate from temporary, workspace, and harness directories.")
+			return errors.New("file storage must be separate from temporary, workspace, and harness directories")
 		}
 	}
 	for ancestor := storage.root; ; ancestor = filepath.Dir(ancestor) {
@@ -93,7 +93,7 @@ func (storage *FileByteStorage) initialize() error {
 			return err
 		}
 		if canonical != ancestor {
-			return errors.New("File storage must not traverse symbolic links.")
+			return errors.New("file storage must not traverse symbolic links")
 		}
 		break
 	}
@@ -105,7 +105,7 @@ func (storage *FileByteStorage) initialize() error {
 		return err
 	}
 	if canonical != storage.root {
-		return errors.New("File storage must not traverse symbolic links.")
+		return errors.New("file storage must not traverse symbolic links")
 	}
 	for _, path := range excluded {
 		canonical, err := filepath.EvalSymlinks(path)
@@ -115,7 +115,7 @@ func (storage *FileByteStorage) initialize() error {
 			return err
 		}
 		if overlaps(canonical, storage.root) {
-			return errors.New("File storage overlaps an excluded directory.")
+			return errors.New("file storage overlaps an excluded directory")
 		}
 	}
 	for _, path := range []string{filepath.Join(storage.root, "objects"), filepath.Join(storage.root, "staging")} {
@@ -145,7 +145,7 @@ func privateDirectory(path string) error {
 		return err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || !ownedDirectory(info) {
-		return errors.New("File storage directories must be private, owned directories, not symbolic links.")
+		return errors.New("file storage directories must be private, owned directories, not symbolic links")
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func openRegular(path string) (*os.File, error) {
 	}
 	info, err := handle.Stat()
 	if err == nil && !info.Mode().IsRegular() {
-		err = errors.New("Managed bytes are not a regular file.")
+		err = errors.New("managed bytes are not a regular file")
 	}
 	if err != nil {
 		return nil, errors.Join(err, handle.Close())
@@ -176,7 +176,7 @@ func openRegular(path string) (*os.File, error) {
 
 func storageKey(value string) (string, error) {
 	if !storageKeyPattern.MatchString(value) {
-		return "", errors.New("Invalid internal storage key.")
+		return "", errors.New("invalid internal storage key")
 	}
 	return value, nil
 }
@@ -220,7 +220,7 @@ func fileError(code, message string, status int, cause error) error {
 
 func requireVerifier(verifyType TypeVerifier) error {
 	if verifyType == nil {
-		return errors.New("Managed file storage requires its file-type validator.")
+		return errors.New("managed file storage requires its file-type validator")
 	}
 	return nil
 }

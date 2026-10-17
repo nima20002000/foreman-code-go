@@ -10,7 +10,7 @@ import (
 // Other operating systems still need an equivalent no-follow and descriptor
 // change-identity adapter before storage can be enabled there. Never replace
 // those checks with a permissive filesystem fallback.
-var errStoragePlatform = errors.New("Managed file storage is not implemented on this platform.")
+var errStoragePlatform = errors.New("managed file storage is not implemented on this platform")
 
 func storagePlatform() error { return errStoragePlatform }
 

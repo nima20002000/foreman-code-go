@@ -20,7 +20,7 @@ func (storage *FileByteStorage) Receive(ctx context.Context, key string, source 
 		return candidate, err
 	}
 	if source == nil {
-		return candidate, errors.New("Managed file storage requires an upload source.")
+		return candidate, errors.New("managed file storage requires an upload source")
 	}
 	if err := storage.Initialize(); err != nil {
 		return candidate, err
@@ -137,7 +137,7 @@ func writeBytes(handle *os.File, bytes []byte) error {
 			return err
 		}
 		if written == 0 {
-			return errors.New("Managed storage made no write progress.")
+			return errors.New("managed storage made no write progress")
 		}
 		bytes = bytes[written:]
 	}
