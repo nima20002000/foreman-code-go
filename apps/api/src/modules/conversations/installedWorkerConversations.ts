@@ -191,6 +191,13 @@ function createInstalledConversationAllocator(input: InstalledWorkerConversation
         workingDirectory: binding.workingDirectory, instructionsDelivered: options.instructionsDelivered }
     }
     return { manager, inspector, nativeOwner, start,
+      hasExited() {
+        const original = launch
+        return original !== undefined && input.registry.snapshot().launches.some(current =>
+          current.owner === scope.owner && current.launchId === original.launchId
+          && (current.lifecycle === 'ended' || current.lifecycle === 'closed')
+          && workerConversationProcessDigest(binding, current) === workerConversationProcessDigest(binding, original))
+      },
       async refreshApplicationAccess(token, signal) {
         if (!mcp || !mcpEnvironment || appMcpAccess !== 'scoped') unavailable('The retained Codex MCP route is unavailable.')
         await before(signal)
@@ -243,8 +250,13 @@ export async function createInstalledWorkerConversations(input: InstalledWorkerC
     prepare: (binding, configuration, connection) => allocate(binding, configuration, connection, 'preparation'),
     recover: (record, configuration, connection, signal, request) => recoverWorkerConversation({
       record, configuration, connection, signal, request, registry: input.registry, journal: conversationJournal,
-      allocate: () => allocate(request.method === 'conversation.open' && request.previousBinding
-        ? request.binding : record.binding, configuration, connection, 'chat'),
+      allocate: () => {
+        const originalSkills = request.method === 'conversation.open' && request.previousConfiguration
+          && isDeepStrictEqual(configuration, request.previousConfiguration)
+        const binding = request.method === 'conversation.open' && request.previousBinding && !originalSkills
+          ? request.binding : record.binding
+        return allocate(binding, configuration, connection, 'chat')
+      },
       assertCurrent: () => callbacks.authorize(request, connection, signal),
     }),
     readCompaction: async (request, _record, connection, signal) => {
