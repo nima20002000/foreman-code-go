@@ -238,7 +238,7 @@ it('fetches another retention page after sending the first and keeps the five-mi
   expect(query).toHaveBeenCalledTimes(2)
 })
 
-function remoteExecutionFixture(enabled: boolean) {
+function remoteExecutionFixture(enabled?: boolean) {
   const mainId = '11111111-1111-4111-8111-111111111111'
   const registration = { mainId, deviceId: '22222222-2222-4222-8222-222222222222',
     workerInstallationId: '33333333-3333-4333-8333-333333333333', status: 'paired',
@@ -251,14 +251,14 @@ function remoteExecutionFixture(enabled: boolean) {
     if (sql.includes('from device_registrations')) return { rows: [{ record: registration }] }
     return { rows: [row] }
   } } as unknown as pg.Pool
-  const policy = new WorkerExecutionPolicy({ enabled, managedBy: 'startup' })
+  const policy = new WorkerExecutionPolicy({ enabled: enabled ?? true, managedBy: 'startup' })
   const status = { operation: 'status' as const, ready: true, reasons: [], cpuCount: 8,
     memoryBytes: 16 * 2 ** 30, runs: [], startProtocolVersion: 3 }
   const request = vi.fn(async (_device: string, _namespace: string, payload: CiHostRequest) => ({ payload:
     payload.operation === 'cancel' ? { operation: 'cancel', runId: payload.runId, cancelled: true } : status }))
   const devices = { capabilities: () => [{ namespace: CI_HOST_NAMESPACE, mainCanRequest: true }], request }
   const endpoint = new ProductionHostCiEndpoint(pool, mainId, () => devices,
-    { handle: async () => status }, [], undefined, policy)
+    { handle: async () => status }, [], undefined, enabled === undefined ? undefined : policy)
   const computer: HostCiComputer = { key: row.host_key, hostRef: target.hostRef, label: 'Worker', priority: 50 }
   const start = CiHostRequestSchema.parse({ operation: 'start', runId: '44444444-4444-4444-8444-444444444444',
     repository: 'example/project', commit: 'a'.repeat(40), suite: 'unit' })
@@ -286,4 +286,9 @@ it('rechecks remote execution after a status probe and before delivering Start',
   })
   expect(f.request).toHaveBeenCalledTimes(1)
   expect(f.request.mock.calls[0]?.[2].operation).toBe('status')
+})
+
+it('selects paired computers by default without an execution opt-in', async () => {
+  const f = remoteExecutionFixture()
+  expect((await f.endpoint.computers()).map(computer => computer.key)).toEqual([f.computer.key])
 })
