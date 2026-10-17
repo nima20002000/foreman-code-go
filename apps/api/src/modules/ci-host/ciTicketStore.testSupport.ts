@@ -21,10 +21,20 @@ export function ticketStore(initial: CiRunRecord[], hostKeys: Record<string, str
     row.record = JSON.parse(next.record as string)
     return { rows: [], rowCount: 1 }
   }
+  const claims = new Map<unknown, unknown>()
   const query = async (sql: string, p: unknown[] = []) => {
     const text = sql.replace(/\s+/gu, ' ').trim()
-    if (text.startsWith('insert into ci_dispatch_claims') || text.startsWith('update ci_dispatch_claims')) {
+    if (text.startsWith('insert into ci_dispatch_claims')) {
+      if (claims.has(p[0])) return { rows: [], rowCount: 0 }
+      claims.set(p[0], p[1])
       return { rows: [{ ticket_id: p[0] }], rowCount: 1 }
+    }
+    if (text.startsWith('update ci_dispatch_claims')) {
+      return { rows: [], rowCount: Number(claims.get(p[0]) === p[1]) }
+    }
+    if (text.startsWith('delete from ci_dispatch_claims')) {
+      if (claims.get(p[0]) === p[1]) claims.delete(p[0])
+      return { rows: [], rowCount: 1 }
     }
     if (text.startsWith('update ci_runs set record=$2::jsonb')) {
       return changed(matches(p[0], p[2]), { record: p[1] })

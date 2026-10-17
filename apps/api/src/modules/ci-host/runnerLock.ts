@@ -1,9 +1,9 @@
-import { open } from 'node:fs/promises'
+import { open, type FileHandle } from 'node:fs/promises'
 import { directoryFlags, withPrivateDirectoryLock } from '../sources/privateFilesystem.js'
 import { SourceError } from '../sources/manifest.js'
 
 /** Native entry and reconciliation share a kernel lock, including across Worker restarts. */
-export async function withHostCiRunLock<T>(directory: string, work: () => Promise<T>,
+export async function withHostCiRunLock<T>(directory: string, work: (guard: FileHandle) => Promise<T>,
   options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}): Promise<T | undefined> {
   const handle = await open(directory, directoryFlags)
   try {

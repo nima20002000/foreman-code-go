@@ -661,12 +661,21 @@ export class HostCiService {
         run = pending
         audit = cancellation
       }
-      await withCiTicketLock(this.pool, run.id, async client => {
+      const handled = await withCiTicketLock(this.pool, run.id, async client => {
         const current = await this.read(run.id, workspaceId, client)
         if (current.computer && ['starting', 'running'].includes(current.state)) {
           await this.cancelAssignedTicket(current, client, current.cancellation ?? audit)
         }
+        return true
       })
+      if (!handled) {
+        // Start can hold the claim while waiting on I/O. Signal Stop now; only the claim owner may settle.
+        const current = await this.read(run.id, workspaceId)
+        if (current.cancellation && current.computer && ['starting', 'running'].includes(current.state)) {
+          const computer = await this.computer(current.computer.hostRef)
+          await cancelAssignedCiTicket(this.endpoint, computer, current)
+        }
+      }
     }
     const current = await this.read(run.id, workspaceId)
     const reassigned = ['starting', 'running'].includes(current.state)
