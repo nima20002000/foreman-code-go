@@ -330,10 +330,21 @@ it('confirms preparation cleanup only after native closure and transfer reservat
   expect(f.preparationTransfersClosed).not.toHaveBeenCalled()
   expect(f.preparationReconciled).not.toHaveBeenCalled()
   f.preparationNativeClosed.mockResolvedValue(true)
-  f.preparationTransfersClosed.mockRejectedValueOnce(new Error('Transfer cleanup incomplete'))
-  await vi.waitFor(async () => {
-    await expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
+  const transferCleanup = Promise.withResolvers<void>()
+  const releaseTransfers = Promise.withResolvers<void>()
+  f.preparationTransfersClosed.mockImplementationOnce(async () => {
+    transferCleanup.resolve()
+    await releaseTransfers.promise
+    throw new Error('Transfer cleanup incomplete')
   })
+  const rejected = expect(f.service.handle(request, f.context)).rejects.toThrow('Transfer cleanup incomplete')
+  try {
+    await transferCleanup.promise
+    expect(f.preparationReconciled).not.toHaveBeenCalled()
+  } finally {
+    releaseTransfers.resolve()
+    await rejected
+  }
   expect(f.preparationReconciled).not.toHaveBeenCalled()
   const response = await f.service.handle(request, f.context)
   expect(response).toMatchObject({ operation: request.operation, closure: {

@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it } from 'vitest'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
 import { harnessSettingsKeys } from '../../shared/api/harnessSettings'
@@ -14,6 +14,11 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const base = { pluginId: 'notes@trusted', name: 'notes', marketplaceName: 'trusted', version: '1.0.0',
   enabled: true, sourceType: 'remote', installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL', verification: 'catalog' }
 const clients: QueryClient[] = []
+beforeEach(() => {
+  server.use(http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({
+    graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3999/mcp' },
+  })))
+})
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); sessionStorage.clear() })
 function mount(path: string, reuse?: QueryClient) {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
@@ -142,14 +147,42 @@ it('does not combine newer list revisions with delayed old details', async () =>
   const next = 'sha256:' + 'c'.repeat(64)
   let release!: () => void
   const gate = new Promise<void>((resolve) => { release = resolve })
+  const detailRequested = Promise.withResolvers<void>()
   server.use(
     http.get('/api/management/harnesses/codex/plugins', () => HttpResponse.json(listPayload(false, next))),
     http.get('/api/management/harnesses/codex/plugins/operations', () => HttpResponse.json({ items: [] })),
-    http.get('/api/management/harnesses/codex/plugins/:pluginId', async () => { await gate; return HttpResponse.json(detailPayload(false, next)) }),
+    http.get('/api/management/harnesses/codex/plugins/:pluginId', async () => {
+      detailRequested.resolve()
+      await gate
+      return HttpResponse.json(detailPayload(false, next))
+    }),
   )
-  const refreshing = client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled())
-  release(); await refreshing
+  const listUpdated = Promise.withResolvers<void>()
+  const disabled = Promise.withResolvers<void>()
+  const install = screen.getByRole('button', { name: 'Install plugin' })
+  const observer = new MutationObserver(() => {
+    if (install.hasAttribute('disabled')) disabled.resolve()
+  })
+  observer.observe(install, { attributes: true, attributeFilter: ['disabled'] })
+  const unsubscribe = client.getQueryCache().subscribe(event => {
+    if (event.query.queryKey.includes('codex-plugins')
+      && (event.query.state.data as { revision?: string } | undefined)?.revision === next) listUpdated.resolve()
+  })
+  let refreshing: Promise<void> | undefined
+  try {
+    await act(async () => {
+      refreshing = client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
+      await Promise.all([listUpdated.promise, detailRequested.promise])
+    })
+    // Query cache completion can precede the batched observer render.
+    await disabled.promise
+    expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled()
+  } finally {
+    observer.disconnect()
+    unsubscribe()
+    release()
+    await act(async () => { await refreshing })
+  }
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
 }, 20_000)
 it.each(['list', 'detail'])('keeps protected content hidden through success → 403 → 503 for %s', async (target) => {
@@ -217,9 +250,6 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   const gate = new Promise<void>(resolve => { release = resolve })
   const next = 'sha256:' + 'c'.repeat(64)
   server.use(
-    http.get('/api/management/harnesses/claude/setup-options', () => HttpResponse.json({
-      graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3999/mcp' },
-    })),
     http.get('/api/management/harnesses/codex/plugins', async ({ request }) => {
       if (new URL(request.url).searchParams.get('refresh') === 'true') {
         refreshRequested = true
