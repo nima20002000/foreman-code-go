@@ -11,6 +11,9 @@ import { pathToFileURL } from 'node:url'
 import { gzipSync } from 'node:zlib'
 
 const baseline = '8d2ea76c5028ef4458bf8cd64ef8624422e71d9f'
+const baselineSnapshot = '51e85118bfcddef492cc4ecf555095ff09e6fe11'
+const baselineTree = '0b8843295e54ed7830bbb276e782a8eff028b349'
+const publicMirror = 'https://github.com/nima20002000/foreman-code-go-ci.git'
 const repository = process.cwd()
 const root = mkdtempSync(join(tmpdir(), 'foreman-schema-capture-'))
 const source = join(root, 'source')
@@ -217,7 +220,9 @@ async function captureSchema(environment) {
       const actual = (await restoreClient.query('select version from application_migrations order by version')).rows.map(row => Number(row.version))
       if (JSON.stringify(actual) !== JSON.stringify(migrations)) throw new Error('Restored migration history differs.')
     } finally { await restoreClient.end() }
-    const provenance = { sourceCommit: baseline, capturedAt: new Date().toISOString(), rawSha256: digest(raw),
+    const provenance = { sourceCommit: baseline, sourceSnapshot: baselineSnapshot, verifiedSourceTree: baselineTree,
+      captureExecutorCommit: command('read capture execution snapshot', 'git', ['rev-parse', 'HEAD']).trim(),
+      capturedAt: new Date().toISOString(), rawSha256: digest(raw),
       sqlSha256: digest(sql), conversion: changes, checkpointSchema: 'langgraph', postgresServer: serverVersion,
       postgresClient: command('read dump client version', 'docker', ['exec', containerName, 'pg_dump', '--version']).trim(),
       node: process.version, pnpm: command('read pinned pnpm version', 'corepack', ['pnpm', '--version'], { cwd: source, env: environment }).trim(),
@@ -256,9 +261,18 @@ async function main() {
     artifact('backend/go.mod', readFileSync(join(repository, 'backend/go.mod')))
     artifact('backend/go.sum', readFileSync(join(repository, 'backend/go.sum')))
   }
-  command('fetch exact TS baseline if needed', 'git', ['fetch', '--quiet', '--no-tags', 'origin', baseline])
-  command('create pinned isolated TS source checkout', 'git', ['worktree', 'add', '--detach', source, baseline])
+  command('fetch checked public TS baseline snapshot', 'git', ['fetch', '--quiet', '--no-tags', '--depth=1', publicMirror, baselineSnapshot])
+  // Cloud snapshots retain source bytes without publishing the private source history.
+  // The known baseline snapshot adds only CI durations; removing that one additive file
+  // must reproduce the original complete tree, including every runtime import and manifest.
+  const indexEnvironment = { ...process.env, GIT_INDEX_FILE: join(root, 'baseline.index') }
+  command('load baseline source inventory', 'git', ['read-tree', baselineSnapshot], { env: indexEnvironment })
+  command('exclude additive CI timing cache', 'git', ['update-index', '--force-remove', 'scripts/ci-learned-durations.json'], { env: indexEnvironment })
+  const sourceTree = command('verify entire original baseline source tree', 'git', ['write-tree'], { env: indexEnvironment }).trim()
+  if (sourceTree !== baselineTree) throw new Error('Public baseline snapshot does not reproduce the original complete source tree.')
+  command('create pinned isolated TS source checkout', 'git', ['worktree', 'add', '--detach', source, baselineSnapshot])
   sourceCreated = true
+  rmSync(join(source, 'scripts/ci-learned-durations.json'), { force: true })
   command('install exact baseline dependencies', 'corepack', ['pnpm', 'install', '--frozen-lockfile'], { cwd: source, env: environment })
   command('build exact baseline contracts', 'corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'], { cwd: source, env: environment })
   await captureSchema(environment)
