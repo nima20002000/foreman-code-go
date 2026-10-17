@@ -12,8 +12,11 @@ const repository = fileURLToPath(new URL('../../../', import.meta.url));
 async function fixture(t) {
   const cache = join(homedir(), '.cache/foreman-tmp');
   await mkdir(cache, { recursive: true });
-  const directory = await mkdtemp(join(cache, 'worker-imports-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const parent = await mkdtemp(join(cache, 'worker-imports-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  await mkdir(join(parent, 'artifacts'));
+  const directory = join(parent, 'artifacts-link');
+  await symlink('artifacts', directory);
   const root = join(directory, 'repository');
   const environment = {
     ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',

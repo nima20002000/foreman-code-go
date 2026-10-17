@@ -443,7 +443,10 @@ async function installFixture(t) {
   await mkdir(parent, { recursive: true })
   const directory = await mkdtemp(join(parent, 'production-install-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  return directory
+  await mkdir(join(directory, 'installation'))
+  const installation = join(directory, 'installation-link')
+  await symlink('installation', installation)
+  return installation
 }
 
 async function cutoverFixture(t, pendingMigrations) {
