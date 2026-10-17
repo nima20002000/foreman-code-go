@@ -145,7 +145,7 @@ async function until(predicate) {
   throw new Error('Worker update did not reach the expected state.');
 }
 
-test('a stalled update attempt persists its deadline, resumes work, and can retry', async t => {
+async function assertStalledUpdateRetry(t, { beforeDownload = async () => {} } = {}) {
   const f = await fixture(t);
   let releaseDrain;
   const blocked = new Promise(resolve => { releaseDrain = resolve; });
@@ -154,12 +154,20 @@ test('a stalled update attempt persists its deadline, resumes work, and can retr
   let restarted = 0;
   let stall = true;
   const updater = await new WorkerUpdater({ ...f.options, attemptTimeoutMs: 150,
+    fetchAsset: async input => {
+      await beforeDownload();
+      return f.options.fetchAsset(input);
+    },
     drain: () => stall ? blocked : Promise.resolve(), resume: () => { resumed++; },
     stage: async options => { installs++; return { directory: options.artifact }; },
     launchSupervisor: async () => { restarted++; } }).initialize();
   t.after(async () => { releaseDrain(); await updater.close(); });
   const attempt = updater.start().then(() => 'completed', error => error);
-  await until(async () => (await updater.status()).state === 'draining');
+  await until(async () => {
+    const status = await updater.status();
+    assert.notEqual(status.state, 'failed', status.lastError ?? 'Update failed before drain.');
+    return status.state === 'draining';
+  });
   const outcome = await Promise.race([attempt, wait(300).then(() => 'still draining')]);
   assert.equal(outcome.code, 'worker_update_deadline_exceeded');
   const record = await readUpdateRecord(f.stateDirectory);
@@ -175,6 +183,14 @@ test('a stalled update attempt persists its deadline, resumes work, and can retr
   await updater.start();
   assert.equal(installs, 1);
   assert.equal(restarted, 1);
+}
+
+test('a stalled update attempt persists its deadline, resumes work, and can retry', async t => {
+  await assertStalledUpdateRetry(t);
+});
+
+test('a stalled update can resume and retry after slow artifact preparation', async t => {
+  await assertStalledUpdateRetry(t, { beforeDownload: () => wait(150) });
 });
 
 test('Worker status advertises the running manifest even after a failed target update', async t => {
