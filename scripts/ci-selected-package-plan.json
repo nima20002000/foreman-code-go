@@ -1,0 +1,30 @@
+{
+  "source": "1274173b954d2266f52203b195e5bc8e3c69ffbd",
+  "sourceTree": "3113ac4bf6be82613b10d3f4a128b2972c403910",
+  "package": "./internal/commands",
+  "goFiles": [
+    "internal/commands/postgres_fixture_integration_test.go",
+    "internal/commands/postgres_retention.go",
+    "internal/commands/receipt_lookup_integration_test.go",
+    "internal/commands/receipts.go",
+    "internal/commands/retention.go",
+    "internal/commands/retention_integration_test.go",
+    "internal/commands/retention_test.go"
+  ],
+  "unitTests": [
+    "TestRetentionDoesNotCountConcurrentRevisionChanges",
+    "TestRetentionKeepsUnresolvedAndPermanentReceipts",
+    "TestRetentionLimitsEachSweepToOneHundredReceipts",
+    "TestRetentionPropagatesStorageFailures"
+  ],
+  "integrationTests": [
+    "TestPostgresReceiptLookupAndRetentionPreserveCallerCancellation",
+    "TestPostgresReceiptLookupDoesNotFenceFailedOrUnrelatedCommands",
+    "TestPostgresReceiptLookupKeepsPrunedCommandsExpired",
+    "TestPostgresReceiptLookupRejectsChangedInputAndTarget",
+    "TestPostgresReceiptLookupReplaysOriginalResponseAndScopesIdentity",
+    "TestPostgresReceiptRetentionAdvancesPastUnauditedBatchesAndWraps",
+    "TestPostgresReceiptRetentionPreservesAConcurrentlyChangedResponse",
+    "TestPostgresReceiptRetentionPreservesActiveAndPermanentRecords"
+  ]
+}
