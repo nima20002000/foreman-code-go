@@ -1,0 +1,10 @@
+{
+  "source": "a7d40118f6bca81340167466887d9ea1bf6a26a8",
+  "package": "./internal/jobs",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "unitRoots": [
+    "TestRuntimeCommandClosesAvailableStreamWhenPeerMissing",
+    "TestRuntimeCommandPreservesNativeChunkUTF8Replacement"
+  ],
+  "unitPattern": "^(TestRuntimeCommandClosesAvailableStreamWhenPeerMissing|TestRuntimeCommandPreservesNativeChunkUTF8Replacement)$"
+}
