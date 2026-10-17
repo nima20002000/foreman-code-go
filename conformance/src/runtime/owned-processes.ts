@@ -1,4 +1,4 @@
-import { readdir, readlink, stat } from 'node:fs/promises'
+import { lstat, readdir, readlink, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -19,7 +19,10 @@ async function ownedProcessIds(directory: string): Promise<number[]> {
     const processDirectory = join('/proc', entry.name)
     try {
       if ((await stat(processDirectory)).uid !== uid) continue
-      const cwd = await readlink(join(processDirectory, 'cwd'))
+      const cwdPath = join(processDirectory, 'cwd')
+      // Protected processes can have a same-user /proc directory and a differently owned cwd link.
+      if ((await lstat(cwdPath)).uid !== uid) continue
+      const cwd = await readlink(cwdPath)
       if (belongsToDirectory(directory, cwd)) owned.push(Number(entry.name))
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
