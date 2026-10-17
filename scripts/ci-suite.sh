@@ -8,7 +8,15 @@ case "${SUITE:-}" in
   build|build-api)
     source "$(dirname "$0")/ci-go-toolchain.sh"
     ci_go_environment
-    if [ -n "${1:-}" ]; then ci_go_install; else ci_go_verify; node scripts/ci-capture-foundations.mjs; fi
+    if [ -n "${1:-}" ]; then
+      if ! bash scripts/ci-go-toolchain.sh install; then
+        node scripts/ci-capture-foundations.mjs --download-diagnostics
+        exit 1
+      fi
+    else
+      ci_go_verify
+      node scripts/ci-capture-foundations.mjs
+    fi
     exit 0 ;;
   build-other) exit 0 ;;
 esac

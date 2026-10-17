@@ -236,6 +236,19 @@ async function captureSchema(environment) {
 
 async function main() {
   if (process.env.CI !== 'true' && process.env.CI !== '1') throw new Error('Foundation capture runs only inside authenticated Foreman CI.')
+  if (process.argv[2] === '--download-diagnostics') {
+    const pins = JSON.parse(readFileSync(join(repository, 'scripts/ci-go-versions.json')))
+    const platform = process.arch === 'arm64' ? 'linux-arm64' : 'linux-amd64'
+    const filename = `go${pins.go.version}.${platform}.tar.gz`
+    for (const base of ['https://go.dev/dl/', 'https://dl.google.com/go/']) {
+      const url = `${base}${filename}`
+      const result = spawnSync('curl', ['--head', '--location', '--silent', '--show-error', '--max-time', '40',
+        '--output', '/dev/null', '--write-out', '%{http_code} %{url_effective} %{num_redirects}', url],
+      { encoding: 'utf8', timeout: 45_000 })
+      console.log(`[capture] vendor-download ${JSON.stringify({ url, exit: result.status, result: result.stdout.trim() })}`)
+    }
+    return
+  }
   const environment = isolatedEnvironment()
   command('generate genuine pinned module checksums', 'go', ['mod', 'tidy'], {
     cwd: join(repository, 'backend'), env: { ...process.env, GOFLAGS: '-mod=mod' } })
