@@ -1,0 +1,13 @@
+{
+  "source": "77202f9556dd09e4c045c52f9423b38be4e724ee",
+  "sourceTree": "909b35914838fd71c5bf575999e71d299c6c827d",
+  "package": "./internal/harnesses/discovery",
+  "goFiles": [
+    "internal/harnesses/discovery/fingerprint.go",
+    "internal/harnesses/discovery/types.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "race": true,
+  "mode": "format-only"
+}
