@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { afterEach, expect, it } from 'vitest'
+import { SessionControlStateSchema, unavailableSessionControls, type SessionControlState } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { agentChatKey, PostgresAgentChatRepository, type AgentConversationRow } from '../conversations/agentChatRepository.js'
@@ -39,6 +40,7 @@ function database(path: string) {
     conversation, context, hostKind: 'main', imports: [] as Array<{ path: string }>,
     messages: [] as unknown[][], turns: [] as Record<string, unknown>[],
     receipts: [] as Array<{ operation: string; commandId: string; result: unknown }>,
+    sessionControls: undefined as SessionControlState | undefined,
     readChatReferences: async () => {},
   }
   const locks = new Map<string, { owner: object; done: ReturnType<typeof deferred> }>()
@@ -87,7 +89,9 @@ function database(path: string) {
     if (text.includes('select * from operator_conversations')) return result([conversation])
     if (text.includes('select archived_at from workspaces')) return result([{ archived_at: null }])
     if (text.includes('select count(*)::text as count')) return result([{ count: String(state.turns.length) }])
-    if (text.includes('select record from conversation_session_controls')) return result([])
+    if (text.includes('select record from conversation_session_controls')) {
+      return result(state.sessionControls ? [{ record: state.sessionControls }] : [])
+    }
     if (text.includes('insert into operator_conversation_messages')) {
       state.messages.push(values)
       return result([])
@@ -143,8 +147,42 @@ async function fixture() {
     const folder = (await folders.list(principal, {})).items[0]!
     return folders.delete(principal, 'http', { path, expectedIdentity: folder.identity, commandId: randomUUID() })
   }
-  return { ...db, root, path, folders, browser, send, remove }
+  return { ...db, root, path, folders, browser, repository, send, remove }
 }
+
+it.each(['accepted', 'running', 'uncertain'] as const)(
+  'returns the %s compaction rejection before checking a missing chat directory', async status => {
+    const f = await fixture()
+    f.state.sessionControls = SessionControlStateSchema.parse({
+      conversationId: f.conversation.id, revision: 0, profileKey: 'profile',
+      desiredMode: 'regular', appliedMode: null, defaults: {}, desired: {}, applied: null,
+      applicability: 'next-turn', capabilities: unavailableSessionControls('profile'), context: null,
+      nativeSessionId: f.conversation.native_session_id, nativeProviderVersion: f.conversation.provider_version,
+      compaction: { requestId: 'compact-command', nativeSessionId: f.conversation.native_session_id,
+        nativeOperationId: null, status, message: 'Waiting for native compaction.', beforeTokens: null,
+        observedAt: new Date().toISOString() },
+      compactions: [], busyReason: null,
+    })
+    await rm(f.path, { recursive: true })
+    await expect(f.send()).rejects.toMatchObject({ code: 'SESSION_COMPACT_UNCONFIRMED' })
+    expect(f.state.turns).toHaveLength(0)
+    expect(f.state.messages).toHaveLength(0)
+    expect(f.state.sessionControls.revision).toBe(0)
+  },
+)
+
+it('rejects an inactive steer before checking a missing chat directory', async () => {
+  const f = await fixture()
+  await rm(f.path, { recursive: true })
+  await expect(f.repository.admit({
+    key: f.conversation.agent_key, context: f.context, delivery: 'submitting',
+    request: { requestId: randomUUID(), content: 'Steer', intent: 'steer', expectedConversationId: f.conversation.id,
+      expectedNativeTurnId: 'finished-turn', context: { workflowId: f.context.workflowId,
+        workflowNodeId: f.context.workflowNodeId, agentId: f.context.agentId } },
+  })).rejects.toMatchObject({ code: 'AGENT_CHAT_TURN_NOT_ACTIVE' })
+  expect(f.state.turns).toHaveLength(0)
+  expect(f.state.messages).toHaveLength(0)
+})
 
 it('rejects a retained-folder follow-up when recursive removal wins admission', async () => {
   const f = await fixture()
