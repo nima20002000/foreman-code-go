@@ -413,20 +413,25 @@ for (const provider of ['github', 'circleci', 'circleci-ssh']) {
     git(origin, 'commit', '--allow-empty', '-qm', 'tested commit')
     const commit = git(origin, 'rev-parse', 'HEAD')
     git(origin, 'branch', 'ci/tested', commit)
+    git(origin, 'commit', '--allow-empty', '-qm', 'default branch advances')
     const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
     const { parse } = require('yaml')
     if (provider === 'github') {
       const configuration = parse(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'))
       const action = configuration.jobs.ci.steps.find(step => step.uses?.startsWith('actions/checkout@'))
       // Execute the documented checkout action ref/depth contract against the fixture remote.
+      const inputs = { ref: commit, base_commit: base }
+      const refInput = action.with.ref
+      const selectedRef = refInput.startsWith('${{')
+        ? Function('inputs', `return (${refInput.slice(3, -2)})`)(inputs) : refInput
       const depthInput = action.with['fetch-depth']
       const depth = typeof depthInput === 'number' ? depthInput
-        : Function('inputs', `return (${depthInput.slice(3, -2)})`)({ base_commit: base })
+        : Function('inputs', `return (${depthInput.slice(3, -2)})`)(inputs)
       git(checkout, 'init', '-q')
       git(checkout, 'remote', 'add', 'origin', `file://${origin}`)
       if (depth === 0) git(checkout, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*')
-      else git(checkout, 'fetch', '--no-tags', `--depth=${depth}`, 'origin', commit)
-      git(checkout, 'checkout', '--detach', commit)
+      else git(checkout, 'fetch', '--no-tags', `--depth=${depth}`, 'origin', selectedRef)
+      git(checkout, 'checkout', '--detach', 'FETCH_HEAD')
     } else {
       const configuration = parse(readFileSync(new URL('../.circleci/config.yml', import.meta.url), 'utf8'))
       const step = configuration.jobs.ci.steps[0]

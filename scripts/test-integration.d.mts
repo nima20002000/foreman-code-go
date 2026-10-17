@@ -57,3 +57,20 @@ export function scheduleIntegrationQueue(files: string[], slots: { index: number
   prepareRetest?: (...args: never[]) => Promise<void>
   [option: string]: unknown
 }): Promise<{ results: { file: string; status: string }[] }>
+
+interface IntegrationResources {
+  cpuCount: number
+  availableMemoryBytes: number
+  maxConnections: number
+  reservedConnections: number
+  activeConnections: number
+}
+export function readIntegrationResources(
+  admin: { query(text: string): Promise<{ rows: Record<string, unknown>[] }> },
+  host?: Pick<IntegrationResources, 'cpuCount' | 'availableMemoryBytes'>,
+): Promise<IntegrationResources>
+export function integrationShardPlan(
+  environment: NodeJS.ProcessEnv,
+  resources?: Partial<IntegrationResources>,
+  fileCount?: number,
+): { shards: number; limit: number; reason: string }

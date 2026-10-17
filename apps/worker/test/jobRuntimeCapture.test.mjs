@@ -136,7 +136,11 @@ test('offline seed rejects links, undeclared files, missing registry times and q
       await rm(join(f.directory, 'pnpm-store/index.db'));
       await symlink('/etc/passwd', join(f.directory, 'pnpm-store/index.db'));
     }
-    if (kind === 'hardlink') await link(join(f.directory, 'pnpm-store/index.db'), join(f.directory, 'alias'));
+    if (kind === 'hardlink') {
+      const outside = await mkdtemp(join(persistentFixtureRoot, 'seed-link-'));
+      child.after(() => rm(outside, { recursive: true, force: true }));
+      await link(join(f.directory, 'pnpm-store/index.db'), join(outside, 'alias'));
+    }
     if (kind === 'extra') await writeFile(join(f.directory, 'registry-cache/unknown'), 'extra');
     if (kind === 'missing-time') {
       const path = 'metadata/fixture.json';

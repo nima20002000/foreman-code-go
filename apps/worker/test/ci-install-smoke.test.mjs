@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { CiHostRequestSchema } from '@foreman-code/contracts';
 import { runCiInstallSmoke } from '../src/ciInstallSmoke.mjs';
+const require = createRequire(new URL('../../api/package.json', import.meta.url));
+const { tsImport } = await import(require.resolve('tsx/esm/api'));
+const { HostCiRunner, systemHostCiPorts } = await tsImport('../../api/src/modules/ci-host/runner.ts', import.meta.url);
 
 test('update smoke waits for busy capacity and uses a valid focused integration start', async () => {
   const requests = [];
@@ -103,22 +112,75 @@ test('Worker readiness waits for first-upgrade CI smoke and exposes its original
 })
 
 
-test('a single-file update smoke can start alongside unrelated CI when a slot is free', async () => {
-  let started = false;
-  const runner = { handle: async request => {
-    if (request.operation === 'status') return { ready: true, cpuCount: 16, memoryBytes: 32 * 2 ** 30 };
-    if (request.operation === 'start') {
-      CiHostRequestSchema.parse(request);
-      if (request.gate) throw Object.assign(new Error('Another CI job is active.'), { code: 'CI_HOST_BUSY' });
-      started = true;
-      return {};
-    }
-    if (request.operation === 'cancel') return {};
-    return { run: { state: 'passed', exitCode: 0 }, text: '', testResults: {
-      summary: { passed: 1, failed: 0 }, files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts',
-        tests: [{ status: 'passed' }] }] } };
-  } };
-  await runCiInstallSmoke({ repository: 'fixture/project', commit: 'a'.repeat(40) },
-    { runner, timeoutMs: 100, capacityTimeoutMs: 50, pollMs: 1 });
-  assert.equal(started, true);
+test('a single-file update smoke can start alongside unrelated CI when a slot is free', async t => {
+  const root = await mkdtemp(join(homedir(), '.cache', 'foreman-tmp', 'install-smoke-'));
+  const origin = join(root, 'origin');
+  await mkdir(origin);
+  await writeFile(join(origin, 'package.json'), JSON.stringify({ foremanCi: { hostSlots: 1 },
+    scripts: { lint: 'fixture', integration: 'fixture' } }));
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
+    GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
+  const git = (...args) => execFileSync('git', args, { cwd: origin, env, encoding: 'utf8' }).trim();
+  git('init', '-q', '-b', 'main');
+  git('add', '.');
+  git('commit', '-qm', 'fixture');
+  const commit = git('rev-parse', 'HEAD');
+  const occupied = randomUUID();
+  const units = new Set();
+  const launched = [];
+  const system = systemHostCiPorts();
+  // GitHub authentication and the systemd job executor are the external boundaries.
+  const ports = { ...system, cpus: 16, memoryBytes: 32 * 2 ** 30,
+    availableMemoryBytes: () => 32 * 2 ** 30, run: async (file, args, options) => {
+      if (file === 'gh') return { code: 0, stdout: '', stderr: '' };
+      if (file === 'git') return system.run(file,
+        args.map(arg => arg.startsWith('https://github.com/') ? origin : arg), options);
+      if (file === 'systemd-run') {
+        const unit = args.find(arg => arg.startsWith('--unit=')).slice(7);
+        units.add(unit);
+        const directory = dirname(args.at(-1));
+        const runId = basename(directory);
+        launched.push(runId);
+        if (runId !== occupied) {
+          await writeFile(join(directory, 'log'), 'smoke completed');
+          await writeFile(join(directory, 'step'), 'integration');
+          await writeFile(join(directory, 'test-results.json'), JSON.stringify({
+            summary: { passed: 1, failed: 0, skipped: 0 }, truncated: false, files: [{
+              file: 'apps/api/test/ci-smoke.integration.test.ts', status: 'passed', durationMs: 1,
+              tests: [{ name: 'smoke', status: 'passed', durationMs: 1 }] }] }));
+          await writeFile(join(directory, 'exit'), '0');
+          units.delete(unit);
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (file === 'systemctl') {
+        if (args.includes('stop')) units.delete(args.at(-1).replace(/\.service$/, ''));
+        const stdout = args.filter(arg => arg.endsWith('.service')).map(unit =>
+          `Id=${unit}\nLoadState=loaded\nActiveState=${units.has(unit.replace(/\.service$/, '')) ? 'active' : 'inactive'}\n`).join('\n');
+        return { code: 0, stdout, stderr: '' };
+      }
+      return system.run(file, args, options);
+    } };
+  const runner = new HostCiRunner(join(root, 'runner'), ports, env);
+  t.after(async () => {
+    try { await runner.beginDrain(); await runner.cancel(occupied); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  });
+  await runner.handle({ operation: 'start', runId: occupied, repository: 'fixture/project', commit,
+    suite: 'lint', scope: 'full' });
+  const busy = await runner.handle({ operation: 'status' });
+  assert.equal(busy.slotsUsed, 1);
+  assert.ok(busy.slotsTotal > 1);
+  assert.equal(busy.runs.find(run => run.runId === occupied).state, 'running');
+  await runCiInstallSmoke({ repository: 'fixture/project', commit },
+    { runner, timeoutMs: 5000, capacityTimeoutMs: 5000, pollMs: 1 });
+  assert.equal(launched.length, 2);
+  const status = await runner.handle({ operation: 'status' });
+  assert.equal(status.runs.find(run => run.runId === occupied).state, 'running');
+  assert.equal(status.runs.find(run => run.runId === launched[1]).state, 'passed');
+  await runner.cancel(occupied);
+  const smoke = await runner.handle({ operation: 'read', runId: launched[1], afterOffset: 0, maxBytes: 8192,
+    testResults: true });
+  assert.equal(smoke.run.state, 'passed');
+  assert.equal(smoke.testResults.summary.passed, 1);
 });
