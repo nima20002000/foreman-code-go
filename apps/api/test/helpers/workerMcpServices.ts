@@ -1,10 +1,18 @@
+import { join } from 'node:path'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
+import { AgentReferenceService } from '../../src/modules/files/references/agentService.js'
+import { PostgresAgentReferenceAuthorization } from '../../src/modules/files/references/agentAuthorization.js'
+import { PostgresReferenceReadRepository } from '../../src/modules/files/references/agentProvenance.js'
+import { PostgresFileRepository } from '../../src/modules/files/postgres.js'
+import { readFileRetentionSnapshot } from '../../src/modules/files/retentionSnapshot.js'
+import { FileByteStorage } from '../../src/modules/files/storage.js'
 import type { Pool } from 'pg'
 import { BugReportService } from '../../src/modules/bug-reports/service.js'
 import { HostCiService } from '../../src/modules/ci-host/service.js'
 import type { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { RunCiAuthority } from '../../src/modules/jobs/ciAuthority.js'
 
-/** The bug report and CI services every enabled Agent tool needs, so worker tool discovery is complete. */
+/** Real domain services for every enabled Agent tool; external CI dispatch remains unavailable. */
 export function workerToolServices(pool: Pool, commands: PostgresCommandCoordinator) {
   const bugReports = new BugReportService(pool, commands)
   const ci = new HostCiService(pool, commands, new RunCiAuthority(pool), {
@@ -14,5 +22,12 @@ export function workerToolServices(pool: Pool, commands: PostgresCommandCoordina
     computers: async () => [],
     request: async () => { throw new Error('This fixture does not dispatch CI jobs.') },
   })
-  return { bugReports, ci }
+  const root = process.env.FOREMAN_CODE_TEST_ROOT
+  if (!root) throw new Error('Worker reference services require owned test storage.')
+  const references = new AgentReferenceService({
+    files: new PostgresFileRepository(pool, readFileRetentionSnapshot),
+    bytes: new FileByteStorage(join(root, 'worker-reference-files'), MAX_FILE_BYTES),
+    authorization: new PostgresAgentReferenceAuthorization(pool), reads: new PostgresReferenceReadRepository(pool),
+  })
+  return { bugReports, ci, references }
 }

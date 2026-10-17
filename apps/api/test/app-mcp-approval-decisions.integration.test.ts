@@ -11,9 +11,9 @@ const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 async function setup() {
   const f = await approvalDatabase(); closes.push(f.close)
-  const { bugReports, ci } = workerToolServices(f.pool, f.commands)
+  const { bugReports, ci, references } = workerToolServices(f.pool, f.commands)
   const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access: f.access, commands: f.commands, bugReports,
+    appMcp: { references, access: f.access, commands: f.commands, bugReports,
       interactions: new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service) },
     operator: { access: f.access, services: { commands: f.commands, ci, bugReports } as never } })
   const origin = await app.listen({ host: '127.0.0.1', port: 0 }); closes.push(() => app.close())
@@ -32,6 +32,10 @@ describe.skipIf(!postgresEnabled)('A4 authenticated App MCP with persisted Postg
     const client = await f.connect('/mcp', f.credential.environment.variables.GRAPHQL_MCP_TOKEN!)
     const tools = await client.listTools()
     expect(tools.tools.some((tool) => tool.name === 'interaction_respond')).toBe(true)
+    expect(tools.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['files.references_list', 'files.reference_read']))
+    const references = await client.callTool({ name: 'files.references_list', arguments: {} })
+    expect(references.isError).not.toBe(true)
+    expect(references.structuredContent).toMatchObject({ items: [], pageInfo: { nextCursor: null } })
     const args = { interactionId: f.interaction.id, optionId: f.interaction.responseOptions.find((option) => option.semantic === 'approve_once')!.optionId, expectedRevision: f.interaction.revision }
     const first = await client.callTool({ name: 'interaction_respond', arguments: args })
     expect(first.isError).not.toBe(true)

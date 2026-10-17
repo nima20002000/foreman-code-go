@@ -55,6 +55,7 @@ export interface GraphqlMcpServices {
   operator?: OperatorServices
   /** Serves Worker credentials (Orchestrator and Coder Agents). */
   interactions?: AppInteractionService
+  references?: AgentReferenceService
   bugReports?: BugReportService
   commands?: PostgresCommandCoordinator
   workerArtifacts?: () => WorkerArtifactMcpExtension | undefined
@@ -120,8 +121,8 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableHostHarnessToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
-    const references = app.hasDecorator('agentReferenceService')
-      ? app.getDecorator<AgentReferenceService>('agentReferenceService') : undefined
+    const references = services.references ?? (app.hasDecorator('agentReferenceService')
+      ? app.getDecorator<AgentReferenceService>('agentReferenceService') : undefined)
     const context = { role, principal, ...(references ? { references } : {}), ...(access ? { tools: access.tools } : {}),
       ...(operation ? { signal: operation.signal } : {}),
       ...(services.operator ? { operator: services.operator } : {}),

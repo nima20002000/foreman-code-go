@@ -88,7 +88,7 @@ export class ComputerSyncService {
       await this.workspaceRequests.get(input.workspaceId)
       await this.reconciliations.get(`workspace:${input.workspaceId}`)
       const failures = await this.synchronize(undefined, input.workspaceId)
-      if (failures.length) throw new AggregateError(failures)
+      if (failures.length) throw new AggregateError(failures, 'Shared file setup is pending on an unavailable computer.')
     } catch (error) {
       message = error instanceof Error ? error.message.slice(0, 500) : 'Sync setup will retry when this computer reconnects.'
     }

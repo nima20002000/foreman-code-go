@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import Fastify from 'fastify'
 import { expect, it } from 'vitest'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { negotiateDeviceExtensions, parseExtensionDescriptors } from '@foreman-code/contracts/device-application'
 import { SOURCE_MANIFEST_MAX_BYTES, SOURCE_MATERIALIZATION_RECORD_MAX_BYTES } from '@foreman-code/contracts/source-materialization'
 import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
@@ -121,7 +122,8 @@ it('fits approval text escaping and rejects responses beyond the bounded manifes
 })
 
 it('keeps the larger binary allowance confined to the MCP namespace', () => {
-  const maxBinaryBytes = 2 * SOURCE_MATERIALIZATION_RECORD_MAX_BYTES
+  const maxBinaryBytes = 4 * Math.ceil(MAX_FILE_BYTES / 3) + 64 * 1024
+  expect(WORKER_MCP_EXTENSION.maxBinaryBytes).toBe(maxBinaryBytes)
   expect(parseExtensionDescriptors([{ ...WORKER_MCP_EXTENSION, maxBinaryBytes, role: 'client' }]))
     .toMatchObject([{ maxBinaryBytes }])
   expect(() => parseExtensionDescriptors([{ ...WORKER_MCP_EXTENSION,

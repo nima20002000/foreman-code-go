@@ -44,9 +44,9 @@ describe('Foreman Code MCP tools in Agent settings', () => {
     fireEvent.click(within(tools).getByLabelText('Read run context: Agent default'))
     const group = within(tools).getByRole('group', { name: 'Read run context: this workflow' })
     fireEvent.click(within(group).getByLabelText('On'))
-    expect(tools).toHaveTextContent('Enabled in this workflow: Report a bug, Read run context, List interactions, Create workflow output, Append workflow output, Seal workflow output, Publish workflow output, Run CI, Read CI result, List CI computers, Cancel CI, Read CI logs.')
+    expect(tools).toHaveTextContent('Enabled in this workflow: Report a bug, List references, Read a reference, Read run context, List interactions, Create workflow output, Append workflow output, Seal workflow output, Publish workflow output, Run CI, Read CI result, List CI computers, Cancel CI, Read CI logs.')
     fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['bug_report', 'interaction_list', 'files.native_output_create',
+    expect(onSave.mock.calls[0]![0].graphqlTools).toEqual(['bug_report', 'files.references_list', 'files.reference_read', 'interaction_list', 'files.native_output_create',
       'files.native_output_append', 'files.native_output_seal', 'files.native_output_publish', 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read'])
     expect(onSave.mock.calls[0]![3]).toEqual({ add: ['context_get'], remove: [] })

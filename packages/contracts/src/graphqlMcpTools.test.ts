@@ -8,9 +8,9 @@ import { WORKER_NATIVE_OUTPUT_TOOL_NAMES } from './workerNativeOutput.js'
 describe('Foreman Code MCP tools per Agent', () => {
   it('starts from every role tool, applies the Agent default, then the node override, never beyond the role', () => {
     const outputs = Object.values(WORKER_NATIVE_OUTPUT_TOOL_NAMES)
-    expect(graphqlRoleTools('coder')).toEqual(['bug_report', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
+    expect(graphqlRoleTools('coder')).toEqual(['bug_report', 'files.references_list', 'files.reference_read', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read'])
-    expect(effectiveGraphqlTools('coder')).toEqual(['bug_report', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
+    expect(effectiveGraphqlTools('coder')).toEqual(['bug_report', 'files.references_list', 'files.reference_read', 'context_get', 'interaction_list', 'interaction_get', ...outputs, 'ci_run', 'ci_get',
       'ci_computers_list', 'ci_cancel', 'ci_logs_read'])
     expect(effectiveGraphqlTools('coder', ['context_get'])).toEqual(['bug_report', 'context_get'])
     expect(effectiveGraphqlTools('coder', ['context_get'], { add: ['interaction_get'], remove: ['context_get'] }))
@@ -29,6 +29,15 @@ describe('Foreman Code MCP tools per Agent', () => {
         .toEqual(['bug_report', 'context_get', tool])
     }
     expect(effectiveGraphqlTools('coder', outputs, { add: [], remove: outputs })).toEqual(['bug_report'])
+  })
+
+  it('keeps reference reads within Agent roles and honors their defaults and node removals', () => {
+    const references = ['files.references_list', 'files.reference_read'] as const
+    for (const tool of references) {
+      expect(graphqlToolRoles(tool)).toEqual(['orchestrator', 'coder'])
+      expect(effectiveGraphqlTools('coder', [], { add: [tool], remove: [] })).toEqual(['bug_report', tool])
+    }
+    expect(effectiveGraphqlTools('coder', [...references], { add: [], remove: [...references] })).toEqual(['bug_report'])
   })
 
   it('enables Run status only on nodes with interval checks, never from Agent defaults or node tool changes', () => {

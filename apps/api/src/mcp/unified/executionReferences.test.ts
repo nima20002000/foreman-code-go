@@ -14,7 +14,7 @@ import type { AppInteractionService } from '../../modules/interactions/app.js'
 const cleanups: (() => Promise<void>)[] = []
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(close => close())); vi.restoreAllMocks() })
 
-it('delivers inherited references to an authenticated execution with scoped reads and no write tools', async () => {
+it.each(['decorator', 'services'] as const)('delivers inherited references through %s with scoped reads and no write tools', async registration => {
   const principal: ManagementPrincipal = { id: 'worker', name: 'Worker', audience: 'worker', agentId: 'agent',
     expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants: [] }
   const content = Buffer.from('permanent design reference')
@@ -51,8 +51,8 @@ it('delivers inherited references to an authenticated execution with scoped read
   const interactions = { toolAccess: async () => ({ role: 'coder', tools }),
     canRead: async () => false, canRespond: async () => false } as unknown as AppInteractionService
   const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    appMcp: { access, interactions } })
-  app.decorate('agentReferenceService', references)
+    appMcp: { access, interactions, ...(registration === 'services' ? { references } : {}) } })
+  if (registration === 'decorator') app.decorate('agentReferenceService', references)
   const origin = await app.listen({ host: '127.0.0.1', port: 0 })
   const client = new Client({ name: 'execution-references', version: '1' })
   cleanups.push(async () => { await client.close(); await app.close() })
@@ -61,6 +61,7 @@ it('delivers inherited references to an authenticated execution with scoped read
   const names = (await client.listTools()).tools.map(tool => tool.name)
   expect(names).toEqual(expect.arrayContaining(tools))
   expect(names).not.toContain('reference_file_add')
+  for (const tool of (await client.listTools()).tools) expect(tool.annotations?.readOnlyHint).toBe(true)
   const list = await client.callTool({ name: 'files.references_list', arguments: {} })
   expect(list.structuredContent).toMatchObject({ items: [{ fileId: 'reference', revisionId: 'revision' }] })
   const read = { fileId: 'reference', revisionId: 'revision', offset: 0, length: 64 }

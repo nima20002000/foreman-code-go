@@ -1,7 +1,7 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ComputerSyncStatusSchema, SyncChannelRequestSchema } from '@foreman-code/contracts/computer-accounts'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { buildApp } from '../src/app.js'
@@ -16,11 +16,11 @@ import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
   let mainId: string
-  beforeAll(async () => {
+  beforeEach(async () => {
     database = await agent3Database()
     mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
   }, 60_000)
-  afterAll(async () => { await database?.close() })
+  afterEach(async () => { await database?.close() })
   async function fixture(options: { withoutSync?: boolean } = {}) {
     const access = new PostgresAccessService(database.pool)
     const commands = new PostgresCommandCoordinator(database.pool)
