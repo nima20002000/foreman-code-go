@@ -80,7 +80,7 @@ test('lint checks changed files and typecheck checks packages reached by imports
   assert.deepEqual(affectedCommands('unit', [unit]), [[process.execPath, 'scripts/test-command.mjs', '--',
     'corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run', 'src/feature.test.ts']])
   assert.deepEqual(affectedCommands('unit', ['apps/web/src/view.test.tsx', 'scripts/tool.test.mjs']), [
-    ['corepack', 'pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run', 'src/view.test.tsx'],
+    ['env', 'FOREMAN_WEB_TEST_PHASE=fast', 'corepack', 'pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run', 'src/view.test.tsx'],
     [process.execPath, '--test', 'scripts/tool.test.mjs']])
   assert.deepEqual(selectByIndexes(['a', 'b', 'c'], 's:0,2'), ['a', 'c'])
   assert.throws(() => selectByIndexes(['a', 'b', 'c'], '-1'), /Invalid/)
@@ -92,6 +92,13 @@ test('lint checks changed files and typecheck checks packages reached by imports
   for (const bad of ['d:-1', 'd:A', 'd:1.', 'd:.1', 'd:1.2.3', `d:${(100).toString(36)}`, 'd:0.2s', 'd:50,1z']) {
     assert.throws(() => selectByIndexes(names, bad), /Invalid/, bad)
   }
+})
+
+test('affected load-sensitive web suites run in the heavy phase with its workers and timeouts', () => {
+  assert.deepEqual(affectedCommands('unit', ['apps/web/src/board.integration.test.tsx', 'apps/web/src/view.test.tsx']), [
+    ['env', 'FOREMAN_WEB_TEST_PHASE=fast', 'corepack', 'pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run', 'src/view.test.tsx'],
+    ['env', 'FOREMAN_WEB_TEST_PHASE=heavy', 'corepack', 'pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run',
+      'src/board.integration.test.tsx']])
 })
 
 test('runs affected commands without leaking dispatch selections into nested commands', t => {
