@@ -21,14 +21,25 @@ class LatencySocket extends EventEmitter {
   peer?: LatencySocket
   closed = false
   dropChunks = false
+  bytesPerSecond = Infinity
+  lastAcknowledgedAt: number | undefined
+  private availableAt = 0
   constructor(private readonly latencyMs: number) { super() }
   send(text: string) {
-    if (this.dropChunks && (JSON.parse(text) as { type: string }).type === 'application-chunk') return
+    const frame = JSON.parse(text) as { type: string; offset?: number }
+    if (this.dropChunks && frame.type === 'application-chunk') return
     const deliver = () => {
-      if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
+      if (this.closed || this.peer?.closed) return
+      if (this.peer && frame.type === 'application-ack' && (frame.offset ?? 0) > 0) {
+        this.peer.lastAcknowledgedAt = Date.now()
+      }
+      this.peer?.emit('message', Buffer.from(text), false)
     }
-    if (this.latencyMs === 0) queueMicrotask(deliver)
-    else setTimeout(deliver, this.latencyMs)
+    this.availableAt = Math.max(Date.now(), this.availableAt)
+      + Buffer.byteLength(text) * 1000 / this.bytesPerSecond
+    const delayMs = this.latencyMs + this.availableAt - Date.now()
+    if (delayMs === 0) queueMicrotask(deliver)
+    else setTimeout(deliver, delayMs)
   }
   close() {
     if (this.closed) return
@@ -96,7 +107,9 @@ async function prepare(toolDurationMs: number, latencyMs = 50) {
   await vi.advanceTimersByTimeAsync(500)
   const relay = await preparing
   return { relay, receivedAt: () => receivedAt, received: () => received, calls: () => calls,
-    stallUpload: () => { workerRaw.dropChunks = true } }
+    stallUpload: () => { workerRaw.dropChunks = true },
+    limitUpload: (bytesPerSecond: number) => { workerRaw.bytesPerSecond = bytesPerSecond },
+    lastAcknowledgedAt: () => workerRaw.lastAcknowledgedAt }
 }
 
 function referenceCall(byteSize: number) {
@@ -153,5 +166,41 @@ it('cancels a stalled upload within its own budget before running the tool', asy
   expect(timedOut).toBe(false)
   await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(1)])
   await checked
+  expect(f.calls()).toBe(0)
+})
+
+it('uploads the advertised maximum over an 8 Mbit/s link and preserves the full execution budget', async () => {
+  const f = await prepare(99_000)
+  f.limitUpload(1_000_000)
+  const call = referenceCall(MAX_FILE_BYTES)
+  const started = Date.now()
+  const checked = expect(f.relay.request(call)).resolves.toMatchObject({
+    statusCode: 200, body: '{"result":"stored"}',
+  })
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(180_000)])
+  await checked
+  expect(f.receivedAt()! - started).toBeGreaterThan(MAX_FILE_BYTES / 1_000_000 * 1000)
+  expect(f.receivedAt()! - started).toBeLessThan(60_000)
+  expect(f.received()).toEqual(call)
+  expect(f.calls()).toBe(1)
+})
+
+it('times out fifteen seconds after the last acknowledged progress when an upload stalls', async () => {
+  const f = await prepare(0)
+  f.limitUpload(1_000_000)
+  const started = Date.now()
+  let settledAt: number | undefined
+  const pending = f.relay.request(referenceCall(2 * 1024 * 1024))
+    .catch((error: unknown) => { settledAt = Date.now(); return error })
+  await vi.advanceTimersByTimeAsync(1000)
+  f.stallUpload()
+  await vi.advanceTimersByTimeAsync(1000)
+  const lastAcknowledgedAt = f.lastAcknowledgedAt()!
+  expect(lastAcknowledgedAt).toBeGreaterThan(started)
+  await vi.advanceTimersByTimeAsync(lastAcknowledgedAt + 14_999 - Date.now())
+  expect(settledAt).toBeUndefined()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(await pending).toMatchObject({ code: 'timeout' })
+  expect(settledAt! - lastAcknowledgedAt).toBe(15_000)
   expect(f.calls()).toBe(0)
 })
