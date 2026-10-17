@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -8,6 +8,24 @@ const parent = join(homedir(), '.cache', 'foreman-capture')
 mkdirSync(parent, { recursive: true, mode: 0o700 })
 const root = mkdtempSync(join(parent, 'go-probe-'))
 const report = value => console.log(`[go-probe] ${JSON.stringify(value)}`)
+let bootstrap
+
+async function removeOwnedProbe(directory) {
+  if (!existsSync(directory)) return
+  const stat = lstatSync(directory)
+  if (!directory.startsWith(`${parent}/go-probe-`) || !stat.isDirectory() || stat.isSymbolicLink()
+    || realpathSync(directory) !== directory || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
+    throw new Error('Probe cleanup ownership is not confirmed.')
+  }
+  if (bootstrap && existsSync(join(directory, 'modules'))) {
+    const cleanup = await command(bootstrap, ['clean', '-modcache'], {
+      PATH: process.env.PATH, HOME: directory, GOENV: 'off', GOWORK: 'off', GOTOOLCHAIN: 'local',
+      GOMODCACHE: join(directory, 'modules'), GOCACHE: join(directory, 'build'), GOPATH: join(directory, 'gopath'),
+    })
+    if (cleanup.status !== 0) throw new Error('Official Go cleanup of the owned module cache failed.')
+  }
+  rmSync(directory, { recursive: true, force: true })
+}
 
 async function command(program, args, environment, timeout = 30_000) {
   const child = spawn(program, args, { cwd: root, env: environment, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -28,7 +46,6 @@ try {
     GOPATH: join(root, 'gopath'), GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org' }
   const candidates = [...new Set([...(process.env.PATH ?? '').split(delimiter).filter(Boolean)
     .map(directory => join(directory, 'go')), '/usr/local/go/bin/go', '/usr/bin/go'])]
-  let bootstrap
   for (const path of candidates) {
     try { accessSync(path, constants.X_OK) }
     catch { continue /* ignore: an absent standard Go location is an ordinary probe result. */ }
@@ -40,6 +57,9 @@ try {
   if (!bootstrap) {
     report({ feasible: false, reason: 'No existing Go >=1.21 found on PATH or standard installed locations.' })
   } else {
+    // The first verified probe left only its own read-only downloaded module cache.
+    await removeOwnedProbe(join(parent, 'go-probe-0vhvAR'))
+    report({ previousOwnedProbeCache: 'removed with official go clean -modcache' })
     report({ requested: 'go1.27.2', proxy: environment.GOPROXY, checksumDatabase: environment.GOSUMDB,
       cache: 'fresh private invocation cache; no existing cache or global Go configuration modified' })
     const result = await command(bootstrap, ['version'], { ...environment, GOTOOLCHAIN: 'go1.27.2' }, 180_000)
@@ -51,4 +71,4 @@ try {
     report({ feasible: verified, status: result.status, version: verified ? result.stdout : undefined,
       verifiedModuleChecksum, diagnostics })
   }
-} finally { rmSync(root, { recursive: true, force: true }) }
+} finally { await removeOwnedProbe(root) }
