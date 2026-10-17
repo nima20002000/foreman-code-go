@@ -266,8 +266,9 @@ async function runReservedTransfer(input: CacheTransfer, lockStorage: StorageLoc
     const closed = await closeTransferWriters(root, reservation)
     try {
       const failed = !result || result.code !== 0
-      // Only a killed Git leaves its locks; ones not yet stale stay recorded for a later acquisition to recover.
-      const recovery = command === 'fetch' && failed && (await removeAbandonedFetchArtifacts(common)).length > 0
+      // Writers have ended and the repository flock is still held; clean this interrupted fetch's locks now.
+      const recovery = command === 'fetch' && failed
+        && (await removeAbandonedFetchArtifacts(common, result?.interrupted?.startedAt)).length > 0
       if (command === 'clone' && createdTarget && failed) await rm(target, { recursive: true, force: true })
       // A kept fetch record (never staging) reserves nothing once its writers are gone.
       if (recovery) await closed.close()

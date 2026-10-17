@@ -27,17 +27,22 @@ async function entries(directory: string, recursive = false): Promise<string[]> 
 
 /** The caller holds the repository lock, which every Main fetch writer inherits for its whole life, so none of them
  * is alive. Other Git processes (Agents, people) may still write here, so an artifact is abandoned only once it has
- * stayed unchanged past the staleness bound. Returns the fresh artifacts, which are left alone. */
-export async function removeAbandonedFetchArtifacts(common: string): Promise<string[]> {
+ * stayed unchanged past the staleness bound. After Main observes its own interrupted fetch end, its start time also
+ * permits removing fetch locks written during that transfer. Returns the fresh artifacts, which are left alone. */
+export async function removeAbandonedFetchArtifacts(common: string,
+  interruptedFetchStartedAt?: number): Promise<string[]> {
   const refLocks = (await Promise.all(FETCH_REF_NAMESPACES.map(namespace => entries(join(common, namespace), true))))
     .flat().filter(path => path.endsWith('.lock'))
   const packs = (await entries(join(common, 'objects', 'pack'))).filter(path => TEMPORARY_PACK.test(basename(path)))
+  const locks = new Set([...FETCH_LOCKS.map(name => join(common, name)), ...refLocks])
   const fresh: string[] = []
-  for (const path of [...FETCH_LOCKS.map(name => join(common, name)), ...refLocks, ...packs]) {
+  for (const path of [...locks, ...packs]) {
     try {
       const stat = await lstat(path)
       if (!stat.isFile()) continue
-      if (Date.now() - stat.mtimeMs < STALE_MS) fresh.push(path)
+      const interruptedLock = interruptedFetchStartedAt !== undefined && locks.has(path)
+        && stat.mtimeMs >= interruptedFetchStartedAt
+      if (!interruptedLock && Date.now() - stat.mtimeMs < STALE_MS) fresh.push(path)
       else await unlink(path)
     } catch (error) {
       if (!absent(error)) throw error
