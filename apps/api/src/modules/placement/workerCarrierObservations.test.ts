@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion } from '@foreman-code/contracts'
-import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
+import { RemoteOperationReceiptSchema, type RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
@@ -12,7 +12,13 @@ import type { RemoteCommitFacts, RemoteResultCommitPort } from '../runs/remote/r
 import { deriveDispatch, freezePlacement } from './binding.js'
 import { remoteNativeManager } from './workerCarrier.js'
 
-function observationFixture(history?: NativeHistory, delayMetadata = false) {
+function observationFixture(history?: NativeHistory, options: {
+  delayMetadata?: boolean
+  historyReply?(reply: ReturnType<typeof pageNativeHistory> & {
+    status: { status: 'known'; receipt: RemoteOperationReceipt }
+  }, metadata: boolean, signal?: AbortSignal): void | Promise<void>
+  beforeCommit?(): void
+} = {}) {
   const mainId = randomUUID()
   const deviceId = randomUUID()
   const workerInstallationId = randomUUID()
@@ -78,18 +84,22 @@ function observationFixture(history?: NativeHistory, delayMetadata = false) {
       controlFor: async () => { throw new Error('No native control is expected') },
       carrier: { capture: () => {
         const identity = { ...connection, connectionGeneration: generation++ }
-        return { identity, request: async (_namespace, raw) => {
+        return { identity, request: async (_namespace, raw, requestOptions) => {
           const frame = RemoteExecutionRpcRequestSchema.parse(raw)
-          const status = { status: 'known', receipt: structuredClone(receipt) }
+          const status = { status: 'known' as const, receipt: structuredClone(receipt) }
           if (frame.method === 'prepare') return { payload: { session, status } }
-          if (frame.method === 'history' && history) {
+          if ((frame.method === 'history' || frame.method === 'reconcile-response') && history) {
             historyReads.push(frame)
-            if (frame.metadata && delayMetadata && !metadataDelayed) {
+            const metadata = frame.method === 'history' ? frame.metadata : undefined
+            if (metadata && options.delayMetadata && !metadataDelayed) {
               metadataDelayed = true
               metadataEntered.resolve()
               await metadataRelease.promise
             }
-            return { payload: { ...pageNativeHistory(history, frame.afterSequence, frame.metadata), status } }
+            const afterSequence = frame.method === 'history' ? frame.afterSequence : undefined
+            const reply = { ...pageNativeHistory(history, afterSequence, metadata), status }
+            await options.historyReply?.(reply, metadata !== undefined, requestOptions?.signal)
+            return { payload: reply }
           }
           if (frame.method !== 'status') throw new Error('Only session preparation and boundary reads are expected')
           if (identity.connectionGeneration === 3) secondReply.resolve()
@@ -98,6 +108,7 @@ function observationFixture(history?: NativeHistory, delayMetadata = false) {
       } },
       commit: async (_receipt, authenticated) => {
         observedGenerations.push(authenticated.connectionGeneration)
+        options.beforeCommit?.()
         if (authenticated.connectionGeneration === 2) {
           committed.resolve()
           await release.promise
@@ -178,7 +189,7 @@ it('bounds identical pending replies and releases their capacity after observati
 it('binds an identical boundary reply to its own connection while earlier history metadata is delayed', async () => {
   const history: NativeHistory = { events: [], pendingInteractions: [],
     terminalResult: { outcome: 'succeeded', output: { text: 'x'.repeat(400_000) } } }
-  const f = observationFixture(history, true)
+  const f = observationFixture(history, { delayMetadata: true })
   f.release.resolve()
   await f.manager.createSession({ request: f.request, correlationId: `execution:${f.request.executionId}` })
   const reading = f.manager.history(f.session)
@@ -194,4 +205,97 @@ it('binds an identical boundary reply to its own connection while earlier histor
   await expect(reading).resolves.toMatchObject(history)
   expect(f.observedGenerations).toEqual([1, 4, 2])
   expect(f.rejections).toEqual([])
+})
+
+const historyFailures = ['continuation failure', 'cancellation', 'invalid first page',
+  'invalid continuation', 'receipt conflict'] as const
+it.each((['history', 'reconcile-response'] as const).flatMap(method =>
+  historyFailures.map(failure => ({ method, failure }))))(
+  'releases retained $method responses after $failure', async ({ method, failure }) => {
+    const history: NativeHistory = { events: [], pendingInteractions: [],
+      terminalResult: { outcome: 'succeeded', output: { text: 'x'.repeat(400_000) } } }
+    const interrupted = new Error('History read interrupted')
+    let failing = false
+    let controller = new AbortController()
+    const f = observationFixture(history, {
+      historyReply: (reply, metadata, signal) => {
+        if (!failing) return
+        if (failure === 'invalid first page') Reflect.set(reply.history, 'pendingInteractions', null)
+        if (failure === 'receipt conflict') reply.status.receipt.native!.sessionId = 'other-session'
+        if (!metadata) return
+        if (failure === 'continuation failure') throw interrupted
+        if (failure === 'cancellation') {
+          controller.abort(interrupted)
+          signal!.throwIfAborted()
+        }
+        if (failure === 'invalid continuation') reply.page.metadata!.digest = 'f'.repeat(64)
+      },
+    })
+    f.release.resolve()
+    await f.manager.createSession({ request: f.request, correlationId: `execution:${f.request.executionId}` })
+    failing = true
+    for (let attempt = 0; attempt < 33; attempt++) {
+      controller = new AbortController()
+      const reading = method === 'history' ? f.manager.history(f.session, controller.signal)
+        : f.manager.reconcileResponse(f.session, {
+          nativeRequestId: 'question', nativeRequestType: 'approval', option: {
+            optionId: 'approve', semantic: 'approve_once', label: 'Approve', persistence: 'request',
+            affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false,
+          },
+        }, controller.signal)
+      if (failure === 'continuation failure' || failure === 'cancellation') {
+        await expect(reading).rejects.toBe(interrupted)
+      } else if (failure === 'receipt conflict') {
+        await expect(reading).rejects.toThrow('Original remote receipt changed')
+      } else if (failure === 'invalid continuation') {
+        await expect(reading).rejects.toThrow('JSON continuation identity changed')
+      } else {
+        await expect(reading).rejects.toMatchObject({ name: 'ZodError' })
+      }
+    }
+    expect(f.observedGenerations).toEqual([1])
+    failing = false
+    await expect(f.manager.observeBoundary(f.session)).resolves.toBeUndefined()
+    await expect(f.manager.history(f.session)).resolves.toMatchObject(history)
+    expect(f.rejections).toEqual([])
+  },
+)
+
+it('preserves observation errors and releases consumed history responses exactly once', async () => {
+  const history: NativeHistory = { events: [], pendingInteractions: [] }
+  const rejected = new Error('Receipt commit failed')
+  let failing = false
+  const f = observationFixture(history, {
+    beforeCommit: () => { if (failing) throw rejected },
+  })
+  f.release.resolve()
+  await f.manager.createSession({ request: f.request, correlationId: `execution:${f.request.executionId}` })
+  failing = true
+  for (let attempt = 0; attempt < 33; attempt++) {
+    await expect(f.manager.history(f.session)).rejects.toBe(rejected)
+  }
+  failing = false
+  await expect(f.manager.history(f.session)).resolves.toMatchObject(history)
+  await expect(f.manager.observeBoundary(f.session)).resolves.toBeUndefined()
+  expect(f.rejections).toEqual([])
+})
+
+it('preserves reconciliation errors for history responses that contain no receipt', async () => {
+  const history: NativeHistory = { events: [], pendingInteractions: [] }
+  let unknown = false
+  const f = observationFixture(history, {
+    historyReply: reply => {
+      if (unknown) Reflect.set(reply, 'status', {
+        status: 'unknown', reason: 'journal_absence_requires_reconciliation',
+      })
+    },
+  })
+  f.release.resolve()
+  await f.manager.createSession({ request: f.request, correlationId: `execution:${f.request.executionId}` })
+  unknown = true
+  for (let attempt = 0; attempt < 33; attempt++) {
+    await expect(f.manager.history(f.session)).rejects.toThrow('Original worker journal requires reconciliation')
+  }
+  unknown = false
+  await expect(f.manager.history(f.session)).resolves.toMatchObject(history)
 })
