@@ -70,6 +70,22 @@ async function removeIncompletePacks(common: string, before: string[]): Promise<
   }
 }
 
+/** The common-directory lock outlives every fetch writer, so these locks have no remaining owner. */
+async function removeFetchLocks(common: string): Promise<void> {
+  for (const name of ['shallow.lock', 'FETCH_HEAD.lock', 'packed-refs.lock']) {
+    await rm(resolve(common, name), { force: true })
+  }
+  const removeRefLocks = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      const path = resolve(directory, entry.name)
+      if (entry.isDirectory()) await removeRefLocks(path)
+      else if (entry.name.endsWith('.lock')) await rm(path, { force: true })
+    }
+  }
+  await removeRefLocks(resolve(common, 'refs'))
+}
+
 function boundedArgs(args: string[], index: number): string[] {
   const command = args[index]!
   const flags = command === 'clone'
@@ -121,7 +137,7 @@ async function removeAbandonedStaging(root: FileHandle, owner: TransferOwner): P
 async function liveReservations(root: FileHandle): Promise<number> {
   let live = 0
   for (const name of await readdir(anchored(root))) {
-    if (!/^transfer-.+\.reservation$/u.test(name)) continue
+    if (!/^transfer-.+\.(?:reservation|staging)$/u.test(name)) continue
     const file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
     try {
       let owner: TransferOwner = {}
@@ -134,7 +150,17 @@ async function liveReservations(root: FileHandle): Promise<number> {
       const active = owner.lifetimeLock === true
         ? running || !await lockTransfer(file, { nonBlocking: true })
         : running
-      if (active) live++
+      if (active && name.endsWith('.staging')) {
+        // Completed clones keep recovery records until publication or removal; their writers no longer reserve bytes.
+        if (typeof owner.staging !== 'string') {
+          throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git clone staging is unavailable.', 409)
+        }
+        try { await lstat(owner.staging) }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          await rm(anchored(root, name), { force: true })
+        }
+      } else if (active) live++
       else {
         await removeAbandonedStaging(root, owner)
         await rm(anchored(root, name), { force: true })
@@ -188,9 +214,13 @@ async function closeTransferWriters(root: FileHandle,
   }
 }
 
-async function releaseTransfer(root: FileHandle, name: string): Promise<void> {
+async function releaseTransfer(root: FileHandle, name: string, staging?: string): Promise<void> {
   await withPrivateDirectoryLock(root, async () => {
-    await rm(anchored(root, name), { force: true })
+    if (staging) {
+      // Renaming preserves crash recovery while ensureClone still owns unpublished staging.
+      await rename(anchored(root, name), anchored(root, name.replace(/\.reservation$/u, '.staging')))
+      await root.sync()
+    } else await rm(anchored(root, name), { force: true })
     const reservedBytes = await liveReservations(root) * SOURCE_GIT_CACHE_LIMITS.transferBytes
     const measured = await measureStorage(root)
     await writeStorage(root, { ...measured, reservedBytes })
@@ -234,6 +264,7 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
     const reservation = await reserveTransfer(root, options.signal, createdTarget ? target : undefined)
     let closed: FileHandle | undefined
     let transferStarted = false
+    let completedStaging: string | undefined
     try {
       // Clones write a private staging directory; only fetches share a repository, so only they wait for each other.
       const transfer = async (lockFd?: number) => {
@@ -245,26 +276,34 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
           result = await run(boundedArgs(args, index), { ...options,
             maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, transferLockFd: reservation.guard.fd,
             ...(lockFd !== undefined ? { lockFd } : {}) })
+          if (command === 'clone' && createdTarget && result.code === 0) completedStaging = target
           return result
         } finally {
           closed = await closeTransferWriters(root, reservation)
           if (!result || result.code !== 0) {
             if (command === 'clone' && createdTarget) await rm(target, { recursive: true, force: true })
-            else if (command === 'fetch' && before) await removeIncompletePacks(common, before)
+            else if (command === 'fetch' && before) {
+              await removeIncompletePacks(common, before)
+              await removeFetchLocks(common)
+            }
           }
         }
       }
       if (command === 'clone') return await transfer()
       const repository = storagePath === common ? root : await openPrivateRoot(common, false)
       try {
-        return await withPrivateDirectoryLock(repository, guard => transfer(guard.fd), { signal: options.signal })
+        return await withPrivateDirectoryLock(repository, async guard => {
+          await removeFetchLocks(common)
+          await removeIncompletePacks(common, [])
+          return transfer(guard.fd)
+        }, { signal: options.signal })
       } finally {
         if (repository !== root) await repository.close()
       }
     } finally {
       if (!transferStarted) closed = await closeTransferWriters(root, reservation)
       if (closed) {
-        try { await releaseTransfer(root, reservation.name) }
+        try { await releaseTransfer(root, reservation.name, completedStaging) }
         finally { await closed.close() }
       }
     }
