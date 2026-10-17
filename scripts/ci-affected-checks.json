@@ -1,0 +1,155 @@
+{
+  "source": "7eb4939ea753a8b7479fba1c761a93e387fc82fb",
+  "checks": [
+    {
+      "name": "qconf-ci-fixes-8af86af-lint",
+      "cwd": "conformance",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "eslint",
+        "fixtures/harnesses/claude-cli.cjs",
+        "fixtures/harnesses/scripted-input.cjs",
+        "fixtures/harnesses/scripted-mcp-configuration.cjs",
+        "fixtures/harnesses/scripted-mcp.cjs",
+        "fixtures/harnesses/scripted-plans.cjs",
+        "fixtures/harnesses/scripted-turns.cjs",
+        "src/runtime/environment.test.ts",
+        "src/runtime/environment.ts",
+        "src/runtime/postgres.test.ts",
+        "src/runtime/postgres.ts",
+        "src/runtime/target.test.ts",
+        "src/runtime/target.ts",
+        "src/scenarios/workflows/authoring.test.ts",
+        "src/scenarios/workflows/authoring.ts",
+        "--max-warnings",
+        "0"
+      ],
+      "reportKind": null
+    },
+    {
+      "name": "qconf-ci-fixes-8af86af-types",
+      "cwd": "conformance",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "tsc",
+        "--noEmit",
+        "--target",
+        "ES2023",
+        "--module",
+        "NodeNext",
+        "--moduleResolution",
+        "NodeNext",
+        "--strict",
+        "--noUncheckedIndexedAccess",
+        "--exactOptionalPropertyTypes",
+        "--skipLibCheck",
+        "--types",
+        "node",
+        "src/runtime/environment.test.ts",
+        "src/runtime/environment.ts",
+        "src/runtime/postgres.test.ts",
+        "src/runtime/postgres.ts",
+        "src/runtime/target.test.ts",
+        "src/runtime/target.ts",
+        "src/scenarios/workflows/authoring.test.ts",
+        "src/scenarios/workflows/authoring.ts"
+      ],
+      "reportKind": null
+    },
+    {
+      "name": "qconf-ci-fixes-8af86af-regressions",
+      "cwd": "conformance",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/runtime/environment.test.ts",
+        "src/runtime/postgres.test.ts",
+        "src/runtime/target.test.ts",
+        "src/scenarios/workflows/authoring.test.ts"
+      ],
+      "reportKind": "vitest"
+    },
+    {
+      "name": "qconf-settings-ec7d594-lint",
+      "cwd": "conformance",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "eslint",
+        "src/scenarios/http/versioned-setting.ts",
+        "--max-warnings",
+        "0"
+      ],
+      "reportKind": null
+    },
+    {
+      "name": "qconf-settings-ec7d594-types",
+      "cwd": "conformance",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "tsc",
+        "--noEmit",
+        "--target",
+        "ES2023",
+        "--module",
+        "NodeNext",
+        "--moduleResolution",
+        "NodeNext",
+        "--strict",
+        "--noUncheckedIndexedAccess",
+        "--exactOptionalPropertyTypes",
+        "--skipLibCheck",
+        "--types",
+        "node",
+        "src/scenarios/http/versioned-setting.ts",
+        "src/scenarios/http/settings.ts"
+      ],
+      "reportKind": null
+    },
+    {
+      "name": "postgres-installer-syntax",
+      "cwd": ".",
+      "program": "bash",
+      "args": [
+        "-n",
+        "scripts/ci-postgres-toolchain.sh"
+      ]
+    },
+    {
+      "name": "postgres-installer-lint",
+      "cwd": ".",
+      "program": "corepack",
+      "args": [
+        "pnpm",
+        "exec",
+        "node",
+        "apps/api/node_modules/eslint/bin/eslint.js",
+        "--config",
+        "apps/api/eslint.config.mjs",
+        "--max-warnings",
+        "0",
+        "scripts/ci-postgres-toolchain.test.mjs"
+      ]
+    },
+    {
+      "name": "postgres-installer-regressions",
+      "cwd": ".",
+      "program": "node",
+      "args": [
+        "--test",
+        "scripts/ci-postgres-toolchain.test.mjs"
+      ],
+      "reportKind": "node"
+    }
+  ]
+}
