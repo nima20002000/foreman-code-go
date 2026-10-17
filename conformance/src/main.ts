@@ -10,14 +10,12 @@ import { readRunIdentity } from './reporting/revision.js'
 import { CiProgress } from './reporting/progress.js'
 import { runScenarios } from './runner.js'
 import { startTarget } from './runtime/target.js'
+import { selectScenarios } from './selection.js'
 
 async function main(): Promise<void> {
   const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
   const options = parseOptions(process.argv.slice(2), repoRoot, process.env)
-  const candidates = options.smoke ? smokeScenarios : allScenarios
-  const scenarios = candidates.filter(scenario =>
-    (options.lanes.length === 0 || options.lanes.includes(scenario.lane))
-    && (options.scenarioIds.length === 0 || options.scenarioIds.includes(scenario.id)))
+  const scenarios = selectScenarios(allScenarios, smokeScenarios, options)
   const http = checkHttpCoverage([...httpRoutes, ...runtimeHttpRoutes], allScenarios)
   const behaviors = checkBehaviorCoverage(allScenarios)
   const identity = await readRunIdentity(repoRoot)
