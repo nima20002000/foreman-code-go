@@ -222,7 +222,7 @@ async function captureSchema(environment) {
     await client.connect()
     let raw, before, startupRows, migrations, serverVersion
     try {
-      migrations = (await client.query('select version from application_migrations order by version')).rows.map(row => Number(row.version))
+      migrations = (await client.query('select version from public.application_migrations order by version')).rows.map(row => Number(row.version))
       const expected = JSON.parse(readFileSync(join(repository, 'backend/internal/schema/assets/expected-head.json'))).applicationMigrations
       if (JSON.stringify(migrations) !== JSON.stringify(expected)) throw new Error('Executed TS migration versions differ from the expected head.')
       startupRows = await inventory(client)
@@ -246,7 +246,7 @@ async function captureSchema(environment) {
     try {
       await restoreClient.query(sql)
       if (JSON.stringify(await inventory(restoreClient)) !== JSON.stringify(before)) throw new Error('Restored schema inventory or startup row counts differ.')
-      const actual = (await restoreClient.query('select version from application_migrations order by version')).rows.map(row => Number(row.version))
+      const actual = (await restoreClient.query('select version from public.application_migrations order by version')).rows.map(row => Number(row.version))
       if (JSON.stringify(actual) !== JSON.stringify(migrations)) throw new Error('Restored migration history differs.')
     } finally { await restoreClient.end() }
     const provenance = { sourceCommit: baseline, sourceSnapshot: baselineSnapshot, verifiedSourceTree: baselineTree,
