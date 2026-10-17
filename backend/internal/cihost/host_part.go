@@ -79,9 +79,19 @@ func (executor *HostPartExecutor) Start(ctx context.Context, launch HostPartLaun
 		return err
 	}
 	if started.Code != 0 {
-		return fmt.Errorf("The CI unit could not start: %s", hostCiFailureText(started.Stderr))
+		return &hostPartStartRejection{detail: hostCiFailureText(started.Stderr)}
 	}
 	return nil
+}
+
+// hostPartStartRejection keeps the bounded manager diagnostic separate from
+// the user-facing report, whose wording is fixed by HostCiRunner.launchRun.
+type hostPartStartRejection struct {
+	detail string
+}
+
+func (rejection *hostPartStartRejection) Error() string {
+	return "The CI unit could not start: " + rejection.detail
 }
 
 // Stop requests the manager to stop the retained service. Call UnitStates after
