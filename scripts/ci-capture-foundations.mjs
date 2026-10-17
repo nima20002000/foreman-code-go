@@ -4,7 +4,7 @@ import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
@@ -15,7 +15,9 @@ const baselineSnapshot = '51e85118bfcddef492cc4ecf555095ff09e6fe11'
 const baselineTree = '0b8843295e54ed7830bbb276e782a8eff028b349'
 const publicMirror = 'https://github.com/nima20002000/foreman-code-go-ci.git'
 const repository = process.cwd()
-const root = mkdtempSync(join(tmpdir(), 'foreman-schema-capture-'))
+const captureParent = join(homedir(), '.cache', 'foreman-capture')
+mkdirSync(captureParent, { recursive: true, mode: 0o700 })
+const root = mkdtempSync(join(captureParent, 'c-'))
 const source = join(root, 'source')
 const containerName = `foreman-schema-capture-${randomUUID()}`
 const containerLabel = 'foreman-code.schema-capture'
@@ -174,7 +176,7 @@ function executableSql(raw) {
 async function captureSchema(environment) {
   const { Client } = await startDatabase(environment)
   const resources = await import(pathToFileURL(join(source, 'scripts/test-resources.mjs')))
-  const owner = resources.createTestRoot(root)
+  const owner = resources.createTestRoot(root, 'r-')
   const admin = await resources.testAdminPool()
   let database, restored
   try {
