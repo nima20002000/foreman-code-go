@@ -3,11 +3,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { nativeRegistryProjection } from '../src/modules/harnesses/recovery/registryObservation.js'
 import { bootIdentity, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
+import { storageBatch } from '../src/modules/harnesses/recovery/storage.js'
 
 const execute = promisify(execFile)
 const ownerKey = (owner: string) => createHash('sha256').update(owner).digest('hex')
@@ -24,13 +26,14 @@ function seed(root: string, owner: string, closed = false) {
 
 describe.skipIf(process.platform !== 'linux')('passive harness metadata with compact retired history', () => {
   it('preserves over 10,000 exact retired owner receipts and one unresolved launch, including after process restart', async () => {
+    const started = performance.now()
     const root = mkdtempSync(join(tmpdir(), 'harness-retired-history-')), registry = new NativeProcessRegistry(root)
     const receipts: { path: string; value: string }[] = [], retirements: Promise<boolean>[] = []
     try {
       // Positive format-2 closure fixtures use the real retirement/receipt/GC path.
       // No native provider or guardian is launched by this storage regression.
       await nativeRegistryProjection(root).retirementBatch(async () => {
-        for (let index = 0; index < 10_001; index++) {
+        await storageBatch(Array.from({ length: 10_001 }, (_, index) => index), async index => {
           const owner = `retired-owner-${index}`, row = seed(root, owner, true)
           const retirement = registry.closeOwner(owner)
           retirements.push(retirement)
@@ -39,7 +42,7 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
           receipts.push({ path, value: JSON.stringify({ format: 2, owner, id: row.id, observation: { owner, launchId: row.id,
             bootId: row.intent.boot, lifecycle: 'closed', closureEvidence: 'native_not_started' } }) })
           expect(readdirSync(row.ownerDirectory)).toEqual([`closed-${row.id}.json`, 'retired.json'])
-        }
+        })
       })
       expect((await Promise.all(retirements)).every(Boolean)).toBe(true)
       const unresolved = seed(root, 'unresolved-owner')
@@ -63,6 +66,8 @@ describe.skipIf(process.platform !== 'linux')('passive harness metadata with com
       await expect(registry.closeRegistration(registry.scope('retired-owner-0'), randomUUID())).rejects.toMatchObject({ code: 'ENOENT' })
       await expect(registry.reserveLaunch('unresolved-owner')).rejects.toThrow('active or unconfirmed')
     } finally { rmSync(root, { recursive: true, force: true }) }
+    // CI treats 180 seconds without a completed test as a hang.
+    expect(performance.now() - started).toBeLessThan(180_000)
   // Every retirement fsyncs its receipts; slower disks need time for the full history.
   }, 1_200_000)
 
