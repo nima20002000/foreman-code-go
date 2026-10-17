@@ -61,8 +61,8 @@ func requireEnd[T any](t *testing.T, reader *queue.Reader[T], want error) {
 
 type readResult[T any] struct {
 	value T
-	ok bool
-	err error
+	ok    bool
+	err   error
 }
 
 func read[T any](reader *queue.Reader[T]) <-chan readResult[T] {
