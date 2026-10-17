@@ -37,14 +37,16 @@ async function ownedProcessIds(directory: string): Promise<number[]> {
       if (code === 'ENOENT' || code === 'ESRCH') continue
       const message = `Could not establish process ${entry.name} cleanup ownership`
       if (code === 'EACCES' || code === 'EPERM') {
+        const failures = [error]
         try {
           // Fresh roots and their harness processes are created after this launcher starts.
           if (await processStartTicks(processDirectory) < launcherStartTicks) continue
         } catch (identityError) {
           const identityCode = (identityError as NodeJS.ErrnoException).code
           if (identityCode === 'ENOENT' || identityCode === 'ESRCH') continue
-          throw new AggregateError([error, identityError], message, { cause: error })
+          failures.push(identityError)
         }
+        if (failures.length > 1) throw new AggregateError(failures, message, { cause: error })
       }
       throw new Error(message, { cause: error })
     }
