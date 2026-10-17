@@ -1,0 +1,27 @@
+{
+  "source": "29079dd1a93377cfa762f2333023eefd1fdf0e04",
+  "package": "./internal/cihost",
+  "modulePath": "github.com/nima20002000/foreman-code-go/backend",
+  "files": [
+    "internal/cihost/host_part.go",
+    "internal/cihost/host_part_linux_test.go",
+    "internal/cihost/host_part_test.go",
+    "internal/cihost/host_ports.go",
+    "internal/cihost/host_unit_states.go",
+    "internal/cihost/host_unit_states_test.go"
+  ],
+  "unitRoots": [
+    "TestHostPartRunsPreparedPartOnIsolatedWorker",
+    "TestHostPartStartRequiresNativeCommandPort",
+    "TestHostPartStartPreservesNativeFailureWithoutFallback",
+    "TestHostPartStartReportsBoundedManagerRejection",
+    "TestHostPartCanceledBeforeLaunchMakesNoNativeCall",
+    "TestHostPartStopNeedsTerminalObservation",
+    "TestHostCiUnitStatesMatchReorderedObservations",
+    "TestHostCiUnitStatesPreserveUnknownOnUnavailableManager",
+    "TestHostCiUnitStatesKeepTransientManagerStatesActive",
+    "TestHostCiUnitStatesDoNotInventObservationAfterNativeFailure",
+    "TestHostCiUnitStatesEmptyRequestNeedsNoNativeCommand"
+  ],
+  "unitPattern": "^(TestHostPartRunsPreparedPartOnIsolatedWorker|TestHostPartStartRequiresNativeCommandPort|TestHostPartStartPreservesNativeFailureWithoutFallback|TestHostPartStartReportsBoundedManagerRejection|TestHostPartCanceledBeforeLaunchMakesNoNativeCall|TestHostPartStopNeedsTerminalObservation|TestHostCiUnitStatesMatchReorderedObservations|TestHostCiUnitStatesPreserveUnknownOnUnavailableManager|TestHostCiUnitStatesKeepTransientManagerStatesActive|TestHostCiUnitStatesDoNotInventObservationAfterNativeFailure|TestHostCiUnitStatesEmptyRequestNeedsNoNativeCommand)$"
+}
