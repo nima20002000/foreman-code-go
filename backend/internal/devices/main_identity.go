@@ -10,7 +10,7 @@ import (
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
 )
 
-var ErrCorruptMainIdentity = errors.New("Main device-authentication identity is corrupt; explicit recovery is required.")
+var ErrCorruptMainIdentity error = &identityError{message: "Main device-authentication identity is corrupt; explicit recovery is required."}
 
 // MainIdentityQuerier is the frozen TS identity store's single-query port.
 // Both the shared database.DB and its transaction Querier satisfy it.

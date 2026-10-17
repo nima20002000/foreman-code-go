@@ -8,16 +8,23 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"strings"
 	"unicode"
 )
 
 var (
-	ErrEd25519KeyRequired    = errors.New("Worker identity requires an Ed25519 key.")
-	ErrNonCanonicalPublicKey = errors.New("Publish only a canonical Ed25519 public key, never private key material.")
-	ErrInvalidIdentityKey    = errors.New("Device identity requires a valid Ed25519 private key.")
+	ErrEd25519KeyRequired    error = &identityError{message: "Worker identity requires an Ed25519 key."}
+	ErrNonCanonicalPublicKey error = &identityError{message: "Publish only a canonical Ed25519 public key, never private key material."}
+	ErrInvalidIdentityKey    error = &identityError{message: "Device identity requires a valid Ed25519 private key."}
 )
+
+// identityError retains the existing diagnostic and a distinct sentinel identity.
+// It remains an ordinary error at the shared HTTP and Operator error boundaries.
+type identityError struct {
+	message string
+}
+
+func (err *identityError) Error() string { return err.message }
 
 // IdentityKey holds cryptographic state, not a shared protocol or domain DTO.
 // Use generated contract types when constructing pairing and proof messages.
