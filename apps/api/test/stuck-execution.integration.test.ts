@@ -6,10 +6,9 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { BugReportService } from '../src/modules/bug-reports/service.js'
-import { HostCiService } from '../src/modules/ci-host/service.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
-import { RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { workerToolServices } from './helpers/workerMcpServices.js'
 import { intervalRuntime } from './helpers/intervalRuntime.js'
 import { measuredCiPages } from './helpers/measuredCiPages.js'
 
@@ -17,19 +16,12 @@ it('reports an idle running execution after every CI ticket ends, without stoppi
   async () => {
     const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime()
     const commands = new PostgresCommandCoordinator(runtime.db.pool)
-    const bugs = new BugReportService(runtime.db.pool, commands)
-    const ci = new HostCiService(runtime.db.pool, commands, new RunCiAuthority(runtime.db.pool), {
-      capabilities: async () => ({ parts: true, integrationPartitions: true, affected: true }),
-      resolve: async () => { throw new Error('This fixture does not publish CI commits.') },
-    }, {
-      computers: async () => [],
-      request: async () => { throw new Error('This fixture does not dispatch CI jobs.') },
-    })
+    const { bugReports: bugs, ci, references } = workerToolServices(runtime.db.pool, commands)
     const app = buildApp({
       logger: false,
       readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access: runtime.access, services: { commands, ci, bugReports: bugs } as never },
-      appMcp: { access: runtime.access, commands, bugReports: bugs,
+      appMcp: { references, access: runtime.access, commands, bugReports: bugs,
         interactions: new PostgresAppInteractionService(runtime.db.pool, runtime.repository, commands) },
     })
     const clients: Client[] = []

@@ -1,3 +1,5 @@
+import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { callWorkspaceTool } from './helpers/workspaceMcp.js'
@@ -146,12 +148,9 @@ it('discovers real unregistered folders without writes and safely deletes conten
     // A saved Run snapshot remains protected after its workspace location changes.
     const activePath = join(root, 'Active snapshot'); await mkdir(activePath)
     const activeFolder = (await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.find((item) => item.path === activePath)!
-    await pool.query("insert into workflows (id,workspace_id,record) values ('folder-test-workflow',$1,'{}')", [registered.workspace.id])
-    const pins = { workspaceId: registered.workspace.id, workflowId: 'folder-test-workflow', executionSemanticsVersion: 3, agentConfigurationVersionIds: {} }
-    await pool.query("insert into workflow_versions (id,workspace_id,workflow_id,version,entry_node_id,record) values ('folder-test-version',$1,'folder-test-workflow',1,'entry',$2::jsonb)",
-      [registered.workspace.id, JSON.stringify({ ...pins, id: 'folder-test-version', definition: { executionSemanticsVersion: 3 } })])
-    await pool.query("insert into runs (id,workspace_id,workflow_id,workflow_version_id,execution_state,working_directory,record) values ('folder-test-run',$1,'folder-test-workflow','folder-test-version','running',$2,$3::jsonb)",
-      [registered.workspace.id, activePath, JSON.stringify({ ...pins, id: 'folder-test-run', workflowVersionId: 'folder-test-version', executionState: 'running' })])
+    const snapshot = await seedAgent3(pool, activePath, makeCurrentWorkflowFixture(randomUUID(), 'single'))
+    await locations.set(owner.principal, 'http', { workspaceId: snapshot.run.workspaceId,
+      expectedLocationRevision: 1, runnerId: locations.runnerId, rootPath: external })
     await expect(workspaces.storageFolders.delete(owner.principal, 'http', { commandId: randomUUID(), path: activePath, expectedIdentity: activeFolder.identity })).rejects.toMatchObject({ code: 'DIRECTORY_IN_USE' })
     expect((await workspaces.storageFolders.list(owner.principal, { limit: 100 })).items.find((item) => item.path === activePath)?.deletion).toMatchObject({ status: 'protected', reason: 'active_run' })
     const httpPath = join(root, 'HTTP folder'); await mkdir(httpPath); await writeFile(join(httpPath, 'nested-content.txt'), 'owned test content')
