@@ -3,7 +3,8 @@ const fixtureGitEnvironment = Object.fromEntries(Object.entries(process.env).fil
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statfsSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -329,7 +330,7 @@ test('unit inventory includes all package runners and both web/root smoke comman
 })
 
 
-test('measurement reads available cgroup metrics and denies missing or corrupt metrics', () => {
+test('measurement reads available cgroup metrics and denies missing or corrupt metrics', t => {
   const f = fixture()
   try {
     const cgroup = join(f.root, 'cgroup')
@@ -338,31 +339,18 @@ test('measurement reads available cgroup metrics and denies missing or corrupt m
     writeFileSync(join(cgroup, 'memory.peak'), '65536\n')
     writeFileSync(join(cgroup, 'pids.peak'), '4\n')
     const input = { mutableDirectory: f.root, cgroupDirectory: cgroup }
-    const observe = () => {
-      const before = statfsSync(f.root)
-      const measurement = sampleVerificationResources(input)
-      const after = statfsSync(f.root)
-      const usedBytes = stat => (stat.blocks - stat.bfree) * stat.bsize
-      const usedInodes = stat => stat.files - stat.ffree
-      // The shared filesystem can change between samples as other jobs allocate or remove files.
-      assert.ok(measurement.mutableBytes >= Math.min(usedBytes(before), usedBytes(after)))
-      assert.ok(measurement.mutableBytes <= Math.max(usedBytes(before), usedBytes(after)))
-      assert.ok(measurement.mutableInodes >= Math.min(usedInodes(before), usedInodes(after)))
-      assert.ok(measurement.mutableInodes <= Math.max(usedInodes(before), usedInodes(after)))
-      assert.ok(measurement.mutableBytes > 0)
-      assert.ok(measurement.mutableInodes > 0)
-      return measurement
-    }
-    const measurement = observe()
+    const statfs = t.mock.method(fs, 'statfsSync')
+    syncBuiltinESMExports()
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+    const measurement = sampleVerificationResources(input)
+    assert.equal(statfs.mock.callCount(), 1)
+    // Compare the kernel snapshot consumed by the sampler, which other writers cannot change afterward.
+    const filesystem = statfs.mock.calls[0].result
+    assert.equal(measurement.mutableBytes, (filesystem.blocks - filesystem.bfree) * filesystem.bsize)
+    assert.equal(measurement.mutableInodes, filesystem.files - filesystem.ffree)
     assert.equal(measurement.cpuUsageUsec, 12345)
     assert.equal(measurement.memoryPeakBytes, 65536)
     assert.equal(measurement.pidsPeak, 4)
-    for (let index = 0; index < 32; index++) {
-      writeFileSync(join(f.root, `allocated-${index}`), Buffer.alloc(128 * 1024, index))
-    }
-    const allocated = observe()
-    assert.ok(allocated.mutableBytes >= 32 * 128 * 1024)
-    assert.ok(allocated.mutableInodes >= 32)
     writeFileSync(join(cgroup, 'pids.peak'), 'unknown\n')
     assert.throws(() => sampleVerificationResources(input), /unavailable or invalid/)
     rmSync(join(cgroup, 'pids.peak'))

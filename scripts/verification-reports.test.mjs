@@ -3,12 +3,12 @@ import { integrationEnvironmentCapabilities, partitionUnitCapabilities } from '.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statfsSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { groupUsed } from './integration-process.mjs'
-import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess, sampleVerificationResources,
+import { collectPortions, expectedPortions, finalizeVerification, runSuiteProcess,
   validateVerificationContext, verificationCommand, verifyOfflinePreseed } from './verify-repository.mjs'
 import { portionPath, readNodeReport, runVerificationCommand, writeReport } from './verification-reports.mjs'
 
@@ -337,48 +337,6 @@ test('unit inventory includes all package runners and both web/root smoke comman
   const portions = expectedPortions(new URL('..', import.meta.url).pathname, 'unit')
   assert.deepEqual(portions.map(({ key }) => key), ['root:install', 'root:worker-artifact', 'packages/contracts:test', 'apps/api:test',
     'apps/web:test:unit', 'apps/web:test:run-graph-smoke', 'apps/worker:test', 'root:test:scripts'])
-})
-
-
-test('measurement reads available cgroup metrics and denies missing or corrupt metrics', () => {
-  const f = fixture()
-  try {
-    const cgroup = join(f.root, 'cgroup')
-    mkdirSync(cgroup)
-    writeFileSync(join(cgroup, 'cpu.stat'), 'usage_usec 12345\n')
-    writeFileSync(join(cgroup, 'memory.peak'), '65536\n')
-    writeFileSync(join(cgroup, 'pids.peak'), '4\n')
-    const input = { mutableDirectory: f.root, cgroupDirectory: cgroup }
-    const observe = () => {
-      const before = statfsSync(f.root)
-      const measurement = sampleVerificationResources(input)
-      const after = statfsSync(f.root)
-      const usedBytes = stat => (stat.blocks - stat.bfree) * stat.bsize
-      const usedInodes = stat => stat.files - stat.ffree
-      // The shared filesystem can change between samples as other jobs allocate or remove files.
-      assert.ok(measurement.mutableBytes >= Math.min(usedBytes(before), usedBytes(after)))
-      assert.ok(measurement.mutableBytes <= Math.max(usedBytes(before), usedBytes(after)))
-      assert.ok(measurement.mutableInodes >= Math.min(usedInodes(before), usedInodes(after)))
-      assert.ok(measurement.mutableInodes <= Math.max(usedInodes(before), usedInodes(after)))
-      assert.ok(measurement.mutableBytes > 0)
-      assert.ok(measurement.mutableInodes > 0)
-      return measurement
-    }
-    const measurement = observe()
-    assert.equal(measurement.cpuUsageUsec, 12345)
-    assert.equal(measurement.memoryPeakBytes, 65536)
-    assert.equal(measurement.pidsPeak, 4)
-    for (let index = 0; index < 32; index++) {
-      writeFileSync(join(f.root, `allocated-${index}`), Buffer.alloc(128 * 1024, index))
-    }
-    const allocated = observe()
-    assert.ok(allocated.mutableBytes >= 32 * 128 * 1024)
-    assert.ok(allocated.mutableInodes >= 32)
-    writeFileSync(join(cgroup, 'pids.peak'), 'unknown\n')
-    assert.throws(() => sampleVerificationResources(input), /unavailable or invalid/)
-    rmSync(join(cgroup, 'pids.peak'))
-    assert.throws(() => sampleVerificationResources(input))
-  } finally { f.close() }
 })
 
 
