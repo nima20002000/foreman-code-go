@@ -27,6 +27,22 @@ function principalRow(subject: ManagementPrincipal) {
     expires_at: new Date(subject.expiresAt), revoked_at: null, delegated_from: null,
   }
 }
+function preparedManagementCommands(client: pg.PoolClient): PostgresCommandCoordinator {
+  const pool = { connect: async () => ({
+    query: client.query.bind(client),
+    release() {},
+  }) } as unknown as pg.Pool
+  return { execute: async (command: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
+    await command.authorize?.(client)
+    await command.prepare?.(pool)
+    await command.authorize?.(client)
+    if (command.preparedMutation) {
+      expect(await command.preparedMutation.validate(client)).toBe(true)
+    }
+    return { value: await command.perform(client), replayed: false }
+  } } as PostgresCommandCoordinator
+}
+
 function selectionService() {
   const value: HostHarnessOverride = { ...selection, revision: 3, presetId: 'preset', enabled: true, driverId: 'codex', configuration: withAdvancedDefaults(configuration),
     configurationFingerprint: commandInputHash(withAdvancedDefaults(configuration)), qualification: 'unqualified' }
@@ -119,13 +135,7 @@ describe('explicit chat profile configuration producer', () => {
     const value = { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harnessProfileSelection: selection } }
     const update = vi.fn(async (_client: pg.PoolClient, next: unknown) => ({ value: next, revision: 2 }))
     const settings = { getAgentDefaults: async () => ({ value: DEFAULT_AGENT_DEFAULTS, revision: 1 }), updateManagedAgentDefaults: update } as unknown as PostgresFoundationSettingsRepository
-    const commands = { execute: async (command: {
-      authorize: (client: pg.PoolClient) => Promise<void>
-      perform: (client: pg.PoolClient) => Promise<unknown>
-    }) => {
-      await command.authorize(client)
-      return { value: await command.perform(client), replayed: false }
-    } } as unknown as PostgresCommandCoordinator
+    const commands = preparedManagementCommands(client)
     const qualifyConfiguration = vi.fn(async () => { throw new Error('unexpected local probe') })
     const validateSelection = vi.fn(async () => {})
     const service = new FoundationSettingsManagementService(settings, commands, { qualifyConfiguration } as never, undefined, { validateSelection })
@@ -206,12 +216,7 @@ it('saves a changed role while retaining an unchanged default on a revoked compu
       saved = { value, revision: saved.revision + 1 }
       return saved
     } } as unknown as PostgresFoundationSettingsRepository
-  const commands = { execute: async (command: {
-    authorize(client: pg.PoolClient): Promise<void>; perform(client: pg.PoolClient): Promise<unknown>
-  }) => {
-    await command.authorize(client)
-    return { value: await command.perform(client), replayed: false }
-  } } as unknown as PostgresCommandCoordinator
+  const commands = preparedManagementCommands(client)
   const profiles = { validateSelection: async () => { throw new Error('Computer revoked') } }
   const accounts = { resolve: async (harness: unknown, selected: unknown) => {
     if (selected) throw new Error('Computer revoked')
