@@ -26,15 +26,15 @@ func TestPostgresQueryFailuresUseThePublicHTTPEnvelope(t *testing.T) {
 		{
 			name: "statement deadline", statement: "select 1 from pg_sleep(5)",
 			sqlState: "57014",
-			status: http.StatusServiceUnavailable, code: "DATABASE_READ_TIMEOUT",
+			status:   http.StatusServiceUnavailable, code: "DATABASE_READ_TIMEOUT",
 			message: "The database read exceeded its deadline. Retry the request.",
 			details: map[string]any{"retryable": true, "reason": "query_canceled", "sqlState": "57014"},
 		},
 		{
 			name: "private database error", statement: "select $1::text::integer",
 			arguments: []any{"private-database-payload"},
-			sqlState: "22P02",
-			status: http.StatusInternalServerError, code: "INTERNAL_ERROR",
+			sqlState:  "22P02",
+			status:    http.StatusInternalServerError, code: "INTERNAL_ERROR",
 			message: "The API could not complete the request.",
 		},
 	} {

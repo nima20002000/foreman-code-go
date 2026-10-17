@@ -20,7 +20,9 @@ type InvalidRetryTimeoutError struct {
 	Timeout time.Duration
 }
 
-func (err *InvalidRetryTimeoutError) Error() string { return "Database retry timeout must be positive." }
+func (err *InvalidRetryTimeoutError) Error() string {
+	return "Database retry timeout must be positive."
+}
 
 // RetryTimeout retries replay-safe bookkeeping only. Never pass native submissions here.
 func RetryTimeout[T any](ctx context.Context, work func(context.Context) (T, error), options RetryOptions) (T, error) {

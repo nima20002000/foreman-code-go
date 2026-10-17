@@ -31,9 +31,9 @@ func TestConfigurationValidationPreservesPublicDiagnostics(t *testing.T) {
 			setting: "FOREMAN_CODE_LOCAL_PRODUCTION", message: "FOREMAN_CODE_LOCAL_PRODUCTION must be 0 or 1.",
 		},
 		{
-			name: "local production database",
+			name:        "local production database",
 			environment: config.Environment{"FOREMAN_CODE_LOCAL_PRODUCTION": "1", "DATABASE_URL": "postgresql://example.test/fixture"},
-			setting: "DATABASE_URL", message: "Local production requires a loopback API and database.",
+			setting:     "DATABASE_URL", message: "Local production requires a loopback API and database.",
 		},
 		{
 			name: "browser port", environment: config.Environment{"FOREMAN_CODE_WEB_PORT": "0"},
@@ -49,14 +49,14 @@ func TestConfigurationValidationPreservesPublicDiagnostics(t *testing.T) {
 			setting: "FOREMAN_CODE_BROWSER_ORIGIN", message: "FOREMAN_CODE_BROWSER_ORIGIN must be an exact HTTP loopback browser origin.",
 		},
 		{
-			name: "conflicting browser origins",
+			name:        "conflicting browser origins",
 			environment: config.Environment{"FOREMAN_CODE_DEV_BROWSER_ORIGIN": "http://localhost:5174", "FOREMAN_CODE_BROWSER_ORIGIN": "http://localhost:5173"},
-			setting: "FOREMAN_CODE_DEV_BROWSER_ORIGIN", message: "FOREMAN_CODE_DEV_BROWSER_ORIGIN conflicts with FOREMAN_CODE_BROWSER_ORIGIN.",
+			setting:     "FOREMAN_CODE_DEV_BROWSER_ORIGIN", message: "FOREMAN_CODE_DEV_BROWSER_ORIGIN conflicts with FOREMAN_CODE_BROWSER_ORIGIN.",
 		},
 		{
-			name: "conflicting browser port",
+			name:        "conflicting browser port",
 			environment: config.Environment{"FOREMAN_CODE_WEB_PORT": "5174", "FOREMAN_CODE_BROWSER_ORIGIN": "http://localhost:5173"},
-			setting: "FOREMAN_CODE_WEB_PORT", message: "FOREMAN_CODE_WEB_PORT conflicts with FOREMAN_CODE_BROWSER_ORIGIN.",
+			setting:     "FOREMAN_CODE_WEB_PORT", message: "FOREMAN_CODE_WEB_PORT conflicts with FOREMAN_CODE_BROWSER_ORIGIN.",
 		},
 	}
 	for _, test := range tests {
