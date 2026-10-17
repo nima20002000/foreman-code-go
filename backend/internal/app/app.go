@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nima20002000/foreman-code-go/backend/internal/builtweb"
 	"github.com/nima20002000/foreman-code-go/backend/internal/config"
 	"github.com/nima20002000/foreman-code-go/backend/internal/database"
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
@@ -79,9 +80,17 @@ func New(options Options) (*App, error) {
 			Access: options.MCPAccess, Logger: logger, MaxRequestBodyBytes: options.MCPMaxRequestBytes,
 		}),
 	}
-	application.Handle("/", func(http.ResponseWriter, *http.Request) error {
+	var fallback httpserver.Handler = func(http.ResponseWriter, *http.Request) error {
 		return domainerror.New("NOT_FOUND", "The requested API route was not found.", 404, nil)
-	})
+	}
+	if root := options.Config.Environment["FOREMAN_CODE_WEB_DIST"]; root != "" {
+		var err error
+		fallback, err = builtweb.New(root)
+		if err != nil {
+			return nil, err
+		}
+	}
+	application.Handle("/", fallback)
 	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
 		application.Handle(method+" /mcp", application.mcp.Handle)
 	}
