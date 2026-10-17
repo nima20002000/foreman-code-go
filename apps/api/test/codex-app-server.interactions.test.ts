@@ -27,6 +27,17 @@ import {
 describe.skipIf(process.platform === 'win32')('Codex app-server regressions against the real manager', () => {
   useCodexFixture()
 
+  it('accepts a delayed turn reply without treating submission as uncertain', async () => {
+    const session = await manager.createSession(source)
+    for await (const event of manager.startTurn(session, {
+      prompt: 'late-start', clientCorrelationId: 'delayed-reply',
+    })) {
+      if (event.type === 'turn.started') await finish(f.directory, session.nativeSessionId)
+    }
+    assert.equal((await manager.history(session)).terminalResult?.outcome, 'succeeded')
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
   it('F15: native resolution clears the addressed prompt and a duplicate cannot reopen it', async () => {
     const session = await manager.createSession(source)
     const { result } = await start(session, 'approval')
