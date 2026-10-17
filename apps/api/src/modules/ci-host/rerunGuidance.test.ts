@@ -73,7 +73,7 @@ function fixture(audience: 'worker' | 'operator' = 'worker') {
   const commands = {
     execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
       await input.authorize?.(pool as unknown as pg.PoolClient)
-      await input.prepare?.()
+      await input.prepare?.(pool)
       return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
     },
     recordDenied: vi.fn(async () => undefined), recordAudit: vi.fn(async () => undefined),

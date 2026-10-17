@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import type { WorkerConversationReceipt, WorkerConversationRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
-import type { NativeHarnessSessionManager, NativeSessionStart } from '../harnesses/port.js'
+import type { NativeHarnessSessionManager, NativeSessionStart, NativeTurnInput } from '../harnesses/port.js'
 import type { CodexFileHostLease } from '../harnesses/codexFiles/port.js'
 import { WorkerConversationHost } from './workerHost.js'
 import { WorkerConversationJournal } from './workerJournal.js'
@@ -33,7 +33,7 @@ it.each([false, true])('keeps active Codex file calls and cleanup available (rec
   const release = deferred()
   const finished = rejectableDeferred<{ success: boolean }>()
   const native = { harness: 'codex', createSession: async () => f.session,
-    async *startTurn(_session, input) {
+    async *startTurn(_session: Parameters<NativeHarnessSessionManager['startTurn']>[0], input: NativeTurnInput) {
       const turn = await adapter.prepare({ session: f.session, clientCorrelationId: input.clientCorrelationId,
         signal: AbortSignal.timeout(5000) })
       if (!turn) throw new Error('File callbacks are required')
@@ -52,7 +52,7 @@ it.each([false, true])('keeps active Codex file calls and cleanup available (rec
     history: async () => ({ events: [], pendingInteractions: [] }),
     reconcile: async () => ({ events: [], pendingInteractions: [], nativeTurnId: 'native-turn',
       terminalResult: { outcome: 'succeeded' } }),
-  } as NativeHarnessSessionManager
+  } as unknown as NativeHarnessSessionManager
   const host = new WorkerConversationHost({ journal, currentBinding: () => connection,
     authorize: async request => { if (request.method === 'conversation.start-turn') source = request },
     observeSession: async () => {}, observeSubmission: async () => {

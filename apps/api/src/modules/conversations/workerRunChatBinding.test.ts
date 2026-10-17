@@ -176,8 +176,8 @@ it('retries a Worker-applied binding transition after Main persistence was inter
 
 it('refuses a binding transition until the original native process is positively closed', async () => {
   const f = await fixture('codex')
-  f.launch.lifecycle = 'active'
-  delete f.launch.closureEvidence
+  Object.assign(f.launch, { lifecycle: 'active' })
+  Reflect.deleteProperty(f.launch, 'closureEvidence')
   try {
     await expect(f.manager.attachSession(f.session, f.start)).rejects.toMatchObject({
       code: 'WORKER_CONVERSATION_RECOVERY_REQUIRED' })

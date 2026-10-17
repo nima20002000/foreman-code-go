@@ -20,7 +20,7 @@ it('starts mirror publication after resolving the commit while planning is block
   })) } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
   const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
-    await input.prepare?.()
+    await input.prepare?.(pool)
     return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
   } } as PostgresCommandCoordinator
   let releasePlan!: () => void
@@ -71,7 +71,7 @@ it('publishes the unit mirror snapshot with the learned durations the queued tic
   }) } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
   const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
-    await input.prepare?.()
+    await input.prepare?.(pool)
     return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
   } } as PostgresCommandCoordinator
   const publishMirror = vi.fn(async () => undefined)
@@ -112,7 +112,7 @@ it('dispatch reuses a mirror push started during planning with the same learned 
   })) } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
   const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
-    await input.prepare?.()
+    await input.prepare?.(pool)
     return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
   } } as PostgresCommandCoordinator
   let releasePlan!: () => void

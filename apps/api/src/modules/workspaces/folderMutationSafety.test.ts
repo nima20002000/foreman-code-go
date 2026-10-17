@@ -48,7 +48,7 @@ function database(path: string) {
     const held = new Set<string>()
     const releaseLocks = () => {
       for (const key of held) {
-        locks.get(key)!.done.resolve()
+        locks.get(key)!.done.resolve(undefined)
         locks.delete(key)
       }
       held.clear()

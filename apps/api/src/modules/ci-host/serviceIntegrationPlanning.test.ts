@@ -29,7 +29,7 @@ async function admit(computers: HostCiComputer[], statuses: CiHostStatus[], rese
   } } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
   const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
-    await input.prepare?.()
+    await input.prepare?.(pool)
     return { value: await input.perform(pool as unknown as pg.PoolClient), replayed: false }
   } } as PostgresCommandCoordinator
   const endpoint: HostCiEndpoint = {
