@@ -33,8 +33,8 @@ async function fixture() {
   return { root, cache, clone, common: join(clone, '.git'), environment, git, first, successor }
 }
 
-const fetchLocks = ['shallow.lock', 'FETCH_HEAD.lock', 'packed-refs.lock',
-  'refs/remotes/origin/main.lock', 'refs/foreman/ci/fetch/interrupted.lock']
+const destinationRef = 'refs/foreman/ci/fetch/interrupted'
+const fetchLocks = ['FETCH_HEAD.lock', `${destinationRef}.lock`]
 const temporaryPack = 'objects/pack/tmp_pack_interrupted'
 
 it.each(['cancelled', 'timed out'] as const)(
@@ -46,7 +46,7 @@ it.each(['cancelled', 'timed out'] as const)(
     let running: ReturnType<typeof runGitWithCacheStorage> | undefined
     try {
       const shallow = await readFile(join(f.common, 'shallow'))
-      running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', f.successor], {
+      running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', `+${f.successor}:${destinationRef}`], {
         cwd: f.clone, signal: controller.signal,
         ...(interruption === 'timed out' ? { timeoutMs: 1500 } : {}),
       }, (args, options) => runGitProcess(args.includes('fetch') ? writer.args : args, options, f.environment))
@@ -87,7 +87,7 @@ it('preserves an unrelated fresh lock created before a cancelled Main fetch star
   const controller = new AbortController()
   let running: ReturnType<typeof runGitWithCacheStorage> | undefined
   try {
-    running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', f.successor],
+    running = runGitWithCacheStorage(f.cache, ['fetch', 'origin', `${f.successor}:${destinationRef}`],
       { cwd: f.clone, signal: controller.signal }, async (args, options) => {
         // A writer can create a lock after admission, before Main launches its fetch.
         if (args.includes('--is-shallow-repository')) await writeFile(unrelatedLock, 'unrelated', { flag: 'wx' })
@@ -116,3 +116,82 @@ it('preserves an unrelated fresh lock created before a cancelled Main fetch star
     await rm(f.root, { recursive: true, force: true })
   }
 })
+
+it('keeps concurrent Agent locks while removing only Main’s destination locks before a retry', async () => {
+  const f = await fixture()
+  const writer = await interruptedFetchWriter(f.root, f.common, { [`${destinationRef}.lock`]: 41 })
+  const controller = new AbortController()
+  const agentNames = ['refs/remotes/origin/agent.lock', 'packed-refs.lock', 'shallow.lock',
+    'refs/foreman/ci/fetch/agent.lock']
+  const agentFiles = agentNames.map(name => join(f.common, name))
+  let running: ReturnType<typeof runGitWithCacheStorage> | undefined
+  try {
+    running = runGitWithCacheStorage(f.cache, ['fetch', '--no-write-fetch-head', 'origin',
+      `+${f.successor}:${destinationRef}`], { cwd: f.clone, signal: controller.signal },
+    (args, options) => runGitProcess(args.includes('fetch') ? writer.args : args, options, f.environment))
+    const started = await Promise.race([writer.started(), running.then(() => {
+      throw new Error('Fetch ended before its writer started.')
+    })])
+    await started.write()
+    for (const path of agentFiles) await writeFile(path, 'agent', { flag: 'wx' })
+    const before = await Promise.all(agentFiles.map(path => stat(path)))
+    controller.abort()
+    await expect(running).resolves.toMatchObject({ code: 1 })
+    await expect(readFile(join(f.common, `${destinationRef}.lock`))).rejects.toMatchObject({ code: 'ENOENT' })
+    for (const [index, path] of agentFiles.entries()) {
+      expect(await readFile(path, 'utf8')).toBe('agent')
+      expect((await stat(path)).mtimeMs).toBe(before[index]!.mtimeMs)
+    }
+    await expect(runGitWithCacheStorage(f.cache, ['fetch', 'origin', f.successor],
+      { cwd: f.clone, signal: AbortSignal.timeout(1500) },
+      (args, options) => runGitProcess(args, options, f.environment))).rejects.toThrow()
+
+    // The Agent finishes its writes and releases its locks before Main retries.
+    for (const path of agentFiles) await rm(path)
+    await expect(runGitWithCacheStorage(f.cache, ['fetch', 'origin', f.successor],
+      { cwd: f.clone, signal: AbortSignal.timeout(2000) },
+      (args, options) => runGitProcess(args, options, f.environment))).resolves.toMatchObject({ code: 0 })
+    expect(f.git(f.clone, 'cat-file', '-t', f.successor)).toBe('commit')
+    expect(f.git(f.clone, 'rev-parse', 'HEAD')).toBe(f.first)
+  } finally {
+    controller.abort()
+    await running
+    writer.close()
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
+it.each(['linked worktree', 'repository outside the cache', 'fetch without writing FETCH_HEAD'] as const)(
+  'preserves the common FETCH_HEAD lock for a %s', async place => {
+    const f = await fixture()
+    let cwd = f.clone
+    let cache = f.cache
+    if (place === 'linked worktree') {
+      cwd = join(f.root, 'linked')
+      f.git(f.clone, 'worktree', 'add', '--detach', cwd, f.first)
+    } else if (place === 'repository outside the cache') cache = join(f.root, 'other-cache')
+    const writer = await interruptedFetchWriter(f.root, f.common,
+      Object.fromEntries(fetchLocks.map(name => [name, 41])))
+    const controller = new AbortController()
+    let running: ReturnType<typeof runGitWithCacheStorage> | undefined
+    try {
+      running = runGitWithCacheStorage(cache, ['fetch',
+        ...(place === 'fetch without writing FETCH_HEAD' ? ['--no-write-fetch-head'] : []),
+        'origin', `${f.successor}:${destinationRef}`], { cwd, signal: controller.signal },
+      (args, options) => runGitProcess(args.includes('fetch') ? writer.args : args, options, f.environment))
+      const started = await Promise.race([writer.started(), running.then(() => {
+        throw new Error('Fetch ended before its writer started.')
+      })])
+      await started.write()
+      controller.abort()
+      await expect(running).resolves.toMatchObject({ code: 1 })
+      expect(await readFile(join(f.common, 'FETCH_HEAD.lock'))).toEqual(Buffer.alloc(41, 1))
+      await expect(readFile(join(f.common, `${destinationRef}.lock`))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      controller.abort()
+      await running
+      writer.close()
+      await rm(f.root, { recursive: true, force: true })
+    }
+  },
+)
