@@ -4,6 +4,14 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+case "${SUITE:-}" in
+  build|build-api)
+    source "$(dirname "$0")/ci-go-toolchain.sh"
+    ci_go_environment
+    if [ -n "${1:-}" ]; then ci_go_install; else ci_go_verify; node scripts/ci-capture-foundations.mjs; fi
+    exit 0 ;;
+  build-other) exit 0 ;;
+esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 case "${CI_PARTITION:-}" in
