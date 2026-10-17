@@ -97,7 +97,8 @@ async function setupManagedStorage(options, state, previous) {
   const currentRuntime = await optionalManagedJson(state, 'job-runtime.json', MAX_VERIFICATION_CONFIGURATION_BYTES);
   const currentTarget = currentRuntime?.descriptor?.target ?? currentRuntime?.target;
   const hasCurrentRuntime = JSON.stringify(currentTarget) === JSON.stringify(pairingTarget(pairing));
-  if (!installation && !hasCurrentRuntime && !await managedEntryExists(state, 'ci-runtime-installation.json')) {
+  if (!installation && !hasCurrentRuntime
+    && (currentRuntime || !await managedEntryExists(state, 'ci-runtime-installation.json'))) {
     installation = await discoverManagedInstallation(home, stateDirectory, pairing);
     if (installation) {
       await publishManagedJson(state, 'managed-adoption.json', installation);

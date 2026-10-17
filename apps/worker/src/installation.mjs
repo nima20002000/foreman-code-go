@@ -5,6 +5,7 @@ import { mkdir, readFile, lstat, realpath, copyFile, chmod, open, rename, symlin
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 import { acquireWorkerLock } from './runtime.mjs';
+import { migratePinnedCompanionLauncher } from './companionLauncher.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const digest = /^[a-f0-9]{64}$/;
@@ -195,7 +196,20 @@ export async function stageRunningVersion(options) {
     const { state, bound } = await prepareInstallation(options.root, options.stateDirectory);
     const result = await installRelease({ ...options, stageOnly: true }, state, bound);
     options.assertStateOwnership();
+    await migratePinnedCompanionLauncher(options.root);
     return result;
+  });
+}
+
+export async function migrateReleaseCompanionLauncher({ directory, stateDirectory, assertStateOwnership }) {
+  const release = await realpath(directory);
+  const versions = dirname(release);
+  if (basename(versions) !== 'versions' || !/^\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(basename(release))) return;
+  const root = dirname(versions);
+  await withInstallLock(root, async () => {
+    assertStateOwnership();
+    await requireInstallationState({ root, stateDirectory });
+    await migratePinnedCompanionLauncher(root);
   });
 }
 
