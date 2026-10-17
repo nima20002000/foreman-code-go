@@ -103,11 +103,12 @@ export function requestedTestFiles(args, cwd = process.cwd()) {
 
 /** Waits for the tickets' group with one log-free read, prints each failed part with its ticket, failed tests and log
  * lines once the group's results are collected, and returns the finished runs. A ticket superseded by a newer commit is
- * replaced by its replacement's tickets. After waitMs it stops waiting and returns the runs as they are; open tickets
+ * replaced by its replacement's tickets. Group reads include siblings added during fallback. After waitMs it stops
+ * waiting and returns the runs as they are; open tickets
  * keep running on CI. */
 export async function awaitTickets(call, workspaceId, tickets,
   { waitMs = Number(environment.FOREMAN_CODE_CI_WAIT_MS || 2 * 3_600_000) } = {}) {
-  const startedAt = Date.now(), states = new Map()
+  const startedAt = Date.now(), states = new Map(), followed = new Set()
   for (;;) {
     // Main holds each read until every ticket of that group is terminal with its results collected, or for about a
     // minute. A superseded group's replacement is another group, so every group the tickets belong to is read.
@@ -121,16 +122,17 @@ export async function awaitTickets(call, workspaceId, tickets,
       if (!read.wait) throw new Error('Main answered ci_get without the requested group wait.')
       const group = read.partitions ?? [read.run]
       for (const run of group) covered.add(run.id)
-      const members = group.filter(run => tickets.includes(run.id))
-      runs.push(...(members.length ? members : [read.run]))
+      runs.push(...group.filter(run => !followed.has(run.id)))
       if (read.wait.status !== 'settled') groupsSettled = false
     }
+    tickets = runs.map(run => run.id)
     for (const run of runs) {
       const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
       if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
     }
     const superseded = runs.filter(run => run.state === 'canceled' && run.supersededBy)
     if (superseded.length) {
+      for (const run of superseded) followed.add(run.id)
       const replacements = new Set()
       for (const replacement of new Set(superseded.map(run => run.supersededBy))) {
         const next = await call('ci_get', { workspaceId, ticketId: replacement, logTail: false })

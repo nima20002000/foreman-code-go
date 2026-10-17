@@ -184,7 +184,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   return result
 }
 
-/** The oldest unfinished gate runs first; only another gate waits for it. Other work backfills what the gate leaves idle. */
+/** A started gate finishes before the next admitted gate; other work backfills what the gate leaves idle. */
 export function gateQueueBlock(run: CiRunRecord, gate: CiRunRecord | undefined): string | undefined {
   if (!gate || run.groupId === gate.groupId || !run.gate) return undefined
   return `Waiting behind CI gate ${gate.groupId}; this gate resumes when that gate finishes.`

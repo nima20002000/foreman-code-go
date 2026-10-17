@@ -574,9 +574,14 @@ export class HostCiRunner {
       ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
       ...(request.notice ? { notice: request.notice } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
-    await this.writeMeta(meta)
-    this.trackCacheWriter(meta.runId, meta.repository)
-    return meta
+    return (await withHostCiRunLock(directory, async () => {
+      if (existsSync(join(directory, 'meta.json')) && (await this.readMeta(request.runId)).state !== 'queued') {
+        return this.refresh(request.runId)
+      }
+      await this.writeMeta(meta)
+      this.trackCacheWriter(meta.runId, meta.repository)
+      return meta
+    }))!
   }
 
   private async prepareRun(request: StartRequest, meta: RunMeta) {
@@ -1152,7 +1157,7 @@ export class HostCiRunner {
     if (!meta) return this.canceledBeforeStart(runId)
     const directory = this.runDirectory(runId)
     // Status polls read every run; settled runs need no reconciliation lock.
-    const settled = !['starting', 'running'].includes(meta.state)
+    const settled = !['queued', 'starting', 'running'].includes(meta.state)
     if (settled) this.trackCacheWriter(runId)
     else this.trackCacheWriter(runId, meta.repository)
     const reconciled = settled || await withHostCiRunLock(directory, async () => {
@@ -1165,27 +1170,9 @@ export class HostCiRunner {
       meta = { ...meta, state: 'running' }
     }
     if (!['starting', 'running'].includes(meta.state)) this.trackCacheWriter(runId)
-    if (!['starting', 'running'].includes(meta.state) && !preparing && !this.preparing.has(runId)) {
-      if (!meta.cleaned) {
-        const clone = join(this.root, 'git', ...meta.repository.split('/'))
-        if (existsSync(join(directory, 'src'))) {
-          if (!(await stat(join(directory, 'src/.git')).catch(
-            fallbackOnMissing(null),
-          ))?.isDirectory()) {
-            await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
-              { cwd: clone, env: this.environment })
-          }
-          await rm(join(directory, 'src'), { recursive: true, force: true })
-          await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
-        }
-        await rm(join(directory, 'tmp'), { recursive: true, force: true })
-      }
-      // Older cleaned records can still hold the per-run test cache.
-      await rm(join(directory, 'vitest-cache'), { recursive: true, force: true })
-      if (!meta.cleaned) {
-        meta = { ...meta, cleaned: true }
-        await this.writeMeta(meta)
-      }
+    if (!['queued', 'starting', 'running'].includes(meta.state) && !preparing && !this.preparing.has(runId)) {
+      if (meta.cleaned) await rm(join(directory, 'vitest-cache'), { recursive: true, force: true })
+      else meta = await withHostCiRunLock(directory, () => this.cleanSettledRun(runId), { nonBlocking: true }) ?? meta
     }
     const log = await stat(join(directory, 'log')).catch(fallbackOnMissing(null))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(fallbackOnMissing(''))).trim()
@@ -1205,6 +1192,32 @@ export class HostCiRunner {
     if (version) this.settledRuns.set(runId, { version, run })
     else this.settledRuns.delete(runId)
     return run
+  }
+
+  private async cleanSettledRun(runId: string): Promise<RunMeta> {
+    const meta = await this.readMeta(runId)
+    if (['queued', 'starting', 'running'].includes(meta.state) || this.preparing.has(runId) || this.starts.has(runId)) {
+      return meta
+    }
+    const directory = this.runDirectory(runId)
+    if (!meta.cleaned) {
+      const clone = join(this.root, 'git', ...meta.repository.split('/'))
+      if (existsSync(join(directory, 'src'))) {
+        if (!(await stat(join(directory, 'src/.git')).catch(fallbackOnMissing(null)))?.isDirectory()) {
+          await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
+            { cwd: clone, env: this.environment })
+        }
+        await rm(join(directory, 'src'), { recursive: true, force: true })
+        await this.ports.run('git', ['worktree', 'prune'], { cwd: clone, env: this.environment })
+      }
+      await rm(join(directory, 'tmp'), { recursive: true, force: true })
+    }
+    // Older cleaned records can still hold the per-run test cache.
+    await rm(join(directory, 'vitest-cache'), { recursive: true, force: true })
+    if (meta.cleaned) return meta
+    const cleaned = { ...meta, cleaned: true }
+    await this.writeMeta(cleaned)
+    return cleaned
   }
 
   private runMessage(meta: RunMeta): string | null {
