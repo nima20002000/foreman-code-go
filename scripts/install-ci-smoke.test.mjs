@@ -23,6 +23,7 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, firstAdmi
   const canceled = []
   let probes = 0
   let firstAdmissionProbeCount = 0
+  let firstAdmissionComplete = false
   const admissionProbed = Promise.withResolvers()
   const authenticated = []
   const reportPolls = new Map()
@@ -46,7 +47,7 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, firstAdmi
     } else if (request.url === '/health/live') {
       probes++
       if (failure === 'stall' && admissions.length) return
-      if (admissions.length === 1) {
+      if (admissions.length === 1 && !firstAdmissionComplete) {
         firstAdmissionProbeCount++
         if (firstAdmissionProbeCount >= firstAdmissionProbes) admissionProbed.resolve()
       }
@@ -92,6 +93,7 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, firstAdmi
       if (admissions.length === 1) {
         if (firstAdmissionProbes > 0) await admissionProbed.promise
         await delay(firstAdmissionDelayMs)
+        firstAdmissionComplete = true
       }
       response.end(JSON.stringify({ ticketId: `ticket-${admissions.length}` }))
     } else if (request.method === 'DELETE') {
@@ -190,10 +192,12 @@ test('a stuck admission has its own bounded timeout and identifies the slow step
   assert.ok(f.canceled.length > 0)
 })
 
-test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', async t => {
+test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', { timeout: 30_000 }, async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
   const f = await fixture(t, undefined, undefined, { firstAdmissionProbes: 3 })
-  await runInstallCiSmoke({ ...options, origin: f.origin })
+  // Tiny request budgets belong to the timeout cases; this case observes successful HTTP work.
+  await runInstallCiSmoke({ origin: f.origin, workspaceId: options.workspaceId, commit: options.commit,
+    pollMs: options.pollMs })
   assert.deepEqual(f.admissions.slice(0, 2).map(input => input.files), [[], []])
   assert.notEqual(f.admissions[0].commandId, f.admissions[1].commandId)
   const targets = f.admissions.filter(input => input.smokeComputer)
