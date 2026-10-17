@@ -315,3 +315,29 @@ it('keeps a live transfer charged even when its recorded process identity is obs
   await expect(held.fetchOther()).resolves.toBeTruthy()
   expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
+
+it.each(['exited', 'reused-pid'] as const)('reclaims a legacy reservation after its owner is %s', async state => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
+  const metadata = await readFile('/proc/self/stat', 'utf8')
+  const started = metadata.slice(metadata.lastIndexOf(')') + 2).split(' ')[19]!
+  const path = join(f.cache, 'transfer-legacy.reservation')
+  await writeFile(path, JSON.stringify({ pid: process.pid, started }))
+  await writeFile(join(f.origin, 'source.txt'), 'successor after legacy reservation')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Successor')
+  const commit = git(f.origin, 'rev-parse', 'HEAD')
+  await expect(ensureCommit(f.ports, 'fixture/project', commit, signal))
+    .rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ pid: process.pid, started })
+
+  const gone = spawnSync(process.execPath, ['-e', ''])
+  expect(gone.status).toBe(0)
+  const owner = state === 'exited' ? { pid: gone.pid, started } : { pid: process.pid, started: `${started}-old` }
+  await writeFile(path, JSON.stringify(owner))
+  await expect(ensureCommit(f.ports, 'fixture/project', commit, signal)).resolves.toBe(clone)
+  expect(git(clone, 'cat-file', '-t', commit)).toBe('commit')
+  await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)
