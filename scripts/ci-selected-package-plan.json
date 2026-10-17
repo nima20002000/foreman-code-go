@@ -1,0 +1,25 @@
+{
+  "source": "6bbc93e74db32593f3ea5711b201191823bd1636",
+  "sourceTree": "90c2a43a8b6cad9b8d2d33a5e65bd91111a095b7",
+  "package": "./internal/devices",
+  "goFiles": [
+    "internal/devices/identity_errors_test.go",
+    "internal/devices/identity_key.go",
+    "internal/devices/main_identity.go"
+  ],
+  "unitTests": [
+    "TestIdentityFailuresPreserveDiagnosticsSentinelsAndTransportEnvelopes"
+  ],
+  "integrationTests": [],
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "originalSourceLintRed": {
+    "source": "5f02bb46c5283006f828235da985471f3b1bc2e3",
+    "ticket": "a3e38812-1f69-4747-9944-db8cabdad4e7",
+    "diagnostic": "f798a5508c6ded0ea3f867ddab1665a818d58fc6"
+  },
+  "regressionInterpretation": "Compatibility test expected to pass old/new; not behavioral pre-fix red",
+  "mode": "compatibility"
+}
