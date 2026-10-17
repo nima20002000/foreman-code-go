@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { syncBuiltinESMExports } from 'node:module'
+import os from 'node:os'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -166,5 +168,88 @@ for (const tokenName of ['FOREMAN_CODE_MCP_TOKEN', 'GRAPHQL_MCP_TOKEN']) {
       { run: { id: 'scoped-ticket', state: 'passed' } })
     assert.equal(server.calls.length, 2)
     assert.ok(server.calls.every(call => call.authorization === `Bearer ${token}`))
+  })
+}
+
+test('finds the installed scoped bridge when an account changes HOME without a directory override', async t => {
+  const root = directory(t)
+  const installed = join(root, 'service', '.local', 'share', 'graphql', 'mcp')
+  mkdirSync(join(installed, 'routes'), { recursive: true })
+  copyFileSync(new URL('./graphql-mcp.mjs', import.meta.url), join(installed, 'launcher.mjs'))
+  const server = await endpoint(t, message => {
+    assert.equal(message.params.name, 'ci_get')
+    return toolResult({ run: { id: 'account-ticket', state: 'passed' } })
+  })
+  const token = 'account-scoped-fixture'
+  writeFileSync(join(installed, 'routes', `${createHash('sha256').update(token).digest('hex')}.json`),
+    JSON.stringify({ endpoint: `${server.url}/mcp`, pid: process.pid,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(), toolTimeoutMs: 300_000 }))
+  const user = os.userInfo()
+  t.mock.method(os, 'userInfo', () => ({ ...user, homedir: join(root, 'service') }))
+  syncBuiltinESMExports()
+  t.after(() => {
+    t.mock.restoreAll()
+    syncBuiltinESMExports()
+  })
+  environment(t, { HOME: join(root, 'account'), FOREMAN_CODE_MCP_TOKEN: token, GRAPHQL_MCP_TOKEN: undefined,
+    FOREMAN_CODE_APP_MCP_DIRECTORY: undefined, GRAPHQL_APP_MCP_DIRECTORY: undefined,
+    FOREMAN_CODE_MAIN_URL: 'http://127.0.0.1:9' })
+  const call = await mcpClient()
+  assert.deepEqual(await call('ci_get', { ticketId: 'account-ticket' }),
+    { run: { id: 'account-ticket', state: 'passed' } })
+  assert.equal(server.calls.length, 2)
+  assert.ok(server.calls.every(call => call.authorization === `Bearer ${token}`))
+})
+
+const transientFailures = {
+  relay: { error: { code: -32000, message: 'Worker link interrupted',
+    data: { kind: 'relay_unavailable', retryable: true, delivery: 'indeterminate' } } },
+  tool: { result: { isError: true, ...toolResult({ error: { code: 'DATABASE_BUSY',
+    message: 'Retry the same request', details: { retryable: true } } }) } },
+}
+
+for (const [kind, failure] of Object.entries(transientFailures)) {
+  test(`retries a retryable ${kind} failure after accepted admission with unchanged identity`, async t => {
+    const receipts = new Map()
+    const server = await endpoint(t, (message, response) => {
+      const input = message.params.arguments
+      assert.equal(message.params.name, 'ci_run')
+      if (!receipts.has(input.commandId)) receipts.set(input.commandId, { ticketId: 'retained-ticket' })
+      if (server.calls.filter(call => call.message.method === 'tools/call').length === 1) {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, ...failure }))
+        return
+      }
+      return toolResult(receipts.get(input.commandId))
+    })
+    operatorEnvironment(t, server.url)
+    const call = await mcpClient()
+    const input = { workspaceId: 'workspace', suite: 'unit', commit: 'b'.repeat(40),
+      scope: 'full', commandId: 'original-command' }
+    assert.deepEqual(await call('ci_run', input), { ticketId: 'retained-ticket' })
+    assert.equal(receipts.size, 1)
+    const attempts = server.calls.filter(call => call.message.method === 'tools/call')
+    assert.equal(attempts.length, 2)
+    assert.deepEqual(attempts[0].message, attempts[1].message)
+    assert.deepEqual(attempts[1].message.params.arguments, input)
+  })
+
+  test(`retains admission arguments when retryable ${kind} failures exhaust retries`, async t => {
+    const server = await endpoint(t, (message, response) => {
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, ...failure }))
+    })
+    operatorEnvironment(t, server.url)
+    const call = await mcpClient()
+    const input = { workspaceId: 'workspace', suite: 'unit', commit: 'c'.repeat(40),
+      scope: 'full', commandId: 'exhausted-command' }
+    await assert.rejects(call('ci_run', input), error => {
+      assert.equal(error.retryable, true)
+      assert.ok(error.message.includes(`retry ci_run with the same arguments: ${JSON.stringify(input)}`))
+      return true
+    })
+    const attempts = server.calls.filter(call => call.message.method === 'tools/call')
+    assert.equal(attempts.length, 4)
+    assert.ok(attempts.every(attempt => JSON.stringify(attempt.message) === JSON.stringify(attempts[0].message)))
   })
 }
