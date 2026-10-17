@@ -219,6 +219,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     access: (options.operator?.access ?? options.appMcp?.access)!,
     ...(options.operator ? { operator: Object.assign(options.operator.services, { workerToolsMcpImplemented: Boolean(options.appMcp) }) } : {}),
     ...(options.appMcp ? { interactions: options.appMcp.interactions } : {}),
+    ...(options.appMcp?.references ? { references: options.appMcp.references } : {}),
     ...(bugReports ? { bugReports } : {}),
     ...(commands ? { commands } : {}),
     ...(options.workerArtifacts ? { workerArtifacts: options.workerArtifacts } : {}),
