@@ -1,3 +1,5 @@
+import { join } from 'node:path'
+import { AgentReferenceManifestSchema, MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,6 +21,11 @@ import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRe
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { AgentReferenceService } from '../src/modules/files/references/agentService.js'
+import { PostgresAgentReferenceAuthorization } from '../src/modules/files/references/agentAuthorization.js'
+import { PostgresReferenceReadRepository } from '../src/modules/files/references/agentProvenance.js'
+import { PostgresFileRepository } from '../src/modules/files/postgres.js'
+import { FileByteStorage } from '../src/modules/files/storage.js'
 import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -135,6 +142,12 @@ async function fixture(options: { deferMigration?: number | number[]; form?: Cur
       interactions: new PostgresAppInteractionService(database.pool, {} as never, graph.commands),
       bugReports },
     operator: { access: graph.access, services: { commands: graph.commands, workflows: graph.workflows, runs, ci, bugReports } as never } })
+  app.decorate('agentReferenceService', new AgentReferenceService({
+    files: new PostgresFileRepository(database.pool),
+    bytes: new FileByteStorage(join(database.directory, 'reference-files'), MAX_FILE_BYTES),
+    authorization: new PostgresAgentReferenceAuthorization(database.pool),
+    reads: new PostgresReferenceReadRepository(database.pool),
+  }))
   const reader = await graph.credential([{ actions: ['runs:read'], scope: { runIds: [graph.run.id] } }])
   const denied = await graph.credential([{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
   const request = { workspaceId: graph.scope.workspaceId, runId: graph.run.id, limit: 100 }
@@ -311,6 +324,11 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const deniedToken = denied.environment.variables.GRAPHQL_MCP_TOKEN!
       const catalog = await graphRpc(f.app, deniedToken, 'tools/list')
       expect(catalog.error).toBeUndefined()
+      expect(catalog.result?.tools?.map(tool => tool.name)).toEqual(expect.arrayContaining([
+        'files.references_list', 'files.reference_read',
+      ]))
+      expect(AgentReferenceManifestSchema.parse(await f.value(deniedToken, 'files.references_list', {})))
+        .toMatchObject({ items: [], pageInfo: { nextCursor: null } })
       expect(catalog.result?.tools?.map(tool => tool.name)).not.toContain('ci_get')
       const blocked = await f.call(deniedToken, 'ci_get', input)
       expect(blocked.result?.isError).toBe(true)

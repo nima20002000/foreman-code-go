@@ -11,6 +11,6 @@ export const WorkerExecutionSettingsSchema = z.object({
 export type WorkerExecutionSettings = z.infer<typeof WorkerExecutionSettingsSchema>
 
 export const DEFAULT_WORKER_EXECUTION_SETTINGS: WorkerExecutionSettings = {
-  enabled: false,
+  enabled: true,
   managedBy: 'settings',
 }

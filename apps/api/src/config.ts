@@ -33,7 +33,7 @@ const EnvironmentSchema = z.object({
   FOREMAN_CODE_STUCK_EXECUTION_IDLE_MS: z.coerce.number().int().positive()
     .default(DEFAULT_STUCK_EXECUTION_IDLE_MS),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
-  FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
+  FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('1'),
   FOREMAN_CODE_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
   FOREMAN_CODE_ENABLE_EXPERIMENTAL_CODEX_APP_SERVER: z.enum(['0', '1']).optional(),
   FOREMAN_CODE_ENABLE_EXPERIMENTAL_CLAUDE_SDK: z.enum(['0', '1']).optional(),
