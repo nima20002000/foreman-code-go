@@ -5,7 +5,9 @@ import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-ap
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { RemoteExecutionRpcRequestSchema, RemoteHistoryContinuationSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { restartedInstalledFixture } from './__tests__/installedWorkflowHost.js'
-import { RemoteNativeSessionManager, type RemoteNativeTransport } from './nativeManagerProxy.js'
+import { RemoteNativeSessionManager, type RemoteNativeManagerOptions,
+  type RemoteNativeTransport } from './nativeManagerProxy.js'
+import { readPhysicalReadout, remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
 
 it.each(['history', 'reconcile-response'] as const)(
   'reads a large completed result through %s after Worker restart', async method => {
@@ -43,7 +45,16 @@ it.each(['history', 'reconcile-response'] as const)(
       return structuredClone(reply.payload)
     }
     const observeReceipt = vi.fn(async () => {})
-    const observeOriginalSource = vi.fn(async () => {})
+    // Main verifies every observed source against the Worker's retained physical readout.
+    const observeOriginalSource = vi.fn<NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>>(
+      async (receipt, source) => {
+        const selector = { method: 'physical-readout' as const, intent: f.intent, placement: f.placement,
+          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) }
+        const readout = await readPhysicalReadout((await handle(selector, f.context)).payload,
+          async metadata => (await handle({ ...selector, metadata }, f.context)).payload)
+        expect(readout.receipt).toEqual(receipt)
+        if (source.type === 'history') expect(readout.history?.terminalTurn?.result).toEqual(result)
+      })
     const proxy = new RemoteNativeSessionManager({
       intent: f.intent, placement: f.placement, harness: 'codex', configuration: f.request.configuration,
       transport: { request }, observeReceipt, observeOriginalSource,
