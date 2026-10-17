@@ -4,6 +4,7 @@ import { settingScenarios } from './settings.js'
 import { workspaceMcpScenarios } from './workspaces.js'
 import { workerRootMcpScenarios } from './workerRoots.js'
 import { workflowMetadataMcpScenario } from './workflowMetadata.js'
+import { workflowOrderMcpScenario } from './workflowOrder.js'
 
 export const mcpScenarios: Scenario[] = [
   ...settingScenarios,
@@ -11,4 +12,5 @@ export const mcpScenarios: Scenario[] = [
   ...conversationMcpScenarios,
   ...workerRootMcpScenarios,
   workflowMetadataMcpScenario,
+  workflowOrderMcpScenario,
 ]
