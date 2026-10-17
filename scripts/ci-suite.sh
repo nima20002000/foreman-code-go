@@ -4,6 +4,9 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+# Temporary diagnostic selects the existing complete retained unit part.
+export SUITE=unit-other SCOPE=full
+echo '[retained-units] source baseline 11950b175bd9cd51d99429628405589cee794ec9; unmodified unit_other'
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 if [ "${1:-}" != cleanup ]; then
