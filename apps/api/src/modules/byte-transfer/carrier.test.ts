@@ -42,9 +42,20 @@ function pair(bound: DeviceSessionBinding, server: DeviceExtensionRegistration) 
   const extensions = negotiateDeviceExtensions(extensionDescriptors([server]), extensionDescriptors([client]))
   const main = new DeviceApplicationChannel({ side: 'main', binding: bound, socket: mainSocket, signal: stop.signal, extensions, registrations: [server], revalidate: async () => {} })
   const worker = new DeviceApplicationChannel({ side: 'worker', binding: bound, socket: workerSocket, signal: stop.signal, extensions, registrations: [client] })
-  const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 1000), worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
-  for (const task of tasks) void task.catch(() => {})
-  return { worker, rawWorker, async close() { stop.abort(); main.close(); worker.close(); await Promise.allSettled(tasks); await Promise.all([main.join(), worker.join()]) } }
+  const runs = Promise.allSettled([
+    main.run(mainSocket.messages[Symbol.asyncIterator](), 1000),
+    worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000),
+  ])
+  return { worker, rawWorker, async close() {
+    stop.abort()
+    main.close()
+    worker.close()
+    await Promise.all([main.join(), worker.join()])
+    await expect(runs).resolves.toEqual([
+      { status: 'rejected', reason: expect.objectContaining({ code: 'transport' }) },
+      { status: 'rejected', reason: expect.objectContaining({ code: 'transport' }) },
+    ])
+  } }
 }
 it('retains the actual UUID epoch and rejects numeric generation substitution', () => {
   const actual = binding(), context = transferContextForBinding(actual)
@@ -146,16 +157,15 @@ it('waits for the device to reconnect instead of spending its retries while the 
   const receiver = createAuthenticatedTransferReceiver({ stagingRoot: root, current: () => original,
     accepted: { intent: async () => intent, authorize: async () => {} } })
   vi.useFakeTimers()
-  const channels = pair(original, receiver.extension)
-  let connected = false
-  const reconnect = setTimeout(() => { connected = true }, 1_000)
+  let channels: ReturnType<typeof pair> | undefined
+  const reconnect = setTimeout(() => { channels = pair(original, receiver.extension) }, 1_000)
   try {
-    const client = createChannelTransferClient({ captureRequest: namespace => connected ? channels.worker.captureRequest(namespace) : undefined })
+    const client = createChannelTransferClient({ captureRequest: namespace => channels?.worker.captureRequest(namespace) })
     const read = vi.fn(async (_: TransferIntent, offset: number, length: number) => bytes.subarray(offset, offset + length))
     const result = Promise.allSettled([client.sender({ read }).send(intent)])
     await vi.advanceTimersByTimeAsync(750)
     expect(read).not.toHaveBeenCalled()
-    // Make both one-second timers due before the queued heartbeat can be delivered.
+    // Process due timers before delivering queued socket frames.
     vi.advanceTimersByTime(250)
     vi.useRealTimers()
     await expect(result).resolves.toEqual([{ status: 'fulfilled', value: expect.objectContaining({ byteSize: bytes.length }) }])
@@ -163,7 +173,7 @@ it('waits for the device to reconnect instead of spending its retries while the 
   } finally {
     clearTimeout(reconnect)
     vi.useRealTimers()
-    await channels.close()
+    await channels?.close()
     await receiver.receiver.close()
   }
 })
