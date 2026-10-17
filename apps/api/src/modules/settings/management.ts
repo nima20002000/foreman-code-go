@@ -132,16 +132,20 @@ export class FoundationSettingsManagementService {
       },
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
+        await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
+        const previous = await this.settings.getAgentDefaults(client)
+        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
+        const unchangedProfile = (role: keyof AgentDefaults) =>
+          isDeepStrictEqual(value[role].harnessProfileSelection, previous.value[role].harnessProfileSelection)
+          && isDeepStrictEqual(withAdvancedDefaults(value[role].harness), withAdvancedDefaults(previous.value[role].harness))
         if (this.accountConfigurations) {
           for (const role of ['orchestrator', 'coder', 'operator'] as const) {
+            if (unchangedProfile(role)) continue
             value[role].harness = await this.accountConfigurations.resolve(value[role].harness,
               value[role].harnessProfileSelection, { sql: client })
           }
         }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
-        const previous = await this.settings.getAgentDefaults(client)
-        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
           if (role === 'operator' && configuration.harness === 'claude'
@@ -163,6 +167,7 @@ export class FoundationSettingsManagementService {
           if (role === 'operator' && configuration.harness === 'codex') {
             CodexSessionCompatibilitySchema.parse({ configuration, requiresResume: true })
           }
+          if (unchangedProfile(role)) continue
           if (selection) {
             if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
             await this.profiles.validateSelection(livePrincipal, selection, configuration, client)

@@ -111,10 +111,17 @@ export class HostHarnessOverrideService {
     const value = await this.repository.latest(client, selection.instanceId)
     const canonicalConfiguration = withAdvancedDefaults(configuration)
     if (!value || !value.enabled || value.instanceRevision !== selection.instanceRevision
-      || !isDeepStrictEqual(value.target, selection.target) || value.driverId !== configuration.harness
+      || harnessHostKey(value.target.hostRef) !== harnessHostKey(selection.target.hostRef)
+      || value.target.applicationInstallationId !== selection.target.applicationInstallationId
+      || value.driverId !== configuration.harness
       || value.configurationFingerprint !== commandInputHash(canonicalConfiguration)
       || !isDeepStrictEqual(withAdvancedDefaults(value.configuration), canonicalConfiguration)) {
       throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT', 'The selected configured profile or its canonical configuration changed. Read the exact host profile again before saving.', 409)
+    }
+    if (!isDeepStrictEqual(value.target, selection.target)
+      && (await this.describe(value, client)).qualification !== 'qualified') {
+      throw new DomainError('HARNESS_PROFILE_SELECTION_CONFLICT',
+        'The updated harness installation requires qualification before using this saved profile.', 409)
     }
   }
   /** New local Claude choices may reuse an exact qualified saved profile.

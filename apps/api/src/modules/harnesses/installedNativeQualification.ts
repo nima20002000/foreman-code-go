@@ -155,6 +155,7 @@ export function createInstalledNativeQualifier(input: {
         const result = await runAsQualificationCandidate(harness, target.binarySha256, target.installation.launcher.resolvedLauncher!, () => ownedSuite.run({
           binary: target.installation.launcher.resolvedLauncher!, version: version!, binarySha256: target.binarySha256,
           profile: QUALIFICATION_TARGET_PROFILE[harness], model: value.configuration.model,
+          environment: input.environment,
           reasoningEffort: value.configuration.harness === 'codex' ? value.configuration.reasoningEffort : undefined, workDirectory: directory, signal, ownCleanup,
         }))
         checks.push(...result.checks)

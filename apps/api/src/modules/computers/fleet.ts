@@ -94,6 +94,14 @@ export function syncableServers(
       candidate = { transport: 'stdio', name, command: entry.command, args: entry.args ?? [], envVars: [] }
     }
     const parsed = candidate ? SyncedMcpServerSchema.safeParse(candidate) : undefined
+    if (parsed?.success && parsed.data.transport === 'http') {
+      const hostname = new URL(parsed.data.url).hostname.toLowerCase().replace(/\.$/u, '')
+      if (hostname === 'localhost' || hostname.endsWith('.localhost')
+        || hostname.startsWith('127.') || ['[::1]', '[::]', '0.0.0.0'].includes(hostname)) {
+        skipped?.(name, 'uses a host-local endpoint; configure it separately on each computer')
+        continue
+      }
+    }
     if (parsed?.success) servers.push(parsed.data)
     else skipped?.(name)
   }

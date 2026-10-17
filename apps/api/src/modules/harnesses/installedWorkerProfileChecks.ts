@@ -1,9 +1,15 @@
+import { join } from 'node:path'
+import { ProviderAccountIdSchema, ProviderAccountSchema, type ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import type { ProviderAccountResolver } from '../provider-accounts/service.js'
+import { assertWorkerProviderAccountBinding } from '../provider-accounts/workerOperations.js'
+import { readRecord } from './recovery/storage.js'
+import { pinnedCodexAccountEnvironment } from './providerAccountRuntime.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../errors.js'
 import { installedHarnessSelection, readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from '../runs/remote/installedWorkflowConfiguration.js'
-import { CodexAppServerSessionManager } from './codexAppServer.js'
+import { CodexAppServerSessionManager, safeEnvironment } from './codexAppServer.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { qualifyNativeCodexModel } from './codexQualification.js'
 import { runCommand } from './process.js'
@@ -21,6 +27,7 @@ export async function createInstalledWorkerProfileChecks(input: {
   pairing: WorkerPairingConfiguration
   current(): Readonly<DeviceSessionBinding>
   registry: NativeProcessRegistry
+  accounts?: () => ProviderAccountResolver | undefined
 }) {
   const configuration = await readInstalledWorkflowConfiguration(input.configuration)
   if (!configuration) return null
@@ -44,16 +51,35 @@ export async function createInstalledWorkerProfileChecks(input: {
       if (harness === 'claude') return claude.qualify(value, request)
       if (harness !== 'codex') throw new DomainError(
         'HARNESS_DRIVER_UNAVAILABLE', 'The installed native profile checker does not support this driver.', 409)
+      const accountId = value.configuration.accountId
+      const accounts = input.accounts?.()
+      let accountBinding: ProviderAccountBinding | undefined
+      if (accountId) {
+        ProviderAccountIdSchema.parse(accountId)
+        const raw = readRecord(join(input.stateDirectory, 'provider-account-slots', `${accountId}.json`))
+        const account = raw === undefined ? undefined : ProviderAccountSchema.parse(raw)
+        if (!account || account.id !== accountId || account.provider !== 'codex' || account.removedAt
+          || !account.binding || !accounts) throw new DomainError(
+          'PROVIDER_ACCOUNT_UNAVAILABLE', 'The selected Worker account is unavailable.', 409)
+        accountBinding = account.binding
+        assertWorkerProviderAccountBinding(accountBinding, input.current())
+      }
+      const accountEnvironment = pinnedCodexAccountEnvironment(accounts, accountId,
+        undefined, undefined, accountBinding)
+      await accountEnvironment.prepare()
+      const environment = accountEnvironment.environment(process.env)
       const qualifier = createInstalledNativeQualifier({ harness,
         binding, trustedCurrentBinding: input.current,
         inspect: (current, signal) => inspectInstalledCodex({ binding: current,
-          configuration: input.configuration, environment: process.env, cwd: input.stateDirectory, signal,
+          configuration: input.configuration, environment, cwd: input.stateDirectory, signal,
           fingerprintCache: payloadFingerprints }),
-        registry: input.registry, workingRoot: input.stateDirectory, environment: process.env,
+        registry: input.registry, workingRoot: input.stateDirectory, environment,
         checkConfiguration: async (profile, directory, signal, recovery, assertInstallation) => {
           const guarded = async <T>(work: () => Promise<T>, effectSignal = signal): Promise<T> => {
+            await accountEnvironment.revalidate()
             await assertInstallation(effectSignal)
             const result = await work()
+            await accountEnvironment.revalidate()
             await assertInstallation(effectSignal)
             return result
           }
@@ -65,6 +91,7 @@ export async function createInstalledWorkerProfileChecks(input: {
           const manager = new CodexAppServerSessionManager(codex.binary, codex.expectedVersion,
             undefined, recovery, 'none', undefined, {
               mode: 'native',
+              environment: (variables, names) => accountEnvironment.environment(safeEnvironment(variables, names)),
               qualify: (binary, cwd, environment, authenticated, effectSignal) => guarded(
                 () => qualifyCodex(binary, cwd, environment, authenticated, effectSignal, recovery), effectSignal),
               assertUnchanged: qualified => guarded(() => assertCodexUnchanged(qualified)),
