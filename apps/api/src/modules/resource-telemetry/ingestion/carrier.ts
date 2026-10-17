@@ -68,8 +68,9 @@ export async function startRemoteTelemetrySession(input: {
           // A busy channel only misses this sample; its stale age keeps readers from using it.
           const reply = await input.request({ operation: 'collect', challenge }, { signal: lifetime.signal, timeoutMs: TELEMETRY_LIMITS.freshMs })
             .catch(error => {
-              if (!lifetime.signal.aborted && error instanceof DeviceApplicationError
-                && (error.code === 'timeout' || error.code === 'backpressure')) return undefined
+              if (!lifetime.signal.aborted && error instanceof DeviceApplicationError && error.retryable) {
+                return undefined
+              }
               throw error
             })
           lifetime.signal.throwIfAborted()

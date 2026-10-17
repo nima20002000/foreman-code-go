@@ -43,7 +43,7 @@ export async function setupCompanion({ home, node, artifact, approvedManifestSha
     const bridge = await readFile(join(release, 'artifacts/graphql-mcp.mjs'), 'utf8');
     await publish(appMcpLauncher, bridge, 0o600);
     const launcher = join(root, 'graphql-companion');
-    await publish(launcher, `#!/bin/sh\nunset NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED\nexport HOME='${home}'\nexport PATH='${path}'\nexec '${node}' '${release}/src/companion.mjs' --state '${state}' "$@"\n`, 0o700);
+    await publish(launcher, `#!/bin/sh\nunset NODE_OPTIONS NODE_PATH NODE_TLS_REJECT_UNAUTHORIZED\nexport HOME='${home}'\nexport PATH='${path}'\nexec '${node}' '${root}/current/src/companion.mjs' --state '${state}' "$@"\n`, 0o700);
     const desktop = join(home, '.local/share/applications/graphql-companion.desktop');
     const icon = join(home, '.local/share/icons/hicolor/scalable/apps/graphql-companion.svg');
     await publish(icon, await readFile(join(release, 'artifacts/graphql.svg')), 0o644);

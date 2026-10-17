@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import {
   ProviderAccountBindingSchema, ProviderAccountObservationSchema, ProviderAccountAuthenticationOperationSchema, ProviderAccountNativeAuthenticationObservationSchema,
   type ProviderAccountBinding, type ProviderAccountObservation, type ProviderAccountAuthenticationOperation, type ProviderAccountNativeAuthenticationObservation,
@@ -41,6 +42,22 @@ export class NativeAccountJournal {
 
   private slotPath(operation: Pick<ProviderAccountAuthenticationOperation, 'binding'>): string {
     return join(this.root, `${this.owner(operation).replace(':', '-')}.json`)
+  }
+
+  accountGeneration(binding: Readonly<DeviceSessionBinding>): number {
+    const path = join(this.root, 'generation.json')
+    const raw = readRecord(path)
+    // The timestamp also advances observations written before this counter was persisted.
+    let generation = Math.max(Date.now(), binding.connectionGeneration)
+    if (raw !== undefined) {
+      const previous = recordObject(raw)
+      const savedBinding = DeviceSessionBindingSchema.parse(previous.binding)
+      const savedGeneration = ProviderAccountObservationSchema.shape.generation.parse(previous.generation)
+      if (isDeepStrictEqual(savedBinding, binding)) return savedGeneration
+      generation = Math.max(generation, savedGeneration + 1)
+    }
+    writeRecord(path, { binding, generation })
+    return generation
   }
 
   nextObservationSequence(binding: ProviderAccountBinding): number {
@@ -140,7 +157,7 @@ export class NativeAccountJournal {
     const holder = readRecord(slotPath)
     if (holder !== undefined) {
       const previous = this.read(String(recordObject(holder).operationId))
-      if (!previous?.observation.nativeClosed || previous.observation.state === 'outcome-unknown') throw new DomainError('PROVIDER_LOGIN_PENDING',
+      if (!previous?.observation.nativeClosed) throw new DomainError('PROVIDER_LOGIN_PENDING',
         'An earlier account operation still owns this slot.', 409)
       unlinkSync(slotPath)
       syncDirectory(this.root)

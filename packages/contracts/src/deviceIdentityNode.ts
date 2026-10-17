@@ -1,5 +1,5 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomUUID } from 'node:crypto'
-import { link, lstat, mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 let cleanupFailures = 0
@@ -67,7 +67,7 @@ export async function loadOrCreateWorkerIdentity(directory: string): Promise<Wor
   return read()
 }
 
-/** Explicit pairing writes once. Switching main requires explicit unpairing, never an overwrite. */
+/** Re-enrollment retains the pinned Main and device identity with a newer authorization. */
 export async function persistWorkerPairing(directory: string, configuration: import('./deviceIdentity.js').WorkerPairingConfiguration): Promise<void> {
   const { WorkerPairingConfigurationSchema } = await import('./deviceIdentity.js')
   const parsed = WorkerPairingConfigurationSchema.parse(configuration)
@@ -76,13 +76,24 @@ export async function persistWorkerPairing(directory: string, configuration: imp
   const file = join(directory, 'pairing.json'), temporary = join(directory, `.pairing-${randomUUID()}`)
   await writeFile(temporary, JSON.stringify(parsed), { mode: 0o600, flag: 'wx' })
   await syncPath(temporary)
+  let replaced = false
   try {
     try { await link(temporary, file) } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (JSON.stringify(await loadWorkerPairing(directory)) !== JSON.stringify(parsed)) throw new Error('Worker is already paired; explicit unpairing is required.', { cause: error })
+      const previous = await loadWorkerPairing(directory)
+      if (JSON.stringify(previous) !== JSON.stringify(parsed)) {
+        if (previous.mainId !== parsed.mainId || previous.deviceId !== parsed.deviceId
+          || previous.workerInstallationId !== parsed.workerInstallationId || previous.keyRevision !== parsed.keyRevision
+          || previous.mainPublicKeyFingerprint !== parsed.mainPublicKeyFingerprint
+          || parsed.authorizationRevision <= previous.authorizationRevision) {
+          throw new Error('Worker re-enrollment must retain its identity and advance authorization.', { cause: error })
+        }
+        await rename(temporary, file)
+        replaced = true
+      }
     }
     await syncPath(directory)
-  } finally { await unlink(temporary) }
+  } finally { if (!replaced) await unlink(temporary) }
 }
 export async function loadWorkerPairing(directory: string): Promise<import('./deviceIdentity.js').WorkerPairingConfiguration> {
   const { WorkerPairingConfigurationSchema } = await import('./deviceIdentity.js')
