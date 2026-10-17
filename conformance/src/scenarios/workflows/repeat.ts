@@ -58,7 +58,7 @@ async function runRepeat(ctx: ScenarioContext, outcomes: readonly ('issues' | 'p
   assert.ok(relationship)
   const identities: RepeatOccurrenceIdentityV1[] = []
   for (let index = 1; index <= outcomes.length; index++) {
-    const occurrence = findExecution(discovered.items, producer.id, index).occurrence
+    const occurrence: RepeatOccurrenceIdentityV1 | undefined = findExecution(discovered.items, producer.id, index).occurrence
     assert.ok(occurrence)
     assertJson(occurrence, { scope: runScope(run), blockId: 'repair', occurrenceId: '<id>', occurrenceIndex: index },
       [{ pointer: '/body/occurrenceId', kind: 'id' }])

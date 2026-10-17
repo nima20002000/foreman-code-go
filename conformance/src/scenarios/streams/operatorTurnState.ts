@@ -10,7 +10,7 @@ import { assertResponse } from '../../assertions.js'
 import type { ScenarioContext } from '../../scenario.js'
 
 export async function readOperatorState(context: ScenarioContext, id: string, token?: string) {
-  const response = await context.http.request('GET', `/api/operator/conversations/${id}`, { token })
+  const response = await context.http.request('GET', `/api/operator/conversations/${id}`, token === undefined ? {} : { token })
   assert.equal(response.status, 200)
   const value = GetOperatorConversationResponseSchema.parse(response.body)
   assert.deepStrictEqual(value, response.body)
@@ -18,7 +18,7 @@ export async function readOperatorState(context: ScenarioContext, id: string, to
 }
 
 export async function readOperatorHistory(context: ScenarioContext, id: string, token?: string) {
-  const response = await context.http.request('GET', `/api/operator/conversations/${id}/history`, { token })
+  const response = await context.http.request('GET', `/api/operator/conversations/${id}/history`, token === undefined ? {} : { token })
   assert.equal(response.status, 200)
   const value = OperatorConversationHistoryPageSchema.parse(response.body)
   assert.deepStrictEqual(value, response.body)
