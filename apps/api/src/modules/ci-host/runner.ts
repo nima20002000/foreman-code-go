@@ -123,6 +123,17 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
   })
 }
 
+async function removeStaleGitLocks(directory: string): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      await removeStaleGitLocks(path)
+    } else if (entry.isFile() && entry.name.endsWith('.lock')) {
+      await rm(path)
+    }
+  }
+}
+
 interface RunMeta {
   runId: string; repository: string; commit: string; suite: CiSuite; partition: CiPartition | null
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
@@ -680,7 +691,12 @@ export class HostCiRunner {
     try {
       const clone = join(this.root, 'git', ...repository.split('/'))
       await mkdir(clone, { recursive: true, mode: 0o700 })
-      return await withHostCiRunLock(clone, work)
+      return await withHostCiRunLock(clone, async () => {
+        // Preparation commands have exited before releasing this lock, so leftover Git locks are stale.
+        const gitDirectory = join(clone, '.git')
+        if (existsSync(gitDirectory)) await removeStaleGitLocks(gitDirectory)
+        return work()
+      })
     } finally {
       release()
       if (this.repositoryQueues.get(repository) === pending) this.repositoryQueues.delete(repository)
