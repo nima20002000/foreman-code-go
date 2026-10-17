@@ -157,7 +157,7 @@ try {
   await mkdir(join(root, 'bin'), { mode: 0o700 })
   env.CONFORMANCE_GO_BINARY = join(root, 'bin/foreman')
   const packages = await run('affected-Go-package-build', preparedGo, ['build', ...plan.affectedPackages], 'backend')
-  if (packages.exitCode !== 0) throw new Error('Affected Go package build failed')
+  if (packages.exitCode !== 0) failed = true
   const built = await run('selected-Go-server-artifact', preparedGo,
     ['build', '-o', env.CONFORMANCE_GO_BINARY, './cmd/foreman'], 'backend')
   if (built.exitCode !== 0) throw new Error('Selected Go server artifact build failed')
