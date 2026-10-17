@@ -1,18 +1,27 @@
 # Captured database baseline
 
-`baseline.sql` is deliberately absent. This environment has no `postgres`,
-`initdb`, `psql`, or `pg_dump`, and its pnpm is 11.25.0 instead of the source
-checkout's pinned 11.27.0. No database was started, migrated, or dumped here.
+`baseline.sql` is embedded with `capture-provenance.json`. It comes from actual
+startup of the pinned TypeScript baseline
+`8d2ea76c5028ef4458bf8cd64ef8624422e71d9f` against fresh PostgreSQL, followed by a
+verified driver restore into a second fresh database through Foreman CI ticket
+`ee10dc5b-0cd7-4d30-85eb-7885964966c8`. Provenance records the source identities,
+checksums, tools, SQL conversion, and original/restored table row inventories.
 
-`expected-head.json` was generated from the exact TypeScript migration metadata
-at `8d2ea76c5028ef4458bf8cd64ef8624422e71d9f`. Its 183 versions are an expected
-source-derived set, not observed database rows, executed tests, or conformance
-results. The final version is 2026101702. The TypeScript ledger is named
-`application_migrations`.
+`expected-head.json` contains the source-derived migration set. The captured and
+restored `application_migrations` ledger matches all 183 versions, including the
+final version 2026101702. Checkpoint tables and their five migration records are
+retained, along with actual migration and startup seed rows.
 
-Follow `../CAPTURE.md` to produce and verify the real SQL asset. An empty database
-cannot initialize until that asset exists. An existing database must still prove
-the complete expected application migration set and working checkpoint tables.
+The sole excluded data is the startup-generated per-installation Ed25519 private
+key in `public.device_main_identity`: original row count 1, restored row count 0.
+The table schema is unchanged, and provenance explicitly records this exclusion.
+Raw private dumps and capture tooling are not embedded assets.
+
+The TypeScript capture and PostgreSQL driver restore are verified. The Go
+`schema.Prepare` path, real database integration, and conformance remain
+unverified. Follow [the capture instructions](../CAPTURE.md) for recapture and
+remaining execution checks. An existing database must still prove the complete
+expected application migration set and working checkpoint tables.
 
 Numbered Go migrations belong in `migrations/`. Their applied rows live in a
 separate `schema_migrations` table. No baseline row is invented or stamped into

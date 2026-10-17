@@ -2,13 +2,25 @@
 
 ## Current status
 
-The SQL dump is **not captured**. This child environment has no PostgreSQL
-server/client/dump tools, no Docker or Podman, no Go or gofmt, and pnpm 11.25.0
-instead of the required 11.27.0. No database migration, SQL restore, Go test,
-or conformance test has run here. Source-derived migration metadata is not a
-substitute for a dump.
+The embedded `assets/baseline.sql` and `assets/capture-provenance.json` now
+contain a genuine TypeScript baseline capture. Foreman CI ticket
+`ee10dc5b-0cd7-4d30-85eb-7885964966c8` ran the pinned TypeScript server against a
+fresh PostgreSQL database, verified readiness and all 183 application migration
+versions, then restored the SQL through a PostgreSQL driver into a second fresh
+database. The scoped table inventory and row counts matched. The provenance
+records source identity, tool versions, checksums, conversion, and both inventories.
 
-The controller must perform the capture on a machine with the required tooling.
+The only excluded data is the startup-generated per-installation Ed25519 private
+key in `public.device_main_identity`: the original database had one row and the
+restored database has zero. Its schema remains unchanged. Migration and startup
+seed rows, the application ledger, and checkpoint tables are retained.
+
+This proves the TypeScript capture and driver restore. The Go `schema.Prepare`
+path, real PostgreSQL integration tests, and conformance remain unverified.
+The checks below are still required; source metadata alone is not execution
+proof. Any recapture must run through controller-dispatched Foreman CI MCP with
+the required pinned tools and isolated resources.
+
 Only the separate benchmark repository `nima20002000/foreman-code-go` and fresh,
 isolated test resources may be used. No real application database, installation,
 port, or paired worker may be reused. Q-CI owns CI configuration; Q-CONF owns the
@@ -50,6 +62,10 @@ controller.
    including the original `application_migrations` rows,
    `application_installation` singleton, and local-human principal records.
    Inspect startup-created settings and operator rows instead of guessing them.
+   Record the original `device_main_identity` row count, but exclude that table's
+   generated private-key data from the committed dump. Keep the complete table
+   schema and explicitly record the original/restored count difference in
+   provenance; do not omit other migration or startup rows.
 
 5. Stop only the TS process owned by this capture and wait for its clean
    shutdown. Query the actual `public.application_migrations` version set and
@@ -64,6 +80,7 @@ controller.
 
    ```sh
    pg_dump --format=plain --inserts --encoding=UTF8 --no-owner --no-privileges \
+     --exclude-table-data=public.device_main_identity \
      --file="$SCHEMA_CAPTURE_RAW_SQL" "$SCHEMA_CAPTURE_DATABASE_URL"
    ```
 
