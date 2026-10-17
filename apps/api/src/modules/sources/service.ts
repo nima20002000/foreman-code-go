@@ -169,7 +169,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       this.verifiedSources.set(key, source)
       if (this.verifiedSources.size > 64) this.verifiedSources.delete(this.verifiedSources.keys().next().value!)
     }
-    await retainRunSource(this.pool, pin.snapshotId)
+    await retainRunSource(this.pool, sql, pin.snapshotId)
     return structuredClone(source)
   }
   async get(principal: ManagementPrincipal, _source: Transport, raw: unknown): Promise<ApprovedSource> {

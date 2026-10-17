@@ -3,7 +3,7 @@ import { withClientTransaction } from '../../infrastructure/transaction.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
-import { runSourceUseKey } from './runSourceUse.js'
+import { removeAbandonedRunSourceUses } from './runSourceUse.js'
 
 export const SOURCE_RETENTION_SECONDS = 3600
 type SnapshotStore = Pick<PrivateSourceSnapshotStore, 'remove' | 'withCaptureLock'>
@@ -15,6 +15,9 @@ async function releasableSnapshots(sql: GraphSqlClient, snapshotIds: string[],
     select snapshot_id::text,(record->>'approvedAt')::timestamptz as approved_at,availability
     from source_snapshots where snapshot_id=any($1::uuid[])
   ), uses(snapshot_id,active,used_at,retention) as (
+    select candidate.snapshot_id,true,null::timestamptz,null::integer
+    from source_snapshot_uses u join candidates candidate on u.snapshot_id::text=candidate.snapshot_id
+    union all
     select candidate.snapshot_id,e.record#>>'{process,phase}' is distinct from 'terminal'
         or e.record#>>'{process,processStopped}' is distinct from 'true'
         or e.record->>'publication' in ('pending','collecting'),
@@ -144,10 +147,6 @@ async function lockSnapshot(sql: pg.PoolClient, candidate: Candidate, scopeId: s
   const snapshot = (await sql.query<{ availability: string; workspace_id: string }>(`select availability,workspace_id
     from source_snapshots where snapshot_id=$1 for update skip locked`, [candidate.snapshot_id])).rows[0]
   if (!snapshot) return null
-  const use = (await sql.query<{ locked: boolean }>(
-    'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
-    [runSourceUseKey(candidate.snapshot_id)])).rows[0]
-  if (!use?.locked) return null
   const reservation = (await sql.query<{ record: SourceReservation }>(`select record
     from source_storage_reservations where scope_id=$1 and owner_kind='capture' and owner_id=$2
       and state='retained' for update`, [scopeId, candidate.snapshot_id])).rows[0]
@@ -188,6 +187,7 @@ async function releaseSnapshot(pool: pg.Pool, store: SnapshotStore,
 async function scanUnusedSourceSnapshots(pool: pg.Pool,
   store: SnapshotStore, scopeId: string,
   underPressure: boolean): Promise<unknown[]> {
+  await removeAbandonedRunSourceUses(pool)
   const candidates = await pool.query<Candidate>(`select a.snapshot_id,a.requested_by,a.command_id
     from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
     join source_storage_reservations r on r.owner_kind='capture' and r.owner_id=a.snapshot_id::text

@@ -110,6 +110,7 @@ import { jobOutputAdmissionMigration } from './jobOutputAdmissionMigration.js'
 import { jobInputAdmissionMigration } from './jobInputAdmissionMigration.js'
 import { agentPlacementProducerMigration } from './agentPlacementProducerMigration.js'
 import { sourceMetadataMigration } from '../modules/sources/migration.js'
+import { sourceSnapshotUsesMigration } from './sourceSnapshotUsesMigration.js'
 import { workspaceRootPoliciesMigration } from '../modules/sources/rootPoliciesMigration.js'
 import { sourcePreparationReconciliationMigration } from './sourcePreparationReconciliationMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
@@ -980,6 +981,7 @@ export const migrations = [
   ciExecutionHistoryMigration,
   ciGateSpeedIndexMigration,
   runActivityCommitLockMigration,
+  sourceSnapshotUsesMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
