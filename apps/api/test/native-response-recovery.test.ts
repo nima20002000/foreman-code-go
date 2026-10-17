@@ -25,7 +25,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 async function directory() {
-  const path = await mkdtemp(join(tmpdir(), 'graphql-pr17-recovery-'))
+  const path = await mkdtemp(join(tmpdir(), 'native-response-recovery-'))
   directories.push(path)
   return path
 }
@@ -40,7 +40,7 @@ const response = { nativeRequestId: evidence.nativeRequestId, nativeRequestType:
   option: { optionId: evidence.optionId, semantic: evidence.semantic, label: 'Approve once', persistence: 'request' as const,
     affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false } }
 
-describe('PR17 durable native response receipts', () => {
+describe('durable native response receipts', () => {
   it('recovers from a replacement manager/journal after caller persistence fails', async () => {
     const root = await directory()
     new NativeResponseJournal(root).record(evidence)
@@ -61,7 +61,7 @@ describe('PR17 durable native response receipts', () => {
   })
 })
 
-it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the registered launch boundary without replay or PID-only signals', async (context) => {
+it.skipIf(process.platform !== 'linux')('fresh registry closes the registered launch boundary without replay or PID-only signals', async (context) => {
   const root = await directory()
   const registry = new NativeProcessRegistry(root)
   const child = spawnNativeProcess(process.execPath, ['-e', "console.log('ready');process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], {
@@ -86,7 +86,7 @@ it.skipIf(process.platform !== 'linux')('PR17 fresh registry closes the register
   expect(await registry.closeOwner('execution:test')).toBe(true)
 }, 10_000)
 
-it('PR17 uncertain approval recovery cannot start native work without its exact admitted request', async () => {
+it('uncertain approval recovery cannot start native work without its exact admitted request', async () => {
   const fixture = NATIVE_INTERACTION_FIXTURES.codex
   const option = fixture.responseOptions[0]!
   const interaction = { ...fixture, selectedOptionId: option.optionId, selectedSemantic: option.semantic,

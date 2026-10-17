@@ -367,8 +367,8 @@ test('complete Node reports reconcile case totals and preserve nested names', ()
   } finally { f.close() }
 })
 
-for (const name of ['native-guardian-outcome', 'native-launch-abandonment', 'pr17-native-process-runtime',
-  'pr17-recovery', 'codex-idle-recovery', 'native-qualification-command-lifecycle', 'codex-protocol']) {
+for (const name of ['native-guardian-outcome', 'native-launch-abandonment', 'native-process-ownership',
+  'native-response-recovery', 'codex-idle-recovery', 'native-qualification-command-lifecycle', 'codex-protocol']) {
   test(`unit capability scheduling retains required ${name} coverage`, async () => {
     const file = `apps/api/test/${name}.test.ts`
     const environment = await integrationEnvironmentCapabilities({

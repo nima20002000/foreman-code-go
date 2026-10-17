@@ -11,8 +11,8 @@ import { readVerificationEnvironment } from '../packages/contracts/src/verificat
 const nativeUnitFiles = new Set([
   'apps/api/test/native-guardian-outcome.test.ts',
   'apps/api/test/native-launch-abandonment.test.ts',
-  'apps/api/test/pr17-native-process-runtime.test.ts',
-  'apps/api/test/pr17-recovery.test.ts',
+  'apps/api/test/native-process-ownership.test.ts',
+  'apps/api/test/native-response-recovery.test.ts',
   'apps/api/test/codex-idle-recovery.test.ts',
   'apps/api/test/codex-pending-turn-restart.test.ts',
   'apps/api/test/native-qualification-command-lifecycle.test.ts',

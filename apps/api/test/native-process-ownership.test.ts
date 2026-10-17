@@ -15,9 +15,9 @@ import { bootIdentity, identityAlive, processIdentity, sessionAlive } from '../s
 import { privateDirectory, writeRecord } from '../src/modules/harnesses/recovery/storage.js'
 import { cgroupBoundary, cgroupPopulated, cgroupRemoved } from '../src/modules/harnesses/recovery/cgroupBoundary.js'
 
-const owner = 'pr17-native-fixture-owner'
+const owner = 'native-process-fixture-owner'
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'pr17-native-'))
+  const root = mkdtempSync(join(tmpdir(), 'native-process-ownership-'))
   const directory = privateDirectory(join(root, createHash('sha256').update(owner).digest('hex')))
   const registry = new NativeProcessRegistry(root)
   return { root, directory, registry, scope: registry.scope(owner) }
@@ -44,8 +44,8 @@ async function closed(child: ChildProcessWithoutNullStreams) {
 
 // These tests never signal a stored application PID. Test teardown only kills
 // freshly launched, identity-checked fixture children owned by the test itself.
-describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regressions', () => {
-  for (const oldMarker of [false, true]) it(`F3: a setsid descendant prevents false legacy closure (old closed marker=${oldMarker})`, async () => {
+describe.skipIf(process.platform !== 'linux')('Linux native process ownership', () => {
+  for (const oldMarker of [false, true]) it(`a setsid descendant prevents false legacy closure (old closed marker=${oldMarker})`, async () => {
     const f = fixture()
     const parent = spawn(process.execPath, ['-e', `
       const { spawn } = require('node:child_process');
@@ -82,7 +82,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     }
   }, 10_000)
 
-  it('F11: compacts more than 10,000 proven closed launches before applying the active-work bound', async () => {
+  it('compacts more than 10,000 proven closed launches before applying the active-work bound', async () => {
     const f = fixture()
     let child: ChildProcessWithoutNullStreams | undefined
     try {
@@ -106,7 +106,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
   // Every registration keeps a durable receipt, including on slower disks.
   }, 1_200_000)
 
-  it('F11: resumes a partially deleted retirement tombstone, but retains unresolved work', async () => {
+  it('resumes a partially deleted retirement tombstone, but retains unresolved work', async () => {
     const f = fixture()
     try {
       const retiredId = randomUUID()
@@ -127,7 +127,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
-  it('F11/F14: coalesces cleanup and recovers the exact receipt after GC; unrelated missing IDs stay unconfirmed', async () => {
+  it('coalesces cleanup and recovers the exact receipt after GC; unrelated missing IDs stay unconfirmed', async () => {
     const f = fixture()
     try {
       const id = randomUUID()
@@ -152,7 +152,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
-  it('F3: refuses a missing, replaced, or non-kernel cgroup boundary as closure proof', () => {
+  it('refuses a missing, replaced, or non-kernel cgroup boundary as closure proof', () => {
     const f = fixture()
     try {
       assert.throws(() => cgroupBoundary({ kind: 'cgroup-v2', path: '/sys/fs/cgroup/../wrong', device: '1', inode: '2' }, randomUUID()))
@@ -164,7 +164,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
-  it('F3: a qualified launch kills descendants even after they create a new POSIX session', async (context) => {
+  it('a qualified launch kills descendants even after they create a new POSIX session', async (context) => {
     const f = fixture()
     let detached: ReturnType<typeof processIdentity>
     const child = spawnNativeProcess(process.execPath, ['-e', `
@@ -199,7 +199,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     }
   }, 15_000)
 
-  it('F14: retries a failed owned-process kill and retains Stop ownership until closure succeeds', async () => {
+  it('retries a failed owned-process kill and retains Stop ownership until closure succeeds', async () => {
     const owned = await spawnOwnedStdioProcess({ binary: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'],
       cwd: tmpdir(), environment: {}, onError: () => undefined })
     const pid = owned.child.pid!
@@ -225,7 +225,7 @@ describe.skipIf(process.platform !== 'linux')('PR17 Linux native ownership regre
     }
   }, 10_000)
 
-  it('F14: an inspection-process cleanup can retry after rejection and release its retained Stop handle', async () => {
+  it('an inspection-process cleanup can retry after rejection and release its retained Stop handle', async () => {
     let child: import('node:child_process').ChildProcess | undefined
     const original = process.kill
     const running = runJsonlProcess({ binary: process.execPath, args: ['-e', 'process.exit(0)'], cwd: tmpdir(),

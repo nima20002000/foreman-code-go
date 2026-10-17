@@ -49,7 +49,7 @@ function owner() {
   return value
 }
 
-describe('PR17 F7 PostgreSQL runtime ownership', () => {
+describe('PostgreSQL runtime owner handoff', () => {
   it('joins an unstarted guardian before retiring its watched registration and releasing ownership', async () => {
     const root = mkdtempSync(join(tmpdir(), 'runtime-registry-shutdown-'))
     const registry = new NativeProcessRegistry(root)

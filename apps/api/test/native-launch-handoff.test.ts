@@ -14,7 +14,7 @@ describe.skipIf(process.platform !== 'linux')('write-ahead native launch handoff
   const roots: string[] = []
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
   function fixture() {
-    const root = mkdtempSync(join(tmpdir(), 'eng06-launch-')); roots.push(root)
+    const root = mkdtempSync(join(tmpdir(), 'native-launch-handoff-')); roots.push(root)
     const owner = `execution:${randomUUID()}`
     const directory = join(root, createHash('sha256').update(owner).digest('hex'))
     return { root, owner, directory, registry: new NativeProcessRegistry(root) }

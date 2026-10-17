@@ -57,7 +57,7 @@ it('rejects cancellation during positive physical cleanup before publishing qual
 
 it('checks the selected payload before native reservation and after physical closure', async () => {
   let changed = true
-  const reserveLaunch = vi.fn((owner: string) => ({ root: '/recorded/registry', owner }))
+  const reserveLaunch = vi.fn(async (owner: string) => ({ root: '/recorded/registry', owner }))
   const guard = async () => { if (changed) throw new Error('Selected payload changed') }
   const release = vi.fn()
   const source = input()

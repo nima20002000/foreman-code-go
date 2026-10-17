@@ -78,7 +78,7 @@ async function verifyInstalledClaude(root: string, binary: string) {
     connectionGeneration, environmentGeneration: environment.generation })
   const factories = new NativeHarnessFactories({ codexBinary: 'unused', instances, installations,
     auxiliaryRecovery: () => processRegistry.scope(`claude-version:${randomUUID()}`),
-    admitRecovery: async scope => Object.assign(scope, await processRegistry.reserveLaunch(scope.owner)),
+    admitRecovery: async scope => { Object.assign(scope, await processRegistry.reserveLaunch(scope.owner)) },
     abandonRecovery: async scope => { await processRegistry.abandonReservedLaunch(scope) },
     closeRecovery: async scope => { assert.equal(await processRegistry.closeOwner(scope.owner), true) },
     claudeVersionCommand: runCommand,
