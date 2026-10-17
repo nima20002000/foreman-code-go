@@ -18,7 +18,9 @@ test('affected retained tests stay inside their selected package', () => {
 })
 
 test('an empty explicit test selection runs no commands', () => {
-  assert.deepEqual(affectedCommands('unit', []), [])
+  for (const suite of ['typecheck', 'lint', 'unit', 'integration', 'build']) {
+    assert.deepEqual(affectedCommands(suite, []), [])
+  }
 })
 
 test('unsupported nonempty selections fail before any suite can broaden', () => {

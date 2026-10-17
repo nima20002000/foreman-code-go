@@ -10,9 +10,11 @@ const projects = ['packages/contracts', 'apps/web', 'conformance']
 
 /** Selected paths remain separate process arguments. */
 export function affectedCommands(suite, files) {
-  if (!['unit', 'lint'].includes(suite)) {
+  if (!['typecheck', 'lint', 'unit', 'integration', 'build'].includes(suite)) {
     throw new Error(`Unsupported affected suite: ${suite}`)
   }
+  if (!files.length) return []
+  if (!['unit', 'lint'].includes(suite)) throw new Error(`Unsupported affected suite: ${suite}`)
   const groups = new Map()
   for (const file of files) {
     const project = projects.find(value => file.startsWith(`${value}/`))
