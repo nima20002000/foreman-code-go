@@ -45,6 +45,11 @@ describe('device authority and durable local identity', () => {
       await persistWorkerPairing(directory, configuration)
       await persistWorkerPairing(directory, configuration)
       await expect(persistWorkerPairing(directory, { ...configuration, mainId: randomUUID() })).rejects.toThrow('explicit unpairing')
+      await expect(persistWorkerPairing(directory, { ...configuration, mainId: randomUUID(),
+        authorizationRevision: 3 })).rejects.toThrow('explicit unpairing')
+      await expect(persistWorkerPairing(directory, { ...configuration, mainPublicKeyFingerprint: 'c'.repeat(64),
+        authorizationRevision: 3 })).rejects.toThrow('explicit unpairing')
+      expect(await loadWorkerPairing(directory)).toEqual(configuration)
       await updateWorkerEndpoint(directory, 'wss://other-endpoint.example/device')
       const recovered = await loadWorkerPairing(directory)
       expect(recovered.mainId).toBe(configuration.mainId)

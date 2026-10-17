@@ -62,9 +62,12 @@ it.skipIf(!postgresEnabled)('reads passive Codex account state through authentic
     const unknown = { tool: 'codex', installed: true, signedIn: null, account: null, details: [] }
     expect(codex(await read())).toEqual(unknown)
     unreadable = true
-    const unavailable = await client.callTool({ name: 'computer_accounts_list', arguments: { target, refresh: true } })
-    expect(unavailable.isError).toBe(true)
-    expect(JSON.stringify(unavailable.content)).toContain('COMPUTER_ACCOUNT_UNAVAILABLE')
+    const unavailable = await read()
+    expect(unavailable).toEqual({ computers: [{ target, accounts: null }], nextCursor: null })
+    const unavailableHttp = await app.inject({ method: 'POST', url: '/api/management/computers/accounts/read',
+      headers: { authorization: `Bearer ${reader.token}` }, payload: { target, refresh: true } })
+    expect(unavailableHttp.statusCode).toBe(200)
+    expect(ComputerAccountsListSchema.parse(unavailableHttp.json())).toEqual(unavailable)
     unreadable = false
     const ungranted = await connect(denied.token)
     expect((await ungranted.callTool({ name: 'computer_accounts_list', arguments: { target } })).isError).toBe(true)
