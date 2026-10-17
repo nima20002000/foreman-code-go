@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -14,11 +14,16 @@ const startTime = pid => {
   const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
   return stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19]
 }
-function fixture(t) {
+function fixture(t, pathKind = 'direct') {
   const base = join(homedir(), '.cache', 'foreman-tmp')
   mkdirSync(base, { recursive: true })
-  const root = mkdtempSync(join(base, 'heavy-reaping-'))
-  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const directory = mkdtempSync(join(base, 'heavy-reaping-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const root = pathKind === 'symlinked' ? join(directory, 'checkout-link') : directory
+  if (pathKind === 'symlinked') {
+    mkdirSync(join(directory, 'checkout'))
+    symlinkSync('checkout', root)
+  }
   mkdirSync(join(root, 'scripts'))
   mkdirSync(join(root, 'packages/contracts/src'), { recursive: true })
   for (const name of ['heavy-job.mjs', 'heavy-job-slots.mjs', 'sleep.mjs']) {
@@ -27,7 +32,7 @@ function fixture(t) {
   copyFileSync(new URL('../packages/contracts/src/productEnvironment.mjs', import.meta.url),
     join(root, 'packages/contracts/src/productEnvironment.mjs'))
   assert.equal(spawnSync('git', ['init', '-q', root]).status, 0)
-  const common = join(root, '.git')
+  const common = realpathSync(join(root, '.git'))
   const state = join(common, 'graphql-heavy-jobs')
   for (const folder of ['queue', 'running']) mkdirSync(join(state, folder), { recursive: true })
   const env = { ...process.env, TMPDIR: base, FOREMAN_CODE_HEAVY_BASE_TMPDIR: root }
@@ -52,64 +57,66 @@ function fixture(t) {
   return { root, common, state, env, record, occupy, hook, run }
 }
 
-for (const owner of ['gone', 'reused']) {
-  test(`immediately reaps a ${owner} running owner despite unreadable process usage`, t => {
-    const f = fixture(t)
-    const pid = owner === 'gone' ? 999999999 : process.pid
-    f.occupy(f.record({ pid, start: '0', pgid: owner === 'gone' ? null : process.pid }))
-    if (owner === 'reused') {
-      const earlier = new Date(Date.now() - 19 * 60 * 60_000)
-      for (const path of ['running/0001-occupied', 'active', 'queue/0001-occupied']) {
-        utimesSync(join(f.state, path), earlier, earlier)
+for (const pathKind of ['direct', 'symlinked']) {
+  for (const owner of ['gone', 'reused']) {
+    test(`immediately reaps a ${owner} running owner despite unreadable process usage (${pathKind} checkout)`, t => {
+      const f = fixture(t, pathKind)
+      const pid = owner === 'gone' ? 999999999 : process.pid
+      f.occupy(f.record({ pid, start: '0', pgid: owner === 'gone' ? null : process.pid }))
+      if (owner === 'reused') {
+        const earlier = new Date(Date.now() - 19 * 60 * 60_000)
+        for (const path of ['running/0001-occupied', 'active', 'queue/0001-occupied']) {
+          utimesSync(join(f.state, path), earlier, earlier)
+        }
       }
-    }
-    f.hook(`
+      f.hook(`
 const read = fs.readFileSync, list = fs.readdirSync
 fs.readdirSync = (path, ...args) => path === '/proc' ? ['999999998'] : list(path, ...args)
 fs.readFileSync = (path, ...args) => {
   if (String(path).startsWith('/proc/999999998/')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
   return read(path, ...args)
 }`)
-    const result = f.run()
-    assert.equal(result.status, 0, result.stderr || result.error?.message)
-    assert.match(result.stdout, /replacement admitted/)
-    assert.equal(existsSync(join(f.state, 'running/0001-occupied')), false)
-    assert.equal(existsSync(join(f.state, 'queue/0001-occupied')), false)
-  })
-}
+      const result = f.run()
+      assert.equal(result.status, 0, result.stderr || result.error?.message)
+      assert.match(result.stdout, /replacement admitted/)
+      assert.equal(existsSync(join(f.state, 'running/0001-occupied')), false)
+      assert.equal(existsSync(join(f.state, 'queue/0001-occupied')), false)
+    })
+  }
 
-test('reaps a deleted worktree and kills its TERM-ignoring process group after a short grace', async t => {
-  const f = fixture(t)
-  const worktree = join(f.root, 'removed-checkout')
-  mkdirSync(worktree)
-  const childScript = `process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)`
-  const script = `
+  test(`reaps a deleted worktree and kills its TERM-ignoring process group after a short grace (${pathKind} checkout)`, async t => {
+    const f = fixture(t, pathKind)
+    const worktree = join(f.root, 'removed-checkout')
+    mkdirSync(worktree)
+    const childScript = `process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)`
+    const script = `
 const { spawn } = require('node:child_process')
 process.on('SIGTERM', () => {})
 const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
 child.once('message', () => console.log(child.pid))
 setInterval(() => {}, 1000)
 `
-  const child = spawn(process.execPath, ['-e', script], { cwd: worktree, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-  const exited = once(child, 'exit')
-  t.after(async () => {
-    try { process.kill(-child.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
-    await exited
+    const child = spawn(process.execPath, ['-e', script], { cwd: worktree, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const exited = once(child, 'exit')
+    t.after(async () => {
+      try { process.kill(-child.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+      await exited
+    })
+    const [data] = await once(child.stdout, 'data')
+    const descendant = Number(String(data).trim())
+    rmSync(worktree, { recursive: true })
+    f.occupy(f.record({ worktree, pgid: child.pid }))
+    const result = f.run()
+    assert.equal(result.status, 0, result.stderr || result.error?.message)
+    assert.equal((await exited)[1], 'SIGKILL')
+    let state = 'gone'
+    try {
+      const stat = readFileSync(`/proc/${descendant}/stat`, 'utf8')
+      state = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[0]
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+    assert.ok(['gone', 'Z'].includes(state), `descendant remains ${state}`)
   })
-  const [data] = await once(child.stdout, 'data')
-  const descendant = Number(String(data).trim())
-  rmSync(worktree, { recursive: true })
-  f.occupy(f.record({ worktree, pgid: child.pid }))
-  const result = f.run()
-  assert.equal(result.status, 0, result.stderr || result.error?.message)
-  assert.equal((await exited)[1], 'SIGKILL')
-  let state = 'gone'
-  try {
-    const stat = readFileSync(`/proc/${descendant}/stat`, 'utf8')
-    state = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[0]
-  } catch (error) { if (error.code !== 'ENOENT') throw error }
-  assert.ok(['gone', 'Z'].includes(state), `descendant remains ${state}`)
-})
+}
 
 test('ignores foreign and protected process environments without degrading token inspection', t => {
   const f = fixture(t)
