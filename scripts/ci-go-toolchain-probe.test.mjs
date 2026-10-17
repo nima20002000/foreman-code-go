@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: scheduler at immutable source b4b95e0b47d9d9bc02b7a9abefd22c56810c8258.
