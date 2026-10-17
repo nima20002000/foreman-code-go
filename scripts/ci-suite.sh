@@ -5,7 +5,7 @@
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
 case "${SUITE:-}" in
-  build|build-api|build-other)
+  build|build-api|build-other|unit|unit-*)
     source "$(dirname "$0")/ci-go-toolchain.sh"
     ci_go_environment
     if [ -n "${1:-}" ]; then

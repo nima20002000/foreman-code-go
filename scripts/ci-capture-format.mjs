@@ -26,6 +26,7 @@ function artifact(path, bytes) {
 
 if (process.env.CI !== 'true' && process.env.CI !== '1') throw new Error('Formatting capture runs only inside Foreman CI.')
 const files = Object.keys(expected)
+console.log(`[capture-format] formatting ${files.length} verified candidate files with pinned Go`)
 const manifest = { candidate, tool: 'gofmt from pinned Go 1.27.2', files: [] }
 for (const path of files) {
   const before = readFileSync(path)
