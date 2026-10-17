@@ -62,6 +62,7 @@ export class TestWorkerClient {
   }>()
   private channel: TestWorkerChannel | undefined
   private channelClosing: Promise<void> | undefined
+  private readonly channelCloseFailures: unknown[] = []
   private closeRequested = false
   private binding: Readonly<DeviceSessionBinding> | undefined
   private heartbeat: ReturnType<typeof setInterval> | undefined
@@ -207,10 +208,11 @@ export class TestWorkerClient {
     this.welcomeState.reject(error)
     for (const waiter of this.waiters) waiter.result.reject(error)
     if (this.channel && !this.channelClosing) {
-      this.channelClosing = this.channel.close(error)
-      // close() awaits and reports this rejection even if protocol failure
-      // stopped the socket before the scenario reached its cleanup block.
-      void this.channelClosing.catch(() => {})
+      this.channelClosing = this.channel.close(error).catch(cleanup => {
+        // Record immediately; close() awaits this observer and reports the raw
+        // failure even when the protocol stopped before scenario cleanup.
+        this.channelCloseFailures.push(cleanup)
+      })
     }
     if (this.socket.readyState !== WebSocket.CLOSED) this.socket.terminate()
   }
@@ -218,8 +220,8 @@ export class TestWorkerClient {
   async close() {
     this.closeRequested = true
     this.stop(this.failure ?? new Error('The test worker closed.'))
-    const failures: unknown[] = []
-    try { await this.channelClosing } catch (error) { failures.push(error) }
+    await this.channelClosing
+    const failures: unknown[] = [...this.channelCloseFailures]
     try {
       if (this.socket.readyState !== WebSocket.CLOSED) await withWorkerDeadline(this.closedState.promise)
     } catch (error) { failures.push(error) }
@@ -236,7 +238,7 @@ export async function connectTestWorker(options: ConnectTestWorkerOptions) {
   catch (error) {
     try { await client.close() }
     catch (cleanup) {
-      if (cleanup !== error) throw new AggregateError([error, cleanup], 'Worker startup and cleanup failed.')
+      if (cleanup !== error) throw new AggregateError([error, cleanup], 'Worker startup and cleanup failed.', { cause: cleanup })
     }
     throw error
   }

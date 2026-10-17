@@ -65,7 +65,7 @@ export async function callClaudeHttpTool(serverName, server, name, args, signal,
   } catch (error) { failure = error }
   try { await client.close() }
   catch (cleanup) {
-    if (failure) throw new AggregateError([failure, cleanup], 'Fake Claude MCP call and transport cleanup failed.')
+    if (failure) throw new AggregateError([failure, cleanup], 'Fake Claude MCP call and transport cleanup failed.', { cause: cleanup })
     throw cleanup
   }
   if (failure) throw failure
