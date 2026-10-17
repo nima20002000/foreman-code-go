@@ -86,7 +86,9 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         .map(record => ({ record, durations: options.durations ?? null })) }
     }
     if (sql.includes("'gate'='true'")) {
-      return { rows: records.filter(record => record.gate).map(record => ({ record })) }
+      return { rows: records.filter(record => record.gate)
+        .sort((left, right) => left.queuedAt.localeCompare(right.queuedAt))
+        .map(record => ({ record, created_at: new Date(record.queuedAt) })) }
     }
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
     const active = records.filter(record => ['starting', 'running'].includes(record.state))
@@ -408,6 +410,45 @@ const gateChecks = [
   { suite: 'lint', part: 'lint-api' },
   { suite: 'unit', part: 'unit-api' },
 ] as const
+
+it('finishes the running gate before dispatching an earlier-prepared gate admitted during its run', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-12T00:00:02.000Z'))
+  const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run,
+    suite: 'typecheck', part: 'typecheck-api', partition: null, gate: true,
+    queuedAt: '2026-10-12T00:00:01.000Z', plannedHostKey: index === 0 ? cloud.key : host.key }))
+  const earlier = CiRunRecordSchema.parse({ ...queuedRuns(1)[0], suite: 'typecheck', part: 'typecheck-api',
+    partition: null, gate: true, plannedHostKey: host.key })
+  const entered = deferred()
+  const release = deferred()
+  const admission = (async () => {
+    entered.resolve()
+    await release.promise
+    records.push(earlier)
+  })()
+  const occupied = new Set([host.key])
+  const f = fleet(records, [cloud, host], new Map(), occupied)
+  try {
+    await entered.promise
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(records[0]?.state).toBe('running')
+    expect(records[1]?.state).toBe('queued')
+    release.resolve()
+    await admission
+    occupied.delete(host.key)
+    vi.setSystemTime(new Date('2026-10-12T00:00:08.000Z'))
+    await f.service.dispatch()
+    await f.service.drain()
+    expect(f.started.map(item => item.assigned.groupId)).toEqual([records[0]!.groupId, records[0]!.groupId])
+    expect(records[1]?.state).toBe('running')
+    expect(records.find(run => run.id === earlier.id)?.state).toBe('queued')
+  } finally {
+    release.resolve()
+    await admission
+    await f.service.close()
+  }
+})
 
 function buildGateRun(files = ['apps/api/test/feature.integration.test.ts']) {
   return CiRunRecordSchema.parse({ ...queuedRuns(1)[0], gate: true, noSupersede: true,
