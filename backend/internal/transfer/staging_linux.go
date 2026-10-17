@@ -38,12 +38,12 @@ func OpenStagingDirectory(root string, beforeSync func(SyncPoint) error) (*Stagi
 
 func openPrivateDirectory(root string) (*os.File, error) {
 	if !filepath.IsAbs(root) {
-		return nil, errors.New("Transfer root must be absolute")
+		return nil, &stagingFailure{reason: relativeRootFailure}
 	}
 	parts := strings.Split(root, string(filepath.Separator))
 	for _, part := range parts {
 		if part == "." || part == ".." || strings.ContainsRune(part, '\x00') {
-			return nil, errors.New("Unsafe transfer root")
+			return nil, &stagingFailure{reason: unsafeRootFailure}
 		}
 	}
 	current, err := os.OpenFile("/", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
@@ -93,10 +93,10 @@ func validateDirectory(directory *os.File, private bool) error {
 	identity, ok := stat.Sys().(*syscall.Stat_t)
 	if !ok || !stat.IsDir() || (stat.Mode().Perm()&0o022 != 0 && stat.Mode()&os.ModeSticky == 0) ||
 		(identity.Uid != 0 && identity.Uid != uint32(os.Getuid())) {
-		return errors.New("Unsafe transfer ancestor")
+		return &stagingFailure{reason: unsafeAncestorFailure}
 	}
 	if private && (stat.Mode().Perm()&0o077 != 0 || identity.Uid != uint32(os.Getuid())) {
-		return errors.New("Transfer root must be private and owned")
+		return &stagingFailure{reason: privateRootFailure}
 	}
 	return nil
 }
@@ -111,10 +111,10 @@ func anchoredPath(directory *os.File, name string) string {
 // name is a local filename stem, not a substitute for contract ID validation.
 func (directory *StagingDirectory) OpenPart(name string, byteLimit int64, chunkLimit int) (*StagingPart, error) {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
-		return nil, errors.New("Unsafe staging file name")
+		return nil, &stagingFailure{reason: unsafeNameFailure}
 	}
 	if byteLimit < 0 || chunkLimit <= 0 {
-		return nil, errors.New("Invalid staging limits")
+		return nil, &stagingFailure{reason: invalidLimitsFailure}
 	}
 	directory.mu.Lock()
 	defer directory.mu.Unlock()
@@ -144,7 +144,7 @@ func regularFile(file *os.File) (os.FileInfo, error) {
 	identity, ok := stat.Sys().(*syscall.Stat_t)
 	if !ok || !stat.Mode().IsRegular() || identity.Nlink != 1 || stat.Mode().Perm()&0o077 != 0 ||
 		identity.Uid != uint32(os.Getuid()) {
-		return nil, errors.New("Unsafe transfer file")
+		return nil, &stagingFailure{reason: unsafeFileFailure}
 	}
 	return stat, nil
 }

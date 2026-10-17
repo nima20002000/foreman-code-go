@@ -13,12 +13,12 @@ import (
 )
 
 var (
-	ErrCommittedBytes = errors.New("Committed transfer bytes missing or corrupt; restart byte attempt explicitly")
-	ErrChunk          = errors.New("Invalid transfer chunk")
-	ErrAllocation     = errors.New("Chunk exceeds allocation")
-	ErrOffset         = errors.New("Chunk offset conflict")
-	ErrDuplicate      = errors.New("Conflicting duplicate chunk")
-	ErrWholeIntegrity = errors.New("Whole transfer integrity mismatch")
+	ErrCommittedBytes error = &stagingFailure{reason: committedBytesFailure}
+	ErrChunk          error = &stagingFailure{reason: invalidChunkFailure}
+	ErrAllocation     error = &stagingFailure{reason: allocationFailure}
+	ErrOffset         error = &stagingFailure{reason: offsetFailure}
+	ErrDuplicate      error = &stagingFailure{reason: duplicateFailure}
+	ErrWholeIntegrity error = &stagingFailure{reason: wholeIntegrityFailure}
 )
 
 // StagingPart operates on the original open file, even if its ancestors are
