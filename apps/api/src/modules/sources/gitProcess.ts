@@ -1,8 +1,11 @@
 import { spawn } from 'node:child_process'
+import { underDeadline } from '../processDeadline.js'
 
 export interface GitProcessOptions {
   cwd?: string
   signal: AbortSignal
+  /** Enforced by a supervisor that survives the API; 15 minutes by default. */
+  timeoutMs?: number
   env?: Record<string, string>
   maximumFileBytes?: number
   lockFd?: number
@@ -10,7 +13,8 @@ export interface GitProcessOptions {
 }
 export interface GitProcessResult { code: number; stdout: string; stderr: string }
 
-/** All Git children share the transfer's file limit and cache lock, including after an API process exits. */
+/** All Git children share the transfer's file limit, cache lock and deadline, including after an API process exits;
+ * the deadline ends the whole process group, so the kernel then releases the inherited locks. */
 export function runGitProcess(args: string[], options: GitProcessOptions,
   environment: NodeJS.ProcessEnv): Promise<GitProcessResult> {
   return new Promise(resolve => {
@@ -19,7 +23,8 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     const executable = limited ? '/usr/bin/prlimit' : command.shift()!
     const childArgs = limited
       ? [`--fsize=${options.maximumFileBytes}:${options.maximumFileBytes}`, '--', ...command] : command
-    const child = spawn(executable, childArgs, {
+    const [supervisor, supervised] = underDeadline(options.timeoutMs ?? 15 * 60_000, executable, childArgs)
+    const child = spawn(supervisor, supervised, {
       ...(options.cwd ? { cwd: options.cwd } : {}),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe',
@@ -47,11 +52,9 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
       })
     }
     child.once('error', () => { failed = true })
-    const timer = setTimeout(stop, 15 * 60_000)
     options.signal.addEventListener('abort', stop, { once: true })
     if (options.signal.aborted) stop()
     child.once('close', code => {
-      clearTimeout(timer)
       options.signal.removeEventListener('abort', stop)
       resolve({ code: failed || options.signal.aborted ? 1 : code ?? 1,
         stdout: Buffer.concat(output.stdout).toString('utf8'),

@@ -12,6 +12,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
   CI_HOST_START_PROTOCOL_VERSION,
   type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
+import { underDeadline } from '../processDeadline.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnMissing, logIgnoredError } from '../diagnostics/ignoredError.js'
@@ -77,8 +78,8 @@ function runPreparationCommand(file: string, args: readonly string[], options: {
   return new Promise(resolve => {
     if (options.signal?.aborted) return resolve({ code: 1, stdout: '', stderr: 'CI preparation canceled.' })
     // The detached supervisor retains both the deadline and repository guard after API exit.
-    const timeoutSeconds = `${(options.timeoutMs ?? 600_000) / 1000}s`
-    const child = spawn('timeout', ['--signal=TERM', '--kill-after=0.25s', timeoutSeconds, file, ...args], {
+    const [supervisor, supervised] = underDeadline(options.timeoutMs ?? 600_000, file, args)
+    const child = spawn(supervisor, supervised, {
       cwd: options.cwd, env: options.env,
       detached: true, stdio: ['ignore', 'pipe', 'pipe',
         ...(options.lockFd !== undefined ? [options.lockFd] : [])] })
