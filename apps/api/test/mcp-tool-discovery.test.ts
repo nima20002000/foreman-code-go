@@ -108,6 +108,16 @@ describe('authenticated workflow MCP tool discovery', () => {
     } finally { result.resolve({ rows: [f.saved] }); await f.app.close() }
   })
 
+  it('discovers selected reference tools along with context from the shared Worker services', async () => {
+    const f = fixture({ defaults: ['context_get', 'files.references_list', 'files.reference_read'] })
+    try {
+      const response = await f.rpc('tools/list')
+      expect(response.statusCode).toBe(200)
+      expect(decode(response.body).result?.tools?.map(tool => tool.name).sort())
+        .toEqual(['context_get', 'files.reference_read', 'files.references_list'])
+    } finally { await f.app.close() }
+  })
+
   it('fails discovery when the pinned configuration cannot be read', async () => {
     const f = fixture()
     f.query.mockRejectedValueOnce(Object.assign(new Error('Query read timeout'), { code: '57014' }))

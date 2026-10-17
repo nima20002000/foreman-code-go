@@ -51,7 +51,13 @@ it('re-activates a looping node with its loop prompt in its own session without 
       return { client, principalId: credential.principalId }
     }
     const checker = await connect(checkId)
-    expect((await checker.client.listTools()).tools.map(tool => tool.name)).toContain('run_status_get')
+    const tools = (await checker.client.listTools()).tools
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'run_status_get', 'files.references_list', 'files.reference_read',
+    ]))
+    for (const tool of tools.filter(tool => tool.name.startsWith('files.reference'))) {
+      expect(tool.annotations?.readOnlyHint).toBe(true)
+    }
     const read = await checker.client.callTool({ name: 'run_status_get', arguments: {} })
     expect(read.isError).not.toBe(true)
     const status = AgentRunStatusSchema.parse(decodeMcpToolResult(read))
