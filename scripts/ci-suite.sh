@@ -4,6 +4,15 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+case "${SUITE:-}" in
+  unit|unit-*)
+    if [ -n "${1:-}" ]; then
+      SUITE=lint bash scripts/ci-go-toolchain.sh install
+    else
+      node scripts/ci-postgres-integration.mjs
+    fi
+    exit 0 ;;
+esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 case "${CI_PARTITION:-}" in
