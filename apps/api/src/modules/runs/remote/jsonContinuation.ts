@@ -55,7 +55,8 @@ export async function readJsonContinuation(first: DeviceJsonContinuation,
   let chunk = original
   while (true) {
     signal?.throwIfAborted()
-    if (chunk.digest !== original.digest || chunk.byteSize !== original.byteSize || chunk.offset !== offset)
+    if (chunk.digest !== original.digest || chunk.byteSize !== original.byteSize || chunk.offset !== offset
+      || chunk.downloadId !== original.downloadId)
       throw new Error('JSON continuation identity changed')
     const bytes = Buffer.from(chunk.data, 'base64')
     if (!bytes.byteLength || bytes.byteLength > DEVICE_JSON_CONTINUATION_BYTES
@@ -64,7 +65,8 @@ export async function readJsonContinuation(first: DeviceJsonContinuation,
     parts.push(bytes)
     offset += bytes.byteLength
     if (offset === original.byteSize) break
-    chunk = schema.parse(await read({ digest: original.digest, offset }))
+    chunk = schema.parse(await read({ digest: original.digest, offset,
+      ...(original.downloadId === undefined ? {} : { downloadId: original.downloadId }) }))
   }
   const bytes = Buffer.concat(parts)
   if (digest(bytes) !== original.digest) throw new Error('JSON continuation digest changed')
