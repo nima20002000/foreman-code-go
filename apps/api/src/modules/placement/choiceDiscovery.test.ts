@@ -13,7 +13,8 @@ import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.
 import { DomainError } from '../errors.js'
 import { ProductionPlacementChoiceDiscovery } from './choiceDiscovery.js'
 
-function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device' } = {}) {
+function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device'
+  ensureProfileReady?: (profile: unknown) => Promise<void> } = {}) {
   const workflow = makeCurrentWorkflowFixture('computer-choices', 'single')
   const configuration = workflow.configurations[0]!
   const driver = options.driver ?? 'codex'
@@ -75,6 +76,7 @@ function fixture(options: { driver?: 'codex' | 'claude'; host?: 'main' | 'device
     profiles: { list: profiles } as unknown as HarnessInstanceSettingsRepository,
     registry: { installations: { list: installations }, profileEvidence: evidence } as unknown as
       Pick<ProductionHarnessRegistry, 'installations' | 'profileEvidence'>,
+    ...(options.ensureProfileReady ? { ensureProfileReady: options.ensureProfileReady } : {}),
   }
   const input = { workspaceId: configuration.workspaceId, workflowId: workflow.scope.workflowId,
     nodeId: workflow.version.definition.nodes[0]!.id, agentConfigurationVersionId: configuration.id }
@@ -219,4 +221,17 @@ it('offers the current qualified installation for an unchanged saved profile rev
   expect(await f.service.list(f.principal, f.input)).toEqual([expect.objectContaining({ availability: 'unavailable' })])
   f.profile.instanceRevision = 'edited'
   expect(await f.service.list(f.principal, f.input)).toEqual([])
+})
+
+it('reports discovery as pending while a matching profile check is running', async () => {
+  const reason = 'The selected harness profile is being checked. Retry Run start shortly.'
+  const ensureProfileReady = vi.fn(async () => { throw new DomainError('HARNESS_PROFILE_CHECK_PENDING', reason, 503) })
+  const f = fixture({ ensureProfileReady })
+  const discovered = await f.service.list(f.principal, f.input)
+  expect(discovered.pending).toBe(true)
+  expect(discovered.choices).toEqual([expect.objectContaining({ availability: 'unavailable', reason })])
+  ensureProfileReady.mockResolvedValue(undefined)
+  const settled = await f.service.list(f.principal, f.input)
+  expect(settled.pending).toBe(false)
+  expect(settled.choices).toEqual([expect.objectContaining({ availability: 'ready' })])
 })

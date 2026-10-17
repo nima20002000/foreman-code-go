@@ -37,12 +37,12 @@ function mount({ activity = false, maintenance = false } = {}) {
   </QueryClientProvider>)
   return { client, view }
 }
-function discovery(readback: () => { ready: boolean; omitted?: boolean; reason?: string }) {
+function discovery(readback: () => { ready: boolean; omitted?: boolean; reason?: string; pending?: boolean }) {
   let reads = 0
   server.use(http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/nodes/:nodeId/placement-choices', () => {
     reads++
-    const { ready, omitted, reason = pendingReason } = readback()
-    return HttpResponse.json({ ...scope, choices: omitted ? [] : [{ id: 'choice-a', label: 'Paired computer', placement,
+    const { ready, omitted, reason = pendingReason, pending = !ready && !omitted && reason === pendingReason } = readback()
+    return HttpResponse.json({ ...scope, pending, choices: omitted ? [] : [{ id: 'choice-a', label: 'Paired computer', placement,
       availability: ready ? 'ready' : 'unavailable', reason: ready ? null : reason }] })
   }))
   return () => reads
@@ -55,6 +55,21 @@ it('polls a pending check until ready and then stops discovery polling', async (
   mount()
   await screen.findByRole('option', { name: `Paired computer: ${pendingReason}` })
   expect(reads()).toBe(1)
+  ready = true
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+  expect(await screen.findByRole('option', { name: 'Paired computer: Ready' })).toBeEnabled()
+  expect(reads()).toBe(2)
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+  expect(reads()).toBe(2)
+})
+
+it('polls while a computer omitted from the choices is still being checked', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  let ready = false
+  const reads = discovery(() => ({ ready, omitted: !ready, pending: !ready }))
+  mount()
+  await screen.findByText('Choices loaded')
+  expect(screen.queryByRole('option')).toBeNull()
   ready = true
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
   expect(await screen.findByRole('option', { name: 'Paired computer: Ready' })).toBeEnabled()
