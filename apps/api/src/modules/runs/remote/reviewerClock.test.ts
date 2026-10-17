@@ -49,7 +49,10 @@ it.each([-90_000, 50_000, 90_000])(
       elapsed = 40_000
       await expect(journal.renewReviewer(intent.operationId, renewed))
         .resolves.toMatchObject({ retainedReviewer: renewed })
-      elapsed = 60_000
+      const delayed = { ...policy, expiresAt: new Date(mainTime + 80_000).toISOString() }
+      await expect(journal.renewReviewer(intent.operationId, delayed))
+        .resolves.toMatchObject({ retainedReviewer: renewed })
+      elapsed = 90_000
       wallClock.mockReturnValue(mainTime - 300_000)
       await expect(journal.reserveReviewTurn(intent.operationId, assignment, digest, -1))
         .resolves.toMatchObject({ reserved: true })

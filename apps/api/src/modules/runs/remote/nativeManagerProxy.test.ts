@@ -953,3 +953,83 @@ describe('remote native history streaming', () => {
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
 })
+
+it.each(['boundary', 'cancel', 'respond', 'reconcile'] as const)(
+  'accepts an overtaken %s reply without replacing the newer receipt', async operation => {
+    let history = terminal([event(0)])
+    const f = setup(() => history)
+    const originalRequest = f.request.getMockImplementation()!
+    const entered = deferred()
+    const release = deferred()
+    const option = { optionId: 'approve', semantic: 'approve_once' as const, label: 'Approve',
+      persistence: 'request' as const, affectsOtherPendingRequests: false,
+      interruptsCurrentTurn: false, mutatesPersistentPolicy: false }
+    f.controlFor.mockImplementation(async input => ({
+      schemaVersion: 1, protocolVersion: 1, commandId: randomUUID(),
+      operationId: f.receipt.intent.operationId, attemptId: f.receipt.intent.attemptId,
+      executionId: f.receipt.intent.executionId, bindingHash: f.receipt.intent.bindingHash,
+      owner: f.receipt.intent.owner, native: input.native,
+      action: input.kind === 'stop' ? { kind: 'stop' } : {
+        kind: 'respond', interactionId: 'interaction', interactionRevision: '1',
+        nativeInteractionId: input.nativeRequestId!, response: option,
+      },
+    }))
+    let delayed = false
+    const target = operation === 'respond' ? 'control' : operation === 'reconcile' ? 'reconcile-response' : 'status'
+    f.request.mockImplementation(async (method, raw, signal) => {
+      let reply: unknown
+      if (method === 'control') {
+        const frame = RemoteExecutionRpcRequestSchema.parse(raw)
+        if (frame.method !== 'control') throw new Error('Expected a control request')
+        f.receipt.controls.push(frame.command)
+        f.receipt.sequence++
+        if (frame.command.action.kind === 'stop') {
+          f.receipt.stopFence = true
+          f.receipt.phase = 'confirmed_terminal'
+          f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'b'.repeat(64) }
+        }
+        reply = { status: 'known', receipt: f.receipt }
+      } else if (method === 'status') reply = { status: 'known', receipt: f.receipt }
+      else if (method === 'reconcile-response') reply = { ...pageNativeHistory(history),
+        status: { status: 'known', receipt: f.receipt } }
+      else reply = await originalRequest(method, raw, signal)
+      reply = structuredClone(reply)
+      if (method === target && !delayed) {
+        delayed = true
+        entered.resolve()
+        await release.promise
+      }
+      return reply
+    })
+    const session = await f.proxy.createSession(f.start)
+    const pending = {
+      boundary: () => f.proxy.observeBoundary(session),
+      cancel: () => f.proxy.cancel(session),
+      respond: () => f.proxy.respond(session, 'question', option),
+      reconcile: () => f.proxy.reconcileResponse(session, {
+        nativeRequestId: 'question', nativeRequestType: 'approval', option,
+      }),
+    }[operation]()
+    const outcome = Promise.allSettled([pending])
+    let overtakenSequence: number
+    try {
+      await entered.promise
+      overtakenSequence = f.receipt.sequence
+      f.receipt.sequence++
+      history = terminal([event(0), event(1, 'latest')])
+      await f.proxy.history(session)
+    } finally {
+      release.resolve()
+    }
+    await outcome
+    if (operation === 'reconcile') {
+      await expect(pending).resolves.toEqual(history)
+      expect(f.request.mock.calls.filter(([method]) => method === 'reconcile-response')).toHaveLength(2)
+    } else if (operation === 'cancel') await expect(pending).resolves.toBe(true)
+    else await expect(pending).resolves.toBeUndefined()
+    expect(f.discardedReceipts.map(receipt => receipt.sequence)).toEqual([overtakenSequence!])
+    const sequences = f.observedReceipts.map(receipt => receipt.sequence)
+    expect(sequences).toEqual([...sequences].sort((a, b) => a - b))
+    expect(f.observedReceipts.at(-1)).toEqual(f.receipt)
+  },
+)

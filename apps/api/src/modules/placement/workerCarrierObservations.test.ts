@@ -12,7 +12,7 @@ import type { RemoteCommitFacts, RemoteResultCommitPort } from '../runs/remote/r
 import { deriveDispatch, freezePlacement } from './binding.js'
 import { remoteNativeManager } from './workerCarrier.js'
 
-function observationFixture(history?: NativeHistory) {
+function observationFixture(history?: NativeHistory, delayMetadata = false) {
   const mainId = randomUUID()
   const deviceId = randomUUID()
   const workerInstallationId = randomUUID()
@@ -48,6 +48,9 @@ function observationFixture(history?: NativeHistory) {
   const authority: RemoteCommitFacts = { intent, placement, originalConnection: connection,
     originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0,
     lastReceipt: null, native: null, terminal: null }
+  const metadataEntered = deferred()
+  const metadataRelease = deferred()
+  let metadataDelayed = false
   const committed = deferred()
   const release = deferred()
   const secondReply = deferred()
@@ -81,6 +84,11 @@ function observationFixture(history?: NativeHistory) {
           if (frame.method === 'prepare') return { payload: { session, status } }
           if (frame.method === 'history' && history) {
             historyReads.push(frame)
+            if (frame.metadata && delayMetadata && !metadataDelayed) {
+              metadataDelayed = true
+              metadataEntered.resolve()
+              await metadataRelease.promise
+            }
             return { payload: { ...pageNativeHistory(history, frame.afterSequence, frame.metadata), status } }
           }
           if (frame.method !== 'status') throw new Error('Only session preparation and boundary reads are expected')
@@ -100,7 +108,8 @@ function observationFixture(history?: NativeHistory) {
   const request = { executionId: intent.executionId, runId: intent.runId, workspaceId: configuration.workspaceId,
     workflowNodeId: intent.nodeId, workingDirectory: '/project', runtimeDirectory: '/runtime',
     configuration, input: {} }
-  return { manager, request, session, committed, release, secondReply, observedGenerations, rejections, historyReads }
+  return { manager, request, session, committed, release, secondReply, observedGenerations, rejections, historyReads,
+    metadataEntered, metadataRelease }
 }
 
 it('authenticates concurrent identical receipts with each reply original connection', async () => {
@@ -164,4 +173,25 @@ it('bounds identical pending replies and releases their capacity after observati
     f.release.resolve()
     await Promise.allSettled([first, ...pending])
   }
+})
+
+it('binds an identical boundary reply to its own connection while earlier history metadata is delayed', async () => {
+  const history: NativeHistory = { events: [], pendingInteractions: [],
+    terminalResult: { outcome: 'succeeded', output: { text: 'x'.repeat(400_000) } } }
+  const f = observationFixture(history, true)
+  f.release.resolve()
+  await f.manager.createSession({ request: f.request, correlationId: `execution:${f.request.executionId}` })
+  const reading = f.manager.history(f.session)
+  const outcome = Promise.allSettled([reading])
+  try {
+    await f.metadataEntered.promise
+    await expect(f.manager.observeBoundary(f.session)).resolves.toBeUndefined()
+    expect(f.observedGenerations).toEqual([1, 4])
+  } finally {
+    f.metadataRelease.resolve()
+    await outcome
+  }
+  await expect(reading).resolves.toMatchObject(history)
+  expect(f.observedGenerations).toEqual([1, 4, 2])
+  expect(f.rejections).toEqual([])
 })
