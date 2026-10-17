@@ -117,6 +117,15 @@ async function forwardAttempt(message, controller, timeoutMs, emit = output) {
   try {
     const route = await readRoute()
     const url = new URL(route.endpoint)
+    if (timeoutMs === undefined) {
+      if (!Number.isFinite(route.toolTimeoutMs) || route.toolTimeoutMs <= 0) {
+        throw new BridgeFailure('route_unavailable', 'The MCP route has no client tool timeout. Refresh the owning app route.')
+      }
+      const claudeTimeoutMs = Number(process.env.MCP_TOOL_TIMEOUT)
+      const clientTimeoutMs = Math.min(route.toolTimeoutMs, claudeTimeoutMs > 0 ? claudeTimeoutMs : Infinity)
+      // The API enforces upload progress and execution deadlines; leave time to deliver its terminal reply.
+      timeoutMs = Math.max(1, clientTimeoutMs - 5_000)
+    }
     // The owning API's host PID is not visible inside a harness PID namespace.
     // Each request proves access through the endpoint's scoped credential authentication.
     requestSignal = controller ? AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
@@ -128,11 +137,8 @@ async function forwardAttempt(message, controller, timeoutMs, emit = output) {
       body: JSON.stringify(message), signal: requestSignal })
     deliveryStage = 'response'
     if (!response.ok) {
-      try {
-        await response.body?.cancel()
-      } finally {
-        throw httpFailure(response.status)
-      }
+      await response.body?.cancel()
+      throw httpFailure(response.status)
     }
     if ((response.status === 202 || response.status === 204) && !expectsReply) return
     const publish = (value) => {
@@ -234,7 +240,7 @@ async function forward(message, controller) {
   try {
     if (budgetMs !== undefined) return await forwardGroupWait(message, controller, budgetMs)
     for (let attempt = 0; ; attempt++) {
-      const error = await forwardAttempt(message, attemptController, startup ? 45_000 : 120_000)
+      const error = await forwardAttempt(message, attemptController, startup ? 45_000 : undefined)
       if (!error || controller?.signal.aborted) return
       const retryable = startup && ['service_unavailable', 'timeout'].includes(error.data.kind)
       if (retryable) error.data.retryable = true

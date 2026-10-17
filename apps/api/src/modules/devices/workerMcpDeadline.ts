@@ -1,5 +1,7 @@
 import { DeviceApplicationError } from './deviceApplicationError.js'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { deviceRequestTimeoutMs } from './deviceRequestRetry.js'
+import { deviceForegroundWaitMs } from './deviceRequestQueue.js'
 
 /** Main gets 100 seconds to answer before the device transport's 120-second budget expires.
  * Supported CI waits use chunks of at most 60 seconds. */
@@ -10,6 +12,9 @@ const minimumUploadBytesPerSecond = 64 * 1024
 export const workerMcpUploadCeilingMs = workerMcpUploadIdleTimeoutMs + Math.ceil(
   (WORKER_MCP_EXTENSION.maxJsonBytes + WORKER_MCP_EXTENSION.maxBinaryBytes) / minimumUploadBytesPerSecond,
 ) * 1000
+/** Request-slot queue, upload-capacity queue, progressing upload, then Main execution. */
+export const workerMcpRequestBudgetMs = deviceRequestTimeoutMs + deviceForegroundWaitMs
+  + workerMcpUploadCeilingMs + relayDeadlineMs
 
 export async function withWorkerMcpDeadline<T>(
   run: (signal: AbortSignal, uploaded: () => void, progress: (acknowledgedBytes: number) => void, started: () => void) => Promise<T>,

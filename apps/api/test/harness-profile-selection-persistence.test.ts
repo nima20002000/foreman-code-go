@@ -81,13 +81,8 @@ describe('explicit chat profile configuration producer', () => {
         : sql.startsWith('select metadata_revision') ? [{ metadata_revision: '1' }]
         : sql.includes('coalesce(max(version)') ? [{ next_version: 1 }] : [] }
     }) } as unknown as pg.PoolClient
-    const execute = vi.fn(async (command: {
-      authorize: (client: pg.PoolClient) => Promise<void>
-      perform: (client: pg.PoolClient) => Promise<unknown>
-    }) => {
-      await command.authorize(client)
-      return { value: await command.perform(client), replayed: false }
-    })
+    const commands = preparedManagementCommands(client)
+    const execute = vi.fn(commands.execute.bind(commands))
     const qualifyConfiguration = vi.fn(async () => { throw new Error('local probe forbidden') })
     const validateSelection = vi.fn(async () => {})
     const service = new OperatorAgentMutationService({} as pg.Pool, { execute } as unknown as PostgresCommandCoordinator,
