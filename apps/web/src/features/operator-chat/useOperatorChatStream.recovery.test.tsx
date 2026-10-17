@@ -109,7 +109,7 @@ it('stops terminal reconnection after a confirmed read authorization denial', as
   expect(Source.sources).toHaveLength(1)
 })
 
-it.each(['dispose', 'selection', 'session'] as const)('cancels a scheduled replacement on %s change', async kind => {
+it.each(['dispose', 'close', 'session'] as const)('cancels a scheduled replacement on %s change', async kind => {
   const view = mount()
   await screen.findByText('First line Second line', { exact: false })
   vi.useFakeTimers()
@@ -122,4 +122,32 @@ it.each(['dispose', 'selection', 'session'] as const)('cancels a scheduled repla
   await act(() => vi.advanceTimersByTimeAsync(30_000))
   expect(Source.sources).toHaveLength(1)
   expect(Source.sources[0]!.close).toHaveBeenCalledOnce()
+})
+
+it('switches conversations while open and reconnects only the selected conversation', async () => {
+  const second = operatorState({
+    conversation: { ...state.conversation, id: 'conversation-two', title: 'Second conversation' },
+    messages: [{ ...state.messages[0]!, conversationId: 'conversation-two', content: 'Second conversation answer' }],
+  })
+  server.use(http.get('*/api/operator/conversations/conversation-two', () => HttpResponse.json(second)))
+  const view = mount()
+  await screen.findByText('First line Second line', { exact: false })
+  vi.useFakeTimers()
+  act(() => Source.sources[0]!.fail())
+  view.rerender(<QueryClientProvider client={client}><View id="conversation-two" /></QueryClientProvider>)
+  expect(Source.sources).toHaveLength(2)
+  const selected = Source.sources[1]!
+  expect(selected.url).toContain('/conversations/conversation-two/events')
+  act(() => selected.snapshot(second))
+  expect(screen.getByText('Second conversation answer')).toBeVisible()
+  act(() => selected.fail())
+  await act(() => vi.advanceTimersByTimeAsync(30_000))
+  expect(Source.sources).toHaveLength(3)
+  expect(Source.sources.slice(1).every(source => source.url.includes('/conversations/conversation-two/events'))).toBe(true)
+  expect(Source.sources[0]!.close).toHaveBeenCalledOnce()
+  const recovered = { ...second, revision: 2,
+    messages: [{ ...second.messages[0]!, content: 'Second conversation recovered' }] }
+  act(() => Source.sources[2]!.snapshot(recovered))
+  expect(screen.getByText('Second conversation recovered')).toBeVisible()
+  expect(screen.queryByText('Second conversation answer')).not.toBeInTheDocument()
 })

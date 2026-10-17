@@ -10,6 +10,7 @@ import { http, HttpResponse } from 'msw'
 import { type WorkflowDefinitionV3, WorkflowVersionV3Schema, CurrentWorkflowCreateInputSchema, RunStartV3InputSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../../app/router'
 import { server } from '../../mocks/server'
+import { currentWorkflowFixture } from '../../shared/mocks/currentWorkflow'
 import { createCurrentBoardMock } from '../../shared/mocks/currentBoard'
 import { useGraphDraftStore } from '../graph/store'
 import { nextDraftKey, nextDraftDirty } from '../graph/nextDraft/state'
@@ -514,6 +515,39 @@ describe('ENG-S3-ONLY actual registered Board / shared current HTTP', () => {
     await waitFor(() => expect(mounted.router.state.location.search.workflowVersionId).toBe(ordinary.id))
     expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(editor)
     await user.click(screen.getByRole('button', { name: 'Clear Run selection' }))
+    expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).not.toHaveProperty('repeat')
+  }, 15_000)
+  it('removes finite repeat and reopens the saved Board through the registered route', async () => {
+    const mock = newBoardMock()
+    const user = userEvent.setup()
+    const graph = shapeGraph({ ...currentWorkflowFixture().version.definition,
+      id: 'workflow', workspaceId: mock.workspaceId }, 'repeat-ready', mock)
+    const entryNodeId = graph.nodes[0]!.id
+    const exitNodeId = graph.nodes[1]!.id
+    mock.install({ ...graph, repeat: { contractVersion: 1, blocks: [{ id: 'finite-repeat',
+      nodeIds: [entryNodeId, exitNodeId], entryNodeId, exitNodeId, maxOccurrences: 2,
+      repeatOutcome: 'again', earlyExitOutcome: 'done', limitExit: { kind: 'branch_end' } }] } }, true)
+    const key = nextDraftKey(mock.workspaceId, graph.id)
+    const href = `/workspaces/${mock.workspaceId}?workflowId=${graph.id}`
+    const mounted = await mount(mock, href)
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    await user.click(control('Repeats'))
+    const repeat = within(screen.getByRole('region', { name: 'Repeat settings' }))
+    expect(repeat.getByRole('spinbutton', { name: 'Maximum occurrences' })).toHaveValue(2)
+    await user.click(repeat.getByRole('button', { name: 'Remove repeat' }))
+    expect(repeat.getByText('No repeats.')).toBeVisible()
+    const removed = await save(mock, user, 2)
+    expect(removed.definition).not.toHaveProperty('repeat')
+    mounted.unmount()
+    mounted.query.clear()
+    act(() => useGraphDraftStore.setState({ nextDrafts: {} }))
+    await mount(mock, href)
+    await screen.findByRole('region', { name: 'Workflow authoring' })
+    await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]?.context.draft.baseWorkflowVersionId).toBe(removed.id))
+    await user.click(control('Repeats'))
+    const reopened = within(screen.getByRole('region', { name: 'Repeat settings' }))
+    expect(reopened.getByText('No repeats.')).toBeVisible()
+    expect(reopened.queryByRole('button', { name: 'Remove repeat' })).not.toBeInTheDocument()
     expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).not.toHaveProperty('repeat')
   }, 15_000)
   it('keeps production capability false without issuing Start, and rejects retired saved tags before definition dispatch', async () => {
