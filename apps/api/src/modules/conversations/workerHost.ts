@@ -269,7 +269,18 @@ export class WorkerConversationHost {
     request: WorkerConversationRpcRequest, signal: AbortSignal) {
     await this.ports.journal.bindSession(resident.binding, session,
       sessionOwner(await resident.allocation.nativeOwner(session)))
-    await this.ports.observeSession(resident.binding, session, request, signal)
+    if (request.method === 'conversation.initial-turn') {
+      await this.notifyMain(resident.binding, () => this.ports.observeSession(resident.binding, session, request, signal))
+    } else await this.ports.observeSession(resident.binding, session, request, signal)
+  }
+
+  private async notifyMain(binding: WorkerConversationBinding, notify: () => Promise<void>) {
+    try {
+      await notify()
+    } catch (error) {
+      // Main can recover journaled observations after its callback connection returns.
+      this.log.error({ err: error, conversationId: binding.owner.conversationId }, 'Worker chat observation needs delivery to Main')
+    }
   }
 
   private async open(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.open' }>,
@@ -334,8 +345,9 @@ export class WorkerConversationHost {
         request.previousConfiguration!, request.configuration)
       if (!record?.session || !isDeepStrictEqual(record.session, request.source)
         || record.closed || record.closing) unavailable('The original Run chat session is unavailable.')
-      if (record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
-        || record.compactions.some(control => compactionBlocksSend(control.state))) {
+      const unfinished = record.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
+        || record.compactions.some(control => compactionBlocksSend(control.state))
+      if (this.residents.has(id) && unfinished) {
         unavailable('The native conversation has unfinished work.')
       }
       if (isDeepStrictEqual(record.binding, request.binding)) {
@@ -425,6 +437,7 @@ export class WorkerConversationHost {
       prompt: request.prompt, clientCorrelationId: request.correlationId,
       onTerminal: async observation => {
         if (observation.submission.clientCorrelationId !== request.correlationId) unavailable('Native terminal input differs from its admission.')
+        await this.ports.journal.finishTurn(resident.binding, request.correlationId, observation.result)
         await this.authorize(request, connection, signal)
         await this.ports.observeTerminal?.(request, observation, signal)
       },
@@ -432,11 +445,13 @@ export class WorkerConversationHost {
       ...(request.preferences ? { sessionPreferences: request.preferences } : {}),
       onSubmitted: async nativeTurnId => {
         await this.ports.journal.submitted(resident.binding, request.correlationId, { nativeTurnId })
-        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeTurnId }, request, signal)
+        await this.notifyMain(resident.binding, () =>
+          this.ports.observeSubmission(resident.binding, request.correlationId, { nativeTurnId }, request, signal))
       },
       onMessageSubmitted: async nativeSubmission => {
         await this.ports.journal.submitted(resident.binding, request.correlationId, { nativeSubmission })
-        await this.ports.observeSubmission(resident.binding, request.correlationId, { nativeSubmission }, request, signal)
+        await this.notifyMain(resident.binding, () =>
+          this.ports.observeSubmission(resident.binding, request.correlationId, { nativeSubmission }, request, signal))
       },
       onSettingsApplied: async () => {
         await this.ports.observeSettings?.(request, request.correlationId, signal)
@@ -489,6 +504,16 @@ export class WorkerConversationHost {
     let terminal = history.correlationId === correlationId ? history.terminalResult : undefined
     if (history.terminalTurn?.correlationId === correlationId) terminal = history.terminalTurn.result
     return this.ports.journal.finishTurn(binding, correlationId, terminal)
+  }
+
+  private restoreJournaledResult(session: NativeSessionReference, history: NativeHistory,
+    turn: WorkerConversationReceipt['turns'][number] | undefined): NativeHistory {
+    if (session.harness !== 'claude' || turn?.status !== 'completed' || !turn.result
+      || !turn.nativeSubmission || history.correlationId !== turn.correlationId
+      || !isDeepStrictEqual(history.nativeSubmission, turn.nativeSubmission) || history.terminalResult) return history
+    return { ...history, terminalResult: turn.result,
+      terminalTurn: { correlationId: turn.correlationId,
+        providerId: turn.nativeSubmission.nativeMessageId, result: turn.result } }
   }
 
   private async compact(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.compact' }>,
@@ -729,6 +754,7 @@ export class WorkerConversationHost {
           // Main can reconcile a message before its Worker reservation exists.
           history = await manager.history(request.session, signal)
         }
+        history = this.restoreJournaledResult(request.session, history, turn)
         if (request.correlationId && !running && record.turns.some(turn => turn.correlationId === request.correlationId)) {
           await this.finish(request.binding, request.correlationId, history)
         }

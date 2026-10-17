@@ -172,6 +172,9 @@ function nativeUnavailable(error: unknown): { reason: 'native_session_missing' |
     return { reason: 'harness_unavailable', message: 'Native App MCP/environment validation failed. Agent chat cannot use application or workflow credentials; check the native configuration.' }
   }
   if (code === 'AGENT_CHAT_EPHEMERAL_SESSION_LOST') return { reason: 'native_session_missing', message: EPHEMERAL_SESSION_LOST }
+  if (code === 'NATIVE_SESSION_CREATION_STATE_LOST') {
+    return { reason: 'native_session_missing', message: 'The original native session creation can no longer be recovered. This conversation is read-only; no input was resent.' }
+  }
   if (code && (/SESSION_NOT_FOUND|THREAD_NOT_FOUND|SESSION_ID_MISMATCH|SETTING_UNSUPPORTED|VERSION_MISMATCH/.test(code)
     || code === 'AGENT_CHAT_FORK_UNAVAILABLE')) {
     return { reason: 'native_session_missing', message: 'The native session or Run source no longer exists or cannot be continued. No replacement session was created.' }

@@ -53,7 +53,10 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
     this.shutdownController.signal.throwIfAborted()
     const creation = this.creations.get(this.creationKey(input))
     const identity = this.creationIdentity(input, forkSource)
-    if (!creation || creation.identity !== identity) {
+    if (!creation) {
+      throw new HarnessExecutionError('NATIVE_SESSION_CREATION_STATE_LOST', 'The original native creation state is no longer available; no replacement thread was created.')
+    }
+    if (creation.identity !== identity) {
       throw new HarnessExecutionError('CODEX_SESSION_CREATION_UNCERTAIN', 'Native creation identity is not established; no replacement thread was created.')
     }
     if (creation.status === 'rejected') return this.rejectCreation(creation)

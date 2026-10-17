@@ -134,8 +134,11 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     manager.reconcileSessionCreation = async (start, signal, forkSource) => {
       signal?.throwIfAborted()
       lifetime.signal.throwIfAborted()
-      const current = allocation?.manager
-      if (!current?.reconcileSessionCreation) {
+      const current = allocation?.manager ?? (opening ? (await opening).manager : undefined)
+      if (!current) {
+        throw new DomainError('NATIVE_SESSION_CREATION_STATE_LOST', 'The original native creation state is no longer available.', 409)
+      }
+      if (!current.reconcileSessionCreation) {
         throw new DomainError('HARNESS_CREATION_UNCONFIRMED', 'The original native creation is not available.', 409)
       }
       const session = await current.reconcileSessionCreation(start, signal, forkSource)
