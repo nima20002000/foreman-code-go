@@ -177,6 +177,30 @@ describe('remote native history streaming', () => {
       expect(f.controlFor).not.toHaveBeenCalled()
     })
 
+  it.each(['history', 'stream'] as const)(
+    'rejects %s sequence drift below the receipt known before dispatch', async operation => {
+      const f = setup(() => terminal([event(0)]))
+      f.receipt.sequence = 3
+      const request = f.request.getMockImplementation()!
+      f.request.mockImplementation(async (method, raw, signal) => {
+        const reply = structuredClone(await request(method, raw, signal))
+        if (method === 'history') {
+          const value = reply as { status: { receipt: typeof f.receipt } }
+          value.status.receipt.sequence--
+        }
+        return reply
+      })
+      const session = await f.proxy.createSession(f.start)
+      const reading = operation === 'history' ? f.proxy.history(session) : f.proxy.startTurn(session, {
+        prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      }).next()
+      await expect(reading).rejects.toThrow('Original remote receipt changed')
+      expect(f.request.mock.calls.filter(([method]) => method === 'history')).toHaveLength(1)
+      expect(f.observedReceipts.map(receipt => receipt.sequence)).toEqual(
+        operation === 'history' ? [3] : [3, 3])
+      expect(f.controlFor).not.toHaveBeenCalled()
+    })
+
   it.each(['session', 'process', 'connection', 'incarnation', 'intent', 'same-revision'] as const)(
     'rejects an overtaken history response with a conflicting %s', async conflict => {
       const f = setup(() => terminal([event(0)]))
