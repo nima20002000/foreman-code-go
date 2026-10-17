@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, readdir, readFile, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { SOURCE_GIT_CACHE_LIMITS, GitCacheStorageSchema, type GitCacheStorage }
   from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
-import { anchored, identity, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
+import { anchored, identity, lockOpenFile, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
 import { measureRetainedDirectory } from './retainedDirectoryUsage.js'
 import { writeSourceClaim } from './quotaClaims.js'
+import { SourceError } from './manifest.js'
 import type { GitProcessOptions, GitProcessResult } from './gitProcess.js'
 
 type GitRunner = (args: string[], options: GitProcessOptions) => Promise<GitProcessResult>
@@ -91,30 +93,65 @@ async function processStart(pid: number): Promise<string | null> {
   }
 }
 
-/** Counts the transfers still owned by a running process; the storage lock is held. Records of dead owners are removed. */
+/** Preserve the Git cache's public error code for flock failures. */
+async function lockTransfer(file: FileHandle, options: { nonBlocking?: boolean } = {}): Promise<boolean> {
+  try {
+    return await lockOpenFile(file, options)
+  } catch (error) {
+    if (error instanceof SourceError && error.code === 'SOURCE_CLAIM_LOCK_FAILED') {
+      throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer ownership locking failed.', 409, undefined,
+        { cause: error })
+    }
+    throw error
+  }
+}
+
+type TransferOwner = { pid?: unknown; started?: unknown; lifetimeLock?: unknown; staging?: unknown }
+
+async function removeAbandonedStaging(root: FileHandle, owner: TransferOwner): Promise<void> {
+  if (owner.staging === undefined) return
+  const cache = await realpath(anchored(root))
+  if (typeof owner.staging !== 'string' || owner.staging === cache || !inside(cache, owner.staging)) {
+    throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git transfer staging is outside its cache.', 409)
+  }
+  await rm(owner.staging, { recursive: true, force: true })
+}
+
+/** The storage lock is held; only closed transfers can lose their charge or abandoned staging. */
 async function liveReservations(root: FileHandle): Promise<number> {
   let live = 0
   for (const name of await readdir(anchored(root))) {
     if (!/^transfer-.+\.reservation$/u.test(name)) continue
-    let owner: { pid?: unknown; started?: unknown } = {}
-    try { owner = JSON.parse(await readFile(anchored(root, name), 'utf8')) as typeof owner }
-    catch (error) {
-      if (!(error instanceof SyntaxError)) throw error
-      // An interrupted write left no owner; the record is reclaimed below.
-    }
-    if (typeof owner.pid === 'number' && await processStart(owner.pid) === owner.started) live++
-    else await rm(anchored(root, name), { force: true })
+    const file = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      let owner: TransferOwner = {}
+      try { owner = JSON.parse(await file.readFile('utf8')) as TransferOwner }
+      catch (error) {
+        if (!(error instanceof SyntaxError)) throw error
+        // An interrupted write cannot have launched a Git child.
+      }
+      const running = typeof owner.pid === 'number' && await processStart(owner.pid) === owner.started
+      const active = owner.lifetimeLock === true
+        ? running || !await lockTransfer(file, { nonBlocking: true })
+        : running
+      if (active) live++
+      else {
+        await removeAbandonedStaging(root, owner)
+        await rm(anchored(root, name), { force: true })
+      }
+    } finally { await file.close() }
   }
   return live
 }
 
 /** Holds the storage lock only while measuring and reserving this transfer's footprint beside the running transfers. */
-async function reserveTransfer(root: FileHandle, signal: AbortSignal): Promise<string> {
+async function reserveTransfer(root: FileHandle, signal: AbortSignal,
+  staging?: string): Promise<{ name: string; guard: FileHandle }> {
   const name = `transfer-${randomUUID()}.reservation`
-  await withPrivateDirectoryLock(root, async () => {
-    const measured = await measureStorage(root, signal)
+  return withPrivateDirectoryLock(root, async () => {
     const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
     const active = await liveReservations(root) * reservedBytes
+    const measured = await measureStorage(root, signal)
     const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
     await writeStorage(root, { ...measured, reservedBytes: active })
     if (measured.retainedBytes + active + reservedBytes > measured.limitBytes
@@ -123,18 +160,40 @@ async function reserveTransfer(root: FileHandle, signal: AbortSignal): Promise<s
         'The Git cache has insufficient storage for this transfer. Free cache filesystem space, then retry.',
         409, { retryable: true, newCommandRequired: false, storage: measured, reservedBytes })
     }
-    await writeSourceClaim(root, name, JSON.stringify({ pid: process.pid, started: await processStart(process.pid) }))
-    await writeStorage(root, { ...measured, reservedBytes: active + reservedBytes })
+    await writeSourceClaim(root, name, JSON.stringify({ pid: process.pid, started: await processStart(process.pid),
+      lifetimeLock: true, ...(staging ? { staging } : {}) }))
+    const guard = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      await lockTransfer(guard)
+      await writeStorage(root, { ...measured, reservedBytes: active + reservedBytes })
+      return { name, guard }
+    } catch (error) {
+      await guard.close()
+      throw error
+    }
   }, { signal })
-  return name
+}
+
+async function closeTransferWriters(root: FileHandle,
+  reservation: { name: string; guard: FileHandle }): Promise<FileHandle> {
+  // Open independently before dropping our inherited description, then wait outside the storage lock.
+  const closed = await open(anchored(root, reservation.name), constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    await reservation.guard.close()
+    await lockTransfer(closed)
+    return closed
+  } catch (error) {
+    await closed.close()
+    throw error
+  }
 }
 
 async function releaseTransfer(root: FileHandle, name: string): Promise<void> {
-  const measured = await measureStorage(root)
   await withPrivateDirectoryLock(root, async () => {
     await rm(anchored(root, name), { force: true })
-    await writeStorage(root, { ...measured,
-      reservedBytes: await liveReservations(root) * SOURCE_GIT_CACHE_LIMITS.transferBytes })
+    const reservedBytes = await liveReservations(root) * SOURCE_GIT_CACHE_LIMITS.transferBytes
+    const measured = await measureStorage(root)
+    await writeStorage(root, { ...measured, reservedBytes })
   })
 }
 
@@ -165,27 +224,33 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
   }
   const root = await openPrivateRoot(storagePath, false)
   try {
-    const reservation = await reserveTransfer(root, options.signal)
+    if (command === 'clone') {
+      try { await lstat(target) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        createdTarget = true
+      }
+    }
+    const reservation = await reserveTransfer(root, options.signal, createdTarget ? target : undefined)
+    let closed: FileHandle | undefined
+    let transferStarted = false
     try {
       // Clones write a private staging directory; only fetches share a repository, so only they wait for each other.
       const transfer = async (lockFd?: number) => {
-        const before = command === 'fetch' ? await packFiles(common) : []
-        if (command === 'clone') {
-          try { await lstat(target) }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-            createdTarget = true
-          }
-        }
+        transferStarted = true
+        let before: string[] | undefined
         let result: GitProcessResult | undefined
         try {
+          before = command === 'fetch' ? await packFiles(common) : []
           result = await run(boundedArgs(args, index), { ...options,
-            maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, ...(lockFd !== undefined ? { lockFd } : {}) })
+            maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, transferLockFd: reservation.guard.fd,
+            ...(lockFd !== undefined ? { lockFd } : {}) })
           return result
         } finally {
+          closed = await closeTransferWriters(root, reservation)
           if (!result || result.code !== 0) {
             if (command === 'clone' && createdTarget) await rm(target, { recursive: true, force: true })
-            else if (command === 'fetch') await removeIncompletePacks(common, before)
+            else if (command === 'fetch' && before) await removeIncompletePacks(common, before)
           }
         }
       }
@@ -197,7 +262,11 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
         if (repository !== root) await repository.close()
       }
     } finally {
-      await releaseTransfer(root, reservation)
+      if (!transferStarted) closed = await closeTransferWriters(root, reservation)
+      if (closed) {
+        try { await releaseTransfer(root, reservation.name) }
+        finally { await closed.close() }
+      }
     }
   } finally {
     await root.close()

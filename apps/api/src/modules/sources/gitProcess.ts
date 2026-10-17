@@ -6,6 +6,7 @@ export interface GitProcessOptions {
   env?: Record<string, string>
   maximumFileBytes?: number
   lockFd?: number
+  transferLockFd?: number
 }
 export interface GitProcessResult { code: number; stdout: string; stderr: string }
 
@@ -21,7 +22,9 @@ export function runGitProcess(args: string[], options: GitProcessOptions,
     const child = spawn(executable, childArgs, {
       ...(options.cwd ? { cwd: options.cwd } : {}),
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe', ...(options.lockFd !== undefined ? [options.lockFd] : [])],
+      stdio: ['ignore', 'pipe', 'pipe',
+        ...(options.lockFd !== undefined ? [options.lockFd] : []),
+        ...(options.transferLockFd !== undefined ? [options.transferLockFd] : [])],
       env: { ...environment, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never',
         GIT_NO_LAZY_FETCH: '1', ...options.env },
     })

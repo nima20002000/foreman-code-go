@@ -299,15 +299,45 @@ it('counts a transfer reserved by another process against the shared cache budge
   expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)
 
-it('reclaims the reservation of a process that is gone', async () => {
+it('keeps a live transfer charged even when its recorded process identity is obsolete', async () => {
   const held = await twoRepositories()
   const reservation = (await readdir(held.f.cache)).find(name => name.endsWith('.reservation'))!
   const path = join(held.f.cache, reservation)
   const gone = spawnSync(process.execPath, ['-e', ''])
   const owner = JSON.parse(await readFile(path, 'utf8')) as { pid: number }
   await writeFile(path, JSON.stringify({ ...owner, pid: gone.pid }))
+  try {
+    await expect(held.fetchOther()).rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  } finally {
+    held.release.resolve()
+    await held.slow
+  }
   await expect(held.fetchOther()).resolves.toBeTruthy()
-  held.release.resolve()
-  await held.slow
   expect(await held.f.storage()).toMatchObject({ reservedBytes: 0 })
+}, 30_000)
+
+it.each(['exited', 'reused-pid'] as const)('reclaims a legacy reservation after its owner is %s', async state => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
+  const metadata = await readFile('/proc/self/stat', 'utf8')
+  const started = metadata.slice(metadata.lastIndexOf(')') + 2).split(' ')[19]!
+  const path = join(f.cache, 'transfer-legacy.reservation')
+  await writeFile(path, JSON.stringify({ pid: process.pid, started }))
+  await writeFile(join(f.origin, 'source.txt'), 'successor after legacy reservation')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Successor')
+  const commit = git(f.origin, 'rev-parse', 'HEAD')
+  await expect(ensureCommit(f.ports, 'fixture/project', commit, signal))
+    .rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ pid: process.pid, started })
+
+  const gone = spawnSync(process.execPath, ['-e', ''])
+  expect(gone.status).toBe(0)
+  const owner = state === 'exited' ? { pid: gone.pid, started } : { pid: process.pid, started: `${started}-old` }
+  await writeFile(path, JSON.stringify(owner))
+  await expect(ensureCommit(f.ports, 'fixture/project', commit, signal)).resolves.toBe(clone)
+  expect(git(clone, 'cat-file', '-t', commit)).toBe('commit')
+  await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
 }, 30_000)

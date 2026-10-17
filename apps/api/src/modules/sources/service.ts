@@ -40,6 +40,7 @@ import { assertWorktreeReceipt, bindGeneratedWorktreeRun, generatedWorktreePrefi
 import { reconcileFailedCaptures } from './failedCaptureCleanup.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
 import { prepareRunSources } from './runSource.js'
+import { retainRunSource } from './runSourceUse.js'
 import { authorizationReadSnapshot } from '../access/authorizationReadSnapshot.js'
 import { SourceCapacityErrorDetailsSchema } from '@foreman-code/contracts'
 
@@ -168,6 +169,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       this.verifiedSources.set(key, source)
       if (this.verifiedSources.size > 64) this.verifiedSources.delete(this.verifiedSources.keys().next().value!)
     }
+    await retainRunSource(this.pool, pin.snapshotId)
     return structuredClone(source)
   }
   async get(principal: ManagementPrincipal, _source: Transport, raw: unknown): Promise<ApprovedSource> {
@@ -194,13 +196,15 @@ export class PostgresSourceService implements SourceAdmissionPort {
       ...(repository ? { resourceLock: `source-project:${input.workspaceId}:${input.commit}` } : {}),
       authorize: async sql => {
         await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
-        const prior = (await sql.query<{ availability: string }>(`select s.availability from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
+        const prior = (await sql.query<{ availability: string; record: ApprovedSource }>(`select s.availability,s.record from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
           where a.requested_by=$1 and a.command_id=$2
-          union all select s.availability from management_command_receipts c join source_snapshots s
+          union all select s.availability,s.record from management_command_receipts c join source_snapshots s
             on s.snapshot_id::text=c.result#>>'{manifest,snapshotId}'
           where c.principal_id=$1 and c.operation='source.approve' and c.command_id=$2`,
         [principal.id, input.commandId])).rows[0]
         if (prior && prior.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original source approval no longer has retained bytes; command retry cannot resurrect it.', 410)
+        if (prior) await this.resolveApprovedSource(sql, principal, input.workspaceId,
+          ApprovedSourceSchema.parse(prior.record).manifest)
       },
       perform: async () => {
         // Authorize before reading the workspace's server-owned paths.
