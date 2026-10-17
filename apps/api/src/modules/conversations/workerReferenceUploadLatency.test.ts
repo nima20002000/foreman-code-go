@@ -1,0 +1,128 @@
+import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
+import { afterEach, expect, it, vi } from 'vitest'
+import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
+import { WORKER_MCP_EXTENSION, decodeWorkerMcpRequest } from '@foreman-code/contracts/worker-mcp-relay'
+import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
+import { DeviceApplicationChannel, extensionDescriptors } from '../devices/deviceApplicationChannel.js'
+import { adaptDeviceSocket } from '../devices/deviceWire.js'
+import { prepareWorkerConversationMcp } from './workerMcpAccess.js'
+import { workerConversationFixture } from './workerFixtures.test-support.js'
+
+const cleanups: (() => Promise<void>)[] = []
+afterEach(async () => {
+  await Promise.all(cleanups.splice(0).map(close => close()))
+  vi.useRealTimers()
+})
+
+/** Each direction takes 50 ms, giving data and acknowledgements a 100 ms round trip. */
+class LatencySocket extends EventEmitter {
+  bufferedAmount = 0
+  peer?: LatencySocket
+  closed = false
+  send(text: string) {
+    setTimeout(() => {
+      if (!this.closed && !this.peer?.closed) this.peer?.emit('message', Buffer.from(text), false)
+    }, 50)
+  }
+  close() {
+    if (this.closed) return
+    this.closed = true
+    this.emit('close')
+    this.peer?.close()
+  }
+}
+
+async function prepare(toolDurationMs: number) {
+  vi.useFakeTimers()
+  const fixture = workerConversationFixture()
+  const mainRaw = new LatencySocket()
+  const workerRaw = new LatencySocket()
+  mainRaw.peer = workerRaw
+  workerRaw.peer = mainRaw
+  const mainSocket = adaptDeviceSocket(mainRaw)
+  const workerSocket = adaptDeviceSocket(workerRaw)
+  const stop = new AbortController()
+  let receivedAt: number | undefined
+  let received: unknown
+  let calls = 0
+  const server = { ...WORKER_MCP_EXTENSION, role: 'server' as const, handle: async (raw: unknown,
+    context: { bytes?: Uint8Array; signal: AbortSignal }) => {
+    const request = decodeWorkerMcpRequest({ payload: raw, ...(context.bytes ? { bytes: context.bytes } : {}) }) as {
+      operation: string; body?: unknown
+    }
+    if (request.operation === 'conversation-mcp.authorize') {
+      return { payload: { expiresAt: new Date(Date.now() + 600_000).toISOString() } }
+    }
+    calls++
+    receivedAt = Date.now()
+    received = request.body
+    await new Promise<void>((resolve, reject) => {
+      const finish = () => { context.signal.removeEventListener('abort', abort); resolve() }
+      const timer = setTimeout(finish, toolDurationMs)
+      const abort = () => { clearTimeout(timer); reject(context.signal.reason) }
+      context.signal.addEventListener('abort', abort, { once: true })
+    })
+    return { payload: { statusCode: 200, contentType: 'application/json', body: '{"result":"stored"}' } }
+  } }
+  const client = { ...WORKER_MCP_EXTENSION, role: 'client' as const }
+  const extensions = negotiateDeviceExtensions(extensionDescriptors([server]), extensionDescriptors([client]))
+  const binding = { ...fixture.connection }
+  const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket, signal: stop.signal,
+    extensions, registrations: [server] })
+  const worker = new DeviceApplicationChannel({ side: 'worker', binding, socket: workerSocket, signal: stop.signal,
+    extensions, registrations: [client] })
+  const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), 3000),
+    worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
+  for (const task of tasks) void task.catch(() => {
+    // ignore: cleanup closes and joins both readers.
+  })
+  cleanups.push(async () => {
+    stop.abort()
+    main.close()
+    worker.close()
+    await Promise.allSettled(tasks)
+    await Promise.all([main.join(), worker.join()])
+  })
+  const preparing = prepareWorkerConversationMcp({ source: { method: 'conversation.status',
+    binding: { ...fixture.binding, appMcpAccess: 'scoped' }, admissionId: randomUUID() },
+  token: 'scoped-token', signal: stop.signal,
+  request: (namespace, payload, options) => worker.request(namespace, payload, options) })
+  await vi.advanceTimersByTimeAsync(500)
+  const relay = await preparing
+  return { relay, receivedAt: () => receivedAt, received: () => received, calls: () => calls }
+}
+
+function referenceCall(byteSize: number) {
+  return { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'reference_file_add', arguments: {
+    scope: { kind: 'workspace_reference', workspaceId: 'workspace' },
+    upload: { requestId: randomUUID(), filename: 'reference.bin', byteSize },
+    contentBase64: Buffer.alloc(byteSize, 97).toString('base64'),
+  } } }
+}
+
+it('uploads the advertised maximum within fifteen seconds at 100 ms RTT and preserves the execution budget', async () => {
+  const f = await prepare(99_000)
+  const call = referenceCall(MAX_FILE_BYTES)
+  const started = Date.now()
+  const pending = f.relay.request(call)
+  const checked = expect(pending).resolves.toMatchObject({ statusCode: 200, body: '{"result":"stored"}' })
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(120_000)])
+  await checked
+  expect(f.receivedAt()! - started).toBeLessThanOrEqual(15_000)
+  expect(f.received()).toEqual(call)
+  expect(f.calls()).toBe(1)
+})
+
+it('still times out tool execution after one hundred seconds without replaying the uploaded call', async () => {
+  const f = await prepare(101_000)
+  const pending = f.relay.request(referenceCall(2 * 1024 * 1024))
+  let settledAt: number | undefined
+  const checked = expect(pending.catch(error => { settledAt = Date.now(); throw error }))
+    .rejects.toMatchObject({ code: 'timeout' })
+  await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(120_000)])
+  await checked
+  expect(settledAt! - f.receivedAt()!).toBeGreaterThanOrEqual(100_000)
+  expect(settledAt! - f.receivedAt()!).toBeLessThan(100_200)
+  expect(f.calls()).toBe(1)
+})
