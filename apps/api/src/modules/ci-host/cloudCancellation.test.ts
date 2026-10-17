@@ -1,8 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
-import { GitHubActionsProvider, type CloudRun } from './cloudProviders.js'
+import { CircleCiProvider, GitHubActionsProvider, type CloudRun } from './cloudProviders.js'
 import type { HostCiPorts } from './runner.js'
+
+it.each([false, true])('completes CircleCI cancellation without a value, pipeline already ended: %s', async ended => {
+  const run: CloudRun = {
+    runId: randomUUID(), repository: 'octo/site', mirror: 'octo/site-ci', commit: 'a'.repeat(40), suite: 'lint',
+    startedAt: '2026-10-01T00:00:00Z', providerRunId: 'pipeline', state: 'running',
+    finishedAt: null, exitCode: null, message: null,
+  }
+  const commands: string[][] = []
+  const ports: HostCiPorts = {
+    cpus: 4, memoryBytes: 2 ** 30, now: () => new Date('2026-10-01T00:00:00Z'),
+    run: async (_file, args) => {
+      commands.push([...args])
+      const view = ended ? { phase: 'ended', current_outcome: 'canceled', workflows: [] }
+        : { phase: 'started', workflows: [{ phase: 'started', jobs: [] }] }
+      return { code: 0, stderr: '', stdout: args[1] === 'get' ? JSON.stringify(view) : '' }
+    },
+  }
+  const provider = new CircleCiProvider(ports, { circleToken: async () => null })
+  await expect(provider.cancel(run)).resolves.toBeUndefined()
+  expect(commands.filter(args => args[1] === 'cancel')).toEqual(ended ? [] : [['run', 'cancel', 'pipeline', '--force']])
+})
 
 it('does not retry GitHub cancellation of a completed run after reopening', async () => {
   const f = await fixture()

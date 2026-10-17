@@ -176,7 +176,7 @@ it.each([false, true])('settles CircleCI cancellation when nothing is active, lo
   expect(f.circle.triggered).toHaveLength(1)
 })
 
-it('retries accepted CircleCI cancellation only after confirming the workflow is still active', async () => {
+it('keeps an accepted CircleCI cancellation while the workflow remains active across restarts', async () => {
   const f = await fixture({}, { provider: 'circleci' })
   const runId = randomUUID()
   await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
@@ -191,19 +191,17 @@ it('retries accepted CircleCI cancellation only after confirming the workflow is
   await f.reopen().handle(read)
   expect(f.circle.canceled).toEqual(['run-1'])
 
-  const original = f.ports.run.bind(f.ports)
-  vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
-    const result = await original(file, args, options)
-    if (file === 'circleci' && args[0] === 'run' && args[1] === 'cancel') {
-      f.circle.runView = { phase: 'ended', current_outcome: 'canceled', workflows: [] }
-    }
-    return result
-  })
   f.advance(1)
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null } })
+  expect(f.circle.canceled).toEqual(['run-1'])
+  f.advance(75_000)
+  expect(await f.reopen().handle(cancel)).toMatchObject({ run: { state: 'running', finishedAt: null } })
+  expect(f.circle.canceled).toEqual(['run-1'])
+  f.circle.runView = { phase: 'ended', current_outcome: 'canceled', workflows: [] }
+  f.advance(4_000)
   expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'canceled' } })
-  expect(f.circle.canceled).toEqual(['run-1', 'run-1'])
   expect(await f.reopen().handle(cancel)).toMatchObject({ run: { state: 'canceled' } })
-  expect(f.circle.canceled).toEqual(['run-1', 'run-1'])
+  expect(f.circle.canceled).toEqual(['run-1'])
   expect(f.circle.triggered).toHaveLength(1)
 })
 

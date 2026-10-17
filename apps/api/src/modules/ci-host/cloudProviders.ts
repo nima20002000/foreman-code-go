@@ -97,7 +97,7 @@ export interface CloudProvider {
   /** The measured test file durations and structured test results the run left as an artifact. */
   artifacts(run: CloudRun, directory: string): Promise<CloudArtifacts>
   /** False means no workflow accepted cancellation; a successful request otherwise returns normally. */
-  cancel(run: CloudRun): Promise<void | boolean>
+  cancel(run: CloudRun): Promise<void | false>
 }
 
 export function validateProviderParameters(provider: Pick<CloudProvider, 'label' | 'parameterLimit'>,
@@ -603,7 +603,7 @@ export class CircleCiProvider implements CloudProvider {
     return artifacts
   }
 
-  async cancel(run: CloudRun) {
+  async cancel(run: CloudRun): Promise<void | false> {
     this.outputPolls.delete(run.runId)
     let view: { phase?: string; workflows?: unknown[] } | null
     try {
@@ -614,10 +614,9 @@ export class CircleCiProvider implements CloudProvider {
       // Cancellation of the known pipeline does not require a successful status lookup.
       view = null
     }
-    if (view?.phase === 'ended' && !view.workflows?.length) return true
+    if (view?.phase === 'ended' && !view.workflows?.length) return
     try {
       await this.circleci(['run', 'cancel', run.providerRunId!, '--force'], 15_000)
-      return true
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_CANCEL_NOT_ACCEPTED') return false
       throw error
