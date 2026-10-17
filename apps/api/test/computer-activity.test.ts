@@ -50,6 +50,7 @@ async function fixture(options: {
   const pool = new pg.Pool()
   const jobs = [job('visible', 'allowed'), job('secret', 'private')]
   const agents = [agent('visible', 'allowed'), agent('secret', 'private')]
+  const ciTickets: { record: unknown; workspace_name: string }[] = []
   let observed: DevicePresence | null = { binding: { mainId, deviceId, workerInstallationId: workerId,
     keyRevision: 1, authorizationRevision: 1, bootId: '44444444-4444-4444-8444-444444444444',
     connectionGeneration: 1, connectionEpoch: '55555555-5555-4555-8555-555555555555' },
@@ -82,6 +83,7 @@ async function fixture(options: {
     if (text.includes('from device_registrations')) return { rows: [{ record: registration }] }
     if (text.includes('from job_executions')) return { rows: jobs }
     if (text.includes('from harness_executions')) return { rows: agents }
+    if (text.includes('from ci_runs') && !text.includes('group by')) return { rows: ciTickets }
     if (text.includes('from ci_runs')) {
       expect(values).toEqual([`${mainId}:cloud:%`])
       return { rows: [...cloudRunning].map(([provider, running]) => ({ provider, running })) }
@@ -152,7 +154,7 @@ async function fixture(options: {
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
     return client
   }
-  return { app, service, jobs, agents, cloudRunning, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
+  return { app, service, jobs, agents, ciTickets, cloudRunning, principals, audit, audited, connect, deviceAnswers, mainProbes, githubCalls, setPresence(value: DevicePresence | null) { observed = value },
     close: async () => { await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end() } }
 }
 afterEach(() => vi.restoreAllMocks())
@@ -485,4 +487,45 @@ it('supersedes a pending GitHub login through authenticated MCP when a later log
     runner.close()
     await f.close()
   }
+})
+
+
+it('includes active Host CI on its executor through HTTP and authenticated MCP with workspace filtering', async () => {
+  const f = await fixture()
+  const ticket = (id: string, workspaceId: string, state: 'starting' | 'running') => ({
+    record: { id, workspaceId, groupId: '77777777-7777-4777-8777-777777777777', suite: 'unit', part: null,
+      scope: 'full', files: [], partition: null, repository: 'fixture/site', commit: 'a'.repeat(40),
+      state, computer: { hostRef: target.hostRef, label: 'Build computer' }, step: 'unit',
+      exitCode: null, message: null, queuedAt: '2026-10-14T00:00:00Z', startedAt: '2026-10-14T00:00:01Z',
+      finishedAt: null, initiator: { principalId: 'agent', executionId: 'execution' } },
+    workspace_name: workspaceId,
+  })
+  try {
+    f.jobs.splice(0)
+    f.agents.splice(0)
+    f.ciTickets.push(ticket('88888888-8888-4888-8888-888888888888', 'allowed', 'running'),
+      ticket('99999999-9999-4999-8999-999999999999', 'private', 'starting'))
+    const client = await f.connect('owner')
+    const result = ComputerActivityListSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'computer_activity_list', arguments: {},
+    })))
+    expect(result.computers[1]?.jobs).toEqual([
+      { id: '88888888-8888-4888-8888-888888888888', name: 'CI unit', workspaceId: 'allowed',
+        workspaceName: 'allowed', phase: 'running', startedAt: '2026-10-14T00:00:01Z' },
+      { id: '99999999-9999-4999-8999-999999999999', name: 'CI unit', workspaceId: 'private',
+        workspaceName: 'private', phase: 'preparing', startedAt: '2026-10-14T00:00:01Z' },
+    ])
+    const http = await f.app.inject({ url: '/api/management/computers/activity', headers: { authorization: 'Bearer owner' } })
+    expect(http.statusCode).toBe(200)
+    expect(http.json()).toEqual(result)
+    const scopedClient = await f.connect('scoped')
+    const filtered = ComputerActivityListSchema.parse(decodeMcpToolResult(await scopedClient.callTool({
+      name: 'computer_activity_list', arguments: {},
+    })))
+    expect(filtered.computers[1]?.jobs.map(job => job.workspaceId)).toEqual(['allowed'])
+    const deniedClient = await f.connect('denied')
+    expect((await deniedClient.callTool({ name: 'computer_activity_list', arguments: {} })).isError).toBe(true)
+    f.ciTickets.splice(0)
+    expect((await f.service.list(owner)).computers[1]?.jobs).toEqual([])
+  } finally { await f.close() }
 })
