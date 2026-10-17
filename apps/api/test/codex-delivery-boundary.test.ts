@@ -27,6 +27,15 @@ describe('Codex creation and prompt write boundaries', () => {
   beforeEach(async () => { f = await deliveryFixture() })
   afterEach(async () => { await f.close() })
 
+  it('accepts a delayed session reply without treating creation as uncertain', async () => {
+    const manager = f.makeManager()
+    await f.flag('late-thread-start')
+    const session = await manager.createSession(chatInput(f.directory))
+    assert.equal(session.harness, 'codex')
+    assert.equal((await f.wire('thread/start')).length, 1)
+    assert.equal((await f.wire('turn/start')).length, 0)
+  })
+
   it('refuses workflow credentials in chat before creating a thread', async () => {
     const manager = f.makeManager()
     await assert.rejects(manager.createSession(input(f.directory)), (error: unknown) => {
