@@ -81,6 +81,12 @@ tests start only an owned Node process with the existing conformance fake SDK:
 stream/control/history/fork behavior, Go hook/tool callback round trips with a
 denied file remaining absent, and interruption of an active native turn.
 
+Three Node stdio regressions also cover a tool input named `signal` remaining
+unchanged, cleanup of other owned queries/callbacks when one SDK `close` throws,
+and the same in-process MCP rejection on dynamic server updates. Their tests-only
+pre-fix candidate is retained separately for the controller's real red run;
+no pre-fix or fixed test outcome has been claimed.
+
 Integration fixtures are copied to each test's temporary directory before script
 data is added. HOME, Claude, XDG and temporary state are isolated; the configuration
 round trip uses a random local HTTP test port. No live provider, real installation,

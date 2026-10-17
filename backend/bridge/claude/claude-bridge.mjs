@@ -75,13 +75,13 @@ async function initialize(params) {
 
 function remoteCallback(state, name) {
   return async (...args) => {
-    const last = args.at(-1)
-    const nativeSignal = last && typeof last === 'object' ? last.signal : undefined
+    const options = args[2]
+    const nativeSignal = options?.signal instanceof AbortSignal ? options.signal : undefined
     const signal = nativeSignal ? AbortSignal.any([state.controller.signal, nativeSignal]) : state.controller.signal
     signal.throwIfAborted()
     const id = `b${++nextCallback}`
-    const encoded = args.map(value => {
-      if (!value || typeof value !== 'object' || !('signal' in value)) return value
+    const encoded = args.map((value, index) => {
+      if (index !== 2 || !nativeSignal) return value
       return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'signal'))
     })
     return new Promise((resolve, reject) => {
@@ -141,9 +141,7 @@ async function openQuery(params) {
   if (shuttingDown) throw new Error('Claude bridge is closed')
   if (typeof params.queryId !== 'string' || !params.queryId || queries.has(params.queryId)) throw new Error('Claude query identity is invalid or already open')
   if (!params.options || typeof params.options !== 'object' || Array.isArray(params.options)) throw new Error('Claude query options must be an object')
-  for (const server of Object.values(params.options.mcpServers ?? {})) {
-    if (server?.type === 'sdk') throw new Error('In-process SDK MCP servers cannot cross the bridge; use the Go HTTP MCP endpoint')
-  }
+  validateMcpServers(params.options.mcpServers)
   const state = { id: params.queryId, prompt: promptQueue(), controller: new AbortController(), query: undefined, closed: false }
   queries.set(state.id, state)
   try {
@@ -160,6 +158,12 @@ async function openQuery(params) {
     queries.delete(state.id)
     closeQuery(state)
     throw error
+  }
+}
+
+function validateMcpServers(servers) {
+  for (const server of Object.values(servers ?? {})) {
+    if (server?.type === 'sdk') throw new Error('In-process SDK MCP servers cannot cross the bridge; use the Go HTTP MCP endpoint')
   }
 }
 
@@ -183,6 +187,7 @@ async function dispatch(method, params) {
   if (method === 'query.setPermissionMode' && !['default', 'plan'].includes(params.args?.[0])) {
     throw new Error('Claude session permission mode must be default or plan')
   }
+  if (method === 'query.setMcpServers') validateMcpServers(params.args?.[0])
   const control = state.query?.[method.slice(6)]
   if (typeof control !== 'function') throw new Error(`Claude SDK query does not support ${method.slice(6)}`)
   return control.apply(state.query, params.args ?? [])
@@ -208,8 +213,17 @@ async function handle(line) {
 function shutdown() {
   if (shuttingDown) return
   shuttingDown = true
-  for (const state of queries.values()) closeQuery(state)
-  for (const callback of callbacks.values()) callback.finish(new Error('Claude bridge closed'))
+  const failures = []
+  for (const state of queries.values()) {
+    try { closeQuery(state) } catch (error) { failures.push(error) }
+  }
+  for (const callback of callbacks.values()) {
+    try { callback.finish(new Error('Claude bridge closed')) } catch (error) { failures.push(error) }
+  }
+  if (failures.length) {
+    process.exitCode = 1
+    process.stderr.write(`Claude bridge shutdown failed: ${failures.map(error => error instanceof Error ? error.message : String(error)).join('; ')}\n`)
+  }
 }
 
 function fatal(error) {
