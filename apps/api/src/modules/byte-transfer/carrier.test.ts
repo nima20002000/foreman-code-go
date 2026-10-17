@@ -1,5 +1,6 @@
 import { ResumableByteTransferService, TransferExpiredError } from './service.js'
 import { EventEmitter } from 'node:events'
+import { setTimeout as wait } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
@@ -71,7 +72,7 @@ it('fences a replaced UUID session even when numeric generation is unchanged', a
   expect(actual.connectionGeneration).toBe(original.connectionGeneration)
   await expect(authority.authorize(intent, transferContextForBinding(original), 'status')).rejects.toThrow('differs')
 })
-it('moves immutable source-package bytes over the existing binary carrier and verifies server-derived receipt', async () => {
+it.each([0, 1_100])('moves immutable source-package bytes over the existing binary carrier and verifies server-derived receipt after %i ms of delayed work', async delayMs => {
   const bytes = Buffer.alloc(20_000, 7), original = binding(), intent = intentFor(original, bytes)
   let current = original, granted = true
   const root = await mkdtemp(join(homedir(), '.graphql-byte-carrier-test-')); roots.push(root)
@@ -98,6 +99,7 @@ it('moves immutable source-package bytes over the existing binary carrier and ve
     const saved = JSON.parse(await readFile(join(root, `${intent.transferId}.json`), 'utf8'))
     expect(saved.payload.intent.connectionEpoch).toBe(original.connectionEpoch)
     expect(saved.payload.receipt.intent.connectionEpoch).toBe(original.connectionEpoch)
+    await wait(delayMs)
   } finally { await channels.close(); await receiver.receiver.close() }
 })
 it('rejects an old captured sender context before dispatching through a replacement channel', async () => {

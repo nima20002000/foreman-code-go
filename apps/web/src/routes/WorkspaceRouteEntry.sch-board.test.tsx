@@ -164,7 +164,15 @@ afterEach(() => {
 })
 
 describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 }, () => {
-  it.each([null, 'run-a'])('opens the Board after claiming browser tab ownership for Run %s', async (runId) => {
+  it.each([
+    { runId: null, contextDelay: 0 },
+    { runId: 'run-a', contextDelay: 0 },
+    { runId: null, contextDelay: 1_100 },
+  ])('opens the Board after claiming browser tab ownership for Run $runId with $contextDelay ms context reads', async ({ runId, contextDelay }) => {
+    if (contextDelay) server.use(http.get('/api/management/workspaces/:workspaceId/agents', async () => {
+      await delay(contextDelay)
+      // Continue to the normal agent handler after the delayed response.
+    }))
     await mount(runsUrl(runId, scope))
     const name = runId ? 'Selected Run pinned topology' : 'Workflow authoring'
     expect(await screen.findByRole('region', { name })).toBeVisible()
