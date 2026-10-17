@@ -16,7 +16,7 @@ function fixture() {
         id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
         expires_at: new Date(principal.expiresAt), revoked_at: state.revoked ? new Date() : null, delegated_from: null,
       }] }
-      if (sql.includes('from ci_runs')) return { rows: [{ provider: 'github', running: 2 }] }
+      if (sql.includes('from ci_runs') && sql.includes('group by')) return { rows: [{ provider: 'github', running: 2 }] }
       return { rows: [] }
     } }
   } } as unknown as pg.Pool

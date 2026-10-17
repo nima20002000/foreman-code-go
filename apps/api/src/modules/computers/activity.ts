@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { ReadObservation } from '@foreman-code/contracts'
+import { CiRunRecordSchema, type ReadObservation } from '@foreman-code/contracts'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import { z } from 'zod'
 import {
@@ -15,6 +15,7 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { buildComputerKey } from '../settings/buildComputers.js'
 import { cloudCiId } from '../ci-host/cloudProviders.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 const jobRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerJobActivitySchema })
 const agentRow = z.object({ target: DeviceProvisioningTargetSchema, activity: ComputerAgentActivitySchema })
@@ -28,6 +29,7 @@ export interface CloudCiService {
 }
 
 export class ComputerActivityService {
+  private readonly cloudReadiness = new Map<CloudCiService, { ready: boolean; pending: boolean }>()
   constructor(
     private readonly pool: pg.Pool,
     private readonly mainId: string,
@@ -43,11 +45,7 @@ export class ComputerActivityService {
       await this.commands.recordDenied(principal.id, source, 'computer_activity_list', this.mainId)
       throw error
     }
-    const clouds: Parameters<typeof readCloud>[2][number][] = []
-    for (const cloud of this.clouds) {
-      const ready = await cloud.ready()
-      clouds.push({ provider: cloud.provider, ready, observation: cloud.readinessObservation })
-    }
+    this.refreshCloudReadiness()
     return withTransaction(this.pool, async (sql) => {
       const live = await readLiveManagementPrincipal(sql, principal.id)
       requireAuthorization(live, 'settings:read')
@@ -73,8 +71,10 @@ export class ComputerActivityService {
       }
       const byHost = new Map(computers.map(computer => [buildComputerKey(computer.target), computer]))
       const jobs = await readJobs(sql, this.mainId)
+      const ciJobs = await readCiJobs(sql, this.mainId, computers)
+      const jobActivities = [...jobs.rows, ...ciJobs]
       const agents = await readAgents(sql, this.mainId)
-      for (const row of jobs.rows.slice(0, COMPUTER_ACTIVITY_LIMIT)) {
+      for (const row of jobActivities.slice(0, COMPUTER_ACTIVITY_LIMIT)) {
         const { target, activity } = jobRow.parse(row)
         if (isAuthorized(principal, 'jobs:read', activity) && isAuthorized(live, 'jobs:read', activity)) {
           const computer = byHost.get(buildComputerKey(target))
@@ -88,8 +88,11 @@ export class ComputerActivityService {
           if (computer && sameDeviceProvisioningTarget(computer.target, target)) computer.agents.push(activity)
         }
       }
-      const cloud = await readCloud(sql, this.mainId, clouds)
-      const truncated = registrations.rows.length > 100 || jobs.rows.length > COMPUTER_ACTIVITY_LIMIT
+      const cloud = await readCloud(sql, this.mainId, this.clouds.map(service => ({
+        provider: service.provider, ready: this.cloudReadiness.get(service)?.ready ?? false,
+        observation: service.readinessObservation,
+      })))
+      const truncated = registrations.rows.length > 100 || jobActivities.length > COMPUTER_ACTIVITY_LIMIT
         || agents.rows.length > COMPUTER_ACTIVITY_LIMIT
       const latest = await readLiveManagementPrincipal(sql, principal.id)
       requireAuthorization(latest, 'settings:read')
@@ -102,6 +105,24 @@ export class ComputerActivityService {
         isAuthorized(caller, 'jobs:read') && isAuthorized(caller, 'runs:read'))
       return ComputerActivityListSchema.parse({ mainId: this.mainId, computers, cloud, truncated, activityComplete })
     })
+  }
+
+  private refreshCloudReadiness(): void {
+    for (const cloud of this.clouds) {
+      let state = this.cloudReadiness.get(cloud)
+      if (state?.pending) continue
+      if (!state) {
+        state = { ready: false, pending: false }
+        this.cloudReadiness.set(cloud, state)
+      }
+      const observation = state
+      observation.pending = true
+      void cloud.ready().then(ready => {
+        observation.ready = ready
+      }, error => {
+        logIgnoredError('jobs', 'read cloud activity readiness', error, { provider: cloud.provider.id })
+      }).finally(() => { observation.pending = false })
+    }
   }
 }
 
@@ -157,4 +178,26 @@ function readAgents(sql: pg.PoolClient, mainId: string) {
     join workflow_versions v on v.id=r.workflow_version_id join agents a on a.id=e.agent_id
     where p.record#>>'{hostRef,mainId}'=$2 and e.record->>'state' in ('starting','running','waiting')
     order by e.created_at,e.id limit $1`, [COMPUTER_ACTIVITY_LIMIT + 1, mainId])
+}
+
+async function readCiJobs(sql: pg.PoolClient, mainId: string, computers: ComputerActivity[]) {
+  const rows = await sql.query<{ record: unknown; workspace_name: string }>(`select c.record,
+    w.record->>'name' as workspace_name from ci_runs c join workspaces w on w.id=c.workspace_id
+    where c.state in ('starting','running') and c.record#>>'{computer,hostRef,mainId}'=$2
+      and c.record#>>'{computer,hostRef,kind}' in ('main','device')
+    order by c.created_at,c.id limit $1`, [COMPUTER_ACTIVITY_LIMIT + 1, mainId])
+  return rows.rows.flatMap(row => {
+    const run = CiRunRecordSchema.parse(row.record)
+    const hostRef = run.computer?.hostRef
+    if (!hostRef) return []
+    const computer = computers.find(value => value.target.hostRef.kind === hostRef.kind
+      && value.target.hostRef.mainId === hostRef.mainId
+      && (value.target.hostRef.kind === 'main'
+        || hostRef.kind === 'device' && value.target.hostRef.deviceId === hostRef.deviceId))
+    if (!computer) return []
+    return [{ target: computer.target, activity: {
+      id: run.id, name: `CI ${run.suite}`, workspaceId: run.workspaceId, workspaceName: row.workspace_name,
+      phase: run.state === 'starting' ? 'preparing' : 'running', startedAt: run.startedAt,
+    } }]
+  })
 }

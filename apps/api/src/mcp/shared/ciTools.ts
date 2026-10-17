@@ -88,7 +88,9 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'tickets are canceled once no requester remains. run_stop cancels every open ticket of that Run\u2019s Agents '
     + 'that no other requester still shares. Malformed or unknown ticketId returns CI_RUN_NOT_FOUND with your recent '
     + 'tickets in the message and details.recentTickets.',
-  ci_logs_read: `Read a CI ticket\u2019s full log from its computer: omit afterOffset for the last maxBytes (at most ${CI_LOG_MAX_BYTES}), `
+  ci_logs_read: 'Read a CI ticket\u2019s log from its computer, or its labeled saved tail on Main when the completed '
+    + `executor is unavailable. Omit afterOffset for the last maxBytes (at most ${CI_LOG_MAX_BYTES}), `
+    + 'source=saved-tail uses byte cursors within that saved snapshot; restart at 0 when source changes, '
     + 'or page forward with nextOffset. group=true pages every part of the ticket\u2019s group within the same budget. '
     + 'Queued tickets return CI_NOT_STARTED. Malformed or unknown ticketId returns CI_RUN_NOT_FOUND with up to five '
     + 'recent groups you requested or joined, '

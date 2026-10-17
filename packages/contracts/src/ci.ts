@@ -174,10 +174,15 @@ export const CiLogsInputSchema = CiTicketInputSchema.extend({
   group: z.boolean().optional(),
 }).strict()
 export const OperatorCiLogsInputSchema = CiLogsInputSchema.extend({ workspaceId: IdSchema }).strict()
+const CiLogSourceSchema = z.literal('saved-tail').optional().describe(
+  'Previously collected output retained on Main. Byte cursors and logBytes refer to this labeled snapshot, '
+  + 'not the executor log. Restart at offset 0 when the source changes.')
 export const CiLogsOutputSchema = z.object({ text: z.string(), nextOffset: z.number().int().nonnegative(),
+  source: CiLogSourceSchema,
   logBytes: z.number().int().nonnegative(),
   maxBytes: z.number().int().min(1).max(CI_LOG_MAX_BYTES),
   parts: z.array(z.object({ run: CiRunRecordSchema, text: z.string(), nextOffset: z.number().int().nonnegative(),
+    source: CiLogSourceSchema,
     logBytes: z.number().int().nonnegative(),
     maxBytes: z.number().int().nonnegative().max(CI_LOG_MAX_BYTES) }).strict()).optional(),
 }).strict()
