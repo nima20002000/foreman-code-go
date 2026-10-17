@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, readlink, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readlink, readdir, rm, symlink } from 'node:fs/promises';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
@@ -277,20 +277,27 @@ test('supervised updates prune after readiness and leave staged releases intact 
 });
 
 
-test('pruning keeps the selected SDK release until startup moves its selection to the running release', async t => {
-  const f = await fixture(t);
-  const [first] = await installSequence(f, ['1.0.0', '1.1.0']);
-  const path = join(f.stateDirectory, 'workflow-runtime.json');
-  const selection = release => ({ schemaVersion: 1,
-    appMcpLauncher: join(release.directory, 'artifacts/graphql-mcp.mjs'),
-    claude: { binary: '/selected/claude',
-      sdkEntrypoint: join(release.directory, 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'),
-      installedLockPath: join(release.directory, 'artifacts/claude-sdk-lock.yaml') } });
-  await writeFile(path, JSON.stringify(selection(first)), { mode: 0o600 });
-  const [third] = await installSequence(f, ['1.2.0']);
-  assert.equal(await readFile(join(first.directory, entryFile), 'utf8'), `1.0.0: ${entryFile}\n`);
-  await writeFile(path, JSON.stringify(selection(third)), { mode: 0o600 });
-  await installSequence(f, ['1.3.0']);
-  await assert.rejects(readFile(join(first.directory, entryFile)), { code: 'ENOENT' });
-  assert.equal((await readdir(join(f.root, 'versions'))).length, 2);
-});
+for (const rootKind of ['canonical', 'symlink']) {
+  test(`pruning keeps the selected SDK release until startup moves its selection (${rootKind})`, async t => {
+    const f = await fixture(t);
+    if (rootKind === 'symlink') {
+      const alias = join(f.directory, 'installation-alias');
+      await symlink('.', alias);
+      f.root = join(alias, 'app');
+    }
+    const [first] = await installSequence(f, ['1.0.0', '1.1.0']);
+    const path = join(f.stateDirectory, 'workflow-runtime.json');
+    const selection = release => ({ schemaVersion: 1,
+      appMcpLauncher: join(release.directory, 'artifacts/graphql-mcp.mjs'),
+      claude: { binary: '/selected/claude',
+        sdkEntrypoint: join(release.directory, 'node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'),
+        installedLockPath: join(release.directory, 'artifacts/claude-sdk-lock.yaml') } });
+    await writeFile(path, JSON.stringify(selection(first)), { mode: 0o600 });
+    const [third] = await installSequence(f, ['1.2.0']);
+    assert.equal(await readFile(join(first.directory, entryFile), 'utf8'), `1.0.0: ${entryFile}\n`);
+    await writeFile(path, JSON.stringify(selection(third)), { mode: 0o600 });
+    await installSequence(f, ['1.3.0']);
+    await assert.rejects(readFile(join(first.directory, entryFile)), { code: 'ENOENT' });
+    assert.equal((await readdir(join(f.root, 'versions'))).length, 2);
+  });
+}
