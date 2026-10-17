@@ -8,6 +8,7 @@ import { expect, it } from 'vitest'
 import { SOURCE_GIT_CACHE_LIMITS } from '@foreman-code/contracts/source-materialization'
 import { runGitWithCacheStorage } from './gitCacheStorage.js'
 import { runGitProcess } from './gitProcess.js'
+import { ensureClone, ensureCommit, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { deferred } from '../../../test/helpers/deferred.js'
@@ -113,5 +114,153 @@ it('charges detached Git writers after their API exits, then reclaims abandoned 
     } else if (waiter) await stop(waiter)
     server.close()
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+async function recoveryFixture() {
+  const root = await mkdtemp(join(persistentFixtureRoot, 'git-cache-recovery-'))
+  const home = join(root, 'home')
+  const origin = join(root, 'origin')
+  await mkdir(home, { mode: 0o700 })
+  await mkdir(origin, { mode: 0o700 })
+  const environment = { ...gitFixtureEnvironment(), HOME: home }
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
+    { cwd, env: environment, encoding: 'utf8' }).trim()
+  git(origin, 'init', '--template=', '-q', '-b', 'main')
+  const commit = async (content: string) => {
+    await writeFile(join(origin, 'source.txt'), content)
+    git(origin, 'add', '.')
+    git(origin, 'commit', '-qm', content)
+    return git(origin, 'rev-parse', 'HEAD')
+  }
+  const first = await commit('first')
+  const system = systemGitWorktreePorts(environment)
+  const ports: GitWorktreePorts = { cloneDirectory: system.cloneDirectory,
+    git: (args, options) => system.git(args.map(arg => arg === 'https://github.com/fixture/project.git'
+      ? `file://${origin}` : arg), options) }
+  const cache = join(home, '.local', 'share', 'foreman-code', 'git')
+  return { root, home, origin, environment, git, commit, first, ports, cache }
+}
+
+const fetchLocks = ['shallow.lock', 'FETCH_HEAD.lock', 'packed-refs.lock', 'refs/remotes/origin/main.lock']
+
+it('removes failed fetch locks after its writers close and preserves published repository data', async () => {
+  const f = await recoveryFixture()
+  try {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(f.ports, 'fixture/project', f.first, signal)
+    const successor = await f.commit('successor')
+    const common = join(clone, '.git')
+    const before = await readFile(join(common, 'shallow'))
+    const failed = await runGitWithCacheStorage(f.cache, ['fetch', 'origin', successor], { cwd: clone, signal },
+      async (args, options) => {
+        if (!args.includes('fetch')) return runGitProcess(args, options, f.environment)
+        // A killed Git writer leaves these files without publishing their contents.
+        for (const name of fetchLocks) await writeFile(join(common, name), before)
+        await writeFile(join(common, 'objects', 'pack', 'tmp_pack_interrupted'), 'incomplete pack')
+        return { code: 1, stdout: '', stderr: 'Git writer was killed' }
+      })
+    expect(failed.code).toBe(1)
+    for (const name of [...fetchLocks, 'objects/pack/tmp_pack_interrupted']) {
+      await expect(readFile(join(common, name))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    expect(await readFile(join(common, 'shallow'))).toEqual(before)
+    expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
+    await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+    expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+  } finally {
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
+it('recovers abandoned fetch locks before fetching after a restart', async () => {
+  const f = await recoveryFixture()
+  try {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(f.ports, 'fixture/project', f.first, signal)
+    const successor = await f.commit('after restart')
+    for (const name of fetchLocks) await writeFile(join(clone, '.git', name), 'abandoned')
+    await writeFile(join(clone, '.git', 'objects', 'pack', 'tmp_pack_abandoned'), 'incomplete pack')
+    const system = systemGitWorktreePorts(f.environment)
+    const restarted: GitWorktreePorts = { cloneDirectory: system.cloneDirectory, git: system.git }
+    await expect(ensureCommit(restarted, 'fixture/project', successor, signal)).resolves.toBe(clone)
+    expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+    for (const name of [...fetchLocks, 'objects/pack/tmp_pack_abandoned']) {
+      await expect(readFile(join(clone, '.git', name))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+  } finally {
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
+it('recovers clone staging when the API exits as the clone command returns', async () => {
+  const f = await recoveryFixture()
+  let api: ChildProcess | undefined
+  try {
+    const launcher = join(f.root, 'clone-api.mjs')
+    await writeFile(launcher, `
+      import { ensureClone, systemGitWorktreePorts } from ${JSON.stringify(new URL('./gitWorktree.ts', import.meta.url).href)};
+      const [home, origin] = process.argv.slice(2);
+      const system = systemGitWorktreePorts({ ...process.env, HOME: home });
+      const ports = { cloneDirectory: system.cloneDirectory, git: async (args, options) => {
+        const result = await system.git(args.map(arg => arg === 'https://github.com/fixture/project.git'
+          ? 'file://' + origin : arg), options);
+        if (args[0] === 'clone' && result.code === 0) {
+          process.send({ staging: args.at(-1) });
+          await new Promise(resolve => process.once('message', resolve));
+        }
+        return result;
+      } };
+      await ensureClone(ports, 'fixture/project', new AbortController().signal);
+    `)
+    api = spawn(process.execPath, ['--import', 'tsx', launcher, f.home, f.origin],
+      { env: f.environment, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+    let errors = ''
+    api.stderr!.on('data', chunk => { errors += String(chunk) })
+    const earlyExit = once(api, 'exit').then(() => { throw new Error(`Clone API exited early: ${errors}`) })
+    const [message] = await Promise.race([once(api, 'message'), earlyExit]) as [{ staging: string }]
+    await stop(api)
+    const clone = await ensureClone(f.ports, 'fixture/project', AbortSignal.timeout(30_000))
+    expect(f.git(clone, 'rev-parse', 'HEAD')).toBe(f.first)
+    await expect(readFile(join(message.staging, '.git', 'HEAD'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await readdir(f.cache)).filter(name => name.endsWith('.reservation'))).toEqual([])
+  } finally {
+    if (api) await stop(api)
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
+it('preserves live completed staging across competing publication and removes its recovery record afterward', async () => {
+  const f = await recoveryFixture()
+  const entered = deferred()
+  const resume = deferred()
+  let preparing: Promise<string> | undefined
+  let staging: string | undefined
+  try {
+    const signal = AbortSignal.timeout(30_000)
+    const held: GitWorktreePorts = { cloneDirectory: f.ports.cloneDirectory, git: async (args, options) => {
+      const result = await f.ports.git(args, options)
+      if (args[0] === 'clone' && result.code === 0) {
+        staging = args.at(-1)!
+        entered.resolve()
+        await resume.promise
+      }
+      return result
+    } }
+    preparing = ensureClone(held, 'fixture/project', signal)
+    await entered.promise
+    const clone = await ensureClone(f.ports, 'fixture/project', signal)
+    expect(await readFile(join(staging!, '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n')
+    expect(JSON.parse(await readFile(join(f.cache, 'storage.json'), 'utf8'))).toMatchObject({ reservedBytes: 0 })
+    resume.resolve()
+    await expect(preparing).resolves.toBe(clone)
+    const successor = await f.commit('after competing publication')
+    await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+    expect((await readdir(f.cache)).filter(name => /\.(?:reservation|staging)$/u.test(name))).toEqual([])
+    expect(f.git(clone, 'cat-file', '-t', successor)).toBe('commit')
+  } finally {
+    resume.resolve()
+    await preparing
+    await rm(f.root, { recursive: true, force: true })
   }
 })
