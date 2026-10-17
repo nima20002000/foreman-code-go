@@ -1,0 +1,19 @@
+{
+  "source": "b5a8c073e1265cdb2233d7c5a5f48a2067608c34",
+  "sourceTree": "73ee0d3e6bf18796e4938ca712f58d24be580a18",
+  "package": "./internal/interactions",
+  "goFiles": [
+    "internal/interactions/cursor.go",
+    "internal/interactions/cursor_test.go"
+  ],
+  "unitTests": [
+    "TestInteractionListCursorPreservesWireFormat",
+    "TestInteractionListCursorAcceptsFirstPage",
+    "TestInteractionListCursorPreservesPrintableIdentifiers",
+    "TestInteractionListCursorRejectsMalformedEncoding",
+    "TestInteractionListCursorRejectsInvalidIdentity"
+  ],
+  "integrationTests": [],
+  "expectedUnitNamedCount": 30,
+  "mode": "package"
+}
