@@ -630,6 +630,7 @@ export class OperatorChatService {
       runtime.session = await attach({ harness: row.harness,
         providerVersion: row.provider_version ?? 'unknown', nativeSessionId: row.native_session_id }, {
         kind: 'operator', correlationId: nativeCorrelation(id, row.active_request_id), configuration,
+        observationOnly: true,
         workingDirectory: this.workingDirectory,
         // Required native environment references still need a value on attach.
         // This is deliberately NOT an issued credential: the App rejects it.
@@ -1295,6 +1296,8 @@ export class OperatorChatService {
                 creationInput: { kind: 'operator', configuration, workingDirectory: this.workingDirectory,
                   correlationId: nativeCorrelation(row.id, requestId) } }
               this.runtimes.set(row.id, resident)
+              const preferences = await this.sessionControls().preferences(row.id)
+              if (preferences) await resident.manager.configureSessionPreferences?.(preferences)
             }
           }
           if (!resident || resident.disposal || row.active_phase !== 'creating') {

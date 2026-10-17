@@ -19,22 +19,30 @@ export function pageJsonContinuation(value: unknown, request?: DeviceJsonContinu
 
 export function pageJsonContinuationBytes(bytes: Uint8Array,
   request?: DeviceJsonContinuationRequest, options: ContinuationOptions = {}): DeviceJsonContinuation {
-  const contentDigest = digest(bytes)
-  const offset = request?.offset ?? 0
+  return createJsonContinuationPager(bytes, options)(request)
+}
+
+/** Retains one response snapshot and hashes it once for all continuation pages. */
+export function createJsonContinuationPager(bytes: Uint8Array, options: ContinuationOptions = {}) {
   const maxBytes = options.maxBytes ?? DEVICE_JSON_CONTINUATION_LIMIT
   if (bytes.byteLength > maxBytes) {
     throw new DomainError('payload-too-large', 'JSON continuation exceeds its size limit.', 413,
       { byteSize: bytes.byteLength, maxBytes })
   }
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.byteLength) {
-    throw new DomainError('conflict', 'JSON continuation offset is outside the reply.', 409,
-      { offset, byteSize: bytes.byteLength })
+  const contentDigest = digest(bytes)
+  const schema = continuationSchema(options)
+  return (request?: DeviceJsonContinuationRequest): DeviceJsonContinuation => {
+    const offset = request?.offset ?? 0
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.byteLength) {
+      throw new DomainError('conflict', 'JSON continuation offset is outside the reply.', 409,
+        { offset, byteSize: bytes.byteLength })
+    }
+    if (request && request.digest !== contentDigest) {
+      throw new DomainError('conflict', 'JSON continuation changed.', 409, { reason: 'digest_changed' })
+    }
+    return schema.parse({ digest: contentDigest, byteSize: bytes.byteLength,
+      offset, data: Buffer.from(bytes.subarray(offset, offset + DEVICE_JSON_CONTINUATION_BYTES)).toString('base64') })
   }
-  if (request && request.digest !== contentDigest) {
-    throw new DomainError('conflict', 'JSON continuation changed.', 409, { reason: 'digest_changed' })
-  }
-  return continuationSchema(options).parse({ digest: contentDigest, byteSize: bytes.byteLength,
-    offset, data: Buffer.from(bytes.subarray(offset, offset + DEVICE_JSON_CONTINUATION_BYTES)).toString('base64') })
 }
 
 export async function readJsonContinuation(first: DeviceJsonContinuation,

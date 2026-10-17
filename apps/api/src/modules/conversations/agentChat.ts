@@ -1470,9 +1470,22 @@ export class AgentChatService {
 
   private async recoverCreation(row: AgentConversationRow): Promise<boolean> {
     const requestId = row.active_request_id
-    const runtime = this.runtimes.get(row.id)
-    const input = runtime?.creationInput
-    if (!requestId || row.record.sessionCreation?.requestId !== requestId || !runtime || !input
+    if (!requestId || row.record.sessionCreation?.requestId !== requestId) return false
+    let runtime = this.runtimes.get(row.id)
+    if (!runtime) {
+      const configuration = await this.conversationConfiguration(row)
+      if (configuration?.harnessProfileSelection?.target.hostRef.kind !== 'device') return false
+      const accountSource = row.record.origin.kind === 'run_execution'
+        ? { executionId: row.record.origin.executionId } : undefined
+      runtime = { manager: await this.managers(row.id, configuration, row.record.workingDirectory, accountSource),
+        configuration, creationInput: this.startInput(row, configuration, agentChatCorrelation(row.id, requestId),
+          row.record.origin.kind === 'run_execution') }
+      this.runtimes.set(row.id, runtime)
+      const preferences = await this.sessionControls.preferences(row.id)
+      if (preferences) await runtime.manager.configureSessionPreferences?.(preferences)
+    }
+    const input = runtime.creationInput
+    if (!input
       || runtime.retiring || runtime.disposal) return false
     if (input.kind === 'operator' || input.correlationId !== agentChatCorrelation(row.id, requestId)
       || sessionStartConfiguration(input).id !== row.agent_configuration_version_id) return false

@@ -225,7 +225,9 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   private async open(start: NativeSessionStart, mode: 'create' | 'attach' | 'fork',
     source: NativeSessionReference | undefined, signal?: AbortSignal) {
-    const frame = this.frame({ method: 'conversation.open', ...this.startFields(start), mode,
+    const fields = this.startFields(start)
+    if (mode === 'attach' && start.kind === 'operator' && start.observationOnly) delete fields.applicationAccess
+    const frame = this.frame({ method: 'conversation.open', ...fields, mode,
       ...(mode === 'attach' && this.options.previousBinding ? { previousBinding: this.options.previousBinding } : {}),
       ...(source ? { source } : {}) })
     const lease = await this.capture(frame, { callbacks: { sessionObserved: async session => {
@@ -419,6 +421,8 @@ export class WorkerConversationManager implements NativeHarnessSessionManager {
   }
   async retireTurn(session: NativeSessionReference, correlationId: string) {
     this.assertSession(session)
+    if (this.receipt?.creation?.operationId === correlationId
+      && !this.receipt.turns.some(turn => turn.correlationId === correlationId)) return
     this.adopt(await this.request({ method: 'conversation.retire-turn', session, correlationId }))
   }
   private async readHistory(session: NativeSessionReference, signal?: AbortSignal): Promise<NativeHistory> {
