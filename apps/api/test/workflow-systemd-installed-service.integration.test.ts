@@ -55,8 +55,10 @@ describe('installed API fixture packaging', () => {
     { age: 'recent', modified: new Date().toISOString(), publication: undefined, succeeds: true },
     { age: 'unknown', modified: undefined, publication: undefined, succeeds: true },
     { age: 'too young', modified: new Date().toISOString(), publication: new Date().toISOString(), succeeds: false },
+    { age: 'old with an empty store', modified: '2000-01-01T00:00:00.000Z', publication: undefined,
+      succeeds: true, emptyStore: true },
   ])('deploys locked packages with $age abbreviated metadata without bypassing release age', async ({
-    age, modified, publication, succeeds,
+    age, modified, publication, succeeds, emptyStore,
   }) => {
     const directory = await privateFixtureDirectory('locked-packaging-')
     const repository = fileURLToPath(new URL('../../../', import.meta.url))
@@ -98,8 +100,10 @@ describe('installed API fixture packaging', () => {
       packageVersions.set(name, versions)
     }
     let metadataRequests = 0
+    let tarballRequests = 0
     const registry = createServer((request, response) => {
       const name = decodeURIComponent(new URL(request.url!, 'http://localhost').pathname.slice(1))
+      if (name.endsWith('.tgz')) tarballRequests++
       const versions = packageVersions.get(name)
       if (!versions) {
         response.writeHead(404).end()
@@ -134,7 +138,8 @@ describe('installed API fixture packaging', () => {
         if (args.includes('install')) return
         // This disposable copy needs no inode isolation, and hardlinking the store keeps each case fast.
         await execute(command, [...args, '--package-import-method', 'hardlink', '--prefer-offline',
-          '--store-dir', storeDir, '--cache-dir', cache, '--registry', registryUrl], {
+          '--store-dir', emptyStore ? join(directory, 'store') : storeDir,
+          '--cache-dir', cache, '--registry', registryUrl], {
           cwd: directory, env: { ...process.env, CI: 'true' }, timeout: 300_000,
         })
       }, destination)
@@ -145,6 +150,7 @@ describe('installed API fixture packaging', () => {
         return
       }
       await deploy
+      if (emptyStore) expect(tarballRequests).toBeGreaterThan(0)
       if (age !== 'old') {
         expect(metadataRequests).toBeGreaterThan(0)
       }
