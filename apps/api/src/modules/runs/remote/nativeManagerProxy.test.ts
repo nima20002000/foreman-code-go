@@ -9,6 +9,7 @@ import { remoteEntryClosureDigest, remoteNonEntryClosureDigest } from '@foreman-
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import type { NativeHistory } from '../../harnesses/port.js'
+import { HistoryObservationPages } from './historyObservationPages.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { RemoteNativeSessionManager, type RemoteNativeTransport, type RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
@@ -58,16 +59,18 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   const controlFor = vi.fn<RemoteNativeManagerOptions['controlFor']>(async () => {
     throw new Error('No native control requested')
   })
+  const historyPages = new HistoryObservationPages()
   const request = vi.fn<RemoteNativeTransport['request']>(async (method, raw) => {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     if (method === 'prepare') return { session, status }
     if (method === 'start-turn') return status
     if (frame.method !== 'history') throw new Error('Unexpected request')
     cursors.push(frame.afterSequence)
+    if (frame.metadata) return historyPages.read(frame)
     const reply = { ...pageNativeHistory(read(), frame.afterSequence, frame.metadata), status }
     changeReply?.(reply)
     expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(DEVICE_APPLICATION_JSON_BYTES)
-    return reply
+    return historyPages.remember(reply, intent, placement)
   })
   const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
     transport: { request }, observeReceipt: async value => { observedReceipts.push(value) },

@@ -29,8 +29,13 @@ it.each(['receipt bytes', 'physical hashing'] as const)(
       let fields: unknown
       try {
         fields = await readJsonContinuation(page.metadata, async metadata => {
-          const reply = await f.call('history', { metadata,
+          const reply = await f.call('history', { metadata, receiptSequence: originalReceipt.sequence,
             afterSequence: page.nextAfterSequence, correlationId: 'execution:execution' })
+          expect(reply.payload).not.toHaveProperty('status')
+          expect(reply.payload).toMatchObject({ receiptIdentity: {
+            intent: originalReceipt.intent, connection: originalReceipt.connection,
+            workerIncarnationId: originalReceipt.workerIncarnationId, sequence: originalReceipt.sequence,
+          } })
           transferred += Buffer.byteLength(JSON.stringify(reply.payload))
           pages++
           // The history metadata bytes belong to the first receipt even if the journal advances.

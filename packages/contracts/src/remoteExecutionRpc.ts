@@ -1,5 +1,5 @@
 import { CompactionStateSchema, SessionModeSchema, SessionPreferencesSchema } from './sessionControls.js'
-import { RemoteNativeIdentitySchema } from './remoteExecution.js'
+import { RemoteOperationReceiptSchema, RemoteNativeIdentitySchema } from './remoteExecution.js'
 import { z } from 'zod'
 import { DeviceExecutionAdmissionFields } from './deviceResources.js'
 import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, ApprovalResponseOptionSchema,
@@ -7,7 +7,7 @@ import { AgentConfigurationVersionSchema, HarnessExecutionRequestSchema, Approva
 import { NativeExecutionPlacementSchema, AcceptedNodePlacementSchema, DispatchIntentSchema, CurrentAcceptedNodePlacementSchema, CurrentDispatchIntentSchema } from './nodePlacement.js'
 import { RemoteOwnerControlSchema, RemoteOwnerReconciliationSchema, RemoteApplicationAccessSchema,
   RemoteReviewerRequestSchema } from './remoteExecution.js'
-import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
+import { DeviceHistoryRequestFields, DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema, DeviceHistoryPageSchema } from './deviceApplication.js'
 export * from './workerConversations.js'
 const binding = { intent: DispatchIntentSchema, placement: AcceptedNodePlacementSchema, executionPlacement: NativeExecutionPlacementSchema.optional() }
 export const RemoteReceiptPageSchema = z.object({
@@ -15,6 +15,16 @@ export const RemoteReceiptPageSchema = z.object({
   metadata: DeviceJsonContinuationSchema,
 }).strict()
 export type RemoteReceiptPage = z.infer<typeof RemoteReceiptPageSchema>
+export const RemoteHistoryReceiptIdentitySchema = z.object({
+  intent: RemoteOperationReceiptSchema.shape.intent,
+  connection: RemoteOperationReceiptSchema.shape.connection,
+  workerIncarnationId: RemoteOperationReceiptSchema.shape.workerIncarnationId,
+  sequence: RemoteOperationReceiptSchema.shape.sequence,
+})
+export const RemoteHistoryContinuationSchema = z.object({
+  receiptIdentity: RemoteHistoryReceiptIdentitySchema,
+  page: DeviceHistoryPageSchema,
+}).strict()
 export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('receipt-continuation'), ...binding, transferId: z.uuid(),
     receiptSequence: z.number().int().positive(), metadata: DeviceJsonContinuationRequestSchema }).strict(),
@@ -34,7 +44,7 @@ export const RemoteExecutionRpcRequestSchema = z.discriminatedUnion('method', [
     correlationId: z.string().min(1), review: RemoteReviewerRequestSchema.optional(),
     sessionMode: SessionModeSchema.optional() }).strict(),
   z.object({ method: z.literal('history'), ...binding, ...DeviceHistoryRequestFields,
-    correlationId: z.string().min(1).optional() }).strict(),
+    correlationId: z.string().min(1).optional(), receiptSequence: z.number().int().positive().optional() }).strict(),
   z.object({ method: z.enum(['pending', 'status']), ...binding }).strict(),
   z.object({ method: z.enum(['capabilities', 'inspect-mcp']), ...binding, configuration: z.lazy(() => AgentConfigurationVersionSchema) }).strict(),
   z.object({ method: z.literal('reconcile-response'), ...binding, response: z.object({ nativeRequestId: z.string().min(1), nativeRequestType: z.string().min(1), option: z.lazy(() => ApprovalResponseOptionSchema) }).strict() }).strict(),
