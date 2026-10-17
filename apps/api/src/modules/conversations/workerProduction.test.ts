@@ -30,7 +30,7 @@ it('admits a thinking-only next turn through the production Worker channel witho
     nativeOwner: f.nativeOwner, revision: 1, closed: false, closing: false, turns: [first],
     compactions: [], desiredPreferences: null, appliedPreferences: null }
   const owner = { id: 'human', name: 'Human', audience: 'operator', delegated_from: null,
-    grants: [{ actions: ['operator_chat:read', 'operator_chat:write'], scope: {} }],
+    grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel'], scope: {} }],
     expires_at: new Date(Date.now() + 600_000), revoked_at: null }
   const conversation = { id: binding.owner.conversationId, kind: 'operator', owner_principal_id: owner.id,
     operator_configuration_version_id: accepted.id, active_request_id: 'next-turn',
@@ -42,8 +42,10 @@ it('admits a thinking-only next turn through the production Worker channel witho
     return { rows: [conversation], rowCount: 1 }
   }) } as unknown as pg.Pool
   const frames: WorkerConversationRpcRequest[] = []
-  const channel = { binding: f.connection, request: async (raw: unknown) => {
+  let connection = f.connection
+  const request = async (raw: unknown) => {
     const request = WorkerConversationRpcRequestSchema.parse(raw)
+    receipt.connection = connection
     frames.push(request)
     if (request.method === 'conversation.start-turn') {
       receipt.turns.push({ correlationId: request.correlationId,
@@ -54,8 +56,10 @@ it('admits a thinking-only next turn through the production Worker channel witho
     }
     if (request.method === 'conversation.history') return { payload: { receipt, context: null,
       history: { events: [], pendingInteractions: [], nextSequence: 0 } } }
+    if (request.method === 'conversation.cancel') return { payload: { canceled: true } }
     return { payload: { receipt } }
-  } }
+  }
+  let channel = { binding: connection, request }
   const filesystem = { device: '1', inode: '1', mountId: '1' }
   const roots = { binding: f.connection, request: async () => ({ payload: {
     schemaVersion: 1, hostRef: binding.profile.target.hostRef,
@@ -90,6 +94,14 @@ it('admits a thinking-only next turn through the production Worker channel witho
     expect(receipt.turns[0]).toEqual(firstSnapshot)
     expect(conversation.worker_conversation_binding).toEqual(binding)
     expect(commandInputHash(f.configuration)).toBe(binding.owner.configurationHash)
+    connection = { ...connection, connectionGeneration: 2, connectionEpoch: randomUUID() }
+    channel = { binding: connection, request }
+    await expect(manager.history(f.session)).resolves.toMatchObject({ events: [] })
+    await expect(manager.cancel(f.session)).resolves.toBe(true)
+    expect(frames.filter(frame => frame.method === 'conversation.open')).toHaveLength(2)
+    channel = { binding: { ...connection, workerInstallationId: randomUUID() }, request }
+    await expect(manager.history(f.session)).rejects.toMatchObject({ code: 'WORKER_CONVERSATION_UNAVAILABLE' })
+    channel = { binding: connection, request }
     owner.grants = [{ actions: ['operator_chat:read'], scope: {} }]
     await expect(manager.attachSession(f.session, { kind: 'operator', configuration: accepted,
       correlationId: 'denied', workingDirectory: '/main/runtime' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })

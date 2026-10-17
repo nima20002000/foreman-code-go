@@ -5,7 +5,10 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import {
   WorkerConversationRpcRequestSchema, workerConversationProfileSelection, type WorkerConversationBinding, type WorkerConversationConfiguration,
   type WorkerConversationReceipt, type WorkerConversationRpcRequest,
+  WorkerConversationResponsePageSchema, WORKER_CONVERSATION_RESPONSE_BYTES,
 } from '@foreman-code/contracts/remote-execution-rpc'
+import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
+import { pageJsonContinuationBytes } from '../runs/remote/jsonContinuation.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { RemoteNativeIdentity } from '@foreman-code/contracts/remote-execution'
@@ -28,6 +31,7 @@ export interface WorkerConversationAllocation {
   nativeOwner(session: NativeSessionReference): Promise<RemoteNativeIdentity>
   close(): Promise<void>
   deliverClaudeCredential?(token: string, signal: AbortSignal): Promise<void>
+  refreshApplicationAccess?(token: string, signal: AbortSignal): Promise<void>
   recoverClaudeAuthority?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
     submission: NonNullable<WorkerConversationReceipt['turns'][number]['nativeSubmission']>, signal: AbortSignal): Promise<void>
   recoverFiles?(request: Extract<WorkerConversationRpcRequest, { method: 'conversation.history' | 'conversation.reconcile' }>,
@@ -85,6 +89,10 @@ function validateConfiguration(binding: WorkerConversationBinding, configuration
 /** Conversation operations share execution-v1 and the existing native adapters. */
 export class WorkerConversationHost {
   private readonly residents = new Map<string, Resident>()
+  private readonly responseTransfers = new Map<string, {
+    binding: WorkerConversationBinding; connection: Readonly<DeviceSessionBinding>; bytes: Buffer; expiresAt: number
+  }>()
+  private responseBytes = 0
   private readonly preparations = new Map<string, Resident>()
   private readonly inspections = new Set<WorkerConversationAllocation>()
   private readonly allocating = new Map<string, Promise<Resident>>()
@@ -274,6 +282,11 @@ export class WorkerConversationHost {
     }
     if (request.mode === 'attach') {
       if (!record.session || !isDeepStrictEqual(record.session, request.source)) unavailable('A different session cannot replace this chat.')
+      if (request.binding.harness === 'codex' && request.applicationAccess) {
+        if (!resident.allocation.refreshApplicationAccess) unavailable('The retained Codex MCP route cannot refresh its credential.')
+        await resident.allocation.refreshApplicationAccess(request.applicationAccess.token, signal)
+        await this.authorize(request, connection, signal)
+      }
       await this.ports.journal.rebind(request.binding, connection,
         sessionOwner(await resident.allocation.nativeOwner(record.session)))
       return { receipt: await this.ports.journal.read(request.binding) }
@@ -486,6 +499,46 @@ export class WorkerConversationHost {
   async handle(raw: unknown, connection: Readonly<DeviceSessionBinding>, signal = this.lifetime.signal): Promise<unknown> {
     const request = WorkerConversationRpcRequestSchema.parse(raw)
     await this.authorize(request, connection, signal)
+    for (const [id, transfer] of this.responseTransfers) {
+      if (transfer.expiresAt <= Date.now()) this.removeResponse(id)
+    }
+    if (request.method === 'conversation.response-continuation') {
+      const retained = this.responseTransfers.get(request.transferId)
+      if (!retained) unavailable('The conversation response snapshot expired.')
+      if (!isDeepStrictEqual(retained.binding, request.binding) || !isDeepStrictEqual(retained.connection, connection)) {
+        unavailable('The conversation response owner changed.')
+      }
+      const metadata = pageJsonContinuationBytes(retained.bytes, request.metadata,
+        { maxBytes: WORKER_CONVERSATION_RESPONSE_BYTES })
+      retained.expiresAt = Date.now() + 120_000
+      this.responseTransfers.delete(request.transferId)
+      this.responseTransfers.set(request.transferId, retained)
+      return WorkerConversationResponsePageSchema.parse({ kind: 'conversation-response-page',
+        transferId: request.transferId, metadata })
+    }
+    const response = await this.dispatch(request, connection, signal)
+    if (response === undefined) return response
+    const bytes = Buffer.from(JSON.stringify(response))
+    if (bytes.byteLength <= DEVICE_APPLICATION_JSON_BYTES) return response
+    const metadata = pageJsonContinuationBytes(bytes, undefined, { maxBytes: WORKER_CONVERSATION_RESPONSE_BYTES })
+    while (this.responseBytes + bytes.byteLength > WORKER_CONVERSATION_RESPONSE_BYTES
+      || this.responseTransfers.size >= 128) this.removeResponse(this.responseTransfers.keys().next().value!)
+    const transferId = randomUUID()
+    this.responseTransfers.set(transferId, { binding: structuredClone(request.binding),
+      connection: structuredClone(connection), bytes, expiresAt: Date.now() + 120_000 })
+    this.responseBytes += bytes.byteLength
+    return WorkerConversationResponsePageSchema.parse({ kind: 'conversation-response-page', transferId, metadata })
+  }
+
+  private removeResponse(id: string) {
+    const transfer = this.responseTransfers.get(id)
+    if (!transfer) return
+    this.responseBytes -= transfer.bytes.byteLength
+    this.responseTransfers.delete(id)
+  }
+
+  private async dispatch(request: WorkerConversationRpcRequest, connection: Readonly<DeviceSessionBinding>,
+    signal: AbortSignal): Promise<unknown> {
     if (request.method === 'conversation.status') return { receipt: await this.ports.journal.read(request.binding) }
     if (request.method === 'conversation.release-preparation') {
       const preparation = this.preparations.get(request.binding.owner.conversationId)
@@ -699,5 +752,7 @@ export class WorkerConversationHost {
     this.residents.clear()
     this.preparations.clear()
     this.inspections.clear()
+    this.responseTransfers.clear()
+    this.responseBytes = 0
   }
 }

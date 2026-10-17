@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DeviceJsonContinuationRequestSchema, DeviceJsonContinuationSchema } from './deviceApplication.js'
 import { HarnessProfileSelectionSchema } from './harnessProfileSelection.js'
 import { HostHarnessInstallationSchema, HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from './harnessRegistry.js'
 import { HarnessQualificationSchema } from './harnessQualification.js'
@@ -209,7 +210,16 @@ export const WorkerResponseAvailabilitySchema = z.object({
   reason: z.enum(['live_callback', 'qualified_recovery', 'request_consumed', 'callback_lost', 'session_closed',
     'unqualified', 'identity_mismatch', 'response_in_flight', 'unsupported']),
 }).strict()
+export const WORKER_CONVERSATION_RESPONSE_BYTES = 32 * 1024 * 1024
+export const WorkerConversationResponsePageSchema = z.object({
+  kind: z.literal('conversation-response-page'), transferId: z.uuid(),
+  metadata: DeviceJsonContinuationSchema.extend({
+    byteSize: z.number().int().safe().positive().max(WORKER_CONVERSATION_RESPONSE_BYTES),
+  }),
+}).strict()
 export const WorkerConversationRpcRequestSchema = z.discriminatedUnion('method', [
+  z.object({ method: z.literal('conversation.response-continuation'), ...binding, transferId: z.uuid(),
+    metadata: DeviceJsonContinuationRequestSchema }).strict(),
   z.object({ method: z.literal('conversation.file-copy'), ...binding, admissionId: z.uuid(),
     copy: WorkerConversationFileCopySchema }).strict(),
   z.object({ method: z.literal('conversation.status'), ...binding }).strict(),

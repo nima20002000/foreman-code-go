@@ -8,7 +8,7 @@ import {
   type DeviceRequestPriority,
 } from '@foreman-code/contracts/device-application'
 import { DEVICE_BUFFER_BYTES, type DeviceFrame, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { RemoteExecutionRpcRequestSchema, WorkerConversationRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { ExecutionAuthorityRequestSchema, EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import type { AcceptedNodePlacement, DispatchIntent } from '@foreman-code/contracts/node-placement'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
@@ -190,6 +190,15 @@ export class DeviceApplicationChannel {
         && this.stopPlacement(parsed.data.intent, parsed.data.placement)
     }
     if (namespace !== 'execution-v1') return false
+    const conversation = WorkerConversationRpcRequestSchema.safeParse(payload)
+    if (conversation.success && conversation.data.method === 'conversation.cancel') {
+      const { binding, session } = conversation.data
+      const target = binding.profile.target
+      return target.hostRef.kind === 'device' && target.hostRef.mainId === this.binding.mainId
+        && target.hostRef.deviceId === this.binding.deviceId
+        && target.applicationInstallationId === this.binding.workerInstallationId
+        && session.harness === binding.harness
+    }
     const parsed = RemoteExecutionRpcRequestSchema.safeParse(payload)
     if (!parsed.success || parsed.data.method !== 'control' || parsed.data.command.action.kind !== 'stop') return false
     const { intent, placement, command } = parsed.data

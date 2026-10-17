@@ -48,6 +48,7 @@ const reads = new Set(['conversation.status', 'conversation.history', 'conversat
   'conversation.capabilities', 'conversation.inspect-mcp', 'conversation.inspect-entry', 'conversation.compact-read',
   'conversation.response-reconcile', 'conversation.response-availability'])
 reads.add('conversation.release-preparation')
+reads.add('conversation.response-continuation')
 interface OwnerRow {
   id: string; kind: 'operator' | 'agent'; workspace_id: string | null; workflow_id: string | null
   workflow_node_id: string | null; agent_id: string | null; owner_principal_id: string | null
@@ -138,6 +139,14 @@ export function createProductionWorkerConversations(input: {
       if (!channel || channel.binding.mainId !== host.mainId
         || channel.binding.workerInstallationId !== selector.target.applicationInstallationId) {
         unavailable('The selected paired worker channel is unavailable.')
+      }
+      const currentChannel = () => {
+        const actual = input.endpoint().captureRequest(host.deviceId, 'execution-v1')
+        if (!actual) unavailable('The selected paired worker channel is unavailable.')
+        for (const field of ['mainId', 'deviceId', 'workerInstallationId', 'keyRevision', 'authorizationRevision'] as const) {
+          if (actual.binding[field] !== channel.binding[field]) unavailable('The original paired worker authority changed.')
+        }
+        return actual
       }
       const ownerFields = 'operatorId' in configuration
         ? { kind: 'operator', operatorId: configuration.operatorId }
@@ -264,13 +273,13 @@ export function createProductionWorkerConversations(input: {
         const observation = { ...owner, observationPrincipalId: currentCaller,
           ...(effectSignal ? { admissionSignal: effectSignal } : {}) }
         await profiles.revalidate(observation, accepted)
-        const actual = input.endpoint().captureRequest(host.deviceId, 'execution-v1')
-        if (!actual || !isDeepStrictEqual(actual.binding, channel.binding)) unavailable('The original paired worker generation changed.')
+        currentChannel()
       }
       const claudeFiles = configuration.harness.harness === 'claude' && input.fileService
         ? createMainWorkerClaudeFiles({ pool: input.pool, binding: owner, service: input.fileService,
           allowMutation: configuration.harness.sandbox !== 'read-only' }) : undefined
-      const manager = new WorkerConversationManager({ binding, configuration: executionConfiguration, channel, bridge, current,
+      const manager = new WorkerConversationManager({ binding, configuration: executionConfiguration,
+        channel, currentChannel, bridge, current,
         ...(executionConfiguration !== configuration && 'operatorId' in configuration
           ? { acceptedConfiguration: configuration } : {}),
         ...(changingAccess ? { previousBinding: originalBinding } : {}),
@@ -341,6 +350,12 @@ export function createProductionWorkerConversations(input: {
       return { manager, inspector: manager.inspector }
     })
     admitted.manager.setSessionControlPrincipal = principalId => { caller = principalId }
+    if (configuration.harness.harness === 'codex') {
+      admitted.manager.reconcileSessionCreation = async (start, signal, forkSource) => {
+        const manager = await admitted.actual(signal)
+        return manager.reconcileSessionCreation(start, signal, forkSource)
+      }
+    }
     admitted.manager.mcpInspectionContext = async signal => {
       const manager = await admitted.actual(signal)
       return manager.mcpInspectionContext!(signal)
