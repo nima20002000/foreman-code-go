@@ -1,0 +1,187 @@
+{
+  "source": "605ee51feaad7455ba9893f7939e33ed7eb883c2",
+  "backendSourceTree": "04f073867e65315ff65792cfb615b709bc310891",
+  "apiSourceTree": "986d8c919c5876066d09c3ff2f20f44eedffa6bc",
+  "conformanceSourceTree": "965c6ecb618dd9cb71c03015382138821a1615ab",
+  "contractsSourceTree": "a96881b8b5c5014aa03b4d50a6a054d6df8aa8a3",
+  "requiredExports": {
+    ".": {
+      "source": "src/index.ts",
+      "outputs": [
+        "./dist/index.d.ts",
+        "./dist/index.js"
+      ]
+    },
+    "./claude": {
+      "source": "src/claude.ts",
+      "outputs": [
+        "./dist/claude.d.ts",
+        "./dist/claude.js"
+      ]
+    },
+    "./device-application": {
+      "source": "src/deviceApplication.ts",
+      "outputs": [
+        "./dist/deviceApplication.d.ts",
+        "./dist/deviceApplication.js"
+      ]
+    },
+    "./device-connection": {
+      "source": "src/deviceConnection.ts",
+      "outputs": [
+        "./dist/deviceConnection.d.ts",
+        "./dist/deviceConnection.js"
+      ]
+    },
+    "./device-identity": {
+      "source": "src/deviceIdentity.ts",
+      "outputs": [
+        "./dist/deviceIdentity.d.ts",
+        "./dist/deviceIdentity.js"
+      ]
+    },
+    "./device-identity-node": {
+      "source": "src/deviceIdentityNode.ts",
+      "outputs": [
+        "./dist/deviceIdentityNode.d.ts",
+        "./dist/deviceIdentityNode.js"
+      ]
+    },
+    "./device-tls-node": {
+      "source": "src/deviceTlsNode.ts",
+      "outputs": [
+        "./dist/deviceTlsNode.d.ts",
+        "./dist/deviceTlsNode.js"
+      ]
+    },
+    "./files": {
+      "source": "src/files.ts",
+      "outputs": [
+        "./dist/files.d.ts",
+        "./dist/files.js"
+      ]
+    },
+    "./interaction-activity": {
+      "source": "src/interaction-activity.ts",
+      "outputs": [
+        "./dist/interaction-activity.d.ts",
+        "./dist/interaction-activity.js"
+      ]
+    },
+    "./job-admission": {
+      "source": "src/jobAdmission.ts",
+      "outputs": [
+        "./dist/jobAdmission.d.ts",
+        "./dist/jobAdmission.js"
+      ]
+    },
+    "./management": {
+      "source": "src/management/index.ts",
+      "outputs": [
+        "./dist/management/index.d.ts",
+        "./dist/management/index.js"
+      ]
+    },
+    "./operator-chat": {
+      "source": "src/operatorChat.ts",
+      "outputs": [
+        "./dist/operatorChat.d.ts",
+        "./dist/operatorChat.js"
+      ]
+    },
+    "./operator-mcp": {
+      "source": "src/operatorMcp.ts",
+      "outputs": [
+        "./dist/operatorMcp.d.ts",
+        "./dist/operatorMcp.js"
+      ]
+    },
+    "./product": {
+      "source": "src/product.ts",
+      "outputs": [
+        "./dist/product.d.ts",
+        "./dist/product.js"
+      ]
+    },
+    "./product-environment": {
+      "source": "src/productEnvironment.mjs",
+      "outputs": [
+        "./dist/productEnvironment.d.mts",
+        "./dist/productEnvironment.mjs"
+      ]
+    },
+    "./product-environment-node": {
+      "source": "src/productEnvironmentNode.mjs",
+      "outputs": [
+        "./dist/productEnvironmentNode.d.mts",
+        "./dist/productEnvironmentNode.mjs"
+      ]
+    },
+    "./remote-execution-rpc": {
+      "source": "src/remoteExecutionRpc.ts",
+      "outputs": [
+        "./dist/remoteExecutionRpc.d.ts",
+        "./dist/remoteExecutionRpc.js"
+      ]
+    },
+    "./schedules": {
+      "source": "src/schedules.ts",
+      "outputs": [
+        "./dist/schedules.d.ts",
+        "./dist/schedules.js"
+      ]
+    },
+    "./source-admission": {
+      "source": "src/sourceAdmission.ts",
+      "outputs": [
+        "./dist/sourceAdmission.d.ts",
+        "./dist/sourceAdmission.js"
+      ]
+    },
+    "./wave25": {
+      "source": "src/wave25/index.ts",
+      "outputs": [
+        "./dist/wave25/index.d.ts",
+        "./dist/wave25/index.js"
+      ]
+    },
+    "./workspace-bound-location": {
+      "source": "src/workspaceBoundLocation.ts",
+      "outputs": [
+        "./dist/workspaceBoundLocation.d.ts",
+        "./dist/workspaceBoundLocation.js"
+      ]
+    },
+    "./workspace-root-policies": {
+      "source": "src/workspaceRootPolicies.ts",
+      "outputs": [
+        "./dist/workspaceRootPolicies.d.ts",
+        "./dist/workspaceRootPolicies.js"
+      ]
+    }
+  },
+  "dispatchFile": "scripts/ci-go-toolchain-probe.test.mjs",
+  "selections": [
+    {
+      "name": "three-go-skel",
+      "ids": [
+        "health.live",
+        "health.ready",
+        "http.unknown-route"
+      ],
+      "args": [
+        "--import",
+        "tsx",
+        "src/main.ts",
+        "--target",
+        "go",
+        "--scenario",
+        "health.live",
+        "--scenario",
+        "health.ready",
+        "--scenario",
+        "http.unknown-route"
+      ]
+    }
+  ]
+}
