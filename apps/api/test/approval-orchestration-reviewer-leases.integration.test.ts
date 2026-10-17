@@ -149,14 +149,14 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const early = await Promise.allSettled(['early-first', 'early-second'].map((owner) =>
         f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`, new Date(Date.now() + 60000).toISOString())))
       expect(early.every((result) => result.status === 'rejected')).toBe(true)
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(blocked!.retryAfter!) + 1)
-      try {
-        const claims = await Promise.allSettled(['first', 'second'].map((owner) =>
-          f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`,
-            new Date(Date.now() + 60000).toISOString())))
-        expect(claims.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-        expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
-      } finally { clock.mockRestore() }
+      await f.db.pool.query(`update review_jobs set record=jsonb_set(record,'{retryAfter}',
+        to_jsonb(to_char((clock_timestamp() - interval '1 second') at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))) where id=$1`, [f.job.id])
+      const claims = await Promise.allSettled(['first', 'second'].map((owner) =>
+        f.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`,
+          new Date(Date.now() + 60000).toISOString())))
+      expect(claims.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect(claims.filter((result) => result.status === 'rejected')).toHaveLength(1)
     } finally {
       if (busyLaneId) await f.coordination.releaseLane(busyLaneId, 'busy-writer', { observedStatus: 'idle' })
       try {

@@ -211,7 +211,7 @@ describe('mounted Board bounded-history wire budgets', () => {
     wire.report('mounted-151-attempts-252-events-64-runs-eight-ticks')
   }, 30_000)
 
-  it('does not grow normal-refresh payloads when unopened lifetime history grows', async () => {
+  it('isolates current refresh requests from unopened history collections', async () => {
     const scope = fixture.runs.before.scope
     setRunState(fixture, scope, 'running')
     const wire = measureBoardWire(fixture.mock)
@@ -221,8 +221,8 @@ describe('mounted Board bounded-history wire budgets', () => {
     const bytes = wire.current()[0]!.responseBytes
     const eventsBefore = wire.activity().length
     await seedLongHistory()
-    // No version, topology, current cut or selection changed. Only lifetime
-    // backend collections grew, so an ordinary refresh must be byte-stable.
+    // The current mock is fixed: this checks UI request isolation. Persisted
+    // history payload growth is covered through the real API integration test.
     await act(async () => { await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true }) })
     await waitFor(() => expect(wire.current()).toHaveLength(2))
     expect(wire.current()[1]!.responseBytes).toBe(bytes)

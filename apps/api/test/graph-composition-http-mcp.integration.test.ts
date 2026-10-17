@@ -13,7 +13,7 @@ import {
  * using the same PostgreSQL/publisher/read service. No mock principal, browser
  * identity, native harness, engine adapter or bypass of the disposable DB gate.
  */
-describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP and Operator MCP', () => {
+describe.skipIf(!postgresEnabled)('graph composition / authenticated HTTP and Operator MCP', () => {
   let db: GraphTestDatabase
   const fixtures: GraphFixture[] = []
   beforeAll(async () => { db = await agent3Database() }, 60000)
@@ -37,8 +37,31 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / authenticated HTTP 
     const baseline = await http(t, 'snapshot')
     expect(baseline.statusCode, baseline.body).toBe(200)
     const initial = RepeatGraphSnapshotV3Schema.parse(baseline.json())
-    await changeRunState(db, t, 'running')
-    await changeRunState(db, t, 'waiting')
+    let previous = initial
+    for (const state of ['running', 'waiting'] as const) {
+      await changeRunState(db, t, state)
+      const snapshot = RepeatGraphSnapshotV3Schema.parse((await http(t, 'snapshot')).json())
+      expect(snapshot.state.run.executionState).toBe(state)
+      expect((await http(t, 'current')).json().state.run.executionState).toBe(state)
+      expect(graphRpcValue((await mcp(t, 'current')).result)).toMatchObject({
+        state: { run: { executionState: state } }, asOfSequence: snapshot.asOfSequence,
+      })
+      const delta = RepeatGraphPageV3Schema.parse((await http(t, 'events', previous.asOfSequence)).json())
+      expect(delta.baseSequence).toBe(previous.asOfSequence)
+      expect(BigInt(delta.throughSequence)).toBe(BigInt(previous.asOfSequence) + 1n)
+      expect(delta.headSequence).toBe(snapshot.asOfSequence)
+      expect(delta.throughSequence).toBe(snapshot.asOfSequence)
+      expect(delta.batches).toHaveLength(1)
+      expect(delta.batches[0]).toMatchObject({
+        previousSequence: previous.asOfSequence, sequence: snapshot.asOfSequence,
+        events: expect.arrayContaining([expect.objectContaining({
+          fact: { type: 'repeat.run.state', state: expect.objectContaining({ executionState: state }) },
+        })]),
+      })
+      expect(graphRpcValue((await mcp(t, 'events', previous.asOfSequence)).result)).toEqual(delta)
+      expect(reduceRepeatGraphPageV3(previous, delta)).toEqual(snapshot)
+      previous = snapshot
+    }
     for (const kind of ['current', 'snapshot', 'events'] as const) {
       const cursor = kind === 'events' ? initial.asOfSequence : undefined
       const read = await http(t, kind, cursor), remote = await mcp(t, kind, cursor)
