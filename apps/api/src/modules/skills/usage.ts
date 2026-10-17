@@ -116,12 +116,17 @@ export class SkillUsageService {
         const live = await this.authorize(this.pool, principal, input.workspaceId)
         const pins = Object.fromEntries(Object.entries(workflow.currentPins)
           .map(([id, version]) => [id, updated.get(id) ?? version]))
+        const graph = { ...workflow.graph, nodes: workflow.graph.nodes.map(node => {
+          if (node.kind === 'job' || !node.skills?.add) return node
+          return { ...node, skills: { ...node.skills, add: node.skills.add.map(skill =>
+            skill.skillId === input.skillId ? { ...skill, version: plan.head } : skill) } }
+        }) }
         const saved = await this.workflows.save(live, source, {
           workspaceId: input.workspaceId, workflowId: workflow.id,
           executionSemanticsVersion: 3, commandId: childCommandId(input.commandId, 'workflow', workflow.id),
           expectedRevision: workflow.revision, expectedWorkflowVersionId: workflow.versionId,
           expectedAgentConfigurationVersionIds: pins,
-          graph: workflow.graph,
+          graph,
         }) as { value: { currentVersionId: string } }
         result.workflows.push({ workflowId: workflow.id, workflowVersionId: saved.value.currentVersionId })
       } catch (error) {
@@ -162,10 +167,12 @@ async function readUsage(client: pg.Pool | pg.ClientBase, workspaceId: string, s
   const workflows = workflowRows.flatMap(row => {
     const version = WorkflowVersionV3Schema.parse(row.version)
     const pins = version.agentConfigurationVersionIds
+    const graph = WorkflowDefinitionV3Schema.parse(row.record)
+    const nodeOutdated = graph.nodes.some(node => node.kind !== 'job'
+      && node.skills?.add?.some(skill => skill.skillId === skillId && skill.version !== head))
     const affected = Object.keys(pins).some(id => consumers.has(id)
       && (outdatedIds.has(id) || consumers.get(id) !== pins[id]))
-    if (!affected) return []
-    const graph = WorkflowDefinitionV3Schema.parse(row.record)
+    if (!affected && !nodeOutdated) return []
     return [{ id: row.id, name: graph.name, revision: Number(row.revision), versionId: row.current_version_id, graph,
       currentPins: Object.fromEntries(Object.keys(pins).map(id => [id, consumers.get(id) ?? pins[id]!])) }]
   })
