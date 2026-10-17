@@ -5,6 +5,8 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { z } from 'zod'
 import { GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
+import type { AgentReferenceService } from '../../modules/files/references/agentService.js'
+import { registerExecutionReferenceTools } from '../shared/executionReferences.js'
 import { DomainError } from '../../modules/errors.js'
 import { hasWorkerAction } from '../../modules/access/appPolicy.js'
 import type { AppInteractionService } from '../../modules/interactions/app.js'
@@ -26,6 +28,7 @@ export interface GraphqlMcpContext {
   principal: ManagementPrincipal
   operator?: OperatorServices
   interactions?: AppInteractionService
+  references?: AgentReferenceService
   bugReports?: BugReportService
   commands?: PostgresCommandCoordinator
   /** Worker roles only: the tools enabled for this Agent's configuration and workflow node. */
@@ -162,6 +165,7 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext, request
       await registerAppTools(collector, { principal: context.principal, interactions: context.interactions!,
         ...(context.bugReports ? { bugReports: context.bugReports } : {}),
         ...(context.signal ? { signal: context.signal } : {}) })
+      if (context.references) registerExecutionReferenceTools(collector, context.principal, context.references)
       if (context.operator) registerCiTools(collector, { principal: context.principal, services: context.operator,
         ...(context.signal ? { signal: context.signal } : {}) })
     })

@@ -10,7 +10,7 @@ export function sharedFolderId(workspaceId: string): string {
   return `workspace-${createHash('sha256').update(workspaceId).digest('hex')}`
 }
 const FolderSchema = z.object({ id: z.string(), label: z.string(), path: z.string(),
-  devices: z.array(z.object({ deviceID: z.string() })) }).passthrough()
+  devices: z.array(z.object({ deviceID: z.string() })), paused: z.boolean().optional() }).passthrough()
 const StatusSchema = z.object({ state: z.string(), pullErrors: z.number().optional(), error: z.string().optional() })
 interface StatusOptions { signal?: AbortSignal | undefined; workspaceId?: string | undefined }
 const CONFLICT_REFRESH_MS = 300_000
@@ -55,9 +55,12 @@ export class SyncthingComputer {
     const id = sharedFolderId(workspaceId)
     const folders = z.array(FolderSchema).parse(await this.ports.rest('GET', '/rest/config/folders', undefined, signal))
     if (!enabled) {
-      if (folders.some(folder => folder.id === id)) {
+      const existing = folders.find(folder => folder.id === id)
+      if (existing) {
         assertCurrent()
-        await this.ports.rest('DELETE', `/rest/config/folders/${id}`, undefined, signal)
+        await this.ports.rest('POST', '/rest/config/folders', {
+          ...existing, paused: true, devices: [{ deviceID: identity.deviceId }],
+        }, signal)
       }
       return
     }
@@ -139,7 +142,7 @@ export class SyncthingComputer {
     const connections = ConnectionsSchema.parse(
       await this.ports.rest('GET', '/rest/system/connections', undefined, signal)).connections
     signal?.throwIfAborted()
-    const selected = folders.filter(folder => /^workspace-[a-f0-9]{64}$/u.test(folder.id)
+    const selected = folders.filter(folder => !folder.paused && /^workspace-[a-f0-9]{64}$/u.test(folder.id)
       && (workspaceId === undefined || folder.id === sharedFolderId(workspaceId)))
     if (workspaceId === undefined) this.scanConflicts(selected)
     const states = await Promise.all(selected

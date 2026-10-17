@@ -10,7 +10,8 @@ import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { pathsOverlap } from './filesystem.js'
-import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
+import { activeAgentChatDirectories } from '../conversations/activeAgentChats.js'
+import { WORKSPACE_FOLDER_LIFECYCLE_LOCK, continuingRunDirectories } from './projectFolderCleanup.js'
 
 function identity(details: { dev: bigint; ino: bigint }): string {
   return 'sha256:' + createHash('sha256').update(`${details.dev}:${details.ino}`).digest('hex')
@@ -31,7 +32,7 @@ function deletionState(path: string, rootPath: string, references: FolderReferen
 
 /** Discovery never registers records or confers ownership of existing content. */
 export class WorkspaceStorageFolders {
-  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator, private readonly root: string) {}
+  constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator, private readonly root: string, private readonly runnerId = 'runner-local') {}
 
   private async rootPath() {
     try { return await realpath(this.root) } catch {
@@ -43,14 +44,18 @@ export class WorkspaceStorageFolders {
     const result = await client.query<FolderReference>(`
       select execution_location->>'rootPath' as path,
         case when archived_at is null then 'workspace' else 'archived_workspace' end as kind,
-        archived_at is null as registered from workspaces where execution_location is not null
-      union all select created_project_folder->>'rootPath', 'owned_folder', false from workspaces where created_project_folder is not null
-      union all select coalesce(working_directory, record->'executionLocation'->>'rootPath'), 'active_run', false from runs where execution_state <> 'completed'
+        archived_at is null as registered from workspaces where execution_location->>'runnerId'=$1
+      union all select created_project_folder->>'rootPath', 'owned_folder', false from workspaces where created_project_folder->>'runnerId'=$1
       union all select (preparation->>'basePath') || '/' || (preparation->>'directoryName'), 'owned_folder', false
         from workspace_repository_imports where finished_at is null
       union all select record->>'parentPath', 'defaults', false from application_settings where record->>'parentPath' is not null
-    `)
-    return result.rows.filter(({ path }) => Boolean(path))
+    `, [this.runnerId])
+    const directories = [
+      ...await continuingRunDirectories(client, this.runnerId),
+      ...await activeAgentChatDirectories(client),
+    ]
+    return [...result.rows, ...directories.map(path => ({ path, kind: 'active_run' as const, registered: false }))]
+      .filter(({ path }) => Boolean(path))
   }
 
   async list(principal: ManagementPrincipal, raw: { cursor?: string | undefined; limit?: number | undefined }) {

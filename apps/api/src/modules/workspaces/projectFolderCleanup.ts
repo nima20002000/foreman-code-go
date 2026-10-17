@@ -42,28 +42,12 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
          union all select created_project_folder->>'rootPath' as path from workspaces
          where not (id = any($1::text[])) and created_project_folder->>'runnerId'=$2`, [ids, runnerId],
       )
-      const runDirectories = await client.query<{ path: string }>(
-        `with continuing_runs as (
-           select r.id, r.runner_id, r.working_directory, r.workflow_version_id from runs r
-           where r.execution_state in ('queued', 'running', 'waiting')
-             or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
-         )
-         select r.working_directory as path from continuing_runs r
-         join workflow_versions v on v.id=r.workflow_version_id
-         where r.runner_id=$1 and exists(
-           select 1 from jsonb_array_elements(v.record->'definition'->'nodes') node
-           where node->>'kind'='job' or not exists(
-             select 1 from run_node_placements p where p.run_id=r.id and p.node_id=node->>'id'))
-         union all
-         select p.record#>>'{destination,canonicalProjectRoot}' as path
-         from continuing_runs r join run_node_placements p on p.run_id=r.id
-         where p.record#>>'{hostRef,kind}'='main'`, [runnerId],
-      )
+      const runDirectories = await continuingRunDirectories(client, runnerId)
       const contains = (path: string) => { const suffix = relative(folder.rootPath, path); return !isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith('..' + sep) }
       if (references.rows.some(({ path }) => contains(path)) || otherWorkspaces.rows.some(({ path }) => pathsOverlap(folder.rootPath, path))) {
         throw new Error('The project folder is still used by another workspace or workspace defaults.')
       }
-      if (runDirectories.rows.some(({ path }) => pathsOverlap(folder.rootPath, path))) {
+      if (runDirectories.some(path => pathsOverlap(folder.rootPath, path))) {
         throw new Error('The project folder is still required by an accepted Run or its pending cleanup.')
       }
       const chatDirectories = await activeAgentChatDirectories(client)
@@ -95,4 +79,32 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
     throw new DomainError('WORKSPACE_FOLDER_CLEANUP_FAILED',
       `The workspace was archived, but its project folder could not be removed. Retry removal. ${errorMessage(error, '')}`, 503, undefined, { cause: error })
   } finally { client.release() }
+}
+
+/** Main-host project paths retained by Runs, native working trees and their cleanup. */
+export async function continuingRunDirectories(sql: Pick<pg.Pool, 'query'>, runnerId: string): Promise<string[]> {
+  const result = await sql.query<{ path: string }>(
+    `with continuing_runs as (
+       select r.id, r.runner_id, r.workflow_version_id,
+         coalesce(r.working_directory, r.record#>>'{executionLocation,rootPath}') as working_directory
+       from runs r
+       where r.execution_state in ('queued', 'running', 'waiting', 'interrupted')
+         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+     )
+     select r.working_directory as path from continuing_runs r
+     join workflow_versions v on v.id=r.workflow_version_id
+     where r.runner_id=$1 and exists(
+       select 1 from jsonb_array_elements(v.record->'definition'->'nodes') node
+       where node->>'kind'='job' or not exists(
+         select 1 from run_node_placements p where p.run_id=r.id and p.node_id=node->>'id'))
+     union all
+     select p.record#>>'{destination,canonicalProjectRoot}' as path
+     from continuing_runs r join run_node_placements p on p.run_id=r.id
+     where p.record#>>'{hostRef,kind}'='main'
+     union all
+     select n.record#>>'{workingTree,canonicalProjectRoot}' as path
+     from continuing_runs r join execution_native_placements n on n.record->>'runId'=r.id
+     where n.record#>'{materialization,receipt,binding,deviceId}'='null'::jsonb`, [runnerId],
+  )
+  return result.rows.map(row => row.path).filter(Boolean)
 }

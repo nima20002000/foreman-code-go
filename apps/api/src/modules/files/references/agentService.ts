@@ -1,5 +1,5 @@
 import {
-  AgentFileListInputSchema, AgentFileReadInputSchema, MAX_FILE_BYTES, MAX_FILE_PAGE_SIZE,
+  AgentReferenceListInputSchema, AgentFileReadInputSchema, MAX_FILE_BYTES, MAX_FILE_PAGE_SIZE,
   MAX_FILE_READ_BYTES, parseAgentFileReadResult,
 } from '@foreman-code/contracts/files'
 import { IdSchema } from '@foreman-code/contracts'
@@ -7,9 +7,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { AgentReferenceAccess, type AgentReferenceDependencies } from './agentAccess.js'
 import type { AgentReferenceSubject, BoundAgentReferences } from './agentTypes.js'
 
-/** Frozen contracts expose a caller-supplied list scope and a verbose manifest. FIL-37 intentionally
- * does not accept that scope: only its existing pagination fields enter this backend boundary. */
-export const AgentReferenceListInputSchema = AgentFileListInputSchema.pick({ cursor: true, limit: true }).strict()
+export { AgentReferenceListInputSchema } from '@foreman-code/contracts/files'
 
 export class AgentReferenceService {
   private readonly access: AgentReferenceAccess

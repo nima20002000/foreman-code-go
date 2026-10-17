@@ -5,7 +5,7 @@ import type { ChildProcessEnvironment } from '../../harnesses/port.js'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
-import { WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
+import { WORKER_MCP_REQUEST_MAX_BYTES, WorkerMcpRelayResponseSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
 import { componentLogger } from '../../diagnostics/logger.js'
 import { DeviceApplicationError, deviceApplicationFailure } from '../../devices/deviceApplicationError.js'
@@ -122,7 +122,7 @@ export async function createUnboundWorkerMcpEndpoint(input: WorkerMcpEndpointOpt
         for await (const chunk of request) {
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
           byteSize += bytes.byteLength
-          if (byteSize > 1_000_000) { response.writeHead(413); response.end(); return }
+          if (byteSize > WORKER_MCP_REQUEST_MAX_BYTES) { response.writeHead(413); response.end(); return }
           chunks.push(bytes)
         }
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) }

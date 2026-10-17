@@ -69,7 +69,7 @@ import { readLiveManagementPrincipal } from './modules/access/liveManagementPrin
 import { readSourceCurrentNativeSession } from './modules/sources/activeNativeSession.js'
 import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader } from './modules/sources/executionHosts.js'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
-import { WORKER_MCP_EXTENSION, encodeWorkerMcpResult } from '@foreman-code/contracts/worker-mcp-relay'
+import { WORKER_MCP_EXTENSION, encodeWorkerMcpResult, decodeWorkerMcpRequest } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
 import { NodePlacementChoicesService } from './modules/placement/choicesService.js'
@@ -646,8 +646,8 @@ function configureDeviceRuntime(composition: ProductionComposition) {
         return composition.executionAuthority.handle(payload, context)
       } },
       { namespace: WORKER_MCP_EXTENSION.namespace, version: WORKER_MCP_EXTENSION.version, role: 'server',
-        maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: WORKER_MCP_EXTENSION.maxBinaryBytes, async handle(payload, context) {
-          if (context.bytes !== undefined) throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'MCP requests cannot carry binary bytes.', 403)
+        maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: WORKER_MCP_EXTENSION.maxBinaryBytes, async handle(raw, context) {
+          const payload = decodeWorkerMcpRequest({ payload: raw, ...(context.bytes ? { bytes: context.bytes } : {}) })
           if (payload && typeof payload === 'object' && 'operation' in payload
             && typeof payload.operation === 'string' && payload.operation.startsWith('conversation-mcp.')) {
             return encodeWorkerMcpResult(await composition.workerChats.mcp.handle(payload, context.binding, context.signal))

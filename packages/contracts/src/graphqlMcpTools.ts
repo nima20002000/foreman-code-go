@@ -18,6 +18,14 @@ export const GRAPHQL_AGENT_TOOLS = {
       + 'Requires the scoped reporting grant. Retry the same commandId and input.',
     roles: ['operator', 'orchestrator', 'coder'],
   },
+  'files.references_list': {
+    label: 'List references', description: 'List permanent workspace and workflow references inherited by this execution. Scope comes from its credential.',
+    roles: ['orchestrator', 'coder'],
+  },
+  'files.reference_read': {
+    label: 'Read a reference', description: 'Read up to 64 KiB of an inherited reference using fileId and revisionId. Permanent references are read-only.',
+    roles: ['orchestrator', 'coder'],
+  },
   context_get: { label: "Read run context", description: "Its own identity, role, scope and enabled tools.", roles: ["orchestrator", "coder"] },
   interaction_list: { label: "List interactions", description: "Approval requests in its run.", roles: ["operator", "orchestrator", "coder"] },
   interaction_get: { label: "Read an interaction", description: "One approval request and its options.", roles: ["operator", "orchestrator", "coder"] },

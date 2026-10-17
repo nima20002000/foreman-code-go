@@ -1,3 +1,4 @@
+import { WORKER_MCP_REQUEST_MAX_BYTES } from '@foreman-code/contracts/worker-mcp-relay'
 import { z } from 'zod'
 import {
   AgentFileListInputSchema, AgentFileReadInputSchema, AgentFileReadResultSchema,
@@ -9,7 +10,7 @@ import { FileUploadRequestSchema } from '../requests.js'
 /** Backend transport composition only; the frozen contracts have no reference mutation envelopes. */
 export const MAX_REFERENCE_BASE64_CHARACTERS = 4 * Math.ceil(MAX_FILE_BYTES / 3)
 // Full-sized MCP add remains usable without granting host paths/URLs or requiring an HTTP side channel.
-export const MAX_REFERENCE_MCP_BODY_BYTES = MAX_REFERENCE_BASE64_CHARACTERS + 64 * 1024
+export const MAX_REFERENCE_MCP_BODY_BYTES = WORKER_MCP_REQUEST_MAX_BYTES
 export const FileReferenceListInputSchema = AgentFileListInputSchema.extend({ scope: PermanentFileScopeSchema })
 export const FileReferenceReadInputSchema = AgentFileReadInputSchema.extend({ scope: PermanentFileScopeSchema })
 export const FileReferenceReadResultSchema = z.object({ value: AgentFileReadResultSchema }).strict()

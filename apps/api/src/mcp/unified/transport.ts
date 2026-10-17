@@ -4,6 +4,7 @@ import { unavailableDeviceOperatorToolCall, unavailableOperatorControlToolCall, 
 import { unavailableJobToolCall } from '../operator/tools/jobs.js'
 import { unavailableJobRuntimeToolCall } from '../operator/tools/jobRuntimeProfiles.js'
 import { unavailableHostHarnessToolCall } from '../../modules/harnesses/instanceSettings/management.js'
+import type { AgentReferenceService } from '../../modules/files/references/agentService.js'
 import type { FileReferenceService } from '../../modules/files/references/service.js'
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
 import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
@@ -119,7 +120,9 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
         ?? await unavailableHostHarnessToolCall(context, request.body)
       if (unavailable) return reply.send(unavailable)
     }
-    const context = { role, principal, ...(access ? { tools: access.tools } : {}),
+    const references = app.hasDecorator('agentReferenceService')
+      ? app.getDecorator<AgentReferenceService>('agentReferenceService') : undefined
+    const context = { role, principal, ...(references ? { references } : {}), ...(access ? { tools: access.tools } : {}),
       ...(operation ? { signal: operation.signal } : {}),
       ...(services.operator ? { operator: services.operator } : {}),
       ...(services.interactions ? { interactions: services.interactions } : {}),
