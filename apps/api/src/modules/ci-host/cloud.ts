@@ -1245,17 +1245,12 @@ export class CloudCi {
     let stopped = discoveryComplete && !run.dispatch?.uncertain && (ids.size > 0 || !run.dispatch?.attempts)
     for (const providerRunId of ids) {
       const attempt = { ...run, providerRunId }
-      let status = canceled.has(providerRunId) ? await this.provider.status(attempt) : undefined
-      const stillActive = this.provider.id === 'circleci' && discoveryComplete && status?.done === false
-        && await this.provider.find(attempt) !== null
-      if (!canceled.has(providerRunId) || stillActive) {
+      if (!canceled.has(providerRunId)) {
         const accepted = await this.provider.cancel(attempt)
-        if (accepted === false) canceled.delete(providerRunId)
-        else canceled.add(providerRunId)
+        if (accepted !== false) canceled.add(providerRunId)
         run = await this.save({ ...run, cancellation: { ...run.cancellation!, canceledIds: [...canceled] } })
-        status = undefined
       }
-      if (!(status ?? await this.provider.status(attempt)).done) stopped = false
+      if (!(await this.provider.status(attempt)).done) stopped = false
     }
     this.polled.set(run.runId, this.ports.now().getTime())
     const now = this.ports.now().toISOString()
