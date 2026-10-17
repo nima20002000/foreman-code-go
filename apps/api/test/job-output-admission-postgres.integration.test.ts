@@ -37,6 +37,7 @@ import { jobExecution, jobSpec } from './helpers/jobFixture.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import type { JobSql } from '../src/modules/jobs/repository.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 const databaseUrl=process.env.TEST_DATABASE_URL,schema=`job_output_${randomUUID().replaceAll('-','')}`
 const hash=(v:Uint8Array|string)=>createHash('sha256').update(v).digest('hex')
 function queue() {
@@ -44,6 +45,7 @@ function queue() {
   return {push(value:string){const waiter=waiters.shift();if(waiter)waiter({value,done:false});else values.push(value)},
     end(){ended=true;for(const waiter of waiters.splice(0))waiter({value:undefined,done:true})},
     async next():Promise<IteratorResult<string>>{if(values.length)return {value:values.shift()!,done:false};if(ended)return {value:undefined,done:true};return new Promise(resolve=>waiters.push(resolve))},
+    async consume(onMessage:(text:string)=>void,signal:AbortSignal){while(!signal.aborted){const result=await this.next();if(result.done)return;onMessage(result.value)}},
     [Symbol.asyncIterator](){return this}}
 }
 /** Root-only DB contract fixture. Pairing, current W07 session, actual main PostgreSQL
@@ -134,7 +136,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
       authProvider: { token: async () => credential },
     }))
   },60000)
-  afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await removeFixtureDirectory(storage);if(staging)await removeFixtureDirectory(staging);if(admin){try{await dropFixtureSchema(admin, schema)}finally{await admin.end()}}})
+  afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{/* ignore: closing the endpoint ends its session; the test asserted its behavior already */});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await removeFixtureDirectory(storage);if(staging)await removeFixtureDirectory(staging);if(admin){try{await dropFixtureSchema(admin, schema)}finally{await admin.end()}}})
   it('issues persisted original main transfer through HTTP/MCP, denies Operator and publishes actual sender bytes once',async()=>{
     const input={workspaceId:job.workspaceId,executionId:job.id,attemptId:job.attemptId,owner:job.owner,commandId:randomUUID(),path:'dist/report.json',mediaType:'application/json' as const,sha256:hash(body),byteSize:body.length}
     expect((await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${operatorToken}`},payload:input})).statusCode).toBe(403)
@@ -147,7 +149,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     const verified=await sender.send(intent,AbortSignal.timeout(10000));expect(verified.sha256).toBe(input.sha256)
     const published=await app.inject({method:'POST',url:'/device/job-outputs/publish',headers:{authorization:`Bearer ${credential}`},payload:input});expect(published.statusCode).toBe(200)
     const replay=await app.inject({method:'POST',url:'/device/job-outputs/publish',headers:{authorization:`Bearer ${credential}`},payload:input});expect(replay.json()).toEqual(published.json())
-    const artifact=published.json(),sql=await pool.connect();try{await sql.query('begin');const principal=await new PostgresAccessService(pool).authenticate(operatorToken);expect((await actual.artifacts.read(sql,principal,job.workspaceId,job.id,artifact.fileId,artifact.revisionId)).bytes).toEqual(body);await sql.query('commit')}finally{sql.release()}
+    const artifact=published.json();await withTransaction(pool,async sql=>{const principal=await new PostgresAccessService(pool).authenticate(operatorToken);expect((await actual.artifacts.read(sql,principal,job.workspaceId,job.id,artifact.fileId,artifact.revisionId)).bytes).toEqual(body)})
     const counts=(await pool.query("select (select count(*) from management_command_receipts where operation='job.output.admit')::int admissions,(select count(*) from file_tool_publications)::int publications,(select count(*) from file_allocations where state='finalized')::int allocations")).rows[0];expect(counts).toEqual({admissions:1,publications:1,allocations:1})
     await pool.query("update device_registrations set record=jsonb_set(record,'{status}','\"revoked\"'::jsonb) where id=$1",[binding.deviceId])
     await expect(actual.receiver.resolveVerifiedReceipt(intent.transferId,outputTransferContext(binding))).rejects.toMatchObject({code:'JOB_OUTPUT_DEVICE_REVOKED'})

@@ -13,6 +13,11 @@ import { nativeCorrelation } from './operatorChatRepository.js'
 import { workerExecutionConfiguration } from './workerExecutionConfiguration.js'
 import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 
+function agentOwner<T extends { kind: string }>(owner: T): Extract<T, { kind: 'agent' }> {
+  if (owner.kind !== 'agent') throw new Error('Expected an Agent chat binding.')
+  return owner as Extract<T, { kind: 'agent' }>
+}
+
 it.each([false, true])('admits a thinking-only next turn through the production Worker channel (attachments: %s)', async fileInputs => {
   const f = workerConversationFixture()
   if (!('operatorId' in f.configuration) || f.binding.owner.kind !== 'operator') throw new Error('Operator fixture required')
@@ -140,7 +145,7 @@ it.each(['codex', 'claude'] as const)('exposes journal-only %s creation recovery
     grants: [{ actions: ['agent_chat:read', 'agent_chat:write'], scope: {} }],
     expires_at: new Date(Date.now() + 600_000), revoked_at: null }
   const conversation = { id: binding.owner.conversationId, kind: 'agent', workspace_id: f.configuration.workspaceId,
-    workflow_id: binding.owner.workflowId, workflow_node_id: binding.owner.workflowNodeId,
+    workflow_id: agentOwner(binding.owner).workflowId, workflow_node_id: agentOwner(binding.owner).workflowNodeId,
     agent_id: f.configuration.agentId, agent_configuration_version_id: f.configuration.id,
     active_request_id: 'request', native_session_id: null, deleted_at: null,
     owner_principal_id: principal.id, payload: { ownerPrincipalId: principal.id }, record: { status: 'open' },
@@ -177,11 +182,11 @@ it.each(['codex', 'claude'] as const)('exposes journal-only %s creation recovery
   try {
     expect(manager.reconcileSessionCreation).toBeTypeOf('function')
     await expect(manager.reconcileSessionCreation!({ kind: 'agent-chat', configuration: f.configuration,
-      conversationId: conversation.id, workflowId: binding.owner.workflowId, workflowNodeId: binding.owner.workflowNodeId,
+      conversationId: conversation.id, workflowId: agentOwner(binding.owner).workflowId, workflowNodeId: agentOwner(binding.owner).workflowNodeId,
       workingDirectory: binding.workingDirectory, correlationId: operationId })).resolves.toEqual(f.session)
     expect(methods).toEqual(['conversation.status'])
     await expect(manager.reconcileSessionCreation!({ kind: 'agent-chat', configuration: f.configuration,
-      conversationId: conversation.id, workflowId: binding.owner.workflowId, workflowNodeId: binding.owner.workflowNodeId,
+      conversationId: conversation.id, workflowId: agentOwner(binding.owner).workflowId, workflowNodeId: agentOwner(binding.owner).workflowNodeId,
       workingDirectory: binding.workingDirectory, correlationId: 'another-creation' })).rejects.toThrow()
     expect(methods).toEqual(['conversation.status', 'conversation.status'])
   } finally { await manager.dispose?.(); await production.close() }

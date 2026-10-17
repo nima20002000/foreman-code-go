@@ -38,7 +38,7 @@ async function fixture() {
     },
     reconcile: async () => ({ events: [], pendingInteractions: [], correlationId: 'active-input',
       nativeTurnId: 'active-turn', terminalResult: { outcome: 'succeeded' } }),
-  } as NativeHarnessSessionManager
+  } as unknown as NativeHarnessSessionManager
   const allocation = { manager: native, close, start: async () => start, nativeOwner: async () => f.nativeOwner }
   const recover = vi.fn(async () => allocation)
   const host = new WorkerConversationHost({ journal, currentBinding: () => f.connection,

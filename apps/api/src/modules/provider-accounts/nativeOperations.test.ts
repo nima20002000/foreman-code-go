@@ -8,6 +8,7 @@ import { NativeProviderAccountCommands, type ProviderAccountNativeInput, type Ac
   type AccountCommandResult } from './nativeCommands.js'
 import { NativeAccountJournal } from './nativeJournal.js'
 import { NativeProviderAccountOperations } from './nativeOperations.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -67,8 +68,8 @@ describe('owned native authentication', () => {
     const f = await fixture()
     const value = input()
     value.operation.intent = intent
-    const started = Promise.withResolvers<void>()
-    const resume = Promise.withResolvers<void>()
+    const started = deferred<void>()
+    const resume = deferred<void>()
     const reserve = f.registry.reserveLaunch.getMockImplementation()!
     f.registry.reserveLaunch.mockImplementationOnce(async owner => {
       started.resolve()
