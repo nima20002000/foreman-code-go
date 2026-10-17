@@ -67,12 +67,13 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement direc
           expect((await api.repository.get(interaction.id))?.status).toBe('pending')
           if (choice === 'continue') {
             const acceptStart = api.start.getMockImplementation()!
-            api.start.mockImplementationOnce(async (principal, source, input) => {
-              await acceptStart(principal, source, input)
+            api.start.mockImplementationOnce(async (...args) => {
+              await acceptStart(...args)
               throw new Error('Start reply unavailable')
             })
             expect((await api.call('interaction_respond', response))?.isError).toBe(true)
-            expect((await api.repository.get(interaction.id))?.status).toBe('delivery_pending')
+            expect(await api.repository.get(interaction.id)).toMatchObject({ status: 'delivered',
+              continuationRunId: expect.any(String) })
             const restarted = new InteractionService(new Wave25InteractionRepository(f.db.pool),
               new PostgresApprovalBudgetRepository(f.db.pool), {} as never, async () => undefined)
             restarted.useWorkDirectionActions({ start: api.start, wake: async () => undefined })

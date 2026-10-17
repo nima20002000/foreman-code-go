@@ -17,7 +17,7 @@ import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions
 import { RunGraphReadService } from '../../src/modules/run-graph/readService.js'
 import { graphRpc } from '../eng04-graph-composition-fixture.js'
 import { WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
-import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
+import { admitRepeatRun, type RepeatStartPublication } from '../../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartPublication.js'
 
 export type Fixture = Awaited<ReturnType<typeof workflowSettlementFixture>>
@@ -90,14 +90,14 @@ export function runtime(f: Fixture, observe: (execution: HarnessExecution) => Pr
     driver: { candidate: (ref, attempt) => f.candidate(ref.nodeId, attempt), observe }, lifecycle: f.lifecycle })
 }
 
-export async function directionApi(f: Fixture) {
+export async function directionApi(f: Fixture, publication: RepeatStartPublication = repeatStartPublication) {
   const repository = new Wave25InteractionRepository(f.db.pool)
   const service = new InteractionService(repository, new PostgresApprovalBudgetRepository(f.db.pool),
     {} as never, async () => { throw new Error('Direction must not resume a native approval') })
   const locations = new WorkspaceLocationService(f.db.pool, f.commands)
   const start = vi.fn(async (principal: Parameters<typeof admitRepeatRun>[2], source: 'http' | 'mcp',
-    input: Parameters<typeof admitRepeatRun>[4]) => {
-    const accepted = await admitRepeatRun(f.db.pool, locations, principal, source, input, repeatStartPublication)
+    input: Parameters<typeof admitRepeatRun>[4], options: Parameters<typeof admitRepeatRun>[6] = {}) => {
+    const accepted = await admitRepeatRun(f.db.pool, locations, principal, source, input, publication, options)
     return { run: accepted.value }
   })
   service.useWorkDirectionActions({ start, wake: async () => undefined })

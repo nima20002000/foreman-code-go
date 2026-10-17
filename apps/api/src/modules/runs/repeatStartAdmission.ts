@@ -57,6 +57,10 @@ export interface RepeatStartPublication {
 export interface RepeatStartOptions {
   maximumResidentRuns?: number
   triggerJobId?: string
+  /** Internal direction response; holds the original Run lock through acceptance. */
+  continuation?: {
+    lock(sql: GraphTransactionSql): Promise<(runId: string) => Promise<void>>
+  }
   /** Internal SCH-04 composition only, never a field in public Start input. */
   schedule?: ScheduleStartGuard
 }
@@ -351,6 +355,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       if (replayed) return { value: replayed, replayed: true }
       await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
       await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)
+      const completeContinuation = await options.continuation?.lock(sql)
       await assertWorkflowRecovered(sql, input.workspaceId, input.workflowId)
       const live = await sql.query<{ count: string }>(`select count(*)::text as count from runs r where r.runner_id=$1
         and (r.execution_state in ('queued','running','waiting') or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`,
@@ -393,6 +398,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Accepted Run authority expired before commit.', 403)
       })
       await options.schedule?.afterAcceptance(sql, run)
+      await completeContinuation?.(run.id)
       return { value: run, replayed: false }
     }))
   } catch (error) {
