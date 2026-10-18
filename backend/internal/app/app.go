@@ -126,5 +126,5 @@ func (a *App) RegisterTool(tool *mcp.Tool, validate func(json.RawMessage) error,
 
 // Handler exposes the composed app through the standard HTTP public interface.
 func (a *App) Handler() http.Handler {
-	return httpserver.WithRequestID(a.mux)
+	return httpserver.WithRequestID(httpserver.RequestLogger{Logger: a.Logger}.Wrap(a.mux))
 }
