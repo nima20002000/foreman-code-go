@@ -1,0 +1,18 @@
+{
+  "files": [
+    "conformance/src/scenarios/streams/operator.ts",
+    "conformance/src/scenarios/workflows/handoff.ts",
+    "conformance/src/scenarios/workflows/interaction.ts",
+    "conformance/src/scenarios/workflows/schedule.ts"
+  ],
+  "conformanceTarget": "ts",
+  "conformanceScenarios": [
+    "streams.operator.native-order",
+    "workflow.work-handoff-accepted-return",
+    "workflow.native-input-resume-user-http",
+    "workflow.native-input-resume-operator-http",
+    "workflow.native-input-resume-operator-mcp",
+    "workflow.schedule-latest-save-native-admission"
+  ],
+  "conformanceTsRequired": false
+}

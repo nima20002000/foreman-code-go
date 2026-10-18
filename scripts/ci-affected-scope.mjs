@@ -6,7 +6,7 @@ import { integrationFileList, repositoryFileList, selectByIndexes } from './ci-f
 
 export const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const kinds = ['typecheck', 'lint', 'unit', 'integration', 'build']
-const requestKeys = ['files', 'goTestRoots', 'conformanceScenarios', 'conformanceTsRequired', 'nativeReports', 'scriptsDatabaseRequired']
+const requestKeys = ['files', 'goTestRoots', 'conformanceScenarios', 'conformanceTsRequired', 'conformanceTarget', 'nativeReports', 'scriptsDatabaseRequired']
 const nativeKinds = ['go-unit', 'go-integration', 'conformance-go', 'conformance-ts']
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const packageOf = file => posix.dirname(file) === 'backend' ? '.' : `./${posix.dirname(file).slice('backend/'.length)}`
@@ -69,6 +69,12 @@ export function readAffectedRequest(input, root = repositoryRoot) {
   if (data.conformanceTsRequired !== undefined && typeof data.conformanceTsRequired !== 'boolean') {
     throw new Error('Invalid conformance TS comparison decision.')
   }
+  if (data.conformanceTarget !== undefined && (!['go', 'ts'].includes(data.conformanceTarget) || !conformanceScenarios.length)) {
+    throw new Error('An explicit conformance target requires exact scenario IDs and must be go or ts.')
+  }
+  if (data.conformanceTarget === 'ts' && (data.conformanceTsRequired || files.some(file => file.startsWith('backend/')))) {
+    throw new Error('TS reference qualification cannot include Go checks or a Go-to-TS comparison.')
+  }
   if (data.scriptsDatabaseRequired !== undefined && (typeof data.scriptsDatabaseRequired !== 'boolean'
     || data.scriptsDatabaseRequired === true && !files.some(file => file.startsWith('scripts/')))) throw new Error('Invalid selected scripts database requirement.')
   if (data.nativeReports !== undefined && !object(data.nativeReports)) throw new Error('Invalid native report bindings.')
@@ -86,7 +92,15 @@ export function readAffectedRequest(input, root = repositoryRoot) {
     }
   }
   return { files, goTestRoots, conformanceScenarios, conformanceTsRequired: data.conformanceTsRequired ?? false, nativeReports,
-    scriptsDatabaseRequired: data.scriptsDatabaseRequired ?? false }
+    scriptsDatabaseRequired: data.scriptsDatabaseRequired ?? false,
+    ...(data.conformanceTarget === undefined ? {} : { conformanceTarget: data.conformanceTarget }) }
+}
+
+/** An explicit TS qualification is separate from the normal Go target and optional TS comparison. */
+export function conformanceTargets(request) {
+  if (!request.conformanceScenarios.length) return []
+  if (request.conformanceTarget === 'ts') return ['ts']
+  return request.conformanceTsRequired ? ['go', 'ts'] : ['go']
 }
 
 function bindNativeReports(request, root) {
@@ -163,10 +177,7 @@ export function nativeSelectorBinding(selector, root = repositoryRoot) {
   const kind = suiteKind(binding.suite)
   const requiredKinds = []
   if (goPackages(request).length && ['unit', 'integration'].includes(kind)) requiredKinds.push(`go-${kind}`)
-  if (request.conformanceScenarios.length) {
-    requiredKinds.push('conformance-go')
-    if (request.conformanceTsRequired) requiredKinds.push('conformance-ts')
-  }
+  requiredKinds.push(...conformanceTargets(request).map(target => `conformance-${target}`))
   if (!requiredKinds.length) throw new Error(`Native selector ${selector} has no native tests.`)
   return { suite: binding.suite, selection: binding.selection, request, requiredKinds }
 }
@@ -263,6 +274,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const request = readSelectionFile(suite)
     if (!request.conformanceScenarios.length) throw new Error('Conformance scope has no exact scenario IDs.')
     process.stdout.write(request.conformanceTsRequired ? '1' : '0')
+  } else if (action === 'conformance-targets') {
+    const targets = conformanceTargets(readSelectionFile(suite))
+    if (!targets.length) throw new Error('Conformance scope has no exact scenario IDs.')
+    process.stdout.write(targets.join(' '))
   } else if (action === 'flags') {
     const request = readSelectionFile(suite)
     process.stdout.write([Number(goPackages(request).length > 0), Number(request.conformanceScenarios.length > 0),

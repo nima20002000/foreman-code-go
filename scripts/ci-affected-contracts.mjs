@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join, posix, resolve } from 'node:path'
 import { resolveImport } from '../packages/contracts/src/ciImportGraph.mjs'
-import { repositoryRoot, validateFile } from './ci-affected-scope.mjs'
+import { conformanceTargets, repositoryRoot, validateFile } from './ci-affected-scope.mjs'
 
 const code = /\.[cm]?[jt]sx?$/
 const contractsPackage = '@foreman-code/contracts'
@@ -113,7 +113,7 @@ export function affectedContracts(request, root = repositoryRoot) {
   const pending = request.files.filter(file => !file.startsWith('backend/'))
   if (request.conformanceScenarios.length) pending.push('conformance/src/main.ts')
   // The TS oracle starts these programs by path; its launcher imports do not expose their export dependencies.
-  const tsOracle = request.conformanceScenarios.length > 0 && request.conformanceTsRequired
+  const tsOracle = conformanceTargets(request).includes('ts')
   if (tsOracle) pending.push('apps/api/src/server.ts', 'apps/api/src/cli/operatorCredentials.ts')
   const paths = { has: file => !file.startsWith('../') && lstatSync(resolve(root, file), { throwIfNoEntry: false })?.isFile() }
   while (pending.length) {

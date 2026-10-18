@@ -1,7 +1,7 @@
 #!/bin/bash
 # The existing CI part names remain stable. Affected requests bind exact files and native roots.
 #   *-api: Go; *-other and unit-web*: retained TypeScript; root names: both.
-#   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
+#   integration: selected Go tests, Go conformance with TS comparison, or explicit TS qualification.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
 umask 077
@@ -135,6 +135,7 @@ fi
 affected=1
 go_selected=0
 conformance_part=0
+conformance_targets=()
 scripts_database=0
 retained_part=0
 execution_scope="$(TEST_RESULTS_OUTPUT="$test_results" node "$script_directory/ci-affected-scope.mjs" scope)" || exit 2
@@ -145,6 +146,10 @@ if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
   export SCOPE=affected
   scope_flags="$(node "$script_directory/ci-affected-scope.mjs" flags "$CI_AFFECTED_SELECTION_FILE")"
   read -r go_selected conformance_part scripts_database retained_part <<< "$scope_flags"
+  if [ "$conformance_part" = 1 ]; then
+    target_names="$(node "$script_directory/ci-affected-scope.mjs" conformance-targets "$CI_AFFECTED_SELECTION_FILE")" || exit 2
+    read -r -a conformance_targets <<< "$target_names"
+  fi
 fi
 ci_runtime_initialize
 
@@ -162,7 +167,7 @@ fi
 go_part=0
 integration_database=0
 if [ "$affected" = 1 ]; then
-  if [ "$go_selected" = 1 ] || [ "$conformance_part" = 1 ]; then go_part=1; fi
+  if [ "$go_selected" = 1 ] || [[ " ${conformance_targets[*]} " == *' go '* ]]; then go_part=1; fi
   if [ "${SUITE:-}" = integration ] && [ "$go_selected" = 1 ]; then integration_database=1; fi
 else
   case "${SUITE:-}" in
@@ -373,7 +378,7 @@ affected_retained() (
 )
 
 affected_checks() {
-  local kind="${SUITE%%-*}" comparison=0
+  local kind="${SUITE%%-*}" target
   # The helper returns before touching contracts metadata for a Go-only request.
   build_contracts || return $?
   if [ "$go_selected" = 1 ]; then
@@ -387,11 +392,9 @@ affected_checks() {
   fi
   if [ "$conformance_part" = 1 ]; then
     # Setup failures remain setup failures and never qualify a negative native proof.
-    ci_go_conformance_binary && ci_conformance_identity && ci_conformance_postgres || return $?
-    run_check ci_conformance_test go "$CI_AFFECTED_SELECTION_FILE"
-    ci_conformance_changed "$CI_AFFECTED_SELECTION_FILE" || comparison=$?
-    if [ "$comparison" -gt 1 ]; then return "$comparison"; fi
-    if [ "$comparison" = 0 ]; then run_check ci_conformance_test ts "$CI_AFFECTED_SELECTION_FILE"; fi
+    if [[ " ${conformance_targets[*]} " == *' go '* ]]; then ci_go_conformance_binary || return $?; fi
+    ci_conformance_identity && ci_conformance_postgres || return $?
+    for target in "${conformance_targets[@]}"; do run_check ci_conformance_test "$target" "$CI_AFFECTED_SELECTION_FILE"; done
   fi
   if [ "$retained_part" = 1 ]; then
     case "$kind" in unit|integration) reports+=("$state/affected-retained.vitest.json") ;; esac
