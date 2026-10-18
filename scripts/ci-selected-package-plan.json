@@ -1,0 +1,392 @@
+{
+  "source": "dbef935aec7d19701bff29d6459860b7ecdac9ea",
+  "sourceTree": "a929469af51d1f36baa395cba305e11a0fa68a92",
+  "mode": "build-and-tests",
+  "pythonTests": [],
+  "package": "./internal/harnesses/codex",
+  "packages": [
+    "./internal/harnesses/codex",
+    "./internal/harnesses/codex/protocol",
+    "./internal/harnesses/claude",
+    "./internal/harnesses/claude/queue",
+    "./internal/harnesses/discovery"
+  ],
+  "unitPackages": [
+    "./internal/harnesses/codex",
+    "./internal/harnesses/claude/queue"
+  ],
+  "unitTests": [
+    "TestTransportCorrelatesOutOfOrderResponses",
+    "TestQueuePublicErrorCompatibility"
+  ],
+  "integrationTests": [],
+  "goFiles": [],
+  "expectedUnitNamedCount": 4,
+  "race": true,
+  "testTimeout": "30s",
+  "sourceIdentities": [
+    {
+      "path": "backend/bridge/claude/README.md",
+      "blob": "4ec073d934d2d2f52c45cea22f0607764b128c2f",
+      "bytes": 6378,
+      "sha256": "f009b8a44271684430e89cb80c4bb33b646f0e7cfa9e85b397566f35081b40b9"
+    },
+    {
+      "path": "backend/bridge/claude/bridge.test.mjs",
+      "blob": "0776dc74f5f3cf39e28e87b1dfdae733c31213fe",
+      "bytes": 5723,
+      "sha256": "fa8ed6c299b5e7e5a3e1e793f9f1fa88e7c7c4161868bb14af6ee9bf9be4b55c"
+    },
+    {
+      "path": "backend/bridge/claude/claude-bridge.mjs",
+      "blob": "354c49fe2a15c569a1d7e3f90ef0472dcf102f8c",
+      "bytes": 10305,
+      "sha256": "5458c48f1b8212a658bad7cbbf0921d02f58a69677497987e56dad83c0c92ce3"
+    },
+    {
+      "path": "backend/bridge/claude/test-fixture/package.json",
+      "blob": "3b41eaa5847c6b39aa9051745263fbf1ceee6eba",
+      "bytes": 216,
+      "sha256": "192e66185674e1aa2c567e90bbe8fcf5ad9cc631952b8ecf5b51e34979cc07ff"
+    },
+    {
+      "path": "backend/bridge/claude/test-fixture/sdk.mjs",
+      "blob": "14306eac4fced54b11e1a0308700f7be40e3f844",
+      "bytes": 2033,
+      "sha256": "a81b39422eee109b7db22752b80234112de4291d5f01935d65004f5a847306f2"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/bridge_integration_test.go",
+      "blob": "7b3f1fc3dfb2b196bff980552b7722b77ce84da5",
+      "bytes": 11567,
+      "sha256": "398e9d84b0f3787cdb00a60c17077a3f5cc59b65afa5163affc2a92e7a23823f"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/client.go",
+      "blob": "f0da5ec50619b7b82bfaf1e3a9a814349f8cace8",
+      "bytes": 6735,
+      "sha256": "39d5ab9f369896b910d13f4e73a7d3a4dd4514c3a97079c0e8f9ed299eec9c14"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/client_test.go",
+      "blob": "323a34a97a86b3f11f525eadf962562346ab8dd2",
+      "bytes": 7718,
+      "sha256": "634f6a93e7087389db6d310ca98278d104ef46a1112a744b5a88e1cba24a1588"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/diagnostics_test.go",
+      "blob": "a6ea3cfb4d535596733dc197c80a2081d6a3f960",
+      "bytes": 3510,
+      "sha256": "2fdd87b115dab68e9811533fc8e82d031fc97e18253388aed21f1cb38b7e2c6a"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/protocol.go",
+      "blob": "18f8bc136a8285d63281a83c96ef3c89420678e9",
+      "bytes": 1953,
+      "sha256": "147444348e272ca553e54009bba2db2fa2383c823b5470fd15cb2aa0519bd2eb"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/query.go",
+      "blob": "dc3ceaf4f5b4c0364544f7906518a039cf13753d",
+      "bytes": 4208,
+      "sha256": "f80fb9fa4a4cd55055c952184ee3667715d44a35649e491a6a4f401477075e1e"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/README.md",
+      "blob": "10784ec82c68d8b8592d9dc058342e4725a8edbb",
+      "bytes": 6391,
+      "sha256": "51d4c9466e0e5c234b86025dfccc5886a91f8e933a50ffa1d5312769f71caa24"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/diagnostics_test.go",
+      "blob": "6f5eb4e6f9de611b7e6e3ee8843b63d043a93a20",
+      "bytes": 2269,
+      "sha256": "f3d7f6fa8fbdc5fd9a0475b9404f4d6d9b7d585b3b0c6a91b2037d99446a8fbd"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/queue.go",
+      "blob": "de269490b0fb97e5924f304a4b3b7de2138b91f2",
+      "bytes": 7112,
+      "sha256": "5328a352777a45b039dbc52575ebf4ec64a01c207f97669f61635e695e92448b"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/queue_test.go",
+      "blob": "8928f3a64b2a778a7f41f51a027ef9abbda7acad",
+      "bytes": 14428,
+      "sha256": "5b966426ec3c57ee4d2c70f1f5ce8b0af588a11d9428a29830be689a8bfd4f7e"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/sdk.go",
+      "blob": "ed68810175fdc61d34b052390203dc16a480b7c6",
+      "bytes": 2134,
+      "sha256": "9f2ea2032b7f0ebabc9aa2a5d31386dcba9e7cc564371d71ab2bdc65bba0d475"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/README.md",
+      "blob": "0ad2f6e26f65b83c0ecd6936e8e5fbda6cc11e61",
+      "bytes": 11591,
+      "sha256": "74c83d6f94aad1c83ceb430d6bbde94890bf2e7898118cd6b9dd9fed5d64fbd3"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/cancellation_test.go",
+      "blob": "b07bd4403ac4953a4f5a7b080908653aab33c2fa",
+      "bytes": 6940,
+      "sha256": "8693acce3947d6a21433804170d7b8f0c42717da5eb28d001a0f440c07ae3eab"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/client.go",
+      "blob": "95128b094b22efad40355f74d8f16aa96cda2be4",
+      "bytes": 2029,
+      "sha256": "ca67f41971aefe85348b450166864caa33431e76c32e149c1e508a54b8d07725"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/delivery.go",
+      "blob": "0f7fa7f7be3115664857614a724d2f320c01e363",
+      "bytes": 4687,
+      "sha256": "bc53ef64f030936305c93b27e4efb8af6fa4bf400baa27a9087d1c7f2f939e0f"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/delivery_test.go",
+      "blob": "49b7846210b4910bbc80539511e61a75abe4390f",
+      "bytes": 4358,
+      "sha256": "66c87ef06d05416fbdb007bb23aac6f61f6d25eb8af2c93dd0f22c3064293ca0"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/framing.go",
+      "blob": "18edcc48b07e6d65b882102cc2ab70cfcfc89a71",
+      "bytes": 6708,
+      "sha256": "a5b3bf3e8cd06a813558dde392b56f3dec16a8e1cf45c0893dc2e12fa846abb8"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol.go",
+      "blob": "2c1d9e534da44cd6bae65a7be7cebc5894108ea5",
+      "bytes": 3460,
+      "sha256": "813e8023b237fc69101cb24861d6201361e303db0b2f3eab62def7d41b655bcc"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/generate_types.py",
+      "blob": "7e436750358c8479bda5be58b0b3d228e4da57c8",
+      "bytes": 8432,
+      "sha256": "4837be88233671f7df868e3f8e389a4cda5cdecbf1ce3f865397dd1a0279cf2e"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/generate_types_test.py",
+      "blob": "187a86e8d9344dc8c9d84d2c1739b57398041c5c",
+      "bytes": 5224,
+      "sha256": "beb3b9f741aaa304db50e3a3418f17fee9bc2d2ea32b046672cee8bed538689e"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/native-inputs.json",
+      "blob": "ef286445cf35c56ff3d89eab4dd06a6e28f2e66e",
+      "bytes": 984,
+      "sha256": "129b415793c921db8727640e05a2cc68bd44b6450dee806e3ec1ece0807c5c05"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/optional.go",
+      "blob": "152d5fe1d0bf78a59284104393717040c073d52c",
+      "bytes": 1424,
+      "sha256": "a1ba004f5115aa890d6215db88fdb72db7f25e198816cc066c2764864dfab116"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/optional_test.go",
+      "blob": "46cf1f2bdbe6854ab651bcef77ea18e2905c0372",
+      "bytes": 1940,
+      "sha256": "84b6d0f7cb8d0756ac1a12d4e4b081d0c721c51c845541e1280804db43519ef6"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/types.gen.go",
+      "blob": "7fc2a587cb26656be14ef062d5739983197d2d43",
+      "bytes": 30940,
+      "sha256": "8a966f0c0a54c6e21e3b0513719032f95217564e3c984fd081c1bec4433eafda"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/redaction.go",
+      "blob": "620d96975975f015262049255d04839f19bdee16",
+      "bytes": 1760,
+      "sha256": "62de5cb3c3c714ee0689c9768388d60670a3e874def45b0e6cc4648afabd367d"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/scripted_server_integration_test.go",
+      "blob": "eda5943ad00cb5110c417303617299af59a426dc",
+      "bytes": 3986,
+      "sha256": "4eafa5f2ffe9e1cd56741ebafe8c13ca8da2f56067d7417c4a0206f1b1f4797a"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/transport.go",
+      "blob": "f04af92f1755bc8a94ae96f47c9d2ef391dcc656",
+      "bytes": 9208,
+      "sha256": "bd2ef10b09293c3ab1863cb9bd16aae2a71eac9c791220f94dac862f585100d8"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/transport_fixture_test.go",
+      "blob": "15f96e729913dc9c45c3c4c93ddaddefb6d04b09",
+      "bytes": 5384,
+      "sha256": "2f314d1bd81bbbbb347d74691639b31bccedff4be1b21bf801b224d3df6aadf1"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/transport_test.go",
+      "blob": "c030f5b0c8d53ffde9fea68f53dd2a9e9336549c",
+      "bytes": 9258,
+      "sha256": "5bede552846fd99dd8592e1aaa3bb22019341c47a50883a612ecdc116a2266bb"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/access_other.go",
+      "blob": "7dd9c3d4f551d481d12c2e1f68546f6b2ab4bddc",
+      "bytes": 253,
+      "sha256": "d781bfa1c5a8b93149fa8daa29f71aee27e73f3627c845683af275c912f9b5c0"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/access_unix.go",
+      "blob": "1f0ee7a7adfb31f96e2db6ddf75273dfe67b2e38",
+      "bytes": 516,
+      "sha256": "ca703f8ad7d0c68a339cfab059e56f037eac65a3e706cf48731cb3b5b15719b4"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/diagnostics.go",
+      "blob": "393a14c39c143cd70c3fd4b3bd012609d8ac2b73",
+      "bytes": 366,
+      "sha256": "8e82a1be25d4a28bc5bf987df037169dee377c11ef71cd21e54b52fc812b698d"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/diagnostics_test.go",
+      "blob": "999de9d1b79f1a9ac50e5645fb669070e351ffc6",
+      "bytes": 1784,
+      "sha256": "c47a11a5709a02c23ecf62498bd901e752f17e7814b3334132bb2b4350d6e252"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/fingerprint.go",
+      "blob": "deaa58bfe413aac53b5702f68f4f09101edb4659",
+      "bytes": 4493,
+      "sha256": "6227ec15818327405ce33ac05db9fc0672e21dcb6192c88ee43b4c9a9b25fd84"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/fingerprint_darwin.go",
+      "blob": "3ed105b8a736da3053587fab42868f546de3694d",
+      "bytes": 543,
+      "sha256": "bf4654cb39e4e5c7e20eeb9e9bd976d24f2c1bee25654c11edc19a89e2b953a0"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/fingerprint_linux.go",
+      "blob": "05b81e8115475e204f8da2da7b21f34482b807c3",
+      "bytes": 523,
+      "sha256": "c24fe57311b8216ac2f343d8cd9488fc8339aaabc499b13a7c19737f69c56725"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/fingerprint_other.go",
+      "blob": "87a53dfe0672b87f514de73decf060c3cc914190",
+      "bytes": 266,
+      "sha256": "a66604360b736838abf6876fbb402c69952c6519fe9c59e6c63f65a4cdee12e0"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/fingerprint_test.go",
+      "blob": "3c2a42fcbd752a2b891b6377502b51df5b785ff7",
+      "bytes": 4790,
+      "sha256": "0b3f6fd6a45351e31bee32a82967b4b383927c966ee057933f6e6d36aa14129f"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/launcher.go",
+      "blob": "06f2f12f8233923d6eed340bc0f15c3de60a73bd",
+      "bytes": 7013,
+      "sha256": "35b7a2b55856b3c9fe32b91c81aee0f7ef248d3028928de8eb51dbad3ae6ceab"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/launcher_test.go",
+      "blob": "998a667bf77a01fc7685569f18be061f68222b70",
+      "bytes": 9977,
+      "sha256": "afae2560490c9eba83a84281b1f5a17de5d849e0726bde67c0c0a876fb4c4763"
+    },
+    {
+      "path": "backend/internal/harnesses/discovery/types.go",
+      "blob": "82ac976cfe7bfc1e7ae2939f4b9c7cb617bb43a1",
+      "bytes": 1744,
+      "sha256": "9e1b0e5d62452cc04d77da48b986d0b65374abf2e61b16debcc6fb418484b6b6"
+    },
+    {
+      "path": "backend/go.mod",
+      "blob": "088b974fed5466d50a6a258ef3981ad32783aae8",
+      "bytes": 881,
+      "sha256": "88f7424ff5639cc636a209a97b0e70cfc316b3ceadaa4c8f0961f5a9525c34eb"
+    },
+    {
+      "path": "backend/go.sum",
+      "blob": "f39df7ffee315e4aa566acdfdfb4bdedf03ce66b",
+      "bytes": 10419,
+      "sha256": "d0471fc8f3daa34603aa48d52ff3eb7cf14c421d045a77fb0fcd914af2fde735"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b",
+      "bytes": 1535,
+      "sha256": "dad2c3793bab1a250081390166b66296e84d3ac062cead192420c3134d9ba537"
+    }
+  ],
+  "maps": [
+    {
+      "path": ".benchmark/h-package-integration/ci-proposal.json",
+      "sha256": "4b22bde75a8b151bf5f66034f594c34f911c4f6c53ae261c86b83dffe07ac840"
+    },
+    {
+      "path": ".benchmark/h-package-integration/composition.json",
+      "sha256": "6a47feb1f7e981ab3927a94b1cba871262d9eb401501567be1d03721d8d52489"
+    },
+    {
+      "path": ".benchmark/h-package-integration/owned-entry-map.json",
+      "sha256": "b4fdd6f2196019f07e710a8e056de5432201290757b794be98909e085e16e3f1"
+    },
+    {
+      "path": ".benchmark/h-package-integration/protected-entry-map.json",
+      "sha256": "08e29c21600a7231326bee948f8a4f3c74e9ab879f83550b124efd941a68f2f5"
+    },
+    {
+      "path": ".benchmark/h-package-integration/main-full-tree.json",
+      "sha256": "08e29c21600a7231326bee948f8a4f3c74e9ab879f83550b124efd941a68f2f5"
+    },
+    {
+      "path": ".benchmark/h-package-integration/source-full-tree.json",
+      "sha256": "1513853fe2492878eb6a7acfd034fbcea77553e6e7c8955e3cf86e42b068d00a"
+    },
+    {
+      "path": ".benchmark/h-package-integration/integration-full-tree.json",
+      "sha256": "691571fc5e373f12a5a2a4a549a00bc012c755893789be8d131cdf41a1a77b84"
+    },
+    {
+      "path": ".benchmark/h-package-integration/startup-closure-map.json",
+      "sha256": "eaaebf663b3c49059471bd08eebbd2f95875c21defc94e25d9798ac594418d63"
+    },
+    {
+      "path": ".benchmark/h-package-integration/startup-embedded-map.json",
+      "sha256": "2becbcbec1d25c7e4fc9aa3c77fe00dd80af99d99485dfb36012007750b67d7b"
+    },
+    {
+      "path": ".benchmark/h-package-integration/dependency-impact-proof.json",
+      "sha256": "45e1f72a5c0780d38e18f7033e8af8505b1134050a7f01dee66ca520001459a4"
+    }
+  ],
+  "integrationParents": [
+    "2e6fa47ba6fbe02dfd3293f609e905f7e88cbf65",
+    "e15162c66798b30cfca17deb01e86c9d703a3d95"
+  ],
+  "originalSource": "e15162c66798b30cfca17deb01e86c9d703a3d95",
+  "preservedMainEntries": 6143,
+  "HPostimages": 46,
+  "startupClosure": {
+    "packages": 10,
+    "goFiles": 37,
+    "embeds": 5,
+    "unchanged": true,
+    "runtime": "notrun:unchangedstartupdependencies"
+  },
+  "exclusions": [
+    "No old27/30/11/20/12/4 sets",
+    "No Python/producer/generator execution",
+    "No Staticcheck, formatter or vet",
+    "No startup/cmd/conformance/DB/full suites",
+    "No provider or Node bridge integration"
+  ],
+  "previousScopesRepeated": false,
+  "historicalCleanupFailure": {
+    "ticket": "29966400-584f-4724-8e85-220d04fe3028",
+    "cleanup": false,
+    "relabelled": false
+  }
+}
