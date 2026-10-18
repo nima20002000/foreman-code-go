@@ -13,6 +13,17 @@ fixture next to it. Model discovery uses the shared Codex default model, and MCP
 configuration points at this run's random API port. Default native text,
 resume/fork, pending input and interruption behavior comes from that fixture.
 
+Setup builds `codex-forwarder.c` with the real `cc` executable in a fresh owned
+build directory. The resulting native executable binds the current Node runtime
+and the isolated fixture script as absolute UTF-8 paths, then uses `execv` to
+forward arguments, standard streams, signals and the fixture's exit status.
+Compiler shutdown and owned-process closure are checked before build files are
+removed or the completed executable is selected through the existing PATH and
+`CODEX_BINARY` settings. No installed provider is copied or changed. A missing or
+failing compiler is a setup failure. These CLI checks do not establish native
+qualification; the TS target must still pass its unchanged public admission and
+qualification behavior through Foreman CI.
+
 An opt-in adjacent `scripted-turns.cjs` extension handles the native qualification
 Markdown task. It reads the exact revision through `files_read`, writes only the
 named result in a writable native workspace within the fresh fixture directory,

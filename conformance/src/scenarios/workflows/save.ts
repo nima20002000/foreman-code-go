@@ -5,6 +5,7 @@ import {
   type WorkflowDefinitionV3,
 } from '@foreman-code/contracts/wave25'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { ScenarioContext } from '../../scenario.js'
 import type { ExecutableWorkflow } from './authoring.js'
 import { workflowDigest } from './digest.js'
@@ -19,7 +20,9 @@ export async function saveExecutableWorkflow(ctx: ScenarioContext, fixture: Exec
     expectedWorkflowVersionId: first.id, expectedAgentConfigurationVersionIds: first.agentConfigurationVersionIds, graph,
   })
   const response = await ctx.http.request('PUT', fixture.definitionPath, { body: input })
-  const saved = CurrentWorkflowSaveResultSchema.parse(response.body).value
+  const saved = parseSuccessResponse(response, CurrentWorkflowSaveResultSchema, {
+    method: 'PUT', path: fixture.definitionPath, status: 200, contract: 'CurrentWorkflowSaveResult',
+  }).value
   const definition = { ...graph, version: first.version + 1, updatedAt: saved.version.createdAt }
   const contentHash = workflowDigest({ definition, configurations: first.agentConfigurationVersionIds,
     entryNodeId: definition.entryNodeId })

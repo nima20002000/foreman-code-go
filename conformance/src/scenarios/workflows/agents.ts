@@ -6,6 +6,7 @@ import {
 } from '@foreman-code/contracts'
 import { AgentCreateInputSchema, AgentMutationResultSchema } from '@foreman-code/contracts/management'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { ScenarioContext } from '../../scenario.js'
 
 export function independentCodexSessions() {
@@ -28,7 +29,9 @@ export async function createCodexAgent(
     assignedSkills: [], nativeTools,
   })
   const response = await ctx.http.request('POST', `/api/management/workspaces/${workspaceId}/agents`, { body: input })
-  const result = AgentMutationResultSchema.parse(response.body)
+  const result = parseSuccessResponse(response, AgentMutationResultSchema, {
+    method: 'POST', path: `/api/management/workspaces/${workspaceId}/agents`, status: 201, contract: 'AgentMutationResult',
+  })
   assertResponse(response, { status: 201, body: {
     value: { agent: {
       id: input.agentId, name: input.name, productRole: 'coder',

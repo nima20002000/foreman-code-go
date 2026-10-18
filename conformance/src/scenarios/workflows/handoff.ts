@@ -7,7 +7,6 @@ import { assertJson, assertResponse } from '../../assertions.js'
 import type { Scenario, ScenarioContext } from '../../scenario.js'
 import { assertProtectedRead, readCoverage } from '../http/support.js'
 import { assertInvalidCallerDenied, callTool, mcpClaims, operatorClients } from '../mcp/support.js'
-import { independentCodexSessions } from './agents.js'
 import { createExecutableWorkflow } from './authoring.js'
 import { installCodexScripts } from './codexScript.js'
 import { workflowDigest } from './digest.js'
@@ -35,7 +34,6 @@ export const handoffWorkflowScenarios: Scenario[] = [{
   async run(ctx) {
     const prompts = ['Conformance request saved work review', 'Conformance accept received work review']
     const fixture = await createExecutableWorkflow(ctx, { name: 'Accept exact work handoff', form: 'sequential',
-      configuration: independentCodexSessions(),
       configureGraph: definition => ({ ...definition, handoffs: { contractVersion: 1 },
         nodes: definition.nodes.map((node, index) => ({ ...node, initialPrompt: prompts[index]!,
           ...(index === 0 ? { choice: { outcomes: [{ outcome: 'review',
