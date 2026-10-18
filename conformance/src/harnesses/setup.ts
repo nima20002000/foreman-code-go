@@ -1,5 +1,5 @@
 import { chmod, copyFile, cp, mkdir, writeFile } from 'node:fs/promises'
-import { delimiter, dirname, isAbsolute, join, relative } from 'node:path'
+import { delimiter, isAbsolute, join, relative } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
@@ -7,6 +7,7 @@ import { resolveProductEnvironment } from '@foreman-code/contracts/product-envir
 import { appMcpDirectory } from '@foreman-code/contracts/product-environment-node'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { createDeviceTls } from './tls.js'
+import { installCodexExecutable } from './nativeCodex.js'
 
 export interface FixtureSetupOptions {
   directory: string
@@ -57,8 +58,7 @@ export async function setupFixtures(options: FixtureSetupOptions) {
   await writeFile(join(codex, 'fixture-scope.json'), fixtureScope, { mode: 0o600, flag: 'wx' })
   await writeFile(join(claude, 'fixture-scope.json'), fixtureScope, { mode: 0o600, flag: 'wx' })
   const codexBinary = join(bin, 'codex')
-  const requirePath = './' + relative(dirname(codexBinary), join(codex, 'app-server.cjs')).split('\\').join('/')
-  await writeFile(codexBinary, `#!/usr/bin/env node\nrequire(${JSON.stringify(requirePath)})\n`, { mode: 0o700, flag: 'wx' })
+  await installCodexExecutable(codexBinary, join(codex, 'app-server.cjs'), options.environment)
   const claudeBinary = join(bin, 'claude')
   const cliPath = fileURLToPath(new URL('claude-cli.cjs', source))
   await copyFile(cliPath, claudeBinary)

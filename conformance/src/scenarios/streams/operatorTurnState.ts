@@ -7,6 +7,7 @@ import {
 import { OperatorConversationHistoryPageSchema } from '@foreman-code/contracts/operator-chat'
 import { messageAttachmentIdentity, type FileWithRevision } from '@foreman-code/contracts/files'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { ScenarioContext } from '../../scenario.js'
 
 export async function readOperatorState(context: ScenarioContext, id: string, token?: string) {
@@ -27,6 +28,13 @@ export async function readOperatorHistory(context: ScenarioContext, id: string, 
 
 export function assertAcceptedOperatorTurn(response: Awaited<ReturnType<ScenarioContext['http']['request']>>,
   before: OperatorConversationState, input: SendOperatorMessageRequest, files: readonly FileWithRevision[]) {
+  // Success-only normalization must not hide an HTTP error or a malformed acceptance envelope.
+  const result = parseSuccessResponse(response, SendOperatorMessageResponseSchema, {
+    method: 'POST',
+    path: `/api/operator/conversations/${before.conversation.id}/messages`,
+    status: 202,
+    contract: 'SendOperatorMessageResponse',
+  })
   const base = structuredClone(before)
   delete base.activitySnapshot
   delete base.qualificationKey
@@ -44,7 +52,6 @@ export function assertAcceptedOperatorTurn(response: Awaited<ReturnType<Scenario
     { pointer: '/body/state/messages/0/createdAt', kind: 'timestamp' },
     { pointer: '/body/state/messages/0/updatedAt', kind: 'timestamp' },
   ])
-  const result = SendOperatorMessageResponseSchema.parse(response.body)
   assert.deepStrictEqual(result, response.body)
   const message = result.state.messages[0]!
   assert.equal(message.createdAt, message.updatedAt)
