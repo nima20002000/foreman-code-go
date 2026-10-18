@@ -1,0 +1,61 @@
+{
+  "source": "6c5ad8f6c36119e87a8b48d9d1ac1f4d56535a7c",
+  "sourceTree": "cbb0d915acfe53b50a5ac9bee6276f5356b0e7a0",
+  "mode": "format-only",
+  "package": "./internal/mcpserver",
+  "packages": [],
+  "unitTests": [],
+  "integrationTests": [],
+  "race": false,
+  "staticcheckTags": [],
+  "goFiles": [
+    "internal/mcpserver/authentication_test.go",
+    "internal/mcpserver/server.go"
+  ],
+  "inputIdentities": [
+    {
+      "path": "backend/internal/mcpserver/authentication_test.go",
+      "blob": "b0ddbc7d9c895f4224c89cadee6f2c2e299499ae"
+    },
+    {
+      "path": "backend/internal/mcpserver/server.go",
+      "blob": "657a5a3abc3396dd51a733c9938de33809138a43"
+    }
+  ],
+  "sourceProvenance": {
+    "mapPath": ".benchmark/mcp-reauth-ci/formatter-publication/publication-map.json",
+    "mapSHA256": "11f892a9862a70f7e87984d68030038093d345014bde3deb440971c4fca08e89",
+    "verifiedBlobs": [
+      {
+        "path": "backend/internal/mcpserver/server.go",
+        "beforeBlob": "092a30fc596a3657bc0852aaa0e78a8ba73179e4",
+        "beforeSHA256": "f231a1487fb015e45244ffbe9489e6d13d21515b04f9ee41371c45f7d7ce0358",
+        "afterBlob": "657a5a3abc3396dd51a733c9938de33809138a43",
+        "afterSHA256": "8cc464c810fd444a02bf93cef8b64e2d7f6f6eb5bc691c6c138d4e650088e136",
+        "tokensCommentsLiterals": "identical",
+        "verified": true
+      },
+      {
+        "path": "backend/internal/mcpserver/authentication_test.go",
+        "beforeBlob": "0bc187d2bd379274b40e73f778475906d9da5e99",
+        "beforeSHA256": "c0841fbc813246ffdf6ed492ca3dbca46c03b33f77ce3fea65a8999f8269a181",
+        "afterBlob": "b0ddbc7d9c895f4224c89cadee6f2c2e299499ae",
+        "afterSHA256": "d873ded676fcea04303c66540dc231ca917c0bb63ad35670af2ff337383e2cd0",
+        "tokensCommentsLiterals": "identical",
+        "verified": true
+      }
+    ],
+    "capturedFormatterTicket": "caaeb858-34d4-4225-ae9a-2511569e6f8d",
+    "capturedArtifactSHA256": "89126dad51367228e287690f2e2fb794dd97d2a9f13e160c1cd91aa4375cb8ce",
+    "patchSHA256": "cb3fa47a5d927cae82c1e0dd1ed604495a6b22c3542744fdd58eafecc384ef61",
+    "formattedSource": "bf6b6d8442d556737e388e1363f1c6fe512326af",
+    "formattedSourceTree": "7986e7ea682daa8a86b386586430488e54c28226"
+  },
+  "fullSuiteAuthorized": false,
+  "testsAuthorized": 0,
+  "buildVetStaticcheckAuthorized": false,
+  "inheritedOverallMergeHold": [
+    "body ST1005/format",
+    "logging nonfinite assertion/ST1012/format"
+  ]
+}
