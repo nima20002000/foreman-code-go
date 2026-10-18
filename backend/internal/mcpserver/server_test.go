@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nima20002000/foreman-code-go/backend/internal/app"
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
+	"github.com/nima20002000/foreman-code-go/backend/internal/jsonvalue"
 	"github.com/nima20002000/foreman-code-go/backend/internal/mcpserver"
 )
 
@@ -31,6 +32,15 @@ func (a *counterAccess) Authenticate(request *http.Request) (context.Context, er
 		return nil, domainerror.New("AUTH_INVALID", "The supplied credential is invalid.", 401, nil)
 	}
 	return context.WithValue(request.Context(), principalKey{}, token), nil
+}
+
+func (a *counterAccess) PrincipalID(ctx context.Context) (string, error) {
+	token, _ := ctx.Value(principalKey{}).(string)
+	text, err := jsonvalue.FromUTF8(token)
+	if err != nil {
+		return "", err
+	}
+	return text.IdentityKey(), nil
 }
 
 func (a *counterAccess) Visible(ctx context.Context, name string) (bool, error) {
