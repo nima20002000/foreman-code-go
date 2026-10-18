@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: managed-file-bytes at immutable source 1b639df9b4e3ae5279b639df72b215e368b78a98.

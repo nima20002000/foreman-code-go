@@ -1,0 +1,197 @@
+{
+  "source": "1b639df9b4e3ae5279b639df72b215e368b78a98",
+  "sourceTree": "8cf7167db018a7cf8d77c5d5bb88d2d9153cb846",
+  "package": "./internal/files",
+  "goFiles": [
+    "internal/files/storage.go",
+    "internal/files/storage_directory_linux_test.go",
+    "internal/files/storage_platform_linux.go",
+    "internal/files/storage_platform_other.go",
+    "internal/files/storage_read.go",
+    "internal/files/storage_read_linux_test.go",
+    "internal/files/storage_test_helpers_linux_test.go",
+    "internal/files/storage_upload.go",
+    "internal/files/storage_upload_linux_test.go"
+  ],
+  "unitTests": [
+    "TestManagedBytesAcceptsEmptyValidatedContent",
+    "TestManagedBytesCanceledAllocationCleansCrashPublication",
+    "TestManagedBytesCancellationUnblocksReadAndAllowsRetry",
+    "TestManagedBytesRejectsHostPathsAsStorageKeys",
+    "TestManagedBytesRejectsInvalidConfiguration",
+    "TestManagedBytesRejectsMismatchedAndOversizedUploads",
+    "TestManagedBytesRejectsSymlinkAndPublicDirectories",
+    "TestManagedBytesRejectsTemporaryAndOverlappingRoots",
+    "TestManagedBytesRequiresValidatorAndDiscardsDeniedUpload",
+    "TestManagedBytesRetryNeverOverwritesPublishedContent",
+    "TestManagedBytesSnapshotEnforcesPinsRangesAndClose",
+    "TestManagedBytesUploadFinalizeAndReopen"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "expectedUnitNamedCount": 18,
+  "staticcheckTags": [
+    ""
+  ],
+  "filesFixtureRequired": true,
+  "sourceProvenance": {
+    "candidate": "1b639df9b4e3ae5279b639df72b215e368b78a98",
+    "tree": "8cf7167db018a7cf8d77c5d5bb88d2d9153cb846",
+    "parents": [
+      "c8b7736c597161177cb8c089756de305587d391a"
+    ],
+    "fullBase": "7fa547058109519a99c904493c916662fde6a474",
+    "scopePaths": [
+      "backend/internal/files/storage.go",
+      "backend/internal/files/storage_directory_linux_test.go",
+      "backend/internal/files/storage_platform_linux.go",
+      "backend/internal/files/storage_platform_other.go",
+      "backend/internal/files/storage_read.go",
+      "backend/internal/files/storage_read_linux_test.go",
+      "backend/internal/files/storage_test_helpers_linux_test.go",
+      "backend/internal/files/storage_upload.go",
+      "backend/internal/files/storage_upload_linux_test.go"
+    ],
+    "manifestPostimagesMatch": true,
+    "rawCommitMatches": true,
+    "patchFullTreeMatches": true,
+    "postimages": [
+      {
+        "path": "backend/internal/files/storage.go",
+        "blob": "f77e17afd384f0ee38b785da5407d6bddbcad8bc",
+        "sha256": "08b9b7fcc9cd0cde8c797b083436fb7110e734d3c5fc1fb14aa476d018bbf734",
+        "bytes": 6828
+      },
+      {
+        "path": "backend/internal/files/storage_directory_linux_test.go",
+        "blob": "61be8908e04b69e3e528888a2028dc60c76565be",
+        "sha256": "e32bd2bb16035b1089169c0400bae82a26474f7ea1a80f84178a8dabde7bb263",
+        "bytes": 3002
+      },
+      {
+        "path": "backend/internal/files/storage_platform_linux.go",
+        "blob": "6a90f400906dc1b11d7eedaab0fcf27c16b94f21",
+        "sha256": "4304ea4071289fa7f1040abbc44e463d6bd9337a6375b2547ba7fdf98048d66d",
+        "bytes": 826
+      },
+      {
+        "path": "backend/internal/files/storage_platform_other.go",
+        "blob": "1032eb1cd039db38804a6d5fe20af86bcb0eb327",
+        "sha256": "6e841609329f4642680d134d0dd1e32322b427f5078b76bcf6d3f44b3eca16f6",
+        "bytes": 696
+      },
+      {
+        "path": "backend/internal/files/storage_read.go",
+        "blob": "1c71362c9039d2d668704d056bcc7b5a8e843671",
+        "sha256": "98124be3c8aa8e9f2608057fc4ca94de2ea1e7c10ca3d7ee5496dec7306321d1",
+        "bytes": 2796
+      },
+      {
+        "path": "backend/internal/files/storage_read_linux_test.go",
+        "blob": "3441e17237722d7e26c234d9845fbc0b0bb5a3ef",
+        "sha256": "f9e20c100fbba2a1c9edd6386360a7b934204313faaa7cd60cc14ebcf599971a",
+        "bytes": 2649
+      },
+      {
+        "path": "backend/internal/files/storage_test_helpers_linux_test.go",
+        "blob": "6e4e4e963644bc66598b8224ec140420b28b4cec",
+        "sha256": "291df563432ac117392fba98eb399973340bfd8eedf6fdc8060a3b8e04943a3f",
+        "bytes": 3910
+      },
+      {
+        "path": "backend/internal/files/storage_upload.go",
+        "blob": "eb9ab8327703f04434ed32267b3ad455904b6c79",
+        "sha256": "e798303f5e862e1d98c18f760d4d5fd1c51f245ad5be208289f7466aed61b772",
+        "bytes": 9413
+      },
+      {
+        "path": "backend/internal/files/storage_upload_linux_test.go",
+        "blob": "624bc95c620517f5cb074732ad560c1683812a31",
+        "sha256": "76acb9fbbdda0af63257f9475406d5a3d712871cb35545e16b29cc0490f4f2ba",
+        "bytes": 7552
+      }
+    ],
+    "authoredGoTests": [
+      {
+        "name": "TestManagedBytesRejectsInvalidConfiguration",
+        "file": "backend/internal/files/storage_directory_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRejectsTemporaryAndOverlappingRoots",
+        "file": "backend/internal/files/storage_directory_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRejectsSymlinkAndPublicDirectories",
+        "file": "backend/internal/files/storage_directory_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRejectsHostPathsAsStorageKeys",
+        "file": "backend/internal/files/storage_directory_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesSnapshotEnforcesPinsRangesAndClose",
+        "file": "backend/internal/files/storage_read_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesCanceledAllocationCleansCrashPublication",
+        "file": "backend/internal/files/storage_read_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesUploadFinalizeAndReopen",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRejectsMismatchedAndOversizedUploads",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRequiresValidatorAndDiscardsDeniedUpload",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesRetryNeverOverwritesPublishedContent",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesCancellationUnblocksReadAndAllowsRetry",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      },
+      {
+        "name": "TestManagedBytesAcceptsEmptyValidatedContent",
+        "file": "backend/internal/files/storage_upload_linux_test.go",
+        "constraints": "none"
+      }
+    ],
+    "numstat": "226\t0\tbackend/internal/files/storage.go\n89\t0\tbackend/internal/files/storage_directory_linux_test.go\n39\t0\tbackend/internal/files/storage_platform_linux.go\n25\t0\tbackend/internal/files/storage_platform_other.go\n98\t0\tbackend/internal/files/storage_read.go\n69\t0\tbackend/internal/files/storage_read_linux_test.go\n122\t0\tbackend/internal/files/storage_test_helpers_linux_test.go\n324\t0\tbackend/internal/files/storage_upload.go\n179\t0\tbackend/internal/files/storage_upload_linux_test.go\n",
+    "execution": "static-only; no runtime verification by intake",
+    "prReadback": {
+      "additions": 1171,
+      "baseRefName": "main",
+      "changedFiles": 9,
+      "deletions": 0,
+      "headRefName": "go/checkpoint-managed-file-bytes-1b639df",
+      "headRefOid": "1b639df9b4e3ae5279b639df72b215e368b78a98",
+      "isDraft": true,
+      "number": 30,
+      "state": "OPEN",
+      "url": "https://github.com/nima20002000/foreman-code-go/pull/30"
+    },
+    "blockingFindings": [],
+    "checksDispatchedByIntake": false,
+    "localRuntimeExecuted": false
+  },
+  "ordinaryDuplicateExcludedByRoot": true,
+  "mode": "package"
+}
