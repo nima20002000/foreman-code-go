@@ -1,0 +1,7 @@
+{
+  "name": "@anthropic-ai/claude-agent-sdk",
+  "version": "0.3.284",
+  "type": "module",
+  "private": true,
+  "description": "Owned bridge behavioral fixture, never an official SDK installation or qualification."
+}

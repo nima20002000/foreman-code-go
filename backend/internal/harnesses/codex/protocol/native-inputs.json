@@ -1,0 +1,27 @@
+{
+  "repository": "nima20002000/foreman-code-go",
+  "reference_commit": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "schema": {
+    "path": "apps/api/test/fixtures/codex-protocol.schemas.json",
+    "git_blob": "7de4646ea2657038e164609d9473c76c1be7c843",
+    "bytes": 688845,
+    "sha256": "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a",
+    "trailing_newline": false,
+    "title": "CodexAppServerProtocol",
+    "schema_draft": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "top_level_definitions": 83,
+    "v2_definitions": 618
+  },
+  "method_source": {
+    "path": "scripts/generate-codex-method-types.mjs",
+    "git_blob": "7403cbbd4408f3a30b729060cd2811f9f194352e",
+    "bytes": 3229,
+    "sha256": "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4"
+  },
+  "version_source": {
+    "path": "apps/api/test/fixtures/codex-version.ts",
+    "recorded_cli_version": "codex-cli 0.154.0"
+  },
+  "runtime_qualification": false
+}
