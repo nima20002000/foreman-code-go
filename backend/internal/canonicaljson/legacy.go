@@ -15,8 +15,8 @@ func NumericKeysFirstLegacy(value any) (string, error) {
 	}
 	e := encoder{
 		numericKeysFirst: true,
-		limit: int64(^uint64(0) >> 1),
-		active: make(map[identity]bool),
+		limit:            int64(^uint64(0) >> 1),
+		active:           make(map[identity]bool),
 	}
 	if err := e.value(value, 0); err != nil {
 		return "", err
@@ -35,4 +35,3 @@ func legacyKeyLess(left, right UTF16String) bool {
 	}
 	return compareUnits(left, right) < 0
 }
-

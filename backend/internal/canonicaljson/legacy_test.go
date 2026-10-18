@@ -19,11 +19,11 @@ func TestNumericKeysFirstLegacyReferenceVectors(t *testing.T) {
 	}
 	var file struct {
 		SchemaVersion int `json:"schemaVersion"`
-		Vectors []struct {
-			ID string `json:"id"`
-			Input vectorInput `json:"input"`
+		Vectors       []struct {
+			ID            string        `json:"id"`
+			Input         vectorInput   `json:"input"`
 			NumericLegacy *vectorResult `json:"numericLegacy"`
-			LocaleLegacy *vectorResult `json:"localeLegacy"`
+			LocaleLegacy  *vectorResult `json:"localeLegacy"`
 		} `json:"vectors"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {

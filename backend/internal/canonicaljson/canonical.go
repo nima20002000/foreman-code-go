@@ -13,9 +13,9 @@ import (
 const (
 	// DefaultMaxBytes is the frozen canonicalGraphJson default limit.
 	DefaultMaxBytes int64 = 8 * 1024 * 1024
-	maxSafeInteger int64 = 1<<53 - 1
-	maxDepth            = 32
-	maxNodes            = 100_000
+	maxSafeInteger  int64 = 1<<53 - 1
+	maxDepth              = 32
+	maxNodes              = 100_000
 )
 
 var (
@@ -45,19 +45,19 @@ type Member = jsonvalue.Member
 type Object = jsonvalue.Object
 
 type identity struct {
-	typeOf reflect.Type
+	typeOf  reflect.Type
 	pointer uintptr
-	length int
+	length  int
 }
 
 type encoder struct {
-	strict  bool
+	strict           bool
 	numericKeysFirst bool
-	limit   int64
-	bytes   int64
-	visited int
-	active  map[identity]bool
-	out     strings.Builder
+	limit            int64
+	bytes            int64
+	visited          int
+	active           map[identity]bool
+	out              strings.Builder
 }
 
 // Canonical serializes a JSON-shaped Go value with the frozen canonicalJson

@@ -38,19 +38,19 @@ const (
 )
 
 type frame struct {
-	kind byte
-	state state
-	array []any
-	object Object
+	kind      byte
+	state     state
+	array     []any
+	object    Object
 	positions map[string]int
-	key UTF16String
+	key       UTF16String
 }
 
 type parser struct {
-	data []byte
-	offset int
-	frames []frame
-	root any
+	data     []byte
+	offset   int
+	frames   []frame
+	root     any
 	complete bool
 }
 
@@ -146,13 +146,19 @@ func (p *parser) value() error {
 	case '"':
 		value, err = p.string()
 	case 't':
-		if !p.literal("true") { return p.invalid("expected true") }
+		if !p.literal("true") {
+			return p.invalid("expected true")
+		}
 		value = true
 	case 'f':
-		if !p.literal("false") { return p.invalid("expected false") }
+		if !p.literal("false") {
+			return p.invalid("expected false")
+		}
 		value = false
 	case 'n':
-		if !p.literal("null") { return p.invalid("expected null") }
+		if !p.literal("null") {
+			return p.invalid("expected null")
+		}
 	default:
 		value, err = p.number()
 	}
@@ -185,7 +191,7 @@ func (p *parser) attach(value any) {
 }
 
 func (p *parser) close() {
-	last := len(p.frames)-1
+	last := len(p.frames) - 1
 	current := p.frames[last]
 	p.frames[last] = frame{}
 	p.frames = p.frames[:last]
@@ -196,7 +202,9 @@ func (p *parser) close() {
 	sort.SliceStable(current.object, func(left, right int) bool {
 		a, aIndex := current.object[left].Key.ArrayIndex()
 		b, bIndex := current.object[right].Key.ArrayIndex()
-		if aIndex && bIndex { return a < b }
+		if aIndex && bIndex {
+			return a < b
+		}
 		return aIndex && !bIndex
 	})
 	p.attach(current.object)
@@ -205,8 +213,10 @@ func (p *parser) close() {
 func (p *parser) space() {
 	for p.offset < len(p.data) {
 		switch p.data[p.offset] {
-		case ' ', '\t', '\r', '\n': p.offset++
-		default: return
+		case ' ', '\t', '\r', '\n':
+			p.offset++
+		default:
+			return
 		}
 	}
 }
@@ -241,11 +251,17 @@ func (p *parser) number() (json.Number, error) {
 		p.digits()
 	}
 	if p.take('.') {
-		if !p.digits() { return "", p.invalid("expected digits after the decimal point") }
+		if !p.digits() {
+			return "", p.invalid("expected digits after the decimal point")
+		}
 	}
 	if p.take('e') || p.take('E') {
-		if !p.take('+') { p.take('-') }
-		if !p.digits() { return "", p.invalid("expected exponent digits") }
+		if !p.take('+') {
+			p.take('-')
+		}
+		if !p.digits() {
+			return "", p.invalid("expected exponent digits")
+		}
 	}
 	return json.Number(p.data[start:p.offset]), nil
 }

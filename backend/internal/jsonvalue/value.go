@@ -17,7 +17,7 @@ type UTF16String []uint16
 
 // Member is an enumerable string-keyed property of an Object.
 type Member struct {
-	Key UTF16String
+	Key   UTF16String
 	Value any
 }
 

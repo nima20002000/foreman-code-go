@@ -198,7 +198,7 @@ func TestCanonicalGoContainerRepresentations(t *testing.T) {
 	shared := map[string]any{"😀": "é", "\ue000": true}
 	value := map[string]any{
 		"array": []any{shared, shared, canonicaljson.Undefined},
-		"null": nil, "omitted": canonicaljson.Undefined,
+		"null":  nil, "omitted": canonicaljson.Undefined,
 	}
 	text, err := canonicaljson.Canonical(value)
 	if err != nil {
