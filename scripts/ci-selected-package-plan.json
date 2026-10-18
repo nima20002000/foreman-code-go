@@ -1,0 +1,88 @@
+{
+  "source": "44a4a7e15249a295650027fd7682490aef73155d",
+  "sourceTree": "e4a1b7634144ed3542eea72b6fedb235b741fbf9",
+  "phase": "fixed",
+  "mode": "python-only",
+  "packages": [
+    "./internal/harnesses/discovery",
+    "./internal/harnesses/claude"
+  ],
+  "unitTests": [
+    "TestDiscoveryPublicErrorCompatibility",
+    "TestBridgePublicErrorCompatibility"
+  ],
+  "integrationTests": [],
+  "expectedUnitNamedCount": 8,
+  "race": true,
+  "testTimeout": "30s",
+  "pythonTests": [
+    "GeneratorCLITests.test_frozen_native_inputs_generate_reproducibly",
+    "GeneratorCLITests.test_added_newline_is_rejected_without_touching_output",
+    "GeneratorCLITests.test_generated_output_is_already_gofmt_formatted",
+    "GeneratorCLITests.test_missing_go_toolchain_preserves_existing_output"
+  ],
+  "pythonTestFile": "backend/internal/harnesses/codex/protocol/generate_types_test.py",
+  "reproduceGenerator": true,
+  "generatorFile": "backend/internal/harnesses/codex/protocol/generate_types.py",
+  "schemaFile": "apps/api/test/fixtures/codex-protocol.schemas.json",
+  "methodSourceFile": "scripts/generate-codex-method-types.mjs",
+  "generatedFile": "backend/internal/harnesses/codex/protocol/types.gen.go",
+  "goFiles": [
+    "internal/harnesses/claude/client.go",
+    "internal/harnesses/claude/diagnostics_test.go",
+    "internal/harnesses/claude/protocol.go",
+    "internal/harnesses/claude/sdk.go",
+    "internal/harnesses/codex/protocol/types.gen.go",
+    "internal/harnesses/discovery/access_unix.go",
+    "internal/harnesses/discovery/diagnostics.go",
+    "internal/harnesses/discovery/diagnostics_test.go",
+    "internal/harnesses/discovery/fingerprint.go",
+    "internal/harnesses/discovery/launcher.go"
+  ],
+  "sourceIdentities": [
+    {
+      "path": "apps/api/test/fixtures/codex-protocol.schemas.json",
+      "blob": "7de4646ea2657038e164609d9473c76c1be7c843",
+      "bytes": 688845,
+      "sha256": "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a"
+    },
+    {
+      "path": "scripts/generate-codex-method-types.mjs",
+      "blob": "7403cbbd4408f3a30b729060cd2811f9f194352e",
+      "bytes": 3229,
+      "sha256": "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/generate_types.py",
+      "blob": "7e436750358c8479bda5be58b0b3d228e4da57c8",
+      "bytes": 8432,
+      "sha256": "4837be88233671f7df868e3f8e389a4cda5cdecbf1ce3f865397dd1a0279cf2e"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/generate_types_test.py",
+      "blob": "187a86e8d9344dc8c9d84d2c1739b57398041c5c",
+      "bytes": 5224,
+      "sha256": "beb3b9f741aaa304db50e3a3418f17fee9bc2d2ea32b046672cee8bed538689e"
+    },
+    {
+      "path": "backend/internal/harnesses/codex/protocol/types.gen.go",
+      "blob": "7fc2a587cb26656be14ef062d5739983197d2d43",
+      "bytes": 30940,
+      "sha256": "8a966f0c0a54c6e21e3b0513719032f95217564e3c984fd081c1bec4433eafda"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b",
+      "bytes": 1535,
+      "sha256": "dad2c3793bab1a250081390166b66296e84d3ac062cead192420c3134d9ba537"
+    }
+  ],
+  "intakeSHA256": "a098e15cae8287c867b93406eca330841c3d36952adabd9501e689c71c9e616a",
+  "exclusions": [
+    "No repeat of inherited Codex27, discovery30, Claude11, queue qualification or unrelated shared foundations",
+    "No separate build/vet request, full suite, provider runtime, DB, smoke, installation or fleet operation",
+    "No generated-file replacement or schema-pin update",
+    "No runtime passed or lane done claim"
+  ],
+  "sourceOnlyKnownQueueBlocker": true
+}
