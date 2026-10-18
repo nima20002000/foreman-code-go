@@ -4,15 +4,22 @@ package queue
 
 import (
 	"context"
-	"errors"
 	"sync"
 )
 
 var (
-	ErrCapacity     = errors.New("invalid Claude queue capacity")
-	ErrClosed       = errors.New("Claude queue closed")
-	ErrReaderExists = errors.New("Claude queue already has a reader")
+	ErrCapacity     error = &queueDiagnostic{message: "Invalid Claude queue capacity"}
+	ErrClosed       error = &queueDiagnostic{message: "Claude queue closed"}
+	ErrReaderExists error = &queueDiagnostic{message: "Claude queue already has a reader"}
 )
+
+// queueDiagnostic retains the frozen public message. Each exported error
+// interface holds one stable pointer, with no additional wrapped cause.
+type queueDiagnostic struct {
+	message string
+}
+
+func (e *queueDiagnostic) Error() string { return e.message }
 
 // Queue retains at most capacity values. Additional offers wait in FIFO order.
 // Construct a Queue with New; its zero value is not ready for use.
