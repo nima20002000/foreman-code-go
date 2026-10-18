@@ -1,0 +1,58 @@
+{
+  "source": "6c3aeac0136e110368199dec804b01b8e1b321b1",
+  "sourceTree": "5068451b9aff1e9beadd5e3fd04b8860259e397e",
+  "mode": "format-only",
+  "packages": [],
+  "goFiles": [
+    "internal/devices/wire.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "sourceFiles": [
+    {
+      "path": "backend/internal/computers/README.md",
+      "blob": "ad97152034d545365799ba92fccc471c16a8754c"
+    },
+    {
+      "path": "backend/internal/computers/account_cache.go",
+      "blob": "c15729bcf0c89fdc508c545b3bf045f7c1170651"
+    },
+    {
+      "path": "backend/internal/computers/account_cache_test.go",
+      "blob": "daabccf121ed689feb58d64b03b84f1c2456bc98"
+    },
+    {
+      "path": "backend/internal/devices/README.md",
+      "blob": "e445661ca39a7e34bb179ee2be9cae471109ce70"
+    },
+    {
+      "path": "backend/internal/devices/wire.go",
+      "blob": "a2557ed8fdc4ac393a1e8c5c705c7f60e8349f05"
+    },
+    {
+      "path": "backend/internal/devices/wire_lifecycle_test.go",
+      "blob": "7bb8745727fe30bdd54fc15981089dbf2968faa0"
+    },
+    {
+      "path": "backend/internal/devices/wire_test.go",
+      "blob": "8c319ab922bfce305719040b4a83b988d2da150e"
+    }
+  ],
+  "purpose": "One-file formatting recheck only; retain original 31 roots and 10 subtests without repeating",
+  "formatProvenance": {
+    "ticket": "82c53b00-e81b-4c4f-bb22-ef80c7e0b229",
+    "diagnostic": "c3f6e9507eab1094bffee6516dcaa54678a61dc8",
+    "reportBytes": 80290,
+    "reportSHA256": "05f659baa6163b190bae6809f1f2cbb503e44962a15a6a2993e86ff9b6c7eee7",
+    "savedPatchBytes": 464,
+    "savedPatchSHA256": "9ab6375a0183af4254de38d17a9bf03c9cc58d446e2a32608018ead80ea86e74",
+    "actualFormatterStdoutBytes": 463,
+    "actualFormatterStdoutSHA256": "49ecd8a63bfb0e57d37de6b5f185f3c3fd491e9acf6645c774dd4081f4c497c8",
+    "savedPatchDifference": "one appended LF; source hunks unchanged; used actual raw report stdout",
+    "normalization": "Git headers/backend prefix only; formatter hunks unchanged",
+    "sourceDelta": "one alignment space only in WireError.Code method",
+    "original41PassesRetained": true,
+    "noTestsRepeated": true,
+    "localExecution": "Git/files/hash/static only; no localformatter/tests/runtime"
+  }
+}
