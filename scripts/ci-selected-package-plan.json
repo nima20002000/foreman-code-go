@@ -1,0 +1,227 @@
+{
+  "source": "1947c94e4848944c5f0099edeaec20c27a4c1bf0",
+  "sourceTree": "5f29ffd3919a6809a4c244f7459d1606b3698385",
+  "mode": "tests-only",
+  "package": "./internal/logging",
+  "packages": [
+    "./internal/logging"
+  ],
+  "unitTests": [
+    "TestLoggingNonFiniteNumbersKeepOtherFields",
+    "TestLoggingCircularJSONRetainsRedactedStructure",
+    "TestLoggingErrorPrimitivesUseJavaScriptNumberText",
+    "TestLoggingErrorSharedStringsRemainLossless",
+    "TestLoggingSharedStringsRemainLosslessInJSONFields"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "goFiles": [],
+  "sourceProvenance": {
+    "source": "98b56e1d2760b10536ed56e83aa122cdba8b289d",
+    "composed": "d3a0b55ffc9d6aab849ddb7c87f96b37985a31e1",
+    "tree": "8237cb0b6faf21592c6b9f04627be8ceb8211e11",
+    "composition": "Only exact10-path logging-only delta over body003; cumulative body002 parser is never applied",
+    "deltaPaths": [
+      "backend/cmd/foreman/logging_test.go",
+      "backend/cmd/foreman/main.go",
+      "backend/internal/app/app.go",
+      "backend/internal/httpserver/logging.go",
+      "backend/internal/httpserver/logging_test.go",
+      "backend/internal/logging/buffer.go",
+      "backend/internal/logging/buffer_test.go",
+      "backend/internal/logging/logger.go",
+      "backend/internal/logging/logger_test.go",
+      "backend/internal/logging/redact.go"
+    ],
+    "preFix": {
+      "source": "f406d105f95658566b56ba16f504fb5eb7abbb2b",
+      "dependencyComposition": "1947c94e4848944c5f0099edeaec20c27a4c1bf0",
+      "tree": "5f29ffd3919a6809a4c244f7459d1606b3698385",
+      "command": [
+        "go",
+        "test",
+        "./internal/logging",
+        "-run",
+        "^(TestLoggingNonFiniteNumbersKeepOtherFields|TestLoggingCircularJSONRetainsRedactedStructure|TestLoggingErrorPrimitivesUseJavaScriptNumberText|TestLoggingErrorSharedStringsRemainLossless|TestLoggingSharedStringsRemainLosslessInJSONFields)$",
+        "-count=1"
+      ],
+      "sameTestBlob": "91c80352a6881ef94c973717929050dab2055990",
+      "expected": "intended structured-output assertions fail; old implementation retained"
+    },
+    "commandRed": {
+      "candidate": "f97be0d504a5a759663684df2093aabd264d70eb",
+      "build": [
+        "go",
+        "build",
+        "-o",
+        "<fresh-absolute-binary>",
+        "./cmd/foreman"
+      ],
+      "env": {
+        "FOREMAN_TEST_BINARY": "<exact-built-binary>"
+      },
+      "command": [
+        "go",
+        "test",
+        "./cmd/foreman",
+        "-run",
+        "^(TestForemanLoggingUsageExit)$",
+        "-count=1"
+      ],
+      "expected": "final stdout diagnostic assertion fails"
+    },
+    "green": {
+      "count": 29,
+      "testRoots": [
+        "TestForemanLoggingHelpExit",
+        "TestForemanLoggingUsageExit",
+        "TestForemanLoggingUnavailableExit",
+        "TestForemanLoggingSilentPreservesFailureExit",
+        "TestRequestLoggingLevelsAndPrivateQuery",
+        "TestRequestLoggingPreservesResponseController",
+        "TestRequestLoggingTracksFinalAndFlushedStatus",
+        "TestRequestLoggingPropagatesAbortWithoutCompletion",
+        "TestRequestLoggingAppComposition",
+        "TestLoggingDoesNotBlockRequestOnSlowStdout",
+        "TestLoggingPeriodicallyFlushesSmallLines",
+        "TestLoggingCloseWaitsForAcceptedLines",
+        "TestLoggingRetainsDestinationFailure",
+        "TestLoggingFatalDrainsWithoutExiting",
+        "TestLoggingLeavesCallerStdoutOpen",
+        "TestLoggingStructuredStdout",
+        "TestLoggingLevelEnvironment",
+        "TestLoggingRedactsSourcePaths",
+        "TestLoggingGroupsAndBindingsRetainRedaction",
+        "TestLoggingSerializesBoundedErrorIdentity",
+        "TestLoggingBoundsCyclesDepthAndAggregateErrors",
+        "TestLoggingKeepsSourceRedactionDepth",
+        "TestLoggingNonFiniteNumbersKeepOtherFields",
+        "TestLoggingCircularJSONRetainsRedactedStructure",
+        "TestLoggingRepeatedReferencesRemainOrdinaryJSON",
+        "TestLoggingCircularFallbackUsesSourceBounds",
+        "TestLoggingErrorPrimitivesUseJavaScriptNumberText",
+        "TestLoggingErrorSharedStringsRemainLossless",
+        "TestLoggingSharedStringsRemainLosslessInJSONFields"
+      ],
+      "loggingAndHTTP": [
+        "go",
+        "test",
+        "./internal/logging",
+        "./internal/httpserver",
+        "-run",
+        "^(TestRequestLoggingLevelsAndPrivateQuery|TestRequestLoggingPreservesResponseController|TestRequestLoggingTracksFinalAndFlushedStatus|TestRequestLoggingPropagatesAbortWithoutCompletion|TestRequestLoggingAppComposition|TestLoggingDoesNotBlockRequestOnSlowStdout|TestLoggingPeriodicallyFlushesSmallLines|TestLoggingCloseWaitsForAcceptedLines|TestLoggingRetainsDestinationFailure|TestLoggingFatalDrainsWithoutExiting|TestLoggingLeavesCallerStdoutOpen|TestLoggingStructuredStdout|TestLoggingLevelEnvironment|TestLoggingRedactsSourcePaths|TestLoggingGroupsAndBindingsRetainRedaction|TestLoggingSerializesBoundedErrorIdentity|TestLoggingBoundsCyclesDepthAndAggregateErrors|TestLoggingKeepsSourceRedactionDepth|TestLoggingNonFiniteNumbersKeepOtherFields|TestLoggingCircularJSONRetainsRedactedStructure|TestLoggingRepeatedReferencesRemainOrdinaryJSON|TestLoggingCircularFallbackUsesSourceBounds|TestLoggingErrorPrimitivesUseJavaScriptNumberText|TestLoggingErrorSharedStringsRemainLossless|TestLoggingSharedStringsRemainLosslessInJSONFields)$",
+        "-count=1"
+      ],
+      "commandBuild": [
+        "go",
+        "build",
+        "-o",
+        "<fresh-absolute-binary>",
+        "./cmd/foreman"
+      ],
+      "commandEnv": {
+        "FOREMAN_TEST_BINARY": "<exact-built-binary>"
+      },
+      "commandTests": [
+        "go",
+        "test",
+        "./cmd/foreman",
+        "-run",
+        "^(TestForemanLoggingHelpExit|TestForemanLoggingUsageExit|TestForemanLoggingUnavailableExit|TestForemanLoggingSilentPreservesFailureExit)$",
+        "-count=1"
+      ],
+      "commandSafety": "unavailable-worker case only on skeleton composition, before later worker implementation"
+    },
+    "frozenCaptures": {
+      "productProbeCount": 6,
+      "productTestNames": [
+        "logging.stdout-nonfinite-structure",
+        "logging.stdout-selective-clone-cycles",
+        "logging.stdout-repeated-ordinary-values",
+        "logging.stdout-circular-source-bounds",
+        "logging.stdout-javascript-number-errors",
+        "logging.stdout-utf16-errors-and-fields"
+      ],
+      "correctedRecipe": {
+        "name": "logging-capture",
+        "sourceFile": "foreman-i-logging-001/probes/i-logging-capture.test.ts",
+        "overlay": "apps/api/test/i-logging-capture.test.ts",
+        "sha256": "f093d919e7b361415b9e5f8b2bfe82f9302f369308f29a008ecb183ec206a164",
+        "blob": "08458d16b6d3d06907831da63173826ef653fffd",
+        "candidate": "69d252d525cf570866efbd2155d8232d39b13266",
+        "tree": "3aff7dbef2eb1cdd22913d355d0adaeb8ab2009e",
+        "ref": "go/recipe-i-logging-capture",
+        "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+      },
+      "producerRegression": {
+        "redRecipe": {
+          "name": "logging-framing-red",
+          "sourceFile": "foreman-i-logging-001/probes/i-logging-capture-framing-red.test.ts",
+          "overlay": "apps/api/test/i-logging-capture.test.ts",
+          "sha256": "e6a635e457368a65e50335da1818f8d23e324d91251b8c1f65a687584bb8c8d3",
+          "blob": "66b919ff09a3c2cda62c97ef4efa238bad841b8a",
+          "candidate": "ab17877444519f68a75bd9ccb94ed99ba9b30d4c",
+          "tree": "7ea4f37ad1af9a7ffa76646b7df40365cedf5db9",
+          "ref": "go/recipe-i-logging-framing-red",
+          "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+        },
+        "greenRecipe": {
+          "name": "logging-capture",
+          "sourceFile": "foreman-i-logging-001/probes/i-logging-capture.test.ts",
+          "overlay": "apps/api/test/i-logging-capture.test.ts",
+          "sha256": "f093d919e7b361415b9e5f8b2bfe82f9302f369308f29a008ecb183ec206a164",
+          "blob": "08458d16b6d3d06907831da63173826ef653fffd",
+          "candidate": "69d252d525cf570866efbd2155d8232d39b13266",
+          "tree": "3aff7dbef2eb1cdd22913d355d0adaeb8ab2009e",
+          "ref": "go/recipe-i-logging-capture",
+          "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+        },
+        "testName": "logging.capture-utf8-chunk-framing",
+        "expectedRed": "same intended emoji stdout assertion with deterministic byte/IPC framing",
+        "distinctFromRepositoryBehavior": true
+      },
+      "originalRecipe": {
+        "name": "logging-capture-original",
+        "sourceFile": "foreman-i-logging-001/probes/i-logging-capture-original.test.ts",
+        "overlay": "apps/api/test/i-logging-capture.test.ts",
+        "sha256": "f5d35b14e991d1ddd508add78a3beae299792cfcd17de025495fd3ff6e44f0ec",
+        "blob": "bac4485b6d0b97ad85fe21815794447b6ace74b4",
+        "candidate": "8b2ef2748d7f55c84459f864f22ca11225d1d8c7",
+        "tree": "1a2ab884e71469cae5314b293d13706cbf739f7e",
+        "ref": "go/recipe-i-logging-capture-original",
+        "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+      },
+      "retain": "actual Node/OS/packages; raw stdout bytes; parsed outcomes; ticket"
+    },
+    "analysisPackages": [
+      "./internal/logging",
+      "./internal/httpserver",
+      "./internal/app",
+      "./cmd/foreman"
+    ],
+    "formatFiles": [
+      "backend/cmd/foreman/logging_test.go",
+      "backend/cmd/foreman/main.go",
+      "backend/internal/app/app.go",
+      "backend/internal/httpserver/logging.go",
+      "backend/internal/httpserver/logging_test.go",
+      "backend/internal/logging/buffer.go",
+      "backend/internal/logging/buffer_test.go",
+      "backend/internal/logging/logger.go",
+      "backend/internal/logging/logger_test.go",
+      "backend/internal/logging/redact.go"
+    ],
+    "open": [
+      "file logging",
+      "operational failure aggregation",
+      "runtime timing bridge",
+      "access/auth",
+      "body acceptance tickets"
+    ]
+  },
+  "noOrdinaryDuplicate": true
+}
