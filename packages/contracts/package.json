@@ -3,26 +3,70 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
-    "./failure": { "types": "./dist/failure.d.ts", "import": "./dist/failure.js" },
-    "./worker-update": { "types": "./dist/workerUpdate.d.ts", "import": "./dist/workerUpdate.js" },
-    "./worker-artifact-content-node": { "types": "./dist/workerArtifactContentNode.d.mts", "import": "./dist/workerArtifactContentNode.mjs" },
-    "./managed-mcp-channel": { "types": "./dist/managedMcpChannel.d.ts", "import": "./dist/managedMcpChannel.js" },
-    "./runtime-build-identity-node": { "types": "./dist/runtimeBuildIdentityNode.d.mts", "import": "./dist/runtimeBuildIdentityNode.mjs" },
-    "./worktree-settings": { "types": "./dist/worktreeSettings.d.ts", "import": "./dist/worktreeSettings.js" },
-    "./workspace-git": { "types": "./dist/workspaceGit.d.ts", "import": "./dist/workspaceGit.js" },
-    "./provider-accounts": { "types": "./dist/providerAccounts.d.ts", "import": "./dist/providerAccounts.js" },
-    "./operator-mcp": { "types": "./dist/operatorMcp.d.ts", "import": "./dist/operatorMcp.js" },
+    "./failure": {
+      "types": "./dist/failure.d.ts",
+      "import": "./dist/failure.js"
+    },
+    "./worker-update": {
+      "types": "./dist/workerUpdate.d.ts",
+      "import": "./dist/workerUpdate.js"
+    },
+    "./worker-artifact-content-node": {
+      "types": "./dist/workerArtifactContentNode.d.mts",
+      "import": "./dist/workerArtifactContentNode.mjs"
+    },
+    "./managed-mcp-channel": {
+      "types": "./dist/managedMcpChannel.d.ts",
+      "import": "./dist/managedMcpChannel.js"
+    },
+    "./runtime-build-identity-node": {
+      "types": "./dist/runtimeBuildIdentityNode.d.mts",
+      "import": "./dist/runtimeBuildIdentityNode.mjs"
+    },
+    "./worktree-settings": {
+      "types": "./dist/worktreeSettings.d.ts",
+      "import": "./dist/worktreeSettings.js"
+    },
+    "./workspace-git": {
+      "types": "./dist/workspaceGit.d.ts",
+      "import": "./dist/workspaceGit.js"
+    },
+    "./provider-accounts": {
+      "types": "./dist/providerAccounts.d.ts",
+      "import": "./dist/providerAccounts.js"
+    },
+    "./operator-mcp": {
+      "types": "./dist/operatorMcp.d.ts",
+      "import": "./dist/operatorMcp.js"
+    },
     "./local-client-node": {
       "types": "./dist/localClientNode.d.ts",
       "import": "./dist/localClientNode.js"
     },
-    "./product": { "types": "./dist/product.d.ts", "import": "./dist/product.js" },
-    "./product-environment": { "types": "./dist/productEnvironment.d.mts", "import": "./dist/productEnvironment.mjs" },
-    "./product-environment-node": { "types": "./dist/productEnvironmentNode.d.mts", "import": "./dist/productEnvironmentNode.mjs" },
-    "./ci-import-graph": { "types": "./dist/ciImportGraph.d.mts", "import": "./dist/ciImportGraph.mjs" },
-    "./subagents": { "types": "./dist/subagents.d.ts", "import": "./dist/subagents.js" },
+    "./product": {
+      "types": "./dist/product.d.ts",
+      "import": "./dist/product.js"
+    },
+    "./product-environment": {
+      "types": "./dist/productEnvironment.d.mts",
+      "import": "./dist/productEnvironment.mjs"
+    },
+    "./product-environment-node": {
+      "types": "./dist/productEnvironmentNode.d.mts",
+      "import": "./dist/productEnvironmentNode.mjs"
+    },
+    "./ci-import-graph": {
+      "types": "./dist/ciImportGraph.d.mts",
+      "import": "./dist/ciImportGraph.mjs"
+    },
+    "./subagents": {
+      "types": "./dist/subagents.d.ts",
+      "import": "./dist/subagents.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -139,10 +183,22 @@
       "types": "./dist/remoteExecutionEntryClosureNode.d.ts",
       "import": "./dist/remoteExecutionEntryClosureNode.js"
     },
-    "./computer-activity": { "types": "./dist/computerActivity.d.ts", "import": "./dist/computerActivity.js" },
-    "./computer-accounts": { "types": "./dist/computerAccounts.d.ts", "import": "./dist/computerAccounts.js" },
-    "./computer-maintenance": { "types": "./dist/computerMaintenance.d.ts", "import": "./dist/computerMaintenance.js" },
-    "./build-computers": { "types": "./dist/buildComputers.d.ts", "import": "./dist/buildComputers.js" },
+    "./computer-activity": {
+      "types": "./dist/computerActivity.d.ts",
+      "import": "./dist/computerActivity.js"
+    },
+    "./computer-accounts": {
+      "types": "./dist/computerAccounts.d.ts",
+      "import": "./dist/computerAccounts.js"
+    },
+    "./computer-maintenance": {
+      "types": "./dist/computerMaintenance.d.ts",
+      "import": "./dist/computerMaintenance.js"
+    },
+    "./build-computers": {
+      "types": "./dist/buildComputers.d.ts",
+      "import": "./dist/buildComputers.js"
+    },
     "./jobs": {
       "types": "./dist/jobs.d.ts",
       "import": "./dist/jobs.js"
@@ -313,7 +369,7 @@
     }
   },
   "scripts": {
-    "build": "node ../../scripts/heavy-job.mjs --build contracts -- tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/ci-selected-package.mjs prepare-contracts",
     "dev": "tsc -p tsconfig.build.json --watch",
     "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- vitest run",
     "typecheck": "node ../../scripts/ci-remote.mjs typecheck -- node ../../scripts/heavy-job.mjs -- tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
