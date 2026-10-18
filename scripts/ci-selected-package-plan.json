@@ -1,0 +1,19 @@
+{
+  "source": "3bba16c57654f5e96ef1044fbd8eb5aa0b2522c2",
+  "sourceTree": "18e6d8a711af283a5c4fbf76240e5d84bf8ca465",
+  "package": "./internal/jsonvalue",
+  "goFiles": [
+    "internal/canonicaljson/canonical.go",
+    "internal/canonicaljson/canonical_test.go",
+    "internal/canonicaljson/legacy.go",
+    "internal/canonicaljson/legacy_test.go",
+    "internal/jsonvalue/value.go",
+    "internal/jsonvalue/parser.go",
+    "internal/jsonvalue/scalars.go",
+    "internal/jsonvalue/parser_test.go"
+  ],
+  "unitTests": [],
+  "integrationTests": [],
+  "mode": "format-only",
+  "nodeTests": []
+}
