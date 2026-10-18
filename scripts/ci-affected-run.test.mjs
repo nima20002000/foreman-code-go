@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { goCiFixture } from './test-support/go-ci-fixture.mjs'
 
@@ -37,11 +36,11 @@ for (const files of [
     const selection = join(root, 'selected.json')
     writeFileSync(selection, JSON.stringify(files))
 
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+    const result = spawnSync(process.execPath, [join(fixture.directory, 'scripts/ci-affected-run.mjs'),
       'unit', '--files-from', selection], { cwd: root, env: fixture.environment, encoding: 'utf8' })
 
     assert.equal(result.status, 1)
-    assert.ok(result.stderr.includes(`CI selection must contain existing repository files: ${files.join(', ')}`),
+    assert.ok(result.stderr.includes(`CI selection must contain existing repository files: ${files[0]}`),
       result.stderr)
     assert.doesNotMatch(result.stderr, /ENOENT/)
   })
@@ -52,7 +51,7 @@ for (const file of ['../outside.test.mjs', '/outside.test.mjs']) {
     const fixture = delegatedSuite(t)
     const selection = join(fixture.directory, 'selected.json')
     writeFileSync(selection, JSON.stringify([file]))
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+    const result = spawnSync(process.execPath, [join(fixture.directory, 'scripts/ci-affected-run.mjs'),
       'unit', '--files-from', selection], { cwd: fixture.directory, env: fixture.environment, encoding: 'utf8' })
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stderr, /Invalid CI file:/)
@@ -82,12 +81,12 @@ test('second case', () => assert.equal(1, ${failing ? 2 : 1}))
     // The child suite needs its own reporters rather than the parent test IPC channel.
     delete environment.NODE_TEST_CONTEXT
     delete environment.TEST_RESULTS_OUTPUT
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+    const result = spawnSync(process.execPath, [join(fixture.directory, 'scripts/ci-affected-run.mjs'),
       'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
     assert.equal(result.status, failing ? 1 : 0, result.stderr)
     assert.doesNotMatch(result.stderr, /EINVAL|Unhandled 'error' event/)
     assert.equal(fixture.calls().some(call => call.tool === 'go' && call.args[0] === 'test'), false)
-    const results = JSON.parse(readFileSync(join(fixture.state, 'affected-results.json'), 'utf8'))
+    const results = JSON.parse(readFileSync(join(fixture.state, 'affected-retained.results.json'), 'utf8'))
     assert.deepEqual(results.summary, { passed: failing ? 1 : 2, failed: failing ? 1 : 0, skipped: 0 })
     assert.equal(results.files.length, 1)
     assert.equal(results.files[0].status, failing ? 'failed' : 'passed')
@@ -114,7 +113,7 @@ test('passes', () => assert.equal(1, 1))
   const environment = { ...fixture.environment, TEST_RESULTS_OUTPUT: output }
   delete environment.NODE_TEST_CONTEXT
   delete environment.CI_PROGRESS_FILE
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+  const result = spawnSync(process.execPath, [join(fixture.directory, 'scripts/ci-affected-run.mjs'),
     'unit', '--files-from', selection], { cwd: root, env: environment, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const results = JSON.parse(readFileSync(output, 'utf8'))
@@ -136,7 +135,7 @@ test('an explicitly selected file with zero tests fails', t => {
   writeFileSync(selection, JSON.stringify([file]))
   const environment = { ...fixture.environment }
   delete environment.NODE_TEST_CONTEXT
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url)),
+  const result = spawnSync(process.execPath, [join(fixture.directory, 'scripts/ci-affected-run.mjs'),
     'unit', '--files-from', selection], { cwd: fixture.directory, env: environment, encoding: 'utf8' })
   assert.equal(result.status, 1, JSON.stringify({ stderr: result.stderr, stdout: result.stdout,
     results: fixture.results() }))

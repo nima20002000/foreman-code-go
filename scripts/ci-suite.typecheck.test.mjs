@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-const script = fileURLToPath(new URL('./ci-suite.sh', import.meta.url))
 const require = createRequire(new URL('../apps/web/package.json', import.meta.url))
 const compiler = require.resolve('typescript/bin/tsc')
 
@@ -19,6 +17,10 @@ function fixture(t, project = 'apps/web') {
   const source = join(root, 'checkout')
   const bin = join(root, 'bin')
   mkdirSync(join(source, project), { recursive: true })
+  mkdirSync(join(source, 'scripts'), { recursive: true })
+  for (const file of ['ci-suite.sh', 'ci-runtime-state.sh', 'ci-typecheck-cache.mjs']) {
+    copyFileSync(new URL(file, import.meta.url), join(source, 'scripts', file))
+  }
   mkdirSync(bin)
   mkdirSync(join(root, 'home'))
   if (project === 'conformance') writeFileSync(join(source, project, 'package.json'), '{}')
@@ -45,12 +47,12 @@ process.exit(result.status ?? 1)
   const run = () => {
     const environment = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, SUITE: 'typecheck-other', SCOPE: 'full',
       HOME: join(root, 'home'), XDG_CACHE_HOME: '', COREPACK_HOME: join(root, 'corepack'),
-      BASH_ENV: '', ENV: '', CI_PARTITION: '',
+      BASH_ENV: '', ENV: '', CI_PARTITION: '', FOREMAN_CODE_CI_RELEASE: '1', FOREMAN_CODE_CI_CONTRACTS_CACHE: '',
       SELECTED_FILES: '', CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '',
       FOREMAN_CODE_CI_TYPECHECK_CACHE: join(root, 'cache'), FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE: '',
       CI_STATE: join(root, 'state') }
     delete environment.NODE_TEST_CONTEXT
-    const result = spawnSync('bash', [script], { cwd: source, encoding: 'utf8', env: environment })
+    const result = spawnSync('bash', [join(source, 'scripts/ci-suite.sh')], { cwd: source, encoding: 'utf8', env: environment })
     assert.equal(result.error, undefined, result.error?.message)
     assert.notEqual(result.status, null)
     return result

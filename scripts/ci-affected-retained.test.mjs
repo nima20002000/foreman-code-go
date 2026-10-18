@@ -4,7 +4,8 @@ import { affectedCommands } from './ci-affected-run.mjs'
 
 test('affected script checks run only the selected Node test files', () => {
   assert.deepEqual(affectedCommands('unit', ['scripts/ci-selection.test.mjs', 'scripts/ci-affected.test.mjs']), [
-    [process.execPath, '--test', 'scripts/ci-selection.test.mjs', 'scripts/ci-affected.test.mjs'],
+    [process.execPath, '--test', 'scripts/ci-selection.test.mjs'],
+    [process.execPath, '--test', 'scripts/ci-affected.test.mjs'],
   ])
 })
 
@@ -29,6 +30,6 @@ test('unsupported nonempty selections fail before any suite can broaden', () => 
     assert.throws(() => affectedCommands('unit', [file]), /Unsupported affected|Unit scope requires/)
   }
   assert.throws(() => affectedCommands('integration', ['conformance/src/reporting/report.test.ts']),
-    /Unsupported affected suite/)
-  assert.throws(() => affectedCommands('build', ['packages/contracts/src/ci.ts']), /Unsupported affected suite/)
+    /committed native adapter binding/)
+  assert.throws(() => affectedCommands('build', ['packages/contracts/src/ci.ts']), /explicit release scope/)
 })

@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { fileURLToPath } from 'node:url'
-
-const cli = fileURLToPath(new URL('./ci-affected-run.mjs', import.meta.url))
 const repositoryFiles = ['backend/runtime/state.go', 'conformance/health.test.ts', 'scripts/value.test.mjs']
 
 function selectionFixture(t) {
@@ -16,6 +13,13 @@ function selectionFixture(t) {
     mkdirSync(join(directory, path), { recursive: true })
   }
   for (const file of repositoryFiles) writeFileSync(join(directory, file), '// Temporary selected repository file.\n')
+  for (const file of ['ci-affected-run.mjs', 'ci-affected-scope.mjs', 'ci-affected-contracts.mjs',
+    'ci-files.mjs', 'ci-test-results.mjs', 'ci-report-io.mjs', 'ci-native-reports.mjs', 'ci-conformance-report.mjs']) {
+    copyFileSync(new URL(file, import.meta.url), join(directory, 'scripts', file))
+  }
+  mkdirSync(join(directory, 'packages/contracts/src'), { recursive: true })
+  copyFileSync(new URL('../packages/contracts/src/ciImportGraph.mjs', import.meta.url),
+    join(directory, 'packages/contracts/src/ciImportGraph.mjs'))
   symlinkSync('value.test.mjs', join(directory, 'scripts/linked.test.mjs'))
   const dispatched = join(directory, 'dispatched.txt')
   writeFileSync(join(directory, 'scripts/ci-suite.sh'), `#!/bin/bash
@@ -33,14 +37,14 @@ process.stdout.write(JSON.parse(process.env.FIXTURE_REPOSITORY_FILES).join('\\0'
     FIXTURE_REPOSITORY_FILES: JSON.stringify(repositoryFiles), FIXTURE_DISPATCH_OUTPUT: dispatched,
     SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: '1/9', CI_PARTITION: '{}',
     CI_SELECTION_COMMIT: 'inherited-selection', BASH_ENV: '', ENV: '', CI_PROGRESS_FILE: '',
-    TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '' }
+    TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '', CI_AFFECTED_SELECTION_FILE: '', CI_NATIVE_REPORTS_DIR: '', CI_NATIVE_SELECTOR: '' }
   delete env.NODE_TEST_CONTEXT
   return {
     directory,
     dispatched,
     select(text) { writeFileSync(join(directory, 'selected.json'), text) },
     run(args, extra = {}) {
-      const result = spawnSync(process.execPath, [cli, 'unit', ...args], {
+      const result = spawnSync(process.execPath, [join(directory, 'scripts/ci-affected-run.mjs'), 'unit', ...args], {
         cwd: directory, env: { ...env, ...extra }, encoding: 'utf8',
       })
       assert.ifError(result.error)
@@ -52,11 +56,11 @@ process.stdout.write(JSON.parse(process.env.FIXTURE_REPOSITORY_FILES).join('\\0'
 for (const [name, text, error] of [
   ['malformed JSON', '["scripts/value.test.mjs"', /SyntaxError/],
   ['blank JSON', ' \n', /SyntaxError/],
-  ['an object payload', '{}', /CI selection must contain existing repository files\./],
-  ['a null payload', 'null', /CI selection must contain existing repository files\./],
-  ['a non-string entry', '["scripts/value.test.mjs",7]', /CI selection must contain existing repository files\./],
+  ['an object payload', '{}', /bounded affected request/],
+  ['a null payload', 'null', /bounded affected request/],
+  ['a non-string entry', '["scripts/value.test.mjs",7]', /Invalid CI files/],
   ['multiple missing files', '["scripts/missing.test.mjs","backend/missing.go"]',
-    /CI selection must contain existing repository files: scripts\/missing\.test\.mjs, backend\/missing\.go/],
+    /CI selection must contain existing repository files: scripts\/missing\.test\.mjs/],
   ['a directory', '["backend/runtime"]', /CI selection must contain existing repository files: backend\/runtime/],
   ['a symlink', '["scripts/linked.test.mjs"]', /CI selection must contain existing repository files: scripts\/linked\.test\.mjs/],
 ]) {
@@ -78,7 +82,7 @@ for (const path of ['', '../outside.test.mjs', '/outside.test.mjs', 'C:\\outside
     fixture.select(JSON.stringify([path]))
     const result = fixture.run(['--files-from', 'selected.json'])
     assert.equal(result.status, 1, result.stderr)
-    assert.match(result.stderr, /Invalid CI file:/)
+    assert.match(result.stderr, /Invalid CI files?/)
     assert.equal(existsSync(fixture.dispatched), false)
   })
 }
@@ -107,11 +111,14 @@ for (const files of [[], ['scripts/value.test.mjs']]) {
     const fixture = selectionFixture(t)
     fixture.select(JSON.stringify(files))
     const result = fixture.run(['--files-from', 'selected.json'], { FIXTURE_EXIT: '7' })
-    assert.equal(result.status, files.length ? 7 : 0, result.stderr)
+    assert.equal(result.status, files.length ? 7 : 1, result.stderr)
     if (files.length) {
       assert.deepEqual(readFileSync(fixture.dispatched, 'utf8').trim().split('\n'),
-        ['unit-other', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
-    } else assert.equal(existsSync(fixture.dispatched), false)
+        ['unit', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
+    } else {
+      assert.equal(existsSync(fixture.dispatched), false)
+      assert.match(result.stderr, /selected zero files/)
+    }
   })
 }
 
@@ -121,6 +128,6 @@ for (const spec of ['s:2', 'd:2']) {
     const result = fixture.run(['--indexes', spec])
     assert.equal(result.status, 0, result.stderr)
     assert.deepEqual(readFileSync(fixture.dispatched, 'utf8').trim().split('\n'),
-      ['unit-other', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
+      ['unit', 'affected', 'true', 'unset', 'unset', 'unset', 'unset'])
   })
 }

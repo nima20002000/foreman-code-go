@@ -7,111 +7,48 @@ import { test } from 'node:test'
 import { executionFiles, executionSelection } from './ci-selection.mjs'
 
 function repository(t) {
-  const cwd = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-selection-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'ci-selection-'))
   t.after(() => rmSync(cwd, { recursive: true, force: true }))
-  const environment = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
-    GIT_AUTHOR_EMAIL: 'fixture@example.org', GIT_COMMITTER_EMAIL: 'fixture@example.org' }
-  const git = (...args) => execFileSync('git', args, { cwd, env: environment, encoding: 'utf8' }).trim()
-  const write = (file, text) => {
-    mkdirSync(dirname(join(cwd, file)), { recursive: true })
-    writeFileSync(join(cwd, file), text)
-  }
-  const files = {
-    'apps/api/src/value.ts': 'export const value = 1',
-    'apps/api/src/value.test.ts': "import './value.js'",
-    'apps/api/test/value.integration.test.ts': "import '../src/value.js'",
-    'apps/api/test/other.integration.test.ts': 'export {}',
-    'apps/web/src/value.test.tsx': "import '../../api/src/value.js'",
-    'apps/web/src/value.integration.test.tsx': "import '../../api/src/value.js'",
-    'apps/web/heavy-tests.json': JSON.stringify({ files: ['src/*.integration.test.tsx'] }),
-    'packages/contracts/src/other.test.ts': 'export {}',
-  }
-  for (const [file, text] of Object.entries(files)) write(file, text)
-  git('init', '-q', '-b', 'stable')
-  git('add', '.')
-  git('commit', '-qm', 'base')
-  git('update-ref', 'refs/remotes/origin/stable', 'HEAD')
-  return { cwd, git, write, files: Object.keys(files) }
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
+    GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' }
+  const git = (...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim()
+  const write = (file, text) => { mkdirSync(dirname(join(cwd, file)), { recursive: true }); writeFileSync(join(cwd, file), text) }
+  const files = ['backend/runtime/state.go', 'backend/runtime/state_test.go', 'apps/api/test/frozen.test.ts',
+    'apps/web/src/fast.test.tsx', 'apps/web/src/heavy.test.tsx', 'packages/contracts/src/value.test.ts', 'scripts/value.test.mjs']
+  for (const file of files) write(file, file.endsWith('.go') ? 'package runtime' : 'export {}')
+  write('apps/web/heavy-tests.json', JSON.stringify({ files: ['src/heavy.test.tsx'] }))
+  git('init', '-q', '-b', 'main'); git('add', '.'); git('commit', '-qm', 'base')
+  const base = git('rev-parse', 'HEAD')
+  git('update-ref', 'refs/remotes/origin/main', base)
+  return { cwd, git, write, files, base }
 }
 
-test('filters the same affected selection into API, fast web, heavy web and other parts', t => {
+test('existing API part names select Go while retained parts exclude the frozen API', t => {
   const f = repository(t)
-  assert.deepEqual(executionFiles(f.files, 'unit-api', f.cwd), f.files.filter(file => file.startsWith('apps/api/')))
-  assert.deepEqual(executionFiles(f.files, 'unit-web', f.cwd),
-    ['apps/web/src/value.test.tsx', 'apps/web/heavy-tests.json'])
-  assert.deepEqual(executionFiles(f.files, 'unit-web-heavy', f.cwd), ['apps/web/src/value.integration.test.tsx'])
-  assert.deepEqual(executionFiles(f.files, 'unit-other', f.cwd), ['packages/contracts/src/other.test.ts'])
+  assert.deepEqual(executionFiles(f.files, 'typecheck-api', f.cwd), ['backend/runtime/state.go', 'backend/runtime/state_test.go'])
+  assert.deepEqual(executionFiles(f.files, 'unit-web', f.cwd), ['apps/web/src/fast.test.tsx'])
+  assert.deepEqual(executionFiles(f.files, 'unit-web-heavy', f.cwd), ['apps/web/src/heavy.test.tsx'])
+  assert.deepEqual(executionFiles(f.files, 'unit-other', f.cwd), ['packages/contracts/src/value.test.ts', 'scripts/value.test.mjs'])
+  assert.equal(executionFiles(f.files, 'unit', f.cwd).some(file => file.startsWith('apps/api/')), false)
+  assert.throws(() => executionFiles(f.files, 'unit-unknown', f.cwd), /Unsupported/)
 })
 
-test('an explicit base preserves full fork scope at the default branch head and without a default ref', t => {
+test('exact changed test partitions cover only affected retained files', t => {
   const f = repository(t)
-  const baseCommit = f.git('rev-parse', 'HEAD')
-  f.write('apps/api/src/value.ts', 'export const value = 2')
-  f.git('add', '.')
-  f.git('commit', '-qm', 'release changes')
-  f.git('update-ref', 'refs/remotes/origin/stable', 'HEAD')
-  for (const defaultRef of ['origin/stable', 'origin/unavailable']) {
-    const unit = executionSelection({ commit: 'HEAD', baseCommit, executionSuite: 'unit-api', defaultRef, cwd: f.cwd })
-    assert.equal(unit.scope, 'full')
-    assert.deepEqual(unit.files, [])
-    const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', baseCommit,
-      executionSuite: 'integration', defaultRef, partition: { index, count: 2 }, cwd: f.cwd }))
-    assert.ok(slices.every(slice => slice.scope === 'full'))
-    assert.deepEqual(slices.flatMap(slice => slice.files).sort(),
-      ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
-  }
-  const empty = executionSelection({ commit: 'HEAD', baseCommit: f.git('rev-parse', 'HEAD'),
-    executionSuite: 'unit-api', cwd: f.cwd })
-  assert.equal(empty.scope, 'full')
-  assert.deepEqual(empty.files, [])
+  for (const file of ['apps/web/src/fast.test.tsx', 'apps/web/src/heavy.test.tsx']) f.write(file, "import 'node:test'")
+  f.git('add', '.'); f.git('commit', '-qm', 'two affected tests')
+  const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', baseCommit: f.base,
+    executionSuite: 'unit', partition: { index, count: 2 }, cwd: f.cwd }))
+  assert.ok(slices.every(slice => slice.scope === 'affected'))
+  assert.deepEqual(slices.flatMap(slice => slice.files).sort(), ['apps/web/src/fast.test.tsx', 'apps/web/src/heavy.test.tsx'])
 })
 
-test('unavailable and non-ancestor bases fall back to full with a reason and retain integration partition coverage', t => {
+test('unavailable bases and implicit default-head scope fail without a full fallback', t => {
   const f = repository(t)
-  const commit = f.git('rev-parse', 'HEAD')
-  f.git('commit', '--allow-empty', '-qm', 'later commit')
-  const laterCommit = f.git('rev-parse', 'HEAD')
-  for (const baseCommit of ['f'.repeat(40), laterCommit]) {
-    const selections = [0, 1].map(index => executionSelection({ commit, baseCommit, executionSuite: 'integration',
-      partition: { index, count: 2 }, cwd: f.cwd }))
-    assert.ok(selections.every(selection => selection.scope === 'full'
-      && selection.reason === 'baseCommit is unavailable or is not an ancestor of the resolved commit.'))
-    assert.deepEqual(selections.flatMap(selection => selection.files).sort(),
-      ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
-  }
-})
-
-test('a non-main default branch never narrows full Go scope to changed TypeScript files', t => {
-  const f = repository(t)
-  f.write('apps/api/src/value.ts', 'export const value = 2')
-  f.git('add', '.')
-  f.git('commit', '-qm', 'feature')
-  for (const executionSuite of ['unit-api', 'integration']) {
-    const slices = [0, 1].map(index => executionSelection({ commit: 'HEAD', executionSuite,
-      defaultRef: 'origin/stable', partition: { index, count: 2 }, cwd: f.cwd }))
-    assert.ok(slices.every(slice => slice.scope === 'full'))
-    assert.deepEqual(slices.flatMap(slice => slice.files).sort(), executionSuite === 'unit-api' ? []
-      : ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
-  }
-})
-
-test('full fallback partitions cover every integration test when the commit is the default head', t => {
-  const f = repository(t)
-  const selections = [0, 1].map(index => executionSelection({ commit: 'HEAD', executionSuite: 'integration',
-    defaultRef: 'origin/stable', partition: { index, count: 2 }, cwd: f.cwd }))
-  assert.ok(selections.every(selection => selection.scope === 'full' && /default branch head/.test(selection.reason)))
-  assert.deepEqual(selections.flatMap(selection => selection.files).sort(),
-    ['apps/api/test/other.integration.test.ts', 'apps/api/test/value.integration.test.ts'])
-})
-
-test('shared infrastructure falls back to full and unrelated documentation produces an empty selection', t => {
-  const f = repository(t)
-  f.write('README.md', 'documentation')
-  f.git('add', '.')
-  f.git('commit', '-qm', 'documentation')
-  assert.deepEqual(executionSelection({ commit: 'HEAD', executionSuite: 'unit-api', defaultRef: 'origin/stable', cwd: f.cwd }).files, [])
-  f.write('package.json', '{}')
-  f.git('add', '.')
-  f.git('commit', '-qm', 'infrastructure')
-  assert.equal(executionSelection({ commit: 'HEAD', executionSuite: 'unit-api', defaultRef: 'origin/stable', cwd: f.cwd }).scope, 'full')
+  assert.throws(() => executionSelection({ commit: 'HEAD', executionSuite: 'unit', cwd: f.cwd }), /explicit affected base/)
+  assert.throws(() => executionSelection({ commit: 'HEAD', baseCommit: 'f'.repeat(40), executionSuite: 'unit', cwd: f.cwd }), /unavailable/)
+  assert.deepEqual(executionSelection({ commit: 'HEAD', baseCommit: f.base, executionSuite: 'unit', cwd: f.cwd }).files, [])
+  const release = executionSelection({ commit: 'HEAD', executionSuite: 'unit', cwd: f.cwd, release: true })
+  assert.equal(release.scope, 'full')
+  assert.deepEqual(release.files, [])
 })

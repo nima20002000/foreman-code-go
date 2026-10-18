@@ -13,17 +13,15 @@ const conformanceCalls = fixture => fixture.calls().filter(call => call.tool ===
 const conformanceLaunches = fixture => conformanceCalls(fixture).filter(call => !call.args.includes('--list'))
 const conformanceReport = (fixture, name) => JSON.parse(readFileSync(join(fixture.state, 'conformance', name), 'utf8'))
 
-for (const scope of ['full', 'affected', '']) {
-  test(`backend typecheck runs full Go build and vet with ${scope || 'omitted'} scope`, t => {
-    const fixture = goCiFixture(t, { SCOPE: scope, SLICE: '19/30', SELECTED_FILES: 's:999' })
+test('explicit release mode runs full Go build and vet', t => {
+    const fixture = goCiFixture(t, { SCOPE: 'full', SLICE: '19/30', SELECTED_FILES: 's:999' })
     const result = fixture.run('typecheck-api')
     assert.equal(result.status, 0, result.stderr)
     assert.deepEqual(goCalls(fixture).map(call => call.args), [['build', './...'], ['vet', './...']])
     assert.equal(fixture.calls().some(call => call.tool === 'corepack' || call.tool === 'git'), false)
     assert.equal(fixture.isolatedHomeExists(), false)
     assert.equal(readFileSync(join(fixture.home, 'existing-state'), 'utf8'), 'untouched')
-  })
-}
+})
 
 for (const [suite, command] of [['typecheck-api', 'build'], ['typecheck-api', 'vet'], ['build-api', 'build']]) {
   test(`${suite} preserves a failing Go ${command} status`, t => {
@@ -363,20 +361,19 @@ test('cleanup without a runtime needs no module or installed toolchains and crea
   assert.equal(existsSync(join(fixture.state, 'runtime-root')), false)
 })
 
-test('host root integration ignores legacy TS file arguments and publishes the legacy result aliases', t => {
+test('explicit release root integration publishes the legacy result aliases', t => {
   const fixture = goCiFixture(t, { TEST_RESULTS_OUTPUT: '', DURATIONS_OUTPUT: '' })
   const prepared = fixture.run('integration', 'prepare')
   assert.equal(prepared.status, 0, prepared.stderr)
   const rootEntry = join(fixture.directory, 'scripts/ci-root-suite.mjs')
   const output = join(fixture.directory, 'host-results.json')
   const durations = join(fixture.directory, 'host-durations.json')
-  const result = spawnSync(process.execPath, [rootEntry, 'integration', '--', 'node', 'scripts/test-integration.mjs',
-    '--files', 'apps/api/test/frozen.integration.test.ts'], { cwd: fixture.directory, encoding: 'utf8', timeout: 20_000,
+  const result = spawnSync(process.execPath, [rootEntry, 'integration', '--', 'node', 'scripts/test-integration.mjs'],
+    { cwd: fixture.directory, encoding: 'utf8', timeout: 20_000,
     env: { ...fixture.environment, FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT: output,
       FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT: durations } })
   assert.equal(result.error, undefined, result.error?.message)
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /frozen TypeScript file selection is ignored/)
   assert.equal(JSON.parse(readFileSync(output, 'utf8')).summary.passed, 2)
   assert.ok(JSON.parse(readFileSync(durations, 'utf8'))['backend/runtime'] > 0)
 })

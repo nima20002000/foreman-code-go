@@ -30,13 +30,14 @@ test('invalid and empty shards fail instead of starting an unfiltered suite', ()
   }
 })
 
-test('API discovery retains unit tests and excludes integration, acceptance and generated files', () => {
+test('the API part names Go test sources and excludes frozen TypeScript and generated files', () => {
   assert.deepEqual(unitFiles([
     'apps/api/test/a.test.ts', 'apps/api/src/b.spec.tsx', 'apps/api/test/c.test.mjs',
     'apps/api/test/a.integration.test.ts', 'apps/api/test/a.acceptance.test.ts',
     'apps/api/node_modules/module/a.test.ts', 'apps/api/dist/a.test.js',
     'apps/web/src/a.test.tsx', 'apps/api/test/helper.ts',
-  ], 'unit-api'), ['apps/api/src/b.spec.tsx', 'apps/api/test/a.test.ts', 'apps/api/test/c.test.mjs'])
+    'backend/config/config_test.go', 'backend/config/config.go', 'backend/dist/generated_test.go',
+  ], 'unit-api'), ['backend/config/config_test.go'])
   assert.throws(() => unitFiles([], 'other'), /Unknown unit suite/)
 })
 
@@ -59,14 +60,15 @@ test('JSON reporter timings retain only successful files inside the selected pac
   const root = resolve('report-fixture')
   const result = (name, status, startTime, endTime) => ({ name: resolve(root, name), status, startTime, endTime })
   const report = { testResults: [
-    result('apps/api/test/a.test.ts', 'passed', 100, 175),
-    result('apps/api/test/b.test.ts', 'failed', 100, 300),
-    result('apps/api/test/c.test.ts', 'passed', 100, 100),
-    result('apps/api/test/d.test.ts', 'passed', 100, undefined),
+    result('backend/runtime', 'passed', 100, 175),
+    result('backend/config', 'failed', 100, 300),
+    result('backend/empty', 'passed', 100, 100),
+    result('backend/unmeasured', 'passed', 100, undefined),
+    result('apps/api/test/frozen.test.ts', 'passed', 100, 300),
     result('apps/web/src/a.test.tsx', 'passed', 100, 200),
     result('../outside.test.ts', 'passed', 100, 200),
   ] }
-  assert.deepEqual(measuredUnitDurations(report, root, 'unit-api'), { 'apps/api/test/a.test.ts': 75 })
+  assert.deepEqual(measuredUnitDurations(report, root, 'unit-api'), { 'backend/runtime': 75 })
   assert.deepEqual(measuredUnitDurations(report, root, 'unit-web'), { 'apps/web/src/a.test.tsx': 100 })
   assert.deepEqual(measuredUnitDurations({}, root, 'unit-api'), {})
 })

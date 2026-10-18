@@ -54,12 +54,55 @@ function compareMain(report, mainReport, mainCommitSha) {
     ...(!passingScenarioIds.length ? { reason: 'The supplied exact-main report has no executed passing IDs; non-regression is not established.' } : {}) }
 }
 
+function affectedGate(report, inventory, fullConformance, selectionIds, launcherExit) {
+  if (!Array.isArray(selectionIds) || !selectionIds.length || selectionIds.some(id => typeof id !== 'string' || !id.trim())
+    || new Set(selectionIds).size !== selectionIds.length) {
+    throw new Error('Affected conformance requires a nonempty, unique list of exact scenario IDs.')
+  }
+  const known = new Set(inventory.scenarios.map(scenario => scenario.id))
+  const unknown = selectionIds.filter(id => !known.has(id))
+  if (unknown.length) throw new Error(`Unknown selected conformance scenario IDs: ${unknown.join(', ')}.`)
+  const selected = new Set(selectionIds)
+  const actual = new Map(report.scenarios.map(scenario => [scenario.id, scenario]))
+  const missingIds = selectionIds.filter(id => !actual.has(id))
+  const unexpectedIds = [...actual.keys()].filter(id => !selected.has(id))
+  const passedIds = report.scenarios.filter(scenario => selected.has(scenario.id) && scenario.executed && scenario.status === 'passed')
+    .map(scenario => scenario.id)
+  const failedIds = report.scenarios.filter(scenario => selected.has(scenario.id) && (!scenario.executed || scenario.status !== 'passed'))
+    .map(scenario => scenario.id)
+  const reasons = launcherFailures(report, launcherExit)
+  if (report.scope.kind !== 'full' || report.scope.lanes.length || report.scope.completeSelection
+    || report.scope.scenarioIds.length !== selected.size || new Set(report.scope.scenarioIds).size !== selected.size
+    || report.scope.scenarioIds.some(id => !selected.has(id))) {
+    reasons.push('Affected conformance raw scope must match exactly the requested scenario IDs, without lane or smoke filters.')
+  }
+  if (missingIds.length || unexpectedIds.length) reasons.push('Affected conformance terminal outcomes do not match the requested scenario IDs.')
+  if (!report.executed) reasons.push('Zero executed conformance scenarios; setup outcomes are not executed tests.')
+  if (failedIds.length) reasons.push('Every selected conformance scenario must execute and pass.')
+  if (report.setupError !== undefined) reasons.push('Conformance runner setup failed.')
+  if (report.cleanupError !== undefined) reasons.push('Conformance runner cleanup failed.')
+  if (report.status !== 'passed') reasons.push('The affected conformance launcher reported a failure.')
+  return { schemaVersion: 1, repository: report.repository, baselineSha: report.baselineSha, commitSha: report.commitSha,
+    commitSource: report.commitSource, target: report.target, mode: 'affected', status: reasons.length ? 'failed' : 'passed',
+    reasons, evidence: 'validated', launcherExit, inventorySelected: inventory.scenarios.length, fullConformance,
+    selection: { scenarioIds: [...selectionIds], requested: selectionIds.length, reported: report.totals.total, executed: report.executed,
+      passedIds, failedIds, missingIds, unexpectedIds },
+    skeleton: { status: 'not-established', reason: 'An affected selection does not establish complete skeleton acceptance.' },
+    nonRegression: { status: 'not-established', reason: 'An affected selection does not establish full exact-main non-regression.' } }
+}
+
 /** Evaluate an early or complete gate without rewriting any scenario outcome, coverage claim, or run identity. */
-export function conformanceGate(raw, expected, { mode = 'incremental', launcherExit, mainReport, mainCommitSha } = {}) {
-  if (!['incremental', 'complete'].includes(mode)) throw new Error('CONFORMANCE_GATE must be incremental or complete.')
+export function conformanceGate(raw, expected, { selectionIds, mode = selectionIds === undefined ? 'incremental' : 'affected',
+  launcherExit, mainReport, mainCommitSha } = {}) {
+  if (!['incremental', 'complete', 'affected'].includes(mode)) throw new Error('CONFORMANCE_GATE must be incremental or complete or affected.')
   const inventory = validateConformanceInventory(expected?.inventory, expected?.target)
   const report = validateConformanceReport(raw, { ...expected, inventory })
   const fullConformance = fullConformanceVerdict(report)
+  if (mode === 'affected') {
+    if (mainReport !== undefined || mainCommitSha !== undefined) throw new Error('Affected conformance cannot establish a full exact-main comparison.')
+    return affectedGate(report, inventory, fullConformance, selectionIds, launcherExit)
+  }
+  if (selectionIds !== undefined) throw new Error('Explicit scenario IDs require the affected conformance policy.')
   const skeleton = requiredSkeleton(report)
   const nonRegression = compareMain(report, mainReport, mainCommitSha)
   const reasons = launcherFailures(report, launcherExit)
@@ -87,7 +130,8 @@ function readGate(values) {
   const expected = { target: values.target, commitSha: values.commit, commitSource: values['commit-source'],
     inventory: readJsonReport(values.inventory) }
   const launcherExit = /^[0-9]+$/.test(values['launcher-exit']) ? Number(values['launcher-exit']) : NaN
-  const options = { mode: process.env.CONFORMANCE_GATE ?? 'incremental', launcherExit }
+  const options = { mode: process.env.CONFORMANCE_GATE ?? (values.selection ? 'affected' : 'incremental'), launcherExit }
+  if (values.selection) options.selectionIds = readJsonReport(values.selection)
   if (values['main-input'] !== undefined || values['main-commit'] !== undefined) {
     if (!values['main-input'] || !values['main-commit']) {
       throw new Error('An exact-main conformance report and its explicit fork commit SHA must be supplied together.')
@@ -102,12 +146,13 @@ function main() {
   const { values } = parseArgs({ options: { input: { type: 'string' }, inventory: { type: 'string' },
     output: { type: 'string' }, target: { type: 'string' }, commit: { type: 'string' },
     'commit-source': { type: 'string' }, 'launcher-exit': { type: 'string' },
+    selection: { type: 'string' },
     'main-input': { type: 'string' }, 'main-commit': { type: 'string' } } })
   if (!values.input || !values.inventory || !values.output || !values.target || !values.commit
     || !values['commit-source'] || values['launcher-exit'] === undefined) {
-    throw new Error('Usage: ci-conformance-gate.mjs --target go|ts --input <raw.json> --inventory <inventory.json> --output <gate.json> --commit <sha> --commit-source git|environment --launcher-exit <code> [--main-input <main.json> --main-commit <sha>]')
+    throw new Error('Usage: ci-conformance-gate.mjs --target go|ts --input <raw.json> --inventory <inventory.json> --output <gate.json> --commit <sha> --commit-source git|environment --launcher-exit <code> [--selection <scenario-ids.json>] [--main-input <main.json> --main-commit <sha>]')
   }
-  const evidencePaths = [values.input, values.inventory, values['main-input']].filter(Boolean).map(path => resolve(path))
+  const evidencePaths = [values.input, values.inventory, values.selection, values['main-input']].filter(Boolean).map(path => resolve(path))
   if (evidencePaths.includes(resolve(values.output))) {
     throw new Error('The conformance gate output must be separate from its retained raw report, inventory, and exact-main evidence.')
   }
@@ -115,7 +160,7 @@ function main() {
   try {
     gate = readGate(values)
   } catch (error) {
-    gate = { schemaVersion: 1, target: values.target, mode: process.env.CONFORMANCE_GATE ?? 'incremental',
+    gate = { schemaVersion: 1, target: values.target, mode: process.env.CONFORMANCE_GATE ?? (values.selection ? 'affected' : 'incremental'),
       status: 'failed', evidence: 'invalid', reasons: [error.message],
       fullConformance: { status: 'not-evaluated', reason: 'See the retained raw report and full-verdict artifact.' },
       nonRegression: { status: 'not-evaluated', reason: 'Conformance gate evidence is invalid or missing.' } }
