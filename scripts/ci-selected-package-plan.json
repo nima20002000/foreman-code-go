@@ -1,0 +1,55 @@
+{
+  "source": "3bcff8d03c4f43fd70de5252e475ed27b3d1280f",
+  "sourceTree": "fc97d44b1d7b8e6822809813870a45503e7a29d0",
+  "package": "./internal/runs/kernel",
+  "goFiles": [],
+  "unitTests": [
+    "TestSchedulerCancellationReturnsBeforeUnresponsiveWrapperDrains",
+    "TestStagingSentinelErrorMessagesAndWrapping"
+  ],
+  "integrationTests": [],
+  "packages": [
+    "./internal/runs/kernel",
+    "./internal/runs/handoffs",
+    "./internal/transfer",
+    "./internal/jsonvalue",
+    "./internal/canonicaljson"
+  ],
+  "unitPackages": [
+    "./internal/runs/kernel",
+    "./internal/transfer"
+  ],
+  "race": true,
+  "testTimeout": "30s",
+  "sourceProvenance": {
+    "mapPath": ".benchmark/pure-foundations-integration.json",
+    "mapSha256": "4fa9820f74f18f034d0dae19c1ab2e493803d2977506a2cee8083a27592c4321",
+    "base": "3e207f0380811b710ebf08d718110522aecbbfe1",
+    "head": "3bcff8d03c4f43fd70de5252e475ed27b3d1280f",
+    "tree": "fc97d44b1d7b8e6822809813870a45503e7a29d0",
+    "components": {
+      "engine": {
+        "head": "0a317ca07f36f37646d5ff3dd86444bf2be98586",
+        "tree": "dcdc3ce003820d00a8510cd843bfedbcbe608475",
+        "count": 21
+      },
+      "transfer": {
+        "head": "cc297a793ae190d20025369e5c635e2b954027ca",
+        "tree": "83fae7141b54faf78d0ffb80d20305ac7a653b7b",
+        "count": 7
+      },
+      "json": {
+        "head": "3bba16c57654f5e96ef1044fbd8eb5aa0b2522c2",
+        "tree": "18e6d8a711af283a5c4fbf76240e5d84bf8ca465",
+        "count": 14
+      }
+    },
+    "ownedCount": 42,
+    "allOtherMainFilesIdentical": true,
+    "baseEntries": 6075,
+    "startupClosureUnchanged": true,
+    "startupClosureFileCount": 37,
+    "startupConformance": "notrun: unchanged startup dependencies"
+  },
+  "mode": "build-and-tests"
+}

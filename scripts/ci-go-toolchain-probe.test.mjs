@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: pure-foundations at immutable source 3bcff8d03c4f43fd70de5252e475ed27b3d1280f.
