@@ -2,5 +2,9 @@
   "apps/api/test/conformance-ts-reference.integration.test.ts": {
     "suite": "integration",
     "selection": "conformance/ci/ts-reference-selection.json"
+  },
+  "scripts/fixtures/go-provider-status/behavior.test.mjs": {
+    "suite": "unit-api",
+    "selection": "scripts/fixtures/go-provider-status/behavior-plan.json"
   }
 }
