@@ -135,6 +135,7 @@ fi
 affected=1
 go_selected=0
 conformance_part=0
+postgres_part=0
 conformance_targets=()
 scripts_database=0
 retained_part=0
@@ -145,7 +146,7 @@ if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
   export CI_AFFECTED_SELECTION_FILE="$state/affected-selection.json"
   export SCOPE=affected
   scope_flags="$(node "$script_directory/ci-affected-scope.mjs" flags "$CI_AFFECTED_SELECTION_FILE")"
-  read -r go_selected conformance_part scripts_database retained_part <<< "$scope_flags"
+  read -r go_selected conformance_part scripts_database retained_part postgres_part <<< "$scope_flags"
   if [ "$conformance_part" = 1 ]; then
     target_names="$(node "$script_directory/ci-affected-scope.mjs" conformance-targets "$CI_AFFECTED_SELECTION_FILE")" || exit 2
     read -r -a conformance_targets <<< "$target_names"
@@ -181,9 +182,12 @@ if [ "$go_part" = 1 ]; then
   ci_go_environment
   source "$script_directory/ci-go-suite.sh"
 fi
-if [ "$conformance_part" = 1 ]; then
+if [ "$conformance_part" = 1 ]; then postgres_part=1; fi
+if [ "$postgres_part" = 1 ]; then
   source "$script_directory/ci-postgres-toolchain.sh"
   ci_postgres_environment
+fi
+if [ "$conformance_part" = 1 ]; then
   source "$script_directory/ci-conformance-suite.sh"
 fi
 
@@ -217,7 +221,7 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
       prepare_one go bash "$script_directory/ci-go-toolchain.sh" install
     fi
   fi
-  if [ "$conformance_part" = 1 ]; then
+  if [ "$postgres_part" = 1 ]; then
     if [ "$1" = start ]; then
       background postgres bash "$script_directory/ci-postgres-toolchain.sh" install
     else
@@ -268,7 +272,7 @@ if [ "$go_part" = 1 ]; then
   ensure_preparation go bash "$script_directory/ci-go-toolchain.sh" install
   ci_go_verify
 fi
-if [ "$conformance_part" = 1 ]; then ensure_preparation postgres bash "$script_directory/ci-postgres-toolchain.sh" install; fi
+if [ "$postgres_part" = 1 ]; then ensure_preparation postgres bash "$script_directory/ci-postgres-toolchain.sh" install; fi
 if [ "$integration_database" = 1 ]; then ensure_preparation db node "$script_directory/ci-go-prerequisites.mjs" database-start; fi
 if [ "$scripts_database" = 1 ]; then ensure_preparation scripts-db node "$script_directory/ci-go-prerequisites.mjs" scripts-database-start; fi
 

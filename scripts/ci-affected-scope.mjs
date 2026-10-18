@@ -280,8 +280,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.stdout.write(targets.join(' '))
   } else if (action === 'flags') {
     const request = readSelectionFile(suite)
+    // A selected adapter's tools are prerequisites, not additional outer native execution.
+    const postgresRequired = request.conformanceScenarios.length > 0 || Object.keys(request.nativeReports)
+      .some(selector => nativeSelectorBinding(selector)?.request.conformanceScenarios.length > 0)
     process.stdout.write([Number(goPackages(request).length > 0), Number(request.conformanceScenarios.length > 0),
       Number(request.scriptsDatabaseRequired),
-      Number(request.files.some(file => !file.startsWith('backend/') && !(request.conformanceScenarios.length && file.startsWith('conformance/'))))].join(' '))
+      Number(request.files.some(file => !file.startsWith('backend/') && !(request.conformanceScenarios.length && file.startsWith('conformance/')))),
+      Number(postgresRequired)].join(' '))
   } else throw new Error('Invalid affected scope action.')
 }
