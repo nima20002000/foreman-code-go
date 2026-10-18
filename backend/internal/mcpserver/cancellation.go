@@ -14,8 +14,8 @@ import (
 // number distinct from a string; text is the shared opaque UTF-16 unit identity.
 // Principal keys and request keys are separate map dimensions, never joined.
 type rpcID struct {
-	text   string
-	number int64
+	text     string
+	number   int64
 	isString bool
 }
 

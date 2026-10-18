@@ -29,28 +29,39 @@ type cancellationPrincipal struct{}
 // grants, generated principal substitutes, or installation/qualification receipts.
 type cancellationAccess struct {
 	identityCalls atomic.Int32
-	missing bool
-	failure error
+	missing       bool
+	failure       error
 }
 
 func (access *cancellationAccess) Authenticate(request *http.Request) (context.Context, error) {
 	var key string
 	switch request.Header.Get("Authorization") {
-	case "Bearer caller-a": key = "\x00a"
-	case "Bearer caller-b": key = "\x00b"
-	case "Bearer caller-surrogate": key = "\xd8\x00"
-	case "Bearer caller-replacement": key = "\xff\xfd"
-	default: return nil, domainerror.New("AUTH_REQUIRED", "An isolated fixture credential is required.", 401, nil)
+	case "Bearer caller-a":
+		key = "\x00a"
+	case "Bearer caller-b":
+		key = "\x00b"
+	case "Bearer caller-surrogate":
+		key = "\xd8\x00"
+	case "Bearer caller-replacement":
+		key = "\xff\xfd"
+	default:
+		return nil, domainerror.New("AUTH_REQUIRED", "An isolated fixture credential is required.", 401, nil)
 	}
 	return context.WithValue(request.Context(), cancellationPrincipal{}, key), nil
 }
 
 func (access *cancellationAccess) PrincipalID(ctx context.Context) (string, error) {
 	access.identityCalls.Add(1)
-	if access.failure != nil { return "", access.failure }
-	if access.missing { return "", nil }
+	if access.failure != nil {
+		return "", access.failure
+	}
+	if access.missing {
+		return "", nil
+	}
 	key, ok := ctx.Value(cancellationPrincipal{}).(string)
-	if !ok { return "", errors.New("fixture principal context was lost") }
+	if !ok {
+		return "", errors.New("fixture principal context was lost")
+	}
 	return key, nil
 }
 
@@ -66,61 +77,80 @@ func (*cancellationAccess) Authorize(ctx context.Context, name string, _ json.Ra
 }
 
 type cancellationArguments struct {
-	Label string `json:"label"`
-	Wait bool `json:"wait"`
-	IgnoreCancellation bool `json:"ignoreCancellation"`
+	Label              string `json:"label"`
+	Wait               bool   `json:"wait"`
+	IgnoreCancellation bool   `json:"ignoreCancellation"`
 }
 
 func cancellationInput(raw json.RawMessage) (cancellationArguments, error) {
 	var value cancellationArguments
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil { return value, err }
-	if value.Label == "" { return value, errors.New("fixture label is required") }
+	if err := decoder.Decode(&value); err != nil {
+		return value, err
+	}
+	if value.Label == "" {
+		return value, errors.New("fixture label is required")
+	}
 	return value, nil
 }
 
 type cancellationActivity struct {
-	label string
-	ctx context.Context
+	label   string
+	ctx     context.Context
 	release chan struct{}
-	once sync.Once
+	once    sync.Once
 }
 
 func (activity *cancellationActivity) finish() { activity.once.Do(func() { close(activity.release) }) }
 
 type cancellationFixture struct {
-	access *cancellationAccess
-	server *httptest.Server
-	client *http.Client
-	entered chan *cancellationActivity
-	stop chan struct{}
+	access      *cancellationAccess
+	server      *httptest.Server
+	client      *http.Client
+	entered     chan *cancellationActivity
+	stop        chan struct{}
 	invocations atomic.Int32
 }
 
 func newCancellationFixture(t *testing.T, access *cancellationAccess) *cancellationFixture {
 	t.Helper()
-	if access == nil { access = &cancellationAccess{} }
+	if access == nil {
+		access = &cancellationAccess{}
+	}
 	fixture := &cancellationFixture{access: access, entered: make(chan *cancellationActivity, 16), stop: make(chan struct{})}
 	application, err := app.New(app.Options{MCPAccess: access})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	application.RegisterTool(&mcp.Tool{Name: "fixture_wait", InputSchema: json.RawMessage(
 		`{"type":"object","properties":{"label":{"type":"string"},"wait":{"type":"boolean"},"ignoreCancellation":{"type":"boolean"}},"required":["label"],"additionalProperties":false}`)},
 		func(raw json.RawMessage) error { _, err := cancellationInput(raw); return err },
 		func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			fixture.invocations.Add(1)
 			arguments, err := cancellationInput(request.Params.Arguments)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			state := "completed"
 			if arguments.Wait {
 				activity := &cancellationActivity{label: arguments.Label, ctx: ctx, release: make(chan struct{})}
 				fixture.entered <- activity
 				if arguments.IgnoreCancellation {
-					select { case <-activity.release: case <-fixture.stop: }
+					select {
+					case <-activity.release:
+					case <-fixture.stop:
+					}
 				} else {
-					select { case <-ctx.Done(): case <-activity.release: case <-fixture.stop: }
+					select {
+					case <-ctx.Done():
+					case <-activity.release:
+					case <-fixture.stop:
+					}
 				}
-				if ctx.Err() != nil { state = "cancelled" }
+				if ctx.Err() != nil {
+					state = "cancelled"
+				}
 			}
 			return mcpserver.ToolResult(map[string]any{"label": arguments.Label, "state": state})
 		})
@@ -137,19 +167,23 @@ func newCancellationFixture(t *testing.T, access *cancellationAccess) *cancellat
 type cancellationReply struct {
 	status int
 	header http.Header
-	body []byte
-	err error
+	body   []byte
+	err    error
 }
 
 func (fixture *cancellationFixture) post(ctx context.Context, token, body string) cancellationReply {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(body))
-	if err != nil { return cancellationReply{err: err} }
+	if err != nil {
+		return cancellationReply{err: err}
+	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
 	response, err := fixture.client.Do(request)
-	if err != nil { return cancellationReply{err: err} }
+	if err != nil {
+		return cancellationReply{err: err}
+	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
 	return cancellationReply{status: response.StatusCode, header: response.Header, body: data, err: err}
@@ -158,8 +192,10 @@ func (fixture *cancellationFixture) post(ctx context.Context, token, body string
 func (fixture *cancellationFixture) start(t *testing.T, token, id string, arguments cancellationArguments) (<-chan cancellationReply, context.CancelFunc) {
 	t.Helper()
 	params, err := json.Marshal(arguments)
-	if err != nil { t.Fatal(err) }
-	body := `{"jsonrpc":"2.0","id":`+id+`,"method":"tools/call","params":{"name":"fixture_wait","arguments":`+string(params)+`}}`
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"jsonrpc":"2.0","id":` + id + `,"method":"tools/call","params":{"name":"fixture_wait","arguments":` + string(params) + `}}`
 	ctx, cancel := context.WithTimeout(context.Background(), 4*cancellationWait)
 	t.Cleanup(cancel)
 	replies := make(chan cancellationReply, 1)
@@ -171,7 +207,9 @@ func (fixture *cancellationFixture) activity(t *testing.T, label string) *cancel
 	t.Helper()
 	select {
 	case activity := <-fixture.entered:
-		if activity.label != label { t.Fatalf("entered %q, want %q", activity.label, label) }
+		if activity.label != label {
+			t.Fatalf("entered %q, want %q", activity.label, label)
+		}
 		return activity
 	case <-time.After(cancellationWait):
 		t.Fatalf("public tool %q never started", label)
@@ -183,7 +221,9 @@ func replyWithin(t *testing.T, replies <-chan cancellationReply) cancellationRep
 	t.Helper()
 	select {
 	case reply := <-replies:
-		if reply.err != nil { t.Fatal(reply.err) }
+		if reply.err != nil {
+			t.Fatal(reply.err)
+		}
 		return reply
 	case <-time.After(cancellationWait):
 		t.Fatal("MCP request did not complete")
@@ -197,21 +237,38 @@ func rpcBody(t *testing.T, reply cancellationReply) map[string]json.RawMessage {
 	if strings.HasPrefix(reply.header.Get("Content-Type"), "text/event-stream") {
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		for scanner.Scan() {
-			if value, ok := strings.CutPrefix(scanner.Text(), "data: "); ok { data = []byte(value); break }
+			if value, ok := strings.CutPrefix(scanner.Text(), "data: "); ok {
+				data = []byte(value)
+				break
+			}
 		}
-		if err := scanner.Err(); err != nil { t.Fatal(err) }
+		if err := scanner.Err(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var response map[string]json.RawMessage
-	if err := json.Unmarshal(data, &response); err != nil { t.Fatalf("status%d response %q: %v", reply.status, data, err) }
+	if err := json.Unmarshal(data, &response); err != nil {
+		t.Fatalf("status%d response %q: %v", reply.status, data, err)
+	}
 	return response
 }
 
 func requireToolState(t *testing.T, reply cancellationReply, expected string) {
 	t.Helper()
-	if reply.status != 200 { t.Fatalf("tool status%d: %s", reply.status, reply.body) }
-	var result struct { Structured struct { State string `json:"state"` } `json:"structuredContent"` }
-	if err := json.Unmarshal(rpcBody(t, reply)["result"], &result); err != nil { t.Fatal(err) }
-	if result.Structured.State != expected { t.Fatalf("tool state%q, want%q: %s", result.Structured.State, expected, reply.body) }
+	if reply.status != 200 {
+		t.Fatalf("tool status%d: %s", reply.status, reply.body)
+	}
+	var result struct {
+		Structured struct {
+			State string `json:"state"`
+		} `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(rpcBody(t, reply)["result"], &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Structured.State != expected {
+		t.Fatalf("tool state%q, want%q: %s", result.Structured.State, expected, reply.body)
+	}
 }
 
 func (fixture *cancellationFixture) cancel(t *testing.T, token, id string) {
@@ -274,7 +331,7 @@ func TestMCPRejectsDuplicateInFlightIDAndReusesFinishedID(t *testing.T) {
 }
 
 func TestMCPCancellationUsesECMANumberIDs(t *testing.T) {
-	for _, test := range []struct { name, call, cancel string }{
+	for _, test := range []struct{ name, call, cancel string }{
 		{"equivalent_lexemes", "7.0", "7e0"},
 		{"negative_zero", "-0", "0"},
 		{"rounded_integer", "1.0000000000000001", "1"},
@@ -293,7 +350,10 @@ func TestMCPCancellationUsesECMANumberIDs(t *testing.T) {
 }
 
 func TestMCPCancellationOnlyTracksSourceRPCIDs(t *testing.T) {
-	for _, test := range []struct { name, id string; tracked bool }{
+	for _, test := range []struct {
+		name, id string
+		tracked  bool
+	}{
 		{"string", `""`, true}, {"safe", "9007199254740991", true},
 		{"unsafe", "9007199254740992", false}, {"fraction", "7.5", false},
 		{"overflow", "1e5000", false}, {"null", "null", false},
@@ -303,8 +363,12 @@ func TestMCPCancellationOnlyTracksSourceRPCIDs(t *testing.T) {
 			call, _ := fixture.start(t, "caller-a", test.id, cancellationArguments{Label: "identity"})
 			replyWithin(t, call)
 			want := int32(0)
-			if test.tracked { want = 1 }
-			if got := fixture.access.identityCalls.Load(); got != want { t.Fatalf("identity lookups%d, want%d", got, want) }
+			if test.tracked {
+				want = 1
+			}
+			if got := fixture.access.identityCalls.Load(); got != want {
+				t.Fatalf("identity lookups%d, want%d", got, want)
+			}
 		})
 	}
 }
@@ -345,8 +409,12 @@ func TestMCPCancellationDoesNotInterceptExtraEnvelopeFields(t *testing.T) {
 			activity := fixture.activity(t, "active")
 			before := fixture.access.identityCalls.Load()
 			reply := fixture.post(context.Background(), "caller-a", `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}`+extra+`}`)
-			if reply.err != nil { t.Fatal(reply.err) }
-			if fixture.access.identityCalls.Load() != before { t.Fatal("strict cancellation envelope was bypassed") }
+			if reply.err != nil {
+				t.Fatal(reply.err)
+			}
+			if fixture.access.identityCalls.Load() != before {
+				t.Fatal("strict cancellation envelope was bypassed")
+			}
 			activity.finish()
 			requireToolState(t, replyWithin(t, call), "completed")
 		})
@@ -357,13 +425,19 @@ func TestMCPCancellationFailsClosedWithoutPrincipalIdentity(t *testing.T) {
 	for _, name := range []string{"missing", "failure"} {
 		t.Run(name, func(t *testing.T) {
 			access := &cancellationAccess{missing: name == "missing"}
-			if name == "failure" { access.failure = errors.New("isolated identity lookup failure") }
+			if name == "failure" {
+				access.failure = errors.New("isolated identity lookup failure")
+			}
 			fixture := newCancellationFixture(t, access)
 			call, _ := fixture.start(t, "caller-a", "7", cancellationArguments{Label: "denied"})
 			reply := replyWithin(t, call)
-			if reply.status != 500 || fixture.invocations.Load() != 0 { t.Fatalf("missing identity status%d invocations%d", reply.status, fixture.invocations.Load()) }
+			if reply.status != 500 || fixture.invocations.Load() != 0 {
+				t.Fatalf("missing identity status%d invocations%d", reply.status, fixture.invocations.Load())
+			}
 			reply = fixture.post(context.Background(), "caller-a", `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`)
-			if reply.err != nil || reply.status != 500 { t.Fatalf("identity-less cancel status%d error%v", reply.status, reply.err) }
+			if reply.err != nil || reply.status != 500 {
+				t.Fatalf("identity-less cancel status%d error%v", reply.status, reply.err)
+			}
 		})
 	}
 }
@@ -373,13 +447,22 @@ func TestMCPDisconnectedRequestReleasesIDBeforeToolReturns(t *testing.T) {
 	_, disconnect := fixture.start(t, "caller-a", "7", cancellationArguments{Label: "old", Wait: true, IgnoreCancellation: true})
 	old := fixture.activity(t, "old")
 	disconnect()
-	select { case <-old.ctx.Done(): case <-time.After(cancellationWait): t.Fatal("disconnection did not cancel the public handler context") }
+	select {
+	case <-old.ctx.Done():
+	case <-time.After(cancellationWait):
+		t.Fatal("disconnection did not cancel the public handler context")
+	}
 	deadline := time.Now().Add(cancellationWait)
 	for {
 		probe, _ := fixture.start(t, "caller-a", "7", cancellationArguments{Label: "probe"})
 		reply := replyWithin(t, probe)
-		if reply.status == 200 { requireToolState(t, reply, "completed"); break }
-		if reply.status != 409 || time.Now().After(deadline) { t.Fatalf("disconnected id did not become reusable: %d %s", reply.status, reply.body) }
+		if reply.status == 200 {
+			requireToolState(t, reply, "completed")
+			break
+		}
+		if reply.status != 409 || time.Now().After(deadline) {
+			t.Fatalf("disconnected id did not become reusable: %d %s", reply.status, reply.body)
+		}
 	}
 	reused, _ := fixture.start(t, "caller-a", "7", cancellationArguments{Label: "new", Wait: true})
 	fixture.activity(t, "new")

@@ -16,14 +16,14 @@ import (
 // requestInfo contains only transport selections. Domain inputs remain raw JSON
 // for generated validators; this is not a second protocol DTO or domain schema.
 type requestInfo struct {
-	tool          string
-	id            rpcID
-	tracks        bool
-	cancelID      rpcID
-	cancellation  bool
-	invalidID     bool
-	responseID    jsonvalue.UTF16String
-	stringID      bool
+	tool         string
+	id           rpcID
+	tracks       bool
+	cancelID     rpcID
+	cancellation bool
+	invalidID    bool
+	responseID   jsonvalue.UTF16String
+	stringID     bool
 }
 
 func readRequest(w http.ResponseWriter, request *http.Request, limit int64) (*http.Request, requestInfo, error) {
