@@ -1,15 +1,29 @@
 #!/bin/bash
-# The existing CI part names remain stable. Backend parts always check the full Go module.
+# The existing CI part names remain stable. Affected requests bind exact files and native roots.
 #   *-api: Go; *-other and unit-web*: retained TypeScript; root names: both.
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
+cd "$script_directory/.."
+if [ "${1:-}" = affected ]; then
+  export SUITE="${2:?An affected action requires a suite}"
+  export CI_AFFECTED_SELECTION_FILE="${3:?An affected action requires a selection file}"
+  export SCOPE=affected
+fi
 if [ "${1:-}" != cleanup ]; then
   case "${CI_PARTITION:-}" in
     sha256:*) exec node "$script_directory/ci-selection.mjs" --dispatch-inputs "$0" "$@" ;;
   esac
+fi
+
+# The frozen host supplies integration --files only after parallel prepare/contracts setup.
+# This phase makes no check claim. The later affected action must resolve and prepare its scope.
+if [ "${1:-}" = prepare ] && [ "${SUITE:-}" = integration ] \
+  && node "$script_directory/ci-affected-scope.mjs" deferred-host-integration; then
+  echo '[ci-setup] integration setup deferred until the host supplies exact files'
+  exit 0
 fi
 if [ "${CI_WATCHDOG_ACTIVE:-}" != 1 ] && [ -n "${CI_EXPECTED_DURATION_MS:-}" ] && [ -z "${1:-}" ]; then
   case "${SUITE:-}" in unit|unit-*|integration) exec node "$script_directory/ci-watchdog.mjs" -- bash "$0" ;; esac
@@ -117,9 +131,29 @@ if [ "${1:-}" = cleanup ]; then
   # Load only after the EXIT cleanup acquires the lifecycle lock.
   exit 0
 fi
+
+affected=1
+go_selected=0
+conformance_part=0
+scripts_database=0
+retained_part=0
+case "${SCOPE:-affected}" in
+  full)
+    [ "${FOREMAN_CODE_CI_RELEASE:-}" = 1 ] || { echo 'Full CI scope is reserved for explicit release mode.' >&2; exit 2; }
+    affected=0 ;;
+  affected) ;;
+  *) echo "Unsupported CI scope: ${SCOPE:-}" >&2; exit 2 ;;
+esac
+if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
+  TEST_RESULTS_OUTPUT="$test_results" node "$script_directory/ci-affected-scope.mjs" prepare "${SUITE:-}" "$state/affected-selection.json"
+  export CI_AFFECTED_SELECTION_FILE="$state/affected-selection.json"
+  export SCOPE=affected
+  scope_flags="$(node "$script_directory/ci-affected-scope.mjs" flags "$CI_AFFECTED_SELECTION_FILE")"
+  read -r go_selected conformance_part scripts_database retained_part <<< "$scope_flags"
+fi
 ci_runtime_initialize
 
-if [ -z "${1:-}" ] && [ -n "${FOREMAN_CODE_CI_TYPECHECK_CACHE:-}" ] \
+if [ "$affected" = 0 ] && [ -z "${1:-}" ] && [ -n "${FOREMAN_CODE_CI_TYPECHECK_CACHE:-}" ] \
   && [ "${FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE:-}" != 1 ]; then
   case "${SUITE:-}" in
     typecheck|typecheck-other)
@@ -131,15 +165,23 @@ if [ -z "${1:-}" ] && [ -n "${FOREMAN_CODE_CI_TYPECHECK_CACHE:-}" ] \
 fi
 
 go_part=0
-case "${SUITE:-}" in
-  typecheck|typecheck-api|lint|lint-api|build|build-api|unit|unit-api|integration) go_part=1 ;;
-esac
+integration_database=0
+if [ "$affected" = 1 ]; then
+  if [ "$go_selected" = 1 ] || [ "$conformance_part" = 1 ]; then go_part=1; fi
+  if [ "${SUITE:-}" = integration ] && [ "$go_selected" = 1 ]; then integration_database=1; fi
+else
+  case "${SUITE:-}" in
+    typecheck|typecheck-api|lint|lint-api|build|build-api|unit|unit-api|integration) go_part=1 ;;
+  esac
+  if [ "${SUITE:-}" = integration ]; then conformance_part=1; integration_database=1; fi
+  case "${SUITE:-}" in unit|unit-other) scripts_database=1 ;; esac
+fi
 if [ "$go_part" = 1 ]; then
   source "$script_directory/ci-go-toolchain.sh"
   ci_go_environment
   source "$script_directory/ci-go-suite.sh"
 fi
-if [ "${SUITE:-}" = integration ]; then
+if [ "$conformance_part" = 1 ]; then
   source "$script_directory/ci-postgres-toolchain.sh"
   ci_postgres_environment
   source "$script_directory/ci-conformance-suite.sh"
@@ -175,16 +217,21 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
       prepare_one go bash "$script_directory/ci-go-toolchain.sh" install
     fi
   fi
-  if [ "$SUITE" = integration ]; then
+  if [ "$conformance_part" = 1 ]; then
     if [ "$1" = start ]; then
       background postgres bash "$script_directory/ci-postgres-toolchain.sh" install
-      background db node "$script_directory/ci-go-prerequisites.mjs" database-start
     else
       prepare_one postgres bash "$script_directory/ci-postgres-toolchain.sh" install
+    fi
+  fi
+  if [ "$integration_database" = 1 ]; then
+    if [ "$1" = start ]; then
+      background db node "$script_directory/ci-go-prerequisites.mjs" database-start
+    else
       prepare_one db node "$script_directory/ci-go-prerequisites.mjs" database-start
     fi
   fi
-  if [ "$SUITE" = unit ] || [ "$SUITE" = unit-other ]; then
+  if [ "$scripts_database" = 1 ]; then
     if [ "$1" = start ]; then
       background scripts-db node "$script_directory/ci-go-prerequisites.mjs" scripts-database-start
     else
@@ -209,14 +256,21 @@ ready() {
   [ "$(cat "$state/$name.exit")" = 0 ] || { echo "$name failed to start" >&2; return 1; }
 }
 
-# .go files and conformance are not understood by the frozen TS affected selector.
-# Frontend duration shards remain supported, while Go ignores all supplied partitions and file indexes.
-if [ "${1:-}" != affected ]; then
-  if [ "${SCOPE:-affected}" != full ]; then echo 'Running full fork CI scope, including the complete Go backend.'; fi
-  export SCOPE=full
-  unset SELECTED_FILES CI_PARTITION CI_SELECTION_COMMIT
+ensure_preparation() {
+  local name="$1"; shift
+  [ "${CI_PREREQUISITES_UNTRACKED:-0}" != 1 ] || return 0
+  if [ ! -f "$state/$name.log" ]; then prepare_one "$name" "$@" || return $?; fi
+  ready "$name"
+}
+
+# A root action may follow the host's scope-free integration setup, or run without a start phase.
+if [ "$go_part" = 1 ]; then
+  ensure_preparation go bash "$script_directory/ci-go-toolchain.sh" install
+  ci_go_verify
 fi
-if [ "$go_part" = 1 ]; then ready go; ci_go_verify; fi
+if [ "$conformance_part" = 1 ]; then ensure_preparation postgres bash "$script_directory/ci-postgres-toolchain.sh" install; fi
+if [ "$integration_database" = 1 ]; then ensure_preparation db node "$script_directory/ci-go-prerequisites.mjs" database-start; fi
+if [ "$scripts_database" = 1 ]; then ensure_preparation scripts-db node "$script_directory/ci-go-prerequisites.mjs" scripts-database-start; fi
 
 reports=()
 duration_reports=()
@@ -228,6 +282,10 @@ run_check() {
 }
 
 build_contracts() {
+  if [ "$affected" = 1 ]; then
+    node scripts/ci-contracts.mjs affected "$PWD" "${FOREMAN_CODE_CI_CONTRACTS_CACHE:-$state/contracts-cache}"
+    return $?
+  fi
   if [ -n "${FOREMAN_CODE_CI_CONTRACTS_CACHE:-}" ] && node scripts/ci-contracts.mjs ready "$PWD"; then return 0; fi
   pnpm --filter @foreman-code/contracts build
 }
@@ -305,20 +363,51 @@ unit_other() {
   return "$code"
 }
 
-if [ "${1:-}" = affected ]; then
-  build_contracts
-  if [ "${4:-}" = scripts ]; then
-    ready scripts-db
-    database_environment="$(node scripts/ci-go-prerequisites.mjs scripts-database-env)"
-    eval "$database_environment"
+affected_retained() (
+  local kind="${SUITE%%-*}" report="$state/affected-retained.vitest.json" durations="$state/affected-retained.durations.json"
+  if [ "$scripts_database" = 1 ]; then
+    local database_environment
+    database_environment="$(node scripts/ci-go-prerequisites.mjs scripts-database-env)" || return $?
+    eval "$database_environment" || return $?
   fi
-  TEST_RESULTS_OUTPUT="$test_results" DURATIONS_OUTPUT="$durations_output" node --input-type=module -e '
-    import { executeAffected } from "./scripts/ci-affected-run.mjs"
-    process.exitCode = await executeAffected(process.argv[1], process.argv[2])
-  ' "$2" "$3"
-  exit $?
-fi
+  CI_AFFECTED_VITEST_OUTPUT="$report" TEST_RESULTS_OUTPUT="$state/affected-retained.results.json" DURATIONS_OUTPUT="$durations" \
+    node --input-type=module -e '
+      import { executeAffected } from "./scripts/ci-affected-run.mjs"
+      process.exitCode = await executeAffected(process.argv[1], process.argv[2])
+    ' "$kind" "$CI_AFFECTED_SELECTION_FILE"
+)
 
+affected_checks() {
+  local kind="${SUITE%%-*}" comparison=0
+  # The helper returns before touching contracts metadata for a Go-only request.
+  build_contracts || return $?
+  if [ "$go_selected" = 1 ]; then
+    case "$kind" in
+      typecheck) run_check ci_go_typecheck ;;
+      lint) run_check ci_go_lint ;;
+      build) run_check ci_go_build ;;
+      unit) run_check ci_go_test unit ;;
+      integration) run_check ci_go_integration_test ;;
+    esac
+  fi
+  if [ "$conformance_part" = 1 ]; then
+    # Setup failures remain setup failures and never qualify a negative native proof.
+    ci_go_conformance_binary && ci_conformance_identity && ci_conformance_postgres || return $?
+    run_check ci_conformance_test go "$CI_AFFECTED_SELECTION_FILE"
+    ci_conformance_changed "$CI_AFFECTED_SELECTION_FILE" || comparison=$?
+    if [ "$comparison" -gt 1 ]; then return "$comparison"; fi
+    if [ "$comparison" = 0 ]; then run_check ci_conformance_test ts "$CI_AFFECTED_SELECTION_FILE"; fi
+  fi
+  if [ "$retained_part" = 1 ]; then
+    case "$kind" in unit|integration) reports+=("$state/affected-retained.vitest.json") ;; esac
+    run_check affected_retained
+    if [ -f "$state/affected-retained.durations.json" ]; then duration_reports+=("$state/affected-retained.durations.json"); fi
+  fi
+}
+
+if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
+  run_check affected_checks
+else
 case "${SUITE:-}" in
   install) ;;
   typecheck-api) run_check ci_go_typecheck ;;
@@ -345,6 +434,7 @@ case "${SUITE:-}" in
     if ci_conformance_changed; then run_check ci_conformance_test ts; fi ;;
   *) echo "Unknown suite ${SUITE:-}" >&2; exit 2 ;;
 esac
+fi
 
 if [ -n "$test_results" ] && [ "${#reports[@]}" -gt 0 ]; then
   available_reports=()

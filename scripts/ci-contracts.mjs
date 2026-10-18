@@ -3,8 +3,66 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { affectedContracts, affectedContractsKey, contractsEmitCommand, contractsEntryOutputs } from './ci-affected-contracts.mjs'
+import { deferredHostIntegration, environmentRequest, explicitRelease } from './ci-affected-scope.mjs'
 
 const script = fileURLToPath(import.meta.url)
+
+function affectedPlan(root) {
+  const inCi = ['true', '1'].includes(process.env.CI) || process.env.CI_HOST_RUNNER === '1'
+    || process.env.FOREMAN_CODE_CI_HOST === '1' || process.env.FOREMAN_CODE_CI_LOCAL === '1'
+  if (!inCi || explicitRelease()) return null
+  if (deferredHostIntegration()) return { entries: [], sources: [], deferred: true }
+  const request = environmentRequest(process.env, root)
+  if (!request.files.length) throw new Error('Contracts setup received an empty affected scope.')
+  return affectedContracts(request, root)
+}
+
+function selectedReady(root, plan, key) {
+  const output = join(root, 'packages/contracts/dist')
+  const stamp = join(output, '.ci-cache-key')
+  return !plan.entries.length || existsSync(stamp) && readFileSync(stamp, 'utf8') === key
+    && contractsEntryOutputs(plan).every(file => existsSync(join(output, file)))
+}
+
+function selectedBuild(root, cache, plan) {
+  // Resolve this before cache keys, dist checks or the inherited full compiler command.
+  if (!plan.entries.length) {
+    console.log(plan.deferred ? '[ci-setup] contracts setup deferred until the host supplies exact integration files'
+      : '[ci-cache] selected checks need no emitted contracts')
+    return 0
+  }
+  const key = affectedContractsKey(root, plan)
+  const output = join(root, 'packages/contracts/dist')
+  if (selectedReady(root, plan, key)) return 0
+  const cached = join(cache, key)
+  if (existsSync(join(cached, '.ci-cache-key')) && readFileSync(join(cached, '.ci-cache-key'), 'utf8') === key
+    && contractsEntryOutputs(plan).every(file => existsSync(join(cached, file)))) {
+    rmSync(output, { recursive: true, force: true })
+    copy(cached, output)
+    return 0
+  }
+  const temporary = join(cache, `${key}.${randomUUID()}`)
+  mkdirSync(temporary, { recursive: true })
+  try {
+    const command = contractsEmitCommand(root, plan, temporary)
+    const result = spawnSync(command[0], command.slice(1), { cwd: join(root, 'packages/contracts'),
+      stdio: 'inherit', env: process.env })
+    if (result.error) throw result.error
+    if (result.status !== 0) return result.status ?? 1
+    if (!contractsEntryOutputs(plan).every(file => existsSync(join(temporary, file)))) {
+      throw new Error('The selected contracts compiler omitted a required export.')
+    }
+    writeFileSync(join(temporary, '.ci-cache-key'), key)
+    rmSync(cached, { recursive: true, force: true })
+    renameSync(temporary, cached)
+    rmSync(output, { recursive: true, force: true })
+    copy(cached, output)
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+  return 0
+}
 
 export function contractsCacheKey(root) {
   const tree = spawnSync('git', ['rev-parse', 'HEAD:packages/contracts'], { cwd: root, encoding: 'utf8' })
@@ -63,16 +121,25 @@ function build(root, cache, command) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [action, root, cache, divider, ...command] = process.argv.slice(2)
-  if (action === 'key' && root) console.log(contractsCacheKey(root))
-  else if (action === 'ready' && root) process.exitCode = contractsReady(root) ? 0 : 1
-  else if ((action === 'build' || action === 'locked-build') && root && cache && divider === '--' && command.length) {
-    mkdirSync(cache, { recursive: true })
-    if (action === 'locked-build') process.exitCode = build(root, cache, command)
-    else {
-      const result = spawnSync('flock', [join(cache, `${contractsCacheKey(root)}.lock`),
-        process.execPath, script, 'locked-build', root, cache, '--', ...command], { stdio: 'inherit' })
-      if (result.error) throw result.error
-      process.exitCode = result.status ?? 1
+  const plan = root ? affectedPlan(root) : null
+  if (action === 'key' && root) console.log(plan ? affectedContractsKey(root, plan) : contractsCacheKey(root))
+  else if (action === 'ready' && root) {
+    process.exitCode = (plan ? selectedReady(root, plan, affectedContractsKey(root, plan)) : contractsReady(root)) ? 0 : 1
+  } else if (['affected', 'affected-locked', 'build', 'locked-build'].includes(action) && root && cache
+    && (action.startsWith('affected') ? plan : divider === '--' && command.length)) {
+    if (plan && !plan.entries.length) {
+      process.exitCode = selectedBuild(root, cache, plan)
+    } else {
+      mkdirSync(cache, { recursive: true })
+      if (action === 'locked-build' || action === 'affected-locked') {
+        process.exitCode = plan ? selectedBuild(root, cache, plan) : build(root, cache, command)
+      } else {
+        const key = plan ? affectedContractsKey(root, plan) : contractsCacheKey(root)
+        const result = spawnSync('flock', [join(cache, `${key}.lock`), process.execPath, script,
+          action === 'affected' ? 'affected-locked' : 'locked-build', root, cache, '--', ...command], { stdio: 'inherit' })
+        if (result.error) throw result.error
+        process.exitCode = result.status ?? 1
+      }
     }
-  } else throw new Error('Usage: ci-contracts.mjs key|ready root | build root cache -- compiler [args...]')
+  } else throw new Error('Usage: ci-contracts.mjs key|ready root | affected root cache | build root cache -- compiler [args...]')
 }
