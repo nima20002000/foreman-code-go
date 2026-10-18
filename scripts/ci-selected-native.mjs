@@ -1,0 +1,274 @@
+import { execFileSync, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { createRequire } from 'node:module'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { availableParallelism, homedir } from 'node:os'
+import { dirname, join, basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { gzipSync } from 'node:zlib'
+import { ciTestResults } from './ci-test-results.mjs'
+
+process.umask(0o077)
+if (process.env.CI !== 'true' && process.env.CI_HOST_RUNNER !== '1') throw new Error('Foreman CI required')
+const original = await realpath(fileURLToPath(new URL('..', import.meta.url)))
+process.chdir(original)
+const setupOnly = process.argv[2] === 'prepare-contracts'
+const plan = JSON.parse(await readFile(join(original, 'scripts/ci-selected-native-plan.json'), 'utf8'))
+let ticketId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
+if (!ticketId && process.env.GITHUB_EVENT_PATH) {
+  const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'))
+  ticketId = event.inputs?.run_id
+}
+ticketId ||= /(?:^|\/)ci\/([a-f0-9-]{36})(?:$|\/)/.exec(process.env.CIRCLE_BRANCH ?? '')?.[1]
+const resultOutput = process.env.TEST_RESULTS_OUTPUT ?? process.env.FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT
+ticketId ||= resultOutput ? basename(dirname(resultOutput)) : undefined
+const parent = join(await realpath(homedir()), '.c')
+await mkdir(parent, { recursive: true, mode: 0o700 })
+const root = await mkdtemp(join(parent, 'n-'))
+const record = value => console.log('[selected-native] ' + JSON.stringify(value))
+const env = { PATH: process.env.PATH, HOME: join(root, 'home'), TMPDIR: join(root, 't'),
+  XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
+  FOREMAN_CODE_CI_POSTGRES_CACHE: join(root, 'postgres-tools'),
+  FOREMAN_CODE_CI_CPU_COUNT: String(Math.min(2, Math.max(1, Number(process.env.FOREMAN_CODE_CI_CPU_COUNT) || availableParallelism()))),
+  CONFORMANCE_COMMIT_SHA: plan.source, CONFORMANCE_TARGET: 'ts', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8',
+  CI_PROGRESS_FILE: join(root, 'selected-progress.jsonl') }
+const facts = { source: plan.source, sourceTree: plan.sourceTree, frozenTarget: plan.frozenTarget, ticketId, setupOnly, apiSourceTree: plan.apiSourceTree, conformanceSourceTree: plan.conformanceSourceTree,
+  contractsSourceTree: plan.contractsSourceTree, workerSourceTree: plan.workerSourceTree, nodeVersion: process.version,
+  checkoutSha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  commands: [], selections: [], cleanup: false, fullInventoryExecuted: false, liveCatalogExecuted: false }
+const rawReports = []
+const normalizedReports = []
+const failedRawCommands = []
+let phase = 'dependency-preflight'
+let failed = false
+const progress = setInterval(() => record({ stage: 'running', phase,
+  completedSelections: facts.selections.length }), 15000)
+
+async function run(name, program, args, cwd = process.cwd(), childEnv = env) {
+  phase = name
+  const startedAt = new Date().toISOString()
+  record({ stage: 'command-start', name })
+  let stdout = ''
+  let stderr = ''
+  let pending = ''
+  const exitCode = await new Promise((resolve, reject) => {
+    const child = spawn(program, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', text => {
+      stdout += text
+      pending += text
+      const lines = pending.split('\n')
+      pending = lines.pop()
+      for (const line of lines) {
+        if (!line.startsWith('{"kind":"conformance-scenario"')) continue
+        const outcome = JSON.parse(line)
+        record({ stage: 'scenario', selection: name, id: outcome.id, status: outcome.status,
+          executed: outcome.executed, phase: outcome.phase, durationMs: outcome.durationMs })
+      }
+    })
+    child.stderr.on('data', text => { stderr += text })
+    child.once('error', reject)
+    child.once('close', code => resolve(code ?? 1))
+  })
+  facts.commands.push({ name, exitCode, startedAt, finishedAt: new Date().toISOString(),
+    stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr) })
+  record({ stage: 'command-finish', ...facts.commands.at(-1) })
+  if (exitCode !== 0) {
+    failedRawCommands.push({ name, stdout, stderr, exitCode })
+    const diagnostic = stdout + '\n' + stderr
+    const category = sensitiveCategory(diagnostic)
+    if (category) record({ stage: 'command-error', name, blockedCategory: category })
+    else record({ stage: 'command-error', name, lines: diagnostic.split('\n')
+      .filter(line => /Error|error|failed|not found|Cannot|cannot|FATAL/.test(line)).slice(-12)
+      .map(line => line.replaceAll(root, '<owned-runtime>')) })
+  }
+  return { exitCode, stdout, stderr }
+}
+
+async function prepareContractExports() {
+  const missing = []
+  for (const [name, entry] of Object.entries(plan.requiredExports)) {
+    let present = true
+    for (const output of entry.outputs) {
+      try { await access(join('packages/contracts', output)) }
+      catch (error) { if (error.code !== 'ENOENT') throw error; present = false }
+    }
+    if (!present) missing.push({ name, source: entry.source })
+  }
+  record({ stage: 'runtime-export-preflight', required: Object.keys(plan.requiredExports).length,
+    missing: missing.map(entry => entry.name) })
+  if (missing.length) {
+    const requireContracts = createRequire(join(process.cwd(), 'packages/contracts/package.json'))
+    const declared = JSON.parse(await readFile('packages/contracts/package.json', 'utf8')).devDependencies.typescript
+    const packageJson = await realpath(requireContracts.resolve('typescript/package.json'))
+    const installedPackage = JSON.parse(await readFile(packageJson, 'utf8'))
+    const expectedVersion = /^npm:@typescript\/typescript6@(\d+\.\d+\.\d+)$/.exec(declared)?.[1]
+    if (!expectedVersion || installedPackage.version !== expectedVersion) throw new Error('Installed contracts compiler is not pinned')
+    facts.contractsCompiler = { declared, packageName: installedPackage.name,
+      packageVersion: installedPackage.version, bin: installedPackage.bin, packageJsonRealpath: packageJson }
+    record({ stage: 'installed-contracts-package', ...facts.contractsCompiler })
+    if (installedPackage.name !== '@typescript/typescript6' || installedPackage.bin?.tsc6 !== './bin/tsc6') {
+      throw new Error('Installed contracts compiler has an unexpected executable map')
+    }
+    const compiler = await realpath(join(dirname(packageJson), installedPackage.bin.tsc6))
+    facts.contractsCompiler.compilerRealpath = compiler
+    record({ stage: 'installed-contracts-compiler', ...facts.contractsCompiler })
+    const result = await run('only-missing-runtime-contract-exports', process.execPath,
+      [compiler, '--ignoreConfig', '--target', 'ES2022', '--module', 'NodeNext',
+        '--moduleResolution', 'NodeNext', '--types', 'node', '--strict', '--skipLibCheck', '--allowJs',
+        '--declaration', '--sourceMap', '--rootDir', 'src', '--outDir', 'dist', '--listEmittedFiles',
+        ...missing.map(entry => entry.source)], 'packages/contracts')
+    facts.dependencyEmission = { roots: missing.map(entry => entry.source),
+      emittedFiles: result.stdout.split('\n').filter(line => line.startsWith('TSFILE: ')), exitCode: result.exitCode }
+    if (result.exitCode !== 0) {
+      facts.dependencyDiagnostics = result.stdout.split('\n').filter(line => /error TS\d+/.test(line))
+      throw new Error('Required real runtime export generation failed')
+    }
+  }
+  facts.requiredRuntimeExports = Object.keys(plan.requiredExports)
+}
+
+function sensitiveCategory(value) {
+  if (typeof value === 'string') {
+    if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(value)) return 'private-key'
+    const database = /postgres(?:ql)?:\/\/[^:\s]+:([^@\s]+)@/.exec(value)
+    if (database && !/redact|\*{3}/i.test(database[1])) return 'database-password'
+    if (/Authorization["']?\s*[:=]\s*["']?Bearer\s+[A-Za-z0-9._~-]{20,}/i.test(value)) return 'authorization-value'
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      if (/^(?:token|password|privateKey)$/i.test(key) && typeof child === 'string'
+        && child.length >= 20 && !/redact/i.test(child)) return 'credential-field'
+      const category = sensitiveCategory(child)
+      if (category) return category
+    }
+  }
+}
+
+try {
+  if (process.getuid?.() === 0) throw new Error('An existing unprivileged CI user is required')
+  for (const path of [env.HOME, env.TMPDIR, env.XDG_CONFIG_HOME, env.XDG_CACHE_HOME, env.XDG_STATE_HOME]) {
+    await mkdir(path, { recursive: true, mode: 0o700 })
+  }
+  record({ stage: 'provenance', source: plan.source, checkoutSha: facts.checkoutSha,
+    selectedIds: plan.selections.flatMap(selection => selection.ids), canonicalPrivateTemporaryRoot: true })
+  for (const [path, expected] of Object.entries(plan.verifiedSubtrees)) {
+    const actual = execFileSync('git', ['rev-parse', 'HEAD:' + path], { encoding: 'utf8' }).trim()
+    if (actual !== expected) throw new Error('Frozen target subtree differs: ' + path)
+  }
+  const contractsManifest = await readFile(join(original, 'packages/contracts/package.json'), 'utf8')
+  const normalizedManifest = contractsManifest.replace(JSON.stringify(plan.diagnosticContractsBuild), JSON.stringify(plan.originalContractsBuild))
+  if (createHash('sha256').update(normalizedManifest).digest('hex') !== plan.contractsManifestSourceSHA256) {
+    throw new Error('Contracts package differs beyond the declared diagnostic build override')
+  }
+  facts.contractsDiagnosticOverrideVerified = true
+  facts.contractsDiagnosticTree = execFileSync('git', ['rev-parse', 'HEAD:packages/contracts'], { encoding: 'utf8' }).trim()
+  await prepareContractExports()
+  if (!setupOnly) {
+  const key = await run('postgres-cache-key', 'bash', ['scripts/ci-postgres-toolchain.sh', 'cache-key'])
+  if (key.exitCode !== 0 || !/^[a-f0-9]{64}$/.test(key.stdout.trim())) throw new Error('PostgreSQL tool preflight failed')
+  const install = await run('postgres-tool-dependency-install', 'bash', ['scripts/ci-postgres-toolchain.sh', 'install'])
+  if (install.exitCode !== 0) {
+    facts.toolSetupDiagnostics = install.stderr.split('\n').filter(line => /error:|Error [0-9]|failed|Could not/i.test(line))
+      .slice(-15).map(line => line.replaceAll(root, '<owned-runtime>'))
+    throw new Error('Native PostgreSQL dependency preparation failed')
+  }
+  const verify = await run('postgres-tool-dependency-verify', 'bash', ['scripts/ci-postgres-toolchain.sh', 'verify'])
+  if (verify.exitCode !== 0) throw new Error('Native PostgreSQL dependency verification failed')
+  env.CONFORMANCE_POSTGRES_BIN_DIR = join(env.FOREMAN_CODE_CI_POSTGRES_CACHE, 'toolchains',
+    'postgresql-17.6-' + key.stdout.trim(), 'bin')
+  for (const selection of plan.selections) {
+    const progressFile = join(root, selection.name + '.progress.jsonl')
+    const reportFile = join(root, selection.name + '.json')
+    const result = await run(selection.name, process.execPath, selection.args, 'conformance',
+      { ...env, CONFORMANCE_RESULTS_FILE: reportFile, CI_PROGRESS_FILE: progressFile })
+    let rawReport
+    let report
+    try { rawReport = await readFile(reportFile, 'utf8'); report = JSON.parse(rawReport) }
+    catch (error) { if (error.code !== 'ENOENT') throw error }
+    const outcomes = report?.scenarios ?? []
+    const summary = { name: selection.name, requestedIds: selection.ids, originalExitCode: result.exitCode,
+      rawStatus: report?.status ?? 'report-not-produced', actualCount: outcomes.length,
+      executedCount: outcomes.filter(outcome => outcome.executed).length,
+      passedCount: outcomes.filter(outcome => outcome.status === 'passed').length,
+      outcomes: outcomes.map(outcome => ({ id: outcome.id, status: outcome.status,
+        executed: outcome.executed, phase: outcome.phase, errorName: outcome.error?.name })) }
+    let progressText = ''
+    try { progressText = await readFile(progressFile, 'utf8') }
+    catch (error) { if (error.code !== 'ENOENT') throw error }
+    const progressEvents = progressText.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    const cleanupEvents = progressEvents.filter(event => event.phase === 'cleanup' && event.type === 'finish')
+    summary.cleanupEvents = cleanupEvents.map(event => ({ id: event.scenarioId, status: event.status,
+      cleanupCompleted: event.cleanupCompleted }))
+    if (cleanupEvents.length !== selection.ids.length || cleanupEvents.some(event =>
+      !selection.ids.includes(event.scenarioId) || event.status !== 'passed' || event.cleanupCompleted !== true)) failed = true
+    const category = sensitiveCategory([report, result.stdout, result.stderr, progressText])
+    if (category) { summary.rawExportBlockedCategory = category; failed = true }
+    else {
+      rawReports.push({ name: selection.name, rawReport, progressText, stdout: result.stdout, stderr: result.stderr })
+      const lanes = [...new Set(outcomes.map(outcome => outcome.lane))]
+      normalizedReports.push({ testResults: lanes.map(lane => {
+        const cases = outcomes.filter(outcome => outcome.lane === lane)
+        return { name: 'conformance/ts/' + lane,
+          status: cases.some(outcome => outcome.status === 'failed') ? 'failed' : 'passed',
+          duration: cases.reduce((total, outcome) => total + outcome.durationMs, 0),
+          assertionResults: cases.filter(outcome => outcome.executed).map(outcome => ({
+            fullName: '[' + lane + '] ' + outcome.id + ': ' + outcome.title,
+            status: outcome.status, duration: outcome.durationMs,
+            ...(outcome.error ? { failureMessages: [JSON.stringify(outcome.error)] } : {}) })) }
+      }) })
+    }
+    facts.selections.push(summary)
+    record({ stage: 'selection-finish', ...summary })
+    if (result.exitCode !== 0 || outcomes.length !== selection.ids.length
+      || outcomes.some(outcome => !outcome.executed || outcome.status !== 'passed')
+      || outcomes.some(outcome => !selection.ids.includes(outcome.id))) failed = true
+  }
+  const resultsOutput = process.env.TEST_RESULTS_OUTPUT ?? process.env.FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT
+  if (resultsOutput) {
+    await mkdir(dirname(resultsOutput), { recursive: true })
+    await writeFile(resultsOutput, JSON.stringify(ciTestResults(normalizedReports, process.cwd())))
+  }
+  const bytes = Buffer.from(JSON.stringify({ source: plan.source, selections: rawReports }))
+  const encoded = gzipSync(bytes).toString('base64')
+  const chunks = encoded.match(/.{1,24000}/g) ?? []
+  console.log('FOREMAN_CAPTURE ' + JSON.stringify({ kind: 'artifact', path: 'selected-native-reports.json',
+    bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), encoding: 'gzip+base64', chunks: chunks.length }))
+  chunks.forEach((data, index) => console.log('FOREMAN_CAPTURE ' + JSON.stringify({
+    kind: 'chunk', path: 'selected-native-reports.json', index, data })))
+  }
+} catch (error) {
+  failed = true
+  facts.failure = error.message.replaceAll(root, '<owned-runtime>')
+} finally {
+  if (failedRawCommands.length) {
+    const category = sensitiveCategory(failedRawCommands)
+    if (category) record({ stage: 'failed-command-export-blocked', category })
+    else {
+      const bytes = Buffer.from(JSON.stringify({ source: plan.source, failedCommands: failedRawCommands }))
+      const encoded = gzipSync(bytes).toString('base64')
+      const chunks = encoded.match(/.{1,24000}/g) ?? []
+      console.log('FOREMAN_CAPTURE ' + JSON.stringify({ kind: 'artifact', path: 'failed-commands.json',
+        bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), encoding: 'gzip+base64', chunks: chunks.length }))
+      chunks.forEach((data, index) => console.log('FOREMAN_CAPTURE ' + JSON.stringify({
+        kind: 'chunk', path: 'failed-commands.json', index, data })))
+    }
+  }
+  try {
+    await rm(root, { recursive: true, force: true })
+    facts.cleanup = true
+  } catch (error) { failed = true; facts.cleanupFailure = error.message.replaceAll(root, '<owned-runtime>') }
+  clearInterval(progress)
+  facts.failed = failed
+  facts.completeAcceptanceProven = false
+  record({ stage: 'result', ...facts })
+  const bytes = Buffer.from(JSON.stringify({ plan, facts }))
+  const chunks = gzipSync(bytes).toString('base64').match(/.{1,24000}/g) ?? []
+  const artifactPath = setupOnly ? 'selected-six-setup.json' : 'selected-six-facts.json'
+  console.log('FOREMAN_CAPTURE ' + JSON.stringify({ kind: 'artifact', path: artifactPath,
+    bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), encoding: 'gzip+base64', chunks: chunks.length }))
+  for (const [index, data] of chunks.entries()) console.log('FOREMAN_CAPTURE ' + JSON.stringify({
+    kind: 'chunk', path: artifactPath, index, data }))
+}
+process.exitCode = failed ? 1 : 0
