@@ -1,0 +1,197 @@
+{
+  "source": "3829cac5df8918fdd36ed0cd826879b6590665e4",
+  "sourceTree": "ea5602d7c0eab6d9d993c95d98af0bd327590f7c",
+  "packages": [
+    "./internal/activity"
+  ],
+  "unitTests": [
+    "TestRunHistoryCursorPreservesMicroseconds",
+    "TestRunHistoryCursorMatchesFrozenArrayEncoding",
+    "TestRunHistoryCursorBindsTheExactWorkflowFilter",
+    "TestRunHistoryFirstPageIsDistinctFromAnEmptyCursor",
+    "TestRunHistoryCursorRejectsNoncanonicalAndMalformedPositions",
+    "TestRunHistoryCursorRejectsInvalidCalendarPositions",
+    "TestRunHistoryCursorRetainsTheFrozenRunIDRules",
+    "TestRunHistoryCursorRetainsEscapedHighSurrogate",
+    "TestRunHistoryCursorRetainsEscapedLowSurrogate",
+    "TestRunHistoryCursorKeepsDistinctStringIdentities",
+    "TestRunHistoryCursorPreservesSurrogateScopeIdentity",
+    "TestRunHistoryCursorRejectsNoncanonicalSurrogateEscapes"
+  ],
+  "unitPattern": "^(TestRunHistoryCursorPreservesMicroseconds|TestRunHistoryCursorMatchesFrozenArrayEncoding|TestRunHistoryCursorBindsTheExactWorkflowFilter|TestRunHistoryFirstPageIsDistinctFromAnEmptyCursor|TestRunHistoryCursorRejectsNoncanonicalAndMalformedPositions|TestRunHistoryCursorRejectsInvalidCalendarPositions|TestRunHistoryCursorRetainsTheFrozenRunIDRules|TestRunHistoryCursorRetainsEscapedHighSurrogate|TestRunHistoryCursorRetainsEscapedLowSurrogate|TestRunHistoryCursorKeepsDistinctStringIdentities|TestRunHistoryCursorPreservesSurrogateScopeIdentity|TestRunHistoryCursorRejectsNoncanonicalSurrogateEscapes)$",
+  "expectedUnitNamedCount": 83,
+  "expectedRoots": 12,
+  "expectedSubtests": 71,
+  "race": true,
+  "testTimeout": "30s",
+  "goFiles": [
+    "internal/activity/history_cursor.go",
+    "internal/activity/history_cursor_test.go",
+    "internal/activity/history_cursor_surrogate_test.go",
+    "internal/activity/history_cursor_string_identity_test.go"
+  ],
+  "sourceIdentities": [
+    {
+      "path": "backend/internal/activity/README.md",
+      "blob": "0d659544f5e7cdf2eb58457f54ea1271d2b528f3",
+      "bytes": 9118,
+      "sha256": "bf7a4c2b0970f11fd5fc6bdfe0aa13281fde8d06495dacd1dc96df89a897e3d8"
+    },
+    {
+      "path": "backend/internal/activity/history_cursor.go",
+      "blob": "59eb2acc3eed61700729a9244e6d2accb5269fa6",
+      "bytes": 6176,
+      "sha256": "a0d043ec76b1af94fc81aa015a83f0ecbe02ebe0f077053a1fc1aee36056f378"
+    },
+    {
+      "path": "backend/internal/activity/history_cursor_test.go",
+      "blob": "d4240f11647f3d01bd1e385705b390d7e32e8bbf",
+      "bytes": 8019,
+      "sha256": "9e226dbab9e7e266083a3730f1afbb9fdf21a3de4ec09bc1cd6933832624f2b5"
+    },
+    {
+      "path": "backend/internal/activity/history_cursor_surrogate_test.go",
+      "blob": "3d694a7f2ff54c2855214d7a8214c27ce08f58d4",
+      "bytes": 1576,
+      "sha256": "52715ef38edb0feb93f0f350ef1eb07654e823d403c04a1063f2cb826b90f97d"
+    },
+    {
+      "path": "backend/internal/activity/history_cursor_string_identity_test.go",
+      "blob": "96d929c66dcc9a1ad9d8d343285dbd4ef12dc5e7",
+      "bytes": 5753,
+      "sha256": "60cfa394dc8d8cde6f16e2a6e109b421e0133b07817c6aa2765732f2d78fd4bb"
+    },
+    {
+      "path": "backend/go.mod",
+      "blob": "088b974fed5466d50a6a258ef3981ad32783aae8",
+      "bytes": 881,
+      "sha256": "88f7424ff5639cc636a209a97b0e70cfc316b3ceadaa4c8f0961f5a9525c34eb"
+    },
+    {
+      "path": "backend/go.sum",
+      "blob": "f39df7ffee315e4aa566acdfdfb4bdedf03ce66b",
+      "bytes": 10419,
+      "sha256": "d0471fc8f3daa34603aa48d52ff3eb7cf14c421d045a77fb0fcd914af2fde735"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b",
+      "bytes": 1535,
+      "sha256": "dad2c3793bab1a250081390166b66296e84d3ac062cead192420c3134d9ba537"
+    },
+    {
+      "path": "backend/internal/canonicaljson/README.md",
+      "blob": "6952f477ae22fff912b0ebf6273475faac9e3a10",
+      "bytes": 7058,
+      "sha256": "cbe62de53f3832427b4123a1c1f87249c86a301b9707bab8c5cb4e57dceca670"
+    },
+    {
+      "path": "backend/internal/canonicaljson/canonical.go",
+      "blob": "5770e4245ede7ea294bea10ea4b4af7191cfd7b7",
+      "bytes": 6815,
+      "sha256": "22ba0ee7bbc5990a786b3b4cb49b333728bbc73ca991b284ffe901ac60be6f43"
+    },
+    {
+      "path": "backend/internal/canonicaljson/canonical_test.go",
+      "blob": "961b92c158a65eb0beea5a853398a0fcac2404da",
+      "bytes": 7886,
+      "sha256": "6766a83e661e8cd146556304ea6507866a9291617aaee068e35d0f8b06cb82ce"
+    },
+    {
+      "path": "backend/internal/canonicaljson/legacy.go",
+      "blob": "1f2e4bdc3025184dd02f80669d8253e681a91ba0",
+      "bytes": 1257,
+      "sha256": "00215288f4ff055f26d57dbbc9434ef6025e402938ed2ab6db796df33aff5670"
+    },
+    {
+      "path": "backend/internal/canonicaljson/legacy_test.go",
+      "blob": "05a6869022c8e21ea45b90685f982331516df093",
+      "bytes": 1730,
+      "sha256": "a156558a2dfc3aeec591f627375c1f9bbf30eb7721576818ab486b6a8b457ddc"
+    },
+    {
+      "path": "backend/internal/canonicaljson/number.go",
+      "blob": "8a578866f4ca2724ca563798c3584220eed756ce",
+      "bytes": 2048,
+      "sha256": "a8a9b44fc886f53369f45f445106481e51b8c0c3dd9e891611087e00a60c9703"
+    },
+    {
+      "path": "backend/internal/canonicaljson/string.go",
+      "blob": "0278fa30a7cca9ef945ed02f88db176b1037921e",
+      "bytes": 2000,
+      "sha256": "d1f343484319d4258bc0309fef23e555afa00d9fdb2fece9fa0c9dab6287868a"
+    },
+    {
+      "path": "backend/internal/domainerror/codes.go",
+      "blob": "d2bf10b3aa34973c8b2542a9f38d61303721d5bd",
+      "bytes": 6328,
+      "sha256": "8525871e2560c8e363c36edc9b234f3657dd5ccc78a74a816a501a10db3e5add"
+    },
+    {
+      "path": "backend/internal/domainerror/database.go",
+      "blob": "edb75b0ea4487ea3a1e35d9a5f65f69e4d827f82",
+      "bytes": 1562,
+      "sha256": "4357f78c284e55884dec84df9f2c67bca45aa81d8a13675ff559fea4d4fa22c4"
+    },
+    {
+      "path": "backend/internal/domainerror/error.go",
+      "blob": "5746cd964ef1ad1ea5a6aa30e1725e8ba5b3379e",
+      "bytes": 1676,
+      "sha256": "7c0ed8908e55b8b55cfc05fbd32aeba7c3854ef95dc90f1e0018c6243b29aba4"
+    },
+    {
+      "path": "backend/internal/domainerror/failure.go",
+      "blob": "ef08a9a9982794bb6c0263a73873fb537ae0129c",
+      "bytes": 1322,
+      "sha256": "da36ec46e099aba9a22582f0cc1a550adcf4961b6476d11b085407117be83da5"
+    },
+    {
+      "path": "backend/internal/domainerror/failure_test.go",
+      "blob": "de52a14e24786a1040c852038d3940d0ccc70dcd",
+      "bytes": 1230,
+      "sha256": "e421b66daa3b9206abc8458b3a309b0cd398b0413626ae549eaa18cf9d5b1bea"
+    },
+    {
+      "path": "backend/internal/jsonvalue/README.md",
+      "blob": "5502fdc9fc915834c721d0b2099efae890e324e1",
+      "bytes": 4719,
+      "sha256": "d0434c828547af938d6754c57597b1fb008fa0bb5e4d480f0e618ab948d2f0cb"
+    },
+    {
+      "path": "backend/internal/jsonvalue/parser.go",
+      "blob": "cc35b76501f5f0d441c79fddd3bc01416d4c7313",
+      "bytes": 6096,
+      "sha256": "1d8532836c6bcd6d0c7fac0107117924741c9b6b13bfd8584f9a412329d3251c"
+    },
+    {
+      "path": "backend/internal/jsonvalue/parser_test.go",
+      "blob": "a0862fec48d10571f43759a57a9e6d9d42efa110",
+      "bytes": 6449,
+      "sha256": "d23d40c5e54d1ac76c85d1c8c138482ea665f2c3f5bf561f0f05d4a8dcc21903"
+    },
+    {
+      "path": "backend/internal/jsonvalue/scalars.go",
+      "blob": "859b97b9c89f8260e9d5f3784bb9c0f10adfea70",
+      "bytes": 3216,
+      "sha256": "31b6426071055b6673c88bb6d266db2cc6d9d8adc9e7aeebb857bc2de723af06"
+    },
+    {
+      "path": "backend/internal/jsonvalue/value.go",
+      "blob": "c32e10d6c75e86c755659343f6ea05bbd1df99b8",
+      "bytes": 2963,
+      "sha256": "cbf7cb2813729a84604655912fb9168581d845e23581c989aa9c7ce8bbfd5613"
+    }
+  ],
+  "intakePlanSHA256": "086fddd08063fc870a6efbc0ce100dcb3067f55d34d2c783813666022ea22f12",
+  "excludes": [
+    "anchors",
+    "interactions",
+    "integration-tagged/PostgreSQL",
+    "foundation tests",
+    "fixture producers",
+    "full suites/wrappers",
+    "previous red witnesses rerun"
+  ],
+  "fullA1Acceptance": "OPEN",
+  "conformance": "none; unwired codec"
+}

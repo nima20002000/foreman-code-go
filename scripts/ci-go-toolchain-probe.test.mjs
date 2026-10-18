@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected run-history cursor diagnostic: 3829cac5df8918fdd36ed0cd826879b6590665e4.
