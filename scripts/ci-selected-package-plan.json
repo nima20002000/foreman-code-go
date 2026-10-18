@@ -1,0 +1,62 @@
+{
+  "source": "c5e1d7dfd97f34a804793035fd128da0b27b489d",
+  "sourceTree": "7926e3fc6ada8ad79ae80f77c15a49978ab415ce",
+  "phase": "old",
+  "mode": "tests-only",
+  "package": "./internal/harnesses/claude/queue",
+  "packages": [
+    "./internal/harnesses/claude/queue"
+  ],
+  "unitTests": [
+    "TestCapacityErrorPreservesFrozenMessage"
+  ],
+  "expectedUnitNamedCount": 1,
+  "race": false,
+  "testTimeout": "30s",
+  "integrationTests": [],
+  "pythonTests": [],
+  "goFiles": [],
+  "sourceIdentities": [
+    {
+      "path": "backend/internal/harnesses/claude/queue/queue.go",
+      "blob": "0e05f9e11d8f079fa8691c675690f475ad1e81bd",
+      "bytes": 6800,
+      "sha256": "6d43aff556a79225f65d3c5da9a776e76f4a5ed0e112dda7b11dcf1c41a18c3d"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/diagnostics_test.go",
+      "blob": "6f5eb4e6f9de611b7e6e3ee8843b63d043a93a20",
+      "bytes": 2269,
+      "sha256": "f3d7f6fa8fbdc5fd9a0475b9404f4d6d9b7d585b3b0c6a91b2037d99446a8fbd"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b",
+      "bytes": 1535,
+      "sha256": "dad2c3793bab1a250081390166b66296e84d3ac062cead192420c3134d9ba537"
+    },
+    {
+      "path": "backend/go.mod",
+      "blob": "088b974fed5466d50a6a258ef3981ad32783aae8",
+      "bytes": 881,
+      "sha256": "88f7424ff5639cc636a209a97b0e70cfc316b3ceadaa4c8f0961f5a9525c34eb"
+    },
+    {
+      "path": "backend/go.sum",
+      "blob": "f39df7ffee315e4aa566acdfdfb4bdedf03ce66b",
+      "bytes": 10419,
+      "sha256": "d0471fc8f3daa34603aa48d52ff3eb7cf14c421d045a77fb0fcd914af2fde735"
+    }
+  ],
+  "handoffSHA256": "8be7663f542a0013c5dc211b6fe090cd7942e5e6dfdd27719f2e83f2055f71c9",
+  "prior12PostimagesUnchanged": true,
+  "exclusions": [
+    "No rerun of prior queue 20, Codex 27, discovery 30, Claude 11, or existing Python/44a qualification",
+    "No separate package build/vet, full suite, integration runtime, DB, smoke, provider launch, deployment or fleet action",
+    "No source baseline, generated types, raw schema pin, previous 12 postimage, or check configuration change",
+    "No passing result, integration-ready, full Step 1 or H lane Done claim"
+  ],
+  "previousH12ProductChecksRepeated": false,
+  "previousCleanupFailureRetained": true,
+  "cleanupRoutineSHA256": "e142570b66137f3f3b8626270dea162fd40f612c742c74643ee0435381d08378"
+}
