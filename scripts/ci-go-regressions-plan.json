@@ -1,0 +1,175 @@
+{
+  "profile": "logging-body-corrected-qualification",
+  "selector": "scripts/ci-go-toolchain-probe.test.mjs",
+  "roots": [
+    "TestLoggingNonFiniteNumbersKeepOtherFields",
+    "TestLoggingFloatAttributesInGroupsAndBindings",
+    "TestBuiltWebRelativeDirectoryRetainsPublicError"
+  ],
+  "goArguments": [
+    "test",
+    "-json",
+    "-count=1",
+    "-timeout=30s",
+    "-run",
+    "^(TestLoggingNonFiniteNumbersKeepOtherFields|TestLoggingFloatAttributesInGroupsAndBindings|TestBuiltWebRelativeDirectoryRetainsPublicError)$",
+    "./internal/logging",
+    "./internal/builtweb"
+  ],
+  "sourceFiles": [
+    {
+      "path": "backend/internal/builtweb/server.go",
+      "mode": "100644",
+      "blob": "6d7629f85ea8ef32f99719b3844dae376f4b480b",
+      "bytes": 2976,
+      "sha256": "d7afa04b786c80a8be1bc56747ecfbf5efa1ed14bbd5216abee5331e6a1e262d"
+    },
+    {
+      "path": "backend/internal/builtweb/server_test.go",
+      "mode": "100644",
+      "blob": "87b91aca7dd7f2c0b0bcf74158be78308c8785af",
+      "bytes": 6247,
+      "sha256": "5be30afd02cbdf19df286d12ec56dc47fcbadcded6d5a7761b2fbd0c1de4995f"
+    },
+    {
+      "path": "backend/internal/httpserver/body.go",
+      "mode": "100644",
+      "blob": "04e931b43f36c26aca527d25432d2b0dc432e1c6",
+      "bytes": 10148,
+      "sha256": "15f048a3a60f0007cc60a45906f34abc197e1cf093eabca14eb84452e1410f1a"
+    },
+    {
+      "path": "backend/internal/httpserver/body_test.go",
+      "mode": "100644",
+      "blob": "12a11acd4adcee52dd3e08b7aff19aefc1697176",
+      "bytes": 17769,
+      "sha256": "3a39eff7a6ec70984eac9d93234e1a3c45dd206008adc202269e430029e40b4d"
+    },
+    {
+      "path": "backend/internal/httpserver/errors.go",
+      "mode": "100644",
+      "blob": "6292317c0dd67a1119ef6f9e8246ab08458b06f4",
+      "bytes": 3248,
+      "sha256": "03a1dc1a4ab6f7f114791627e772f7d276ac2dbff4b0b7a77829d72685181fb6"
+    },
+    {
+      "path": "backend/internal/httpserver/errors_test.go",
+      "mode": "100644",
+      "blob": "bab5b556f5a8b1757510dfed96316be63963f64f",
+      "bytes": 3598,
+      "sha256": "c61f258bd993a950282aaaa0b14477daf25ee9533c9b6775821bac6500987535"
+    },
+    {
+      "path": "backend/internal/httpserver/logging.go",
+      "mode": "100644",
+      "blob": "e2e7fc9a425d535579d9474c96dfdc5f627de02e",
+      "bytes": 2187,
+      "sha256": "9b08bd9f79ef3dceef53c16a8aea271a95382465319ac81dd79567029afec00b"
+    },
+    {
+      "path": "backend/internal/httpserver/logging_test.go",
+      "mode": "100644",
+      "blob": "7a84d4d4d8b11c1fb8710373c81f7529b88892f7",
+      "bytes": 8879,
+      "sha256": "d99a3e720b305d6bc7ecbe3e1a27093e9cc618b315a3f52f6fad6dcbcf5c684a"
+    },
+    {
+      "path": "backend/internal/httpserver/request.go",
+      "mode": "100644",
+      "blob": "46c47ad123688513a36e30e789ee08cdce34cbc1",
+      "bytes": 962,
+      "sha256": "133d81b0d17eb4d04293c552edcf5d2a0b275cd0b300a60be46c37ef507615ed"
+    },
+    {
+      "path": "backend/internal/logging/buffer.go",
+      "mode": "100644",
+      "blob": "0ba92d8e45d38f7f0bb74c915ac93f22754ee6c0",
+      "bytes": 2725,
+      "sha256": "fb71688e72f33fe22ea6c618e6270c8ed930877e085afe84251efaaabe20ef7a"
+    },
+    {
+      "path": "backend/internal/logging/buffer_test.go",
+      "mode": "100644",
+      "blob": "2354577dc6290570df62526ae9384dd57713ec87",
+      "bytes": 5817,
+      "sha256": "75a0aad89157c825ef941f674b4a164c8b10bc2aa7b714cb4d1e37412a13591a"
+    },
+    {
+      "path": "backend/internal/logging/logger.go",
+      "mode": "100644",
+      "blob": "9b522c9165c9acc2c9785cf0bb6e3cfa5f05ca6f",
+      "bytes": 6099,
+      "sha256": "3a6762059e54007bf77c24271f5a8ba66ac89cf6b5bb558145ab2a51cda3a3e0"
+    },
+    {
+      "path": "backend/internal/logging/logger_test.go",
+      "mode": "100644",
+      "blob": "4a27e77868a6c02daeb7bf748f61cee997eda969",
+      "bytes": 22499,
+      "sha256": "74ddf00751a507920e63a389d1dd8f87a7258d9f3e81a416f81bcf75f473ee23"
+    },
+    {
+      "path": "backend/internal/logging/redact.go",
+      "mode": "100644",
+      "blob": "e9992dbab631b685c888189fb3aa37d1a3036baf",
+      "bytes": 18341,
+      "sha256": "ffb4e37603f82c399df36378bd670b374c2ea4fb70cd4e7aafa3599197dd1358"
+    },
+    {
+      "path": "backend/go.mod",
+      "mode": "100644",
+      "blob": "088b974fed5466d50a6a258ef3981ad32783aae8",
+      "bytes": 881,
+      "sha256": "88f7424ff5639cc636a209a97b0e70cfc316b3ceadaa4c8f0961f5a9525c34eb"
+    },
+    {
+      "path": "backend/go.sum",
+      "mode": "100644",
+      "blob": "f39df7ffee315e4aa566acdfdfb4bdedf03ce66b",
+      "bytes": 10419,
+      "sha256": "d0471fc8f3daa34603aa48d52ff3eb7cf14c421d045a77fb0fcd914af2fde735"
+    },
+    {
+      "path": "scripts/ci-go-toolchain.sh",
+      "mode": "100644",
+      "blob": "a2d81ccdcacfe93fbc5e5ffd2c1e00ab266a3c77",
+      "bytes": 12056,
+      "sha256": "f2a36804c50069954a3fec733eeb8dc7e172ff47bee6348c12c1220273dd4a7b"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "mode": "100644",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b",
+      "bytes": 1535,
+      "sha256": "dad2c3793bab1a250081390166b66296e84d3ac062cead192420c3134d9ba537"
+    },
+    {
+      "path": "backend/internal/app/app.go",
+      "mode": "100644",
+      "blob": "458fc2cddc74ee14d7b127d1fb3d5a50d88d71cf",
+      "bytes": 5029,
+      "sha256": "78ab3febde5b4dbad4e21f734f6c94ee56b3094a276c0a0a5e1f91eb89c1ad8e"
+    },
+    {
+      "path": "backend/cmd/foreman/main.go",
+      "mode": "100644",
+      "blob": "7a02ee2c958b8b3441fd90a87863044d037ddc24",
+      "bytes": 4820,
+      "sha256": "dfc60dde87476f39ecd795133e18162fefc2bb95b7a2dce530ceae03e1a7fb2f"
+    }
+  ],
+  "analysisPackages": [
+    "./internal/builtweb",
+    "./internal/httpserver",
+    "./internal/logging"
+  ],
+  "formatFiles": [
+    "backend/internal/builtweb/server.go",
+    "backend/internal/builtweb/server_test.go",
+    "backend/internal/httpserver/body_test.go",
+    "backend/internal/httpserver/logging_test.go",
+    "backend/internal/logging/logger.go",
+    "backend/internal/logging/logger_test.go",
+    "backend/internal/logging/redact.go"
+  ]
+}
