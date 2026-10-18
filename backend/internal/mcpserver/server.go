@@ -18,6 +18,11 @@ import (
 // Authenticate also enforces the application's local Host and Origin policy.
 type Access interface {
 	Authenticate(*http.Request) (context.Context, error)
+	// PrincipalID returns the authenticated principal's opaque UTF-16 identity
+	// key, using generated contracts.Text.IdentityKey (the jsonvalue primitive).
+	// It is not display text or a bearer credential; replacement UTF-8 decoding
+	// must never collapse two principals. Empty identity fails closed.
+	PrincipalID(context.Context) (string, error)
 	Visible(context.Context, string) (bool, error)
 	Authorize(context.Context, string, json.RawMessage) error
 }
@@ -31,10 +36,11 @@ type Options struct {
 
 // Registry collects lane tools before serving requests. Every invocation is authorized.
 type Registry struct {
-	opts       Options
-	mu         sync.RWMutex
-	tools      []registration
-	validation *mcp.Server
+	opts          Options
+	mu            sync.RWMutex
+	tools         []registration
+	validation    *mcp.Server
+	cancellations cancellationRegistry
 }
 
 type registration struct {
@@ -85,6 +91,7 @@ func (r *Registry) RegisterTool(tool *mcp.Tool, validate func(json.RawMessage) e
 
 // Handle authenticates before reading the bounded request body or dispatching MCP work.
 func (r *Registry) Handle(w http.ResponseWriter, request *http.Request) error {
+	connectionContext := request.Context()
 	if r.opts.Access == nil {
 		if request.Header.Get("Authorization") == "" {
 			return domainerror.New("AUTH_REQUIRED", "A bearer credential is required.", 401, nil)
@@ -105,13 +112,57 @@ func (r *Registry) Handle(w http.ResponseWriter, request *http.Request) error {
 			"error": map[string]any{"code": -32000, "message": "Method not allowed."},
 		})
 	}
-	name, err := requestedTool(w, request, r.opts.MaxRequestBodyBytes)
+	request, info, err := readRequest(w, request, r.opts.MaxRequestBodyBytes)
 	if err != nil {
 		return err
 	}
-	server, err := r.serverFor(ctx, name)
+	// Frozen POST authenticates in onRequest and again in its handler, after
+	// body admission. The credential may have been revoked or rebound while
+	// its body was being read; dispatch must use the fresh principal context.
+	ctx, err = r.opts.Access.Authenticate(request)
 	if err != nil {
 		return err
+	}
+	if ctx == nil {
+		return fmt.Errorf("MCP reauthentication returned no request context")
+	}
+	request = request.WithContext(ctx)
+	if info.tracks || info.cancellation {
+		principal, err := r.opts.Access.PrincipalID(ctx)
+		if err != nil {
+			return err
+		}
+		if principal == "" {
+			return fmt.Errorf("MCP authentication returned no principal identity")
+		}
+		if info.cancellation {
+			r.cancellations.cancel(principal, info.cancelID)
+			w.WriteHeader(http.StatusAccepted)
+			return nil
+		}
+		operation, err := r.cancellations.track(ctx, principal, info.id)
+		if err != nil {
+			return err
+		}
+		// Remote cancellation belongs to tool execution, not to the HTTP
+		// transport context: cancelling the latter can suppress its response.
+		ctx = operation.ctx
+		stopDisconnect := context.AfterFunc(connectionContext, func() {
+			operation.cancel()
+			operation.finish()
+		})
+		defer func() {
+			stopDisconnect()
+			operation.finish()
+			operation.cancel()
+		}()
+	}
+	server, err := r.serverFor(ctx, info.tool)
+	if err != nil {
+		return err
+	}
+	if status, code, message := sourceTransportError(request, info); status != 0 {
+		return writeRPCTransportError(w, status, code, message)
 	}
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{
