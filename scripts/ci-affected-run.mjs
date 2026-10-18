@@ -6,6 +6,14 @@ import { pathToFileURL } from 'node:url'
 import { repositoryFileList, selectByIndexes } from './ci-files.mjs'
 import { writeCiTestResults } from './ci-test-results.mjs'
 
+if (process.argv[2] === 'unit' && process.argv[3] === '--files-from') {
+  const selected = readAffectedSelection(process.argv[3], process.argv[4])
+  if (selected.length === 1 && selected[0] === 'scripts/ci-schema-regressions.test.mjs') {
+    await import('./ci-schema-host.mjs')
+    process.exit(process.exitCode ?? 0)
+  }
+}
+
 const projects = ['packages/contracts', 'apps/web', 'conformance']
 
 /** Selected paths remain separate process arguments. */

@@ -1,0 +1,101 @@
+{
+  "purpose": "private-host source materialization and schema regression qualification",
+  "source": "64f7493783c27e77fd58dbb7ea46cde6d9b0a3e0",
+  "sourceTree": "3f6264ca84c3058e97333bbd72c4f55324cac482",
+  "sourceBranch": "go/witness-i-schema-memoizer-64f74937",
+  "frozen": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "mergedBase": "7fa547058109519a99c904493c916662fde6a474",
+  "selector": "scripts/ci-schema-regressions.test.mjs",
+  "testFile": "scripts/go-contracts/execution-configuration.test.mjs",
+  "tests": [
+    "schema-export.execution-default-memoizer-before-binding",
+    "schema-export.execution-default-memoizer-after-binding",
+    "schema-export.execution-custom-memoizer-before-binding",
+    "schema-export.execution-custom-memoizer-after-binding"
+  ],
+  "sourceFiles": [
+    {
+      "path": "packages/contracts/src/goContractRules.ts",
+      "blob": "4b43ab817e1820a56d95cb5f3527d468396fe5f0",
+      "bytes": 3051,
+      "sha256": "d5d89be64541dcd629b8e09d3c97e19e84d0ed80fbcedb0f5f34c9473fa10b0f"
+    },
+    {
+      "path": "packages/contracts/src/schemaPrimitives.ts",
+      "blob": "fac7cfc7ca2f94f25a5d26ae17de36625d149210",
+      "bytes": 702,
+      "sha256": "c6ce3e45dac250534e0ceeec110e7952c51f3d357ef859ae5159e614a74248b9"
+    },
+    {
+      "path": "packages/contracts/src/management/principals.ts",
+      "blob": "53a1680dd5d941b1b2f4e80f4a999af4ea865609",
+      "bytes": 3871,
+      "sha256": "0c84c0a0b6b35e61f61a0087613cefbef89a2785096d43da371667bf1290a5af"
+    },
+    {
+      "path": "packages/contracts/package.json",
+      "blob": "4961427f4411ffcbf91715fe6e4aa0332fb40ba6",
+      "bytes": 12351,
+      "sha256": "9068f26fb80a56f85a90ba675d70110c42e361f7c97ab4d1f25f85517cf9fc5d"
+    },
+    {
+      "path": "packages/contracts/tsconfig.json",
+      "blob": "9e192f4e0b99ff82dc20a8e3ce62c4cfebb39005",
+      "bytes": 257,
+      "sha256": "e400d5dd73a759d670737f82d950a6c0648ac3609e5b6cc3311655c6a7e6b544"
+    },
+    {
+      "path": "package.json",
+      "blob": "a6985b7253e3d52140e83e55d091ddbc3f6c1cb1",
+      "bytes": 2990,
+      "sha256": "95ada3fcc0be8440ed1f443b24e6efeb8635a0dbc2678b0df502c3bc98e7f83d"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "blob": "658946cc2eee785e47a99188938e535d9008dd69",
+      "bytes": 240818,
+      "sha256": "15e7b1141f50641a9c44f7c838903abc86a5c2da8be4f2f96e910008c2f2eed6"
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "blob": "9a2f9f2ed5de75ecadfc0ced69dd4f9ac2299ac8",
+      "bytes": 484,
+      "sha256": "a80a3f60f5f890a0e4a516e34dfab1737046b94275f21826897848cca194621d"
+    },
+    {
+      "path": ".npmrc",
+      "blob": "108ecb4e464ec01895554eb8931f510f2d4fa4cf",
+      "bytes": 56,
+      "sha256": "2c804ea08b2a052020a6eeff891d2e6c9873dbef92d69a403fc202001efc109a"
+    },
+    {
+      "path": "scripts/go-contracts/execution-configuration.test.mjs",
+      "blob": "0f060d99a2928d6b918ef167531080bd7675045b",
+      "bytes": 4970,
+      "sha256": "6642203325b6f968615bfad3ee564d66a38cb866cc1bdaff9b3fba1cf8303797"
+    },
+    {
+      "path": "scripts/go-contracts/export-schemas.mjs",
+      "blob": "6d978eee5c00b662bdc495c93c847fa53eb53e0a",
+      "bytes": 32917,
+      "sha256": "dfdc27960b34872dd362ad1586f2d1286dba8e14706dfd0309eb2d9bca8635db"
+    }
+  ],
+  "packageManager": "pnpm@11.27.0",
+  "compileRoots": [
+    "packages/contracts/src/goContractRules.ts",
+    "packages/contracts/src/schemaPrimitives.ts",
+    "packages/contracts/src/management/principals.ts"
+  ],
+  "contractEdits": [
+    "packages/contracts/src/goContractRules.ts",
+    "packages/contracts/src/management/principals.ts",
+    "packages/contracts/src/schemaPrimitives.ts"
+  ],
+  "strictQualificationTicket": "eed3a278-36d7-42b3-aac8-841fb237f5f9",
+  "qualifiedOutputs": {
+    "goContractRules.js": "2f51215d85372b0a1d8c174bc4532571e8f5f31f267db9f09430898074fa3362",
+    "management/principals.js": "d87afe948e6626f635af27e2f1cfdc35534746d462e240d990fde6168e93bd96",
+    "schemaPrimitives.js": "9d5173af7c60680fa3d1c791457768578b00b0c412ebb99983547c530fd6b7f6"
+  }
+}
