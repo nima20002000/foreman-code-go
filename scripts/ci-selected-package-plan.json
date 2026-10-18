@@ -1,0 +1,125 @@
+{
+  "source": "64dd0fb180135baba6145bc9182c92207cd27c83",
+  "sourceTree": "cd79ea66ee2499519ed29fef141b9236a0b57e91",
+  "mode": "tests-only",
+  "package": "./internal/mcpserver",
+  "packages": [
+    "./internal/mcpserver"
+  ],
+  "unitTests": [
+    "TestMCPReauthenticatesRevokedCredentialsAfterBodyAdmission",
+    "TestMCPRebindsPrincipalAfterBodyAdmission"
+  ],
+  "integrationTests": [],
+  "race": false,
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "goFiles": [],
+  "inputIdentities": [
+    {
+      "path": "backend/internal/mcpserver/server.go",
+      "blob": "508a8e6c9af85c4a72570296275d9cf7836259c9"
+    },
+    {
+      "path": "backend/internal/mcpserver/authentication_test.go",
+      "blob": "0bc187d2bd379274b40e73f778475906d9da5e99"
+    },
+    {
+      "path": "backend/go.mod",
+      "blob": "088b974fed5466d50a6a258ef3981ad32783aae8"
+    },
+    {
+      "path": "backend/go.sum",
+      "blob": "f39df7ffee315e4aa566acdfdfb4bdedf03ce66b"
+    },
+    {
+      "path": "scripts/ci-go-versions.json",
+      "blob": "9780bce610af1805e095c6e30a074e6b6cd5609b"
+    }
+  ],
+  "sourceProvenance": {
+    "intakePath": ".benchmark/transport-followon-intake/affected-ci-plan.json",
+    "intakeSha256": "8d0c714598187917f2e67ceeb8c3828a6e690a596b6d272b98e082f27583c99a",
+    "source": "35d8eccea20b3e9436ba3d588c2d37e48321e16d",
+    "tree": "0fb6bd0746cfdaa231549659bd4078ee63bb745b",
+    "composed": "0f461b9a689396c5ce0307f96e14fb9c06350e9c",
+    "composedTree": "85b5a88e180a40107af71bd6ff8fcbe898c526e0",
+    "composition": "prior raw tracker91961639 + exact logging10delta + reauth3delta; body003/shared14/logging10postimages preserved; no prior active ref changes",
+    "status": "Source-only composition; raw formatting plus inherited confirmed logging/body findings BLOCK overall merge. Can independently qualify affected auth after explicit root approval.",
+    "changedPaths": [
+      "backend/internal/mcpserver/server.go",
+      "backend/internal/mcpserver/server_test.go",
+      "backend/internal/mcpserver/authentication_test.go"
+    ],
+    "preFix": {
+      "source": "64dd0fb180135baba6145bc9182c92207cd27c83",
+      "tree": "cd79ea66ee2499519ed29fef141b9236a0b57e91",
+      "production": "unchanged exact base; only authentication_test.go added",
+      "sameTestBlob": "0bc187d2bd379274b40e73f778475906d9da5e99",
+      "command": [
+        "go",
+        "test",
+        "./internal/mcpserver",
+        "-run",
+        "^(TestMCPReauthenticatesRevokedCredentialsAfterBodyAdmission|TestMCPRebindsPrincipalAfterBodyAdmission)$",
+        "-count=1"
+      ],
+      "intendedFailures": [
+        "revoked credential dispatched a public MCP tool after body admission",
+        "rebound credential dispatched a public MCP tool using its prior principal"
+      ],
+      "acceptance": "Each must reach actual public dispatch assertion before auth-count bookkeeping; compilation/setup/missing API or count-only failure never counts."
+    },
+    "green": {
+      "command": [
+        "go",
+        "test",
+        "./internal/mcpserver",
+        "-run",
+        "^(TestMCPReauthenticatesRevokedCredentialsAfterBodyAdmission|TestMCPRebindsPrincipalAfterBodyAdmission|TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials|TestMCPRejectsMissingCredentialsBeforeReadingBody|TestMCPMethodRejectionStillAuthenticates|TestMCPNumericIDAdmissionPreservesHeaderAndAuthOrder|TestMCPCancellationFailsClosedWithoutPrincipalIdentity|TestMCPCancelsAcrossAuthenticatedRequests)$",
+        "-count=1"
+      ],
+      "roots": [
+        "TestMCPReauthenticatesRevokedCredentialsAfterBodyAdmission",
+        "TestMCPRebindsPrincipalAfterBodyAdmission",
+        "TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials",
+        "TestMCPRejectsMissingCredentialsBeforeReadingBody",
+        "TestMCPMethodRejectionStillAuthenticates",
+        "TestMCPNumericIDAdmissionPreservesHeaderAndAuthOrder",
+        "TestMCPCancellationFailsClosedWithoutPrincipalIdentity",
+        "TestMCPCancelsAcrossAuthenticatedRequests"
+      ],
+      "newRoots": 2,
+      "necessaryAnchors": 6,
+      "outcomes": [
+        "revoked after Body.Read: zero tool dispatch401/AUTH_REQUIRED",
+        "rebound after Body.Read: one fresh-principal invocation and principal:new readback",
+        "one auth before Body.Read; two after admission; existing fivePOSTfixture now10calls"
+      ]
+    },
+    "analysisPackages": [
+      "./internal/mcpserver",
+      "<necessary affected dependencies only>"
+    ],
+    "formatFiles": [
+      "backend/internal/mcpserver/server.go",
+      "backend/internal/mcpserver/server_test.go",
+      "backend/internal/mcpserver/authentication_test.go"
+    ],
+    "noRepeat": "Do not repeat all tracker16 roots, old full body/logging roots or transport captures; retain their mandatory independent gates/evidence.",
+    "open": [
+      "lossless SDK response-ID adapter",
+      "separate frozen public response-ID capture companion",
+      "known inherited logging/body defects/style/format"
+    ]
+  },
+  "noOrdinaryDuplicate": true,
+  "fullSuiteAuthorized": false,
+  "inheritedOverallMergeHold": [
+    "body ST1005/format",
+    "logging nonfinite assertion/ST1012/format",
+    "raw MCP formatting"
+  ]
+}
