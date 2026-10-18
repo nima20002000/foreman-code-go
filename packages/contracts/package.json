@@ -313,7 +313,7 @@
     }
   },
   "scripts": {
-    "build": "node ../../scripts/heavy-job.mjs --build contracts -- tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/ci-capture-contracts.mjs",
     "dev": "tsc -p tsconfig.build.json --watch",
     "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- vitest run",
     "typecheck": "node ../../scripts/ci-remote.mjs typecheck -- node ../../scripts/heavy-job.mjs -- tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",

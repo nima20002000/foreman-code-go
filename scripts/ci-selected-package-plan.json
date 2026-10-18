@@ -1,0 +1,27 @@
+{
+  "source": "ab17877444519f68a75bd9ccb94ed99ba9b30d4c",
+  "sourceTree": "7ea4f37ad1af9a7ffa76646b7df40365cedf5db9",
+  "frozen": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "mode": "capture",
+  "unitTests": [],
+  "integrationTests": [],
+  "captureTests": [
+    "logging.capture-utf8-chunk-framing"
+  ],
+  "captureFile": "apps/api/test/i-logging-capture.test.ts",
+  "compileEntryPoints": [],
+  "runtimeImportClosure": [],
+  "analyzeProbe": false,
+  "sourceProvenance": {
+    "name": "logging-framing-red",
+    "sourceFile": "foreman-i-logging-001/probes/i-logging-capture-framing-red.test.ts",
+    "overlay": "apps/api/test/i-logging-capture.test.ts",
+    "sha256": "e6a635e457368a65e50335da1818f8d23e324d91251b8c1f65a687584bb8c8d3",
+    "blob": "66b919ff09a3c2cda62c97ef4efa238bad841b8a",
+    "candidate": "ab17877444519f68a75bd9ccb94ed99ba9b30d4c",
+    "tree": "7ea4f37ad1af9a7ffa76646b7df40365cedf5db9",
+    "ref": "go/recipe-i-logging-framing-red",
+    "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+  },
+  "noDatabase": true
+}
