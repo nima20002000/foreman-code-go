@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected public MCP reauthentication diagnostic: fixed at 0f461b9a689396c5ce0307f96e14fb9c06350e9c.
