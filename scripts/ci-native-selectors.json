@@ -1,0 +1,10 @@
+{
+  "scripts/fixtures/go-ci-acceptance/assertion-fail.test.mjs": {
+    "suite": "unit-api",
+    "selection": "scripts/fixtures/go-ci-acceptance/unit-plan.json"
+  },
+  "apps/api/test/qci-go-assertion-fail.integration.test.ts": {
+    "suite": "integration",
+    "selection": "scripts/fixtures/go-ci-acceptance/integration-plan.json"
+  }
+}
