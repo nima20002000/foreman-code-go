@@ -1,0 +1,48 @@
+{
+  "source": "f39f33ed773d21f68a712b2485df2cb9ad587d94",
+  "sourceTree": "04ece29d8643f461abd52e01ba3ba42a478d302a",
+  "package": "./internal/devices",
+  "goFiles": [],
+  "unitTests": [
+    "TestDeviceWirePreservesOpaqueTextAndExactFrameLimit",
+    "TestManagedBytesUploadFinalizeAndReopen"
+  ],
+  "integrationTests": [],
+  "packages": [
+    "./internal/devices",
+    "./internal/computers",
+    "./internal/files"
+  ],
+  "unitPackages": [
+    "./internal/devices",
+    "./internal/files"
+  ],
+  "race": true,
+  "testTimeout": "30s",
+  "filesFixtureRequired": true,
+  "sourceProvenance": {
+    "mapPath": ".benchmark/wire-files-integration.json",
+    "mapSha256": "b91312fbe8292a8c29a870afff69e361e5d50574d260520564fc46d6e664e5a1",
+    "base": "e8a6fb3a66f5a592e1f07a10838b456caadcfee2",
+    "head": "f39f33ed773d21f68a712b2485df2cb9ad587d94",
+    "tree": "04ece29d8643f461abd52e01ba3ba42a478d302a",
+    "components": {
+      "R": {
+        "head": "6c3aeac0136e110368199dec804b01b8e1b321b1",
+        "tree": "5068451b9aff1e9beadd5e3fd04b8860259e397e"
+      },
+      "A2": {
+        "head": "1b639df9b4e3ae5279b639df72b215e368b78a98",
+        "tree": "8cf7167db018a7cf8d77c5d5bb88d2d9153cb846"
+      }
+    },
+    "ownedCount": 16,
+    "allOtherMainEntriesIdentical": true,
+    "baseEntries": 6117,
+    "startupClosureUnchanged": true,
+    "startupClosureCount": 37,
+    "existingJSONEntriesUnchanged": 14,
+    "startupConformance": "notrun:unchangedstartupdependencies"
+  },
+  "mode": "build-and-tests"
+}

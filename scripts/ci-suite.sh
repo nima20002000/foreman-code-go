@@ -4,6 +4,13 @@
 #   integration: Go integration tests, Go conformance, and the TS oracle when conformance changes.
 # start prepares cached tools asynchronously; prepare does the same synchronously on a build computer.
 set -euo pipefail
+# Selected Go-package diagnostic, executed only through the existing CI hook.
+case "${SUITE:-}" in
+  unit|unit-*)
+    case "${1:-}" in start|prepare|cleanup) exit 0 ;; esac
+    exec node "$(dirname "$0")/ci-selected-package.mjs"
+    ;;
+esac
 umask 077
 script_directory="$(cd "$(dirname "$0")" && pwd)"
 if [ "${1:-}" != cleanup ]; then
