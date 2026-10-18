@@ -11,6 +11,12 @@
 # TEST_RESULTS_OUTPUT: where structured test results go for unit and integration (scripts/ci-test-results.mjs).
 # Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
+case "${SUITE:-}" in
+  unit|unit-*)
+    case "${1:-}" in start|prepare|cleanup) exit 0 ;; esac
+    exec node "$(dirname "$0")/ci-selected-package.mjs"
+    ;;
+esac
 # Oversized CircleCI inputs live in the execution snapshot; verify them before starting any suite work.
 case "${CI_PARTITION:-}" in
   sha256:*) exec node "$(dirname "$0")/ci-selection.mjs" --dispatch-inputs "$0" "$@" ;;
