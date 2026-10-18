@@ -1,0 +1,54 @@
+{
+  "source": "42f604ddd7f3c88e4af104d74dec2058754b4e99",
+  "sourceTree": "0146e0c364e8ce1f516eaa51f0f1909c5b487a7a",
+  "mode": "lint-only",
+  "lintFiles": [
+    "packages/contracts/src/goContractRules.ts",
+    "packages/contracts/src/schemaPrimitives.ts",
+    "packages/contracts/src/management/principals.ts"
+  ],
+  "excludedFiles": [
+    "scripts/go-contracts/auth-vectors.mjs",
+    "scripts/go-contracts/auth-vectors.test.mjs",
+    "scripts/go-contracts/export-schemas.mjs",
+    "scripts/go-contracts/export-schemas.test.mjs"
+  ],
+  "configurationBoundary": "Root scripts have no package lint command or ESLint configuration. Existing affected lint router explicitly rejects scripts scope.",
+  "files": [
+    {
+      "path": "packages/contracts/src/goContractRules.ts",
+      "blob": "4b43ab817e1820a56d95cb5f3527d468396fe5f0",
+      "sha256": "d5d89be64541dcd629b8e09d3c97e19e84d0ed80fbcedb0f5f34c9473fa10b0f"
+    },
+    {
+      "path": "packages/contracts/src/schemaPrimitives.ts",
+      "blob": "fac7cfc7ca2f94f25a5d26ae17de36625d149210",
+      "sha256": "c6ce3e45dac250534e0ceeec110e7952c51f3d357ef859ae5159e614a74248b9"
+    },
+    {
+      "path": "packages/contracts/src/management/principals.ts",
+      "blob": "53a1680dd5d941b1b2f4e80f4a999af4ea865609",
+      "sha256": "0c84c0a0b6b35e61f61a0087613cefbef89a2785096d43da371667bf1290a5af"
+    },
+    {
+      "path": "scripts/go-contracts/auth-vectors.mjs",
+      "blob": "86c524c113de0b379bf9eef69f5b63efa6a6fe6d",
+      "sha256": "781204bab96f1c5a597cc948140006520256680a343d34bcf6f3003dfd25dc35"
+    },
+    {
+      "path": "scripts/go-contracts/auth-vectors.test.mjs",
+      "blob": "6b20245f917199771052ecb6299a1a99686f1e61",
+      "sha256": "37926c060d2b4b57d3309f8a35de5d71992f3d31b2dae577323192b3375ad056"
+    },
+    {
+      "path": "scripts/go-contracts/export-schemas.mjs",
+      "blob": "4f955ff4c2c5d0b7f112fc7eeef2b7d8179ef06b",
+      "sha256": "395a901f321cee731a2b0c6b9ea2c7daf1e14ad00124669ce630390d31bf9aff"
+    },
+    {
+      "path": "scripts/go-contracts/export-schemas.test.mjs",
+      "blob": "860494a09266148ee115cca5e7368ee0c0276c64",
+      "sha256": "46e4be460e6629eb0fdaf05a91b6a45d6eab31cb6a826b186f491479e4008f3f"
+    }
+  ]
+}
