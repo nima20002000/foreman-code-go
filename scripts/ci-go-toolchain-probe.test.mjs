@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: pure-foundations-merged at immutable source e8a6fb3a66f5a592e1f07a10838b456caadcfee2.
