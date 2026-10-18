@@ -1,0 +1,14 @@
+{
+  "scripts/fixtures/go-ci-acceptance/normal.test.mjs": {
+    "suite": "unit-api",
+    "selection": "scripts/fixtures/go-ci-acceptance/unit-plan.json"
+  },
+  "apps/api/test/qci-go-normal.integration.test.ts": {
+    "suite": "integration",
+    "selection": "scripts/fixtures/go-ci-acceptance/integration-plan.json"
+  },
+  "apps/api/test/qci-health-ready.integration.test.ts": {
+    "suite": "integration",
+    "selection": "scripts/fixtures/go-ci-acceptance/health-plan.json"
+  }
+}
