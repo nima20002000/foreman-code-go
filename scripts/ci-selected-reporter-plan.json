@@ -1,0 +1,76 @@
+{
+  "source": "4997e4864c8fef6352bdc3a317867833ee6eedab",
+  "sourceTree": "fff36e391a7023d1f3818c0225cc78c7f258c6ce",
+  "phase": "candidate",
+  "testFiles": [
+    "src/clients/response.test.ts",
+    "src/clients/response.credentials.test.ts"
+  ],
+  "caseNames": [
+    "reports a rejected Workspace mutation before reading success fields",
+    "identifies the rejected Agent mutation and retains its public error",
+    "identifies Workflow creation after accepted Workspace and Agent fixture responses",
+    "rejects an error envelope at the expected status and retains the schema cause",
+    "retains a text HTTP failure while redacting embedded bearer credentials",
+    "bounds the failure body and redacts credential fields before truncation",
+    "returns an accepted Workspace with the original exact success assertions",
+    "still rejects a schema-valid response that violates exact success expectations",
+    "leaves intentional error responses available through the public HTTP client",
+    "redacts quoted and backslash-start credentials in a text Workspace rejection",
+    "redacts quoted keys and escaped credential tails inside JSON-looking text",
+    "redacts credentials embedded in public JSON property names",
+    "redacts overlapping literal secrets without exposing the longer suffix",
+    "does not rescan redaction markers for duplicate short secret values",
+    "keeps a credential-shaped sensitive value fully redacted",
+    "redacts escaped schema-cause credentials while retaining bounded useful context",
+    "bounds multibyte previews after removing long quoted credentials",
+    "redacts every cookie in a text header while retaining the next diagnostic line",
+    "preserves redaction of unquoted bracket and parenthesis credential values",
+    "retains an empty Cookie header and the following diagnostic line"
+  ],
+  "typeRoots": [
+    "src/clients/response.ts",
+    "src/clients/response.test.ts",
+    "src/scenarios/smoke/support.ts",
+    "src/scenarios/workflows/agents.ts",
+    "src/scenarios/workflows/authoring.ts",
+    "src/scenarios/workflows/save.ts",
+    "src/scenarios/workflows/runs.ts",
+    "src/scenarios/workflows/schedule.ts",
+    "src/clients/response.credentials.test.ts"
+  ],
+  "compileEntryPoints": [
+    "src/index.ts",
+    "src/management/index.ts",
+    "src/wave25/index.ts",
+    "src/schedules.ts",
+    "src/deviceIdentity.ts",
+    "src/productEnvironment.mjs"
+  ],
+  "requiredExports": {
+    ".": [
+      "dist/index.js",
+      "dist/index.d.ts"
+    ],
+    "./management": [
+      "dist/management/index.js",
+      "dist/management/index.d.ts"
+    ],
+    "./wave25": [
+      "dist/wave25/index.js",
+      "dist/wave25/index.d.ts"
+    ],
+    "./schedules": [
+      "dist/schedules.js",
+      "dist/schedules.d.ts"
+    ],
+    "./device-identity": [
+      "dist/deviceIdentity.js",
+      "dist/deviceIdentity.d.ts"
+    ],
+    "./product-environment": [
+      "dist/productEnvironment.mjs",
+      "dist/productEnvironment.d.mts"
+    ]
+  }
+}
