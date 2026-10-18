@@ -1,0 +1,162 @@
+{
+  "source": "8852dfb193c23770151adc8b91a3c300b5284b74",
+  "sourceTree": "a05acc05b6190c05ad4a2288c1ecc2aa2c64449e",
+  "mode": "tests-only",
+  "package": "./internal/httpserver",
+  "packages": [
+    "./internal/httpserver"
+  ],
+  "unitTests": [
+    "TestBufferedBodyRejectsExpandingUnicodeTypeCase"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "goFiles": [],
+  "sourceProvenance": {
+    "source": "8476e9b4ef5f04ea7acdac40fc919a262f7c6d40",
+    "composed": "bf9124c31910d72a7eadc1ffa595aa1dbdd64001",
+    "tree": "fbce11c35d4191fbd1656c9863b211c016d54a6b",
+    "preFix": [
+      {
+        "candidate": "e403f734818db0427a1d71c4680f4ceddefe0071",
+        "command": [
+          "go",
+          "test",
+          "./internal/app",
+          "-run",
+          "^(TestBodyJSONAcceptsDeepValidPayload)$",
+          "-count=1"
+        ],
+        "intendedFailure": "unchanged expected HTTP204 at depth10001"
+      },
+      {
+        "candidate": "0a29499c41c607f3965878d6e3d87fe37b1f80a7",
+        "command": [
+          "go",
+          "test",
+          "./internal/app",
+          "-run",
+          "^(TestBodyLimitsRejectDeclaredOversizeBeforeHandler|TestBodyLimitsRejectChunkedOversizeBeforeHandler|TestBodyLimitsValidateParserEnvelope|TestBodyLimitsRejectDeclaredLengthMismatch|TestBodyLimitsKeepUnknownRouteMediaException|TestBodyLimitsRejectMediaBeforeReading)$",
+          "-count=1"
+        ],
+        "intendedFailure": "public HTTP rejection/parser/unknown-route assertions"
+      },
+      {
+        "candidate": "8852dfb193c23770151adc8b91a3c300b5284b74",
+        "command": [
+          "go",
+          "test",
+          "./internal/httpserver",
+          "-run",
+          "^(TestBufferedBodyRejectsExpandingUnicodeTypeCase)$",
+          "-count=1"
+        ],
+        "intendedFailure": "Unicode media expanding-case public rejection"
+      },
+      {
+        "candidate": "de04ccd9fb42fd480503c2eb69d45651aa6e3581",
+        "command": [
+          "go",
+          "test",
+          "./internal/app",
+          "-run",
+          "^(TestBuiltWebConfigLoadsCompiledShell|TestBuiltWebConfigRejectsMissingBuild)$",
+          "-count=1"
+        ],
+        "intendedFailure": "builtweb serving/config assertions"
+      }
+    ],
+    "green": {
+      "command": [
+        "go",
+        "test",
+        "./internal/builtweb",
+        "./internal/httpserver",
+        "./internal/app",
+        "-run",
+        "^(TestBuiltWebShellRoutes|TestBuiltWebAssetsAndConditionalReads|TestBuiltWebMissingPathsStayJSONErrors|TestBuiltWebReadsNewFilesAfterStartup|TestBuiltWebRequiresAnAbsolutePresentBuild|TestBuiltWebConfigLoadsCompiledShell|TestBuiltWebConfigPreservesRegisteredAPIAndMCPErrors|TestBuiltWebConfigLeavesServingDisabled|TestBuiltWebConfigRejectsMissingBuild|TestBufferedBodyOverride|TestBufferedJSONKeepsRawAndDecodedBytes|TestBufferedJSONRetainsPoisonPolicyWithLosslessKeys|TestBufferedBodyCountsDecodedUTF8Bytes|TestReadBufferedBodyPreservesAuthorizedContextAndCachedJSON|TestReadBufferedBodyKeepsNullAndUnparsedBodiesDistinct|TestReadBufferedBodyRunsAfterAuthorizationWithRouteLimit|TestStreamingBodyReadsOnlyInsideHandler|TestStreamingBodyEnforcesDeclaredAndChunkedLimits|TestBufferedBodyRetainsCloseFailure|TestBufferedBodyAllowsAbsentBodyAndPlainText|TestBufferedBodyRejectsNonJavaScriptWhitespace|TestBufferedBodyRejectsExpandingUnicodeTypeCase|TestBufferedBodyKeepsValidUnicodeMediaCaseOnMissingRoute|TestBodyLimitsRejectDeclaredOversizeBeforeHandler|TestBodyLimitsRejectChunkedOversizeBeforeHandler|TestBodyLimitsAcceptExactBoundary|TestBodyLimitsPreserveBufferedBytes|TestBodyLimitsValidateParserEnvelope|TestBodyLimitsRejectDeclaredLengthMismatch|TestBodyLimitsSkipBodylessMethods|TestBodyLimitsPreserveStreamReadOrdering|TestBodyLimitsPreserveMCPAuthenticationBeforeRead|TestBodyLimitsKeepUnknownRouteMediaException|TestBodyLimitsRejectMediaBeforeReading|TestBodyJSONAcceptsDeepValidPayload)$",
+        "-count=1"
+      ],
+      "testRoots": [
+        "TestBuiltWebShellRoutes",
+        "TestBuiltWebAssetsAndConditionalReads",
+        "TestBuiltWebMissingPathsStayJSONErrors",
+        "TestBuiltWebReadsNewFilesAfterStartup",
+        "TestBuiltWebRequiresAnAbsolutePresentBuild",
+        "TestBuiltWebConfigLoadsCompiledShell",
+        "TestBuiltWebConfigPreservesRegisteredAPIAndMCPErrors",
+        "TestBuiltWebConfigLeavesServingDisabled",
+        "TestBuiltWebConfigRejectsMissingBuild",
+        "TestBufferedBodyOverride",
+        "TestBufferedJSONKeepsRawAndDecodedBytes",
+        "TestBufferedJSONRetainsPoisonPolicyWithLosslessKeys",
+        "TestBufferedBodyCountsDecodedUTF8Bytes",
+        "TestReadBufferedBodyPreservesAuthorizedContextAndCachedJSON",
+        "TestReadBufferedBodyKeepsNullAndUnparsedBodiesDistinct",
+        "TestReadBufferedBodyRunsAfterAuthorizationWithRouteLimit",
+        "TestStreamingBodyReadsOnlyInsideHandler",
+        "TestStreamingBodyEnforcesDeclaredAndChunkedLimits",
+        "TestBufferedBodyRetainsCloseFailure",
+        "TestBufferedBodyAllowsAbsentBodyAndPlainText",
+        "TestBufferedBodyRejectsNonJavaScriptWhitespace",
+        "TestBufferedBodyRejectsExpandingUnicodeTypeCase",
+        "TestBufferedBodyKeepsValidUnicodeMediaCaseOnMissingRoute",
+        "TestBodyLimitsRejectDeclaredOversizeBeforeHandler",
+        "TestBodyLimitsRejectChunkedOversizeBeforeHandler",
+        "TestBodyLimitsAcceptExactBoundary",
+        "TestBodyLimitsPreserveBufferedBytes",
+        "TestBodyLimitsValidateParserEnvelope",
+        "TestBodyLimitsRejectDeclaredLengthMismatch",
+        "TestBodyLimitsSkipBodylessMethods",
+        "TestBodyLimitsPreserveStreamReadOrdering",
+        "TestBodyLimitsPreserveMCPAuthenticationBeforeRead",
+        "TestBodyLimitsKeepUnknownRouteMediaException",
+        "TestBodyLimitsRejectMediaBeforeReading",
+        "TestBodyJSONAcceptsDeepValidPayload"
+      ],
+      "count": 35
+    },
+    "frozenCapture": {
+      "recipe": {
+        "name": "body-depth",
+        "sourceFile": "foreman-i-body-003/probes/i-body-depth-capture.test.ts",
+        "overlay": "apps/api/test/i-body-depth-capture.test.ts",
+        "sha256": "180d933c3773b45768440ca6eddba0c6c0ca46cc3d25a80aa98901a5e5da3e03",
+        "blob": "7049eb987e01eec2df732b6830c0b9a1b5dfe8f7",
+        "candidate": "4e63fbfbb4933dce5188ce5bdf0ba8ab373b3bc1",
+        "tree": "0088151e2ea2fdd86ce02898dc9386f287bcf859",
+        "ref": "go/recipe-i-body-depth",
+        "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+      },
+      "testName": "body.json-depth-10001",
+      "requiredStatus": 204
+    },
+    "mandatoryScenarios": [
+      "body.json-depth-10001",
+      "body.shared-admission-auth-order",
+      "body.shared-admission-cache",
+      "body.shared-admission-route-limit"
+    ],
+    "analysisPackages": [
+      "./internal/httpserver",
+      "./internal/app",
+      "./internal/builtweb",
+      "./cmd/foreman"
+    ],
+    "formatFiles": [
+      "backend/internal/builtweb/server.go",
+      "backend/internal/builtweb/server_test.go",
+      "backend/internal/app/app.go",
+      "backend/internal/app/builtweb_test.go",
+      "backend/internal/httpserver/body.go",
+      "backend/internal/httpserver/body_test.go",
+      "backend/internal/app/body_test.go"
+    ]
+  },
+  "noOrdinaryDuplicate": true,
+  "testPattern": "^(TestBufferedBodyRejectsExpandingUnicodeTypeCase)$"
+}
