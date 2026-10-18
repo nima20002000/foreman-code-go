@@ -1,5 +1,0 @@
-{
-  "files": ["conformance/src/scenarios/smoke/health.ts"],
-  "conformanceScenarios": ["health.ready"],
-  "conformanceTsRequired": true
-}

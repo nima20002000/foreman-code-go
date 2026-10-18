@@ -1,4 +1,4 @@
 {
   "files": ["backend/ciprobe/roundtrip_test.go"],
-  "goTestRoots": {"./ciprobe": ["TestQCIJSONRoundTrip"]}
+  "goTestRoots": {"./ciprobe": ["TestQCINoMatchingCase"]}
 }
