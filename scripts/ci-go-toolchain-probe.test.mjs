@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Reporter diagnostic selection: 7835b7d4cfc0acdb9b5528af4e4fecf0e511c9dc credentials-eleven.

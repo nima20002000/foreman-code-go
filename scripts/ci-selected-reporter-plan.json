@@ -1,0 +1,56 @@
+{
+  "source": "7835b7d4cfc0acdb9b5528af4e4fecf0e511c9dc",
+  "sourceTree": "50ff0ec3d3bec718919eee5942b08c53dde8d526",
+  "phase": "witness",
+  "testFiles": [
+    "src/clients/response.credentials.test.ts"
+  ],
+  "caseNames": [
+    "redacts quoted and backslash-start credentials in a text Workspace rejection",
+    "redacts quoted keys and escaped credential tails inside JSON-looking text",
+    "redacts credentials embedded in public JSON property names",
+    "redacts overlapping literal secrets without exposing the longer suffix",
+    "does not rescan redaction markers for duplicate short secret values",
+    "keeps a credential-shaped sensitive value fully redacted",
+    "redacts escaped schema-cause credentials while retaining bounded useful context",
+    "bounds multibyte previews after removing long quoted credentials",
+    "redacts every cookie in a text header while retaining the next diagnostic line",
+    "preserves redaction of unquoted bracket and parenthesis credential values",
+    "retains an empty Cookie header and the following diagnostic line"
+  ],
+  "typeRoots": [],
+  "compileEntryPoints": [
+    "src/index.ts",
+    "src/management/index.ts",
+    "src/wave25/index.ts",
+    "src/schedules.ts",
+    "src/deviceIdentity.ts",
+    "src/productEnvironment.mjs"
+  ],
+  "requiredExports": {
+    ".": [
+      "dist/index.js",
+      "dist/index.d.ts"
+    ],
+    "./management": [
+      "dist/management/index.js",
+      "dist/management/index.d.ts"
+    ],
+    "./wave25": [
+      "dist/wave25/index.js",
+      "dist/wave25/index.d.ts"
+    ],
+    "./schedules": [
+      "dist/schedules.js",
+      "dist/schedules.d.ts"
+    ],
+    "./device-identity": [
+      "dist/deviceIdentity.js",
+      "dist/deviceIdentity.d.ts"
+    ],
+    "./product-environment": [
+      "dist/productEnvironment.mjs",
+      "dist/productEnvironment.d.mts"
+    ]
+  }
+}
