@@ -9,6 +9,7 @@ import {
   WorkspaceCreateInputSchema,
 } from '@foreman-code/contracts/management'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { CoverageClaim, ScenarioContext } from '../../scenario.js'
 
 export function httpCoverage(method: string, path: string, outcome: 'success' | 'error'): CoverageClaim {
@@ -21,7 +22,9 @@ export async function createWorkspace(ctx: ScenarioContext, name: string, parent
     ...(parentPath === undefined ? {} : { parentPath }),
   })
   const response = await ctx.http.request('POST', '/api/management/workspaces', { body: input })
-  const created = ManagedWorkspaceCommandResultSchema.parse(response.body)
+  const created = parseSuccessResponse(response, ManagedWorkspaceCommandResultSchema, {
+    method: 'POST', path: '/api/management/workspaces', status: 201, contract: 'ManagedWorkspaceCommandResult',
+  })
   assertResponse(response, {
     status: 201,
     body: {
