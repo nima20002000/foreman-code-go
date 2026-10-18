@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic j-postmerge at immutable source 20f9ce6dfcdf863bf42f9b114bf24cb168034bbf.
