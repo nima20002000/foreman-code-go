@@ -1,0 +1,78 @@
+{
+  "source": "7c23c4516a54634c2b3a50a05bfe11f095eb6aee",
+  "sourceTree": "3f9c45ada73c97136596d6971684bc77d51cf910",
+  "mode": "package",
+  "packages": [
+    "./internal/harnesses/claude/queue"
+  ],
+  "goFiles": [
+    "internal/harnesses/claude/queue/queue.go",
+    "internal/harnesses/claude/queue/queue_test.go"
+  ],
+  "unitTests": [
+    "TestCapacityMustBePositive",
+    "TestOfferPreservesFIFOAndBackpressure",
+    "TestOfferHandsOffToWaitingReader",
+    "TestCoalescingOnlyUsesFullUncontendedBuffer",
+    "TestCanceledOfferCannotEnterQueue",
+    "TestCanceledWriterDoesNotDelayRemainingWriters",
+    "TestAcceptedOfferStaysAcceptedAfterCancellation",
+    "TestCanceledOfferKeepsCauseWhenQueueDiscards",
+    "TestCanceledOfferKeepsCauseWhenQueueCloses",
+    "TestCanceledOfferNoLongerBlocksCoalescing",
+    "TestDiscardReleasesWritersWithoutClosingQueue",
+    "TestCloseRetainsValuesAndFirstFailure",
+    "TestDiscardingCloseReleasesWritersAndRetainsFailure",
+    "TestCloseFinishesWaitingReader",
+    "TestReaderDetachOnlyReleasesItsOwnWait",
+    "TestDiscardPreservesWaitingReader"
+  ],
+  "integrationTests": [],
+  "staticcheckTags": [
+    ""
+  ],
+  "race": true,
+  "testTimeout": "30s",
+  "sourceFiles": [
+    {
+      "path": "backend/internal/harnesses/claude/queue/README.md",
+      "blob": "30974bf30eb431dcffee0bfb559b6012abf3de6b"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/queue.go",
+      "blob": "0e05f9e11d8f079fa8691c675690f475ad1e81bd"
+    },
+    {
+      "path": "backend/internal/harnesses/claude/queue/queue_test.go",
+      "blob": "8928f3a64b2a778a7f41f51a027ef9abbda7acad"
+    }
+  ],
+  "sourceProvenance": {
+    "preFix": {
+      "candidate": "94dd12d581d9626f4b5d41af316c293936596f4f",
+      "tree": "5e01036f253ca71d2d74d8286f07315b78f21301",
+      "initialImplementation": "91ada8624a001b39bc52341615db3c5491da2fe0",
+      "initialImplementationTree": "1d6bcc10613c1ffd28b6996f2db9d4832d933a8d",
+      "implementationBlobUnchanged": "3050c5a6c4ad9148602b033b6fdfffdac24389e9",
+      "testsBlobIdenticalOnRedAndFixed": "8928f3a64b2a778a7f41f51a027ef9abbda7acad",
+      "requiredBeforeMerge": true,
+      "expectedOutcome": "Each named regression must fail for its stated queue behavior on the pre-fix candidate; compilation, toolchain, import, timeout, or environment failures do not satisfy behavioral red evidence.",
+      "checks": [
+        {
+          "name": "TestCanceledOfferKeepsCauseWhenQueueDiscards",
+          "command": "go test -count=1 -timeout=30s -run '^(TestCanceledOfferKeepsCauseWhenQueueDiscards)$' ./internal/harnesses/claude/queue"
+        },
+        {
+          "name": "TestCanceledOfferKeepsCauseWhenQueueCloses",
+          "command": "go test -count=1 -timeout=30s -run '^(TestCanceledOfferKeepsCauseWhenQueueCloses)$' ./internal/harnesses/claude/queue"
+        },
+        {
+          "name": "TestCanceledOfferNoLongerBlocksCoalescing",
+          "command": "go test -count=1 -timeout=30s -run '^(TestCanceledOfferNoLongerBlocksCoalescing)$' ./internal/harnesses/claude/queue"
+        }
+      ]
+    },
+    "intakeCandidate": "7c23c4516a54634c2b3a50a05bfe11f095eb6aee",
+    "intakeTree": "3f9c45ada73c97136596d6971684bc77d51cf910"
+  }
+}

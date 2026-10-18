@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic hqueue-fixed at immutable source 7c23c4516a54634c2b3a50a05bfe11f095eb6aee.
