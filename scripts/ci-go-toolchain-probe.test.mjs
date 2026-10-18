@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected schema descriptor source diagnostic: 375bcb188756a2b0b26807fef1cff0336d969fd2.
