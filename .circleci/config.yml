@@ -205,6 +205,10 @@ jobs:
       - store_artifacts:
           path: .logs/ci-state/conformance
           destination: conformance-results
+      # Native Go events, process statuses and report bindings remain distinct from the wrapper's totals.
+      - store_artifacts:
+          path: .logs/ci-state/go
+          destination: go-results
       - when:
           condition:
             not:

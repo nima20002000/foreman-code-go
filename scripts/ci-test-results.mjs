@@ -17,6 +17,18 @@ const duration = value => typeof value === 'number' && Number.isFinite(value) &&
 // Terminal colors and control characters say nothing in a table.
 const plain = value => String(value ?? '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
 const stackFrame = /(?:file:\/\/)?(\/[^\s()'":]+):(\d+)(?::(\d+))?/g
+const nativeFile = path => path === 'backend' || path.startsWith('backend/') || /^conformance\/(?:go|ts)\//.test(path)
+
+function mergeFile(previous, current) {
+  if (!previous) return current
+  const tests = [...previous.tests, ...current.tests]
+  const status = previous.status === 'failed' || current.status === 'failed' ? 'failed'
+    : tests.length && tests.every(test => test.status === 'skipped')
+      || previous.status === 'skipped' && current.status === 'skipped' ? 'skipped' : 'passed'
+  const durationMs = previous.durationMs === null || current.durationMs === null ? null
+    : duration(previous.durationMs + current.durationMs)
+  return { ...previous, status, durationMs, tests }
+}
 
 /** Where a failure happened: the stack frame in the test's own file, else the first repository frame outside
  * node_modules, as `path:line:column` relative to the repository. The message is clipped, so the stack is read here. */
@@ -36,11 +48,19 @@ function failureLocation(failure, file, repository) {
 export function ciTestResults(reports, repository = root) {
   const summary = { passed: 0, failed: 0, skipped: 0 }
   const byFile = new Map()
+  const nativeCases = new Set()
   for (const report of reports) {
     for (const result of Array.isArray(report?.testResults) ? report.testResults : []) {
       if (typeof result?.name !== 'string' || !result.name) continue
       const path = (isAbsolute(result.name) ? relative(repository, result.name) : result.name).replaceAll('\\', '/')
       const tests = (Array.isArray(result.assertionResults) ? result.assertionResults : []).map(test => {
+        if (nativeFile(path)) {
+          const name = test?.fullName || test?.title
+          if (typeof name !== 'string' || !name.trim()) throw new Error(`Native test result in ${path} is missing its real case identity.`)
+          const identity = JSON.stringify([path, name])
+          if (nativeCases.has(identity)) throw new Error(`Duplicate native test result: ${path} ${name}.`)
+          nativeCases.add(identity)
+        }
         const status = testStatus(test?.status)
         summary[status]++
         const name = clip(plain(test?.fullName || test?.title).trim() || 'Unnamed test', CI_TEST_RESULT_LIMITS.name)
@@ -54,7 +74,7 @@ export function ciTestResults(reports, repository = root) {
       if (result.status === 'failed' || tests.some(test => test.status === 'failed')) status = 'failed'
       else if (result.status === 'skipped' || tests.length && tests.every(test => test.status === 'skipped')) status = 'skipped'
       const file = clip(path || 'unknown file', CI_TEST_RESULT_LIMITS.file)
-      byFile.set(file, { file, status, durationMs: duration(reportDuration(result)), tests })
+      byFile.set(path, mergeFile(byFile.get(path), { file, status, durationMs: duration(reportDuration(result)), tests }))
     }
   }
   const files = [...byFile.values()].sort((left, right) => rank[left.status] - rank[right.status]

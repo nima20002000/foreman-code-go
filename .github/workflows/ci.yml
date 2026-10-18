@@ -258,6 +258,14 @@ jobs:
           path: .logs/ci-state/conformance/
           retention-days: 2
           if-no-files-found: ignore
+      # Keep native Go evidence separately from the wrapper and normalized provider summary.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-results
+          path: .logs/ci-state/go/
+          retention-days: 2
+          if-no-files-found: ignore
       # Measured durations and structured test results, which Main reads back with the ticket.
       - if: always()
         uses: actions/upload-artifact@v4
