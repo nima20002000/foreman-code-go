@@ -1,0 +1,137 @@
+{
+  "source": "9d0f0633421bf4e8f4cc9a6d565737ddf97e835b",
+  "sourceTree": "2bcd1a3a4578bca5674043e97118bdd87105ca22",
+  "mode": "package",
+  "packages": [
+    "./internal/devices",
+    "./internal/computers"
+  ],
+  "goFiles": [
+    "internal/computers/account_cache.go",
+    "internal/computers/account_cache_test.go",
+    "internal/devices/wire.go",
+    "internal/devices/wire_lifecycle_test.go",
+    "internal/devices/wire_test.go"
+  ],
+  "unitTests": [
+    "TestDeviceWireConsumeHandsOffQueuedFramesInOrder",
+    "TestDeviceWireConsumeFailureDiscardsRemainingQueuedFrames",
+    "TestDeviceWireCallbackCloseDiscardsRemainingQueuedFrames",
+    "TestDeviceWireJoinWaitsForDirectConsumerSettlement",
+    "TestDeviceWireJoinWaitsForQueuedConsumerSettlement",
+    "TestDeviceWireCloseWaitsForCarrierShutdownAndRejectsNewWork",
+    "TestDeviceWireJoinWaitsForPhysicalWriteSettlement",
+    "TestDeviceWireParentCancellationClosesAndDrainsCarrier",
+    "TestDeviceWireRequiresExplicitValidBounds",
+    "TestDeviceWireContextAwareConsumerCancellationIsClean",
+    "TestDeviceWireLifetimeDeadlineHasOneTerminalClassification",
+    "TestDeviceWirePreservesOpaqueTextAndExactFrameLimit",
+    "TestDeviceWireIngressBoundsFailClosedAndDiscardUnreadFrames",
+    "TestDeviceWireReadingReleasesUnreadByteAndDepthBudgets",
+    "TestDeviceWireWaitCancellationKeepsLaterFramesAvailable",
+    "TestDeviceWireRetainsAdapterTerminalReasonAcrossPeerClose",
+    "TestDeviceWireNormalPeerCloseDiscardsUnreadFrames",
+    "TestDeviceWireReportsReadAndPhysicalCloseFailures",
+    "TestDeviceWireSendBudgetAndCanceledQueueReservation",
+    "TestDeviceWirePhysicalWriteFailureClosesWithoutReplay",
+    "TestAccountObservationsExpireAndRefresh",
+    "TestAccountObservationsSharePendingReadsUntilSettlement",
+    "TestAccountInvalidationForcesOnlyItsTargetToRefresh",
+    "TestAccountObservationsKeepInstallationAndRevisionSeparate",
+    "TestAccountProbeFailureIsVisibleAndImmediatelyRetryable",
+    "TestUnavailableAccountObservationIsCacheable",
+    "TestAccountProbeFailureReachesEveryPendingWaiter",
+    "TestStaleAccountFailureCannotEvictReplacementProbe",
+    "TestStaleAccountSuccessCannotReplaceNewObservation",
+    "TestAccountWaiterCancellationDoesNotCancelSharedProbe",
+    "TestCanceledAccountReadDoesNotStartProbe"
+  ],
+  "unitGroups": [
+    {
+      "package": "./internal/devices",
+      "tests": [
+        "TestDeviceWireConsumeHandsOffQueuedFramesInOrder",
+        "TestDeviceWireConsumeFailureDiscardsRemainingQueuedFrames",
+        "TestDeviceWireCallbackCloseDiscardsRemainingQueuedFrames",
+        "TestDeviceWireJoinWaitsForDirectConsumerSettlement",
+        "TestDeviceWireJoinWaitsForQueuedConsumerSettlement",
+        "TestDeviceWireCloseWaitsForCarrierShutdownAndRejectsNewWork",
+        "TestDeviceWireJoinWaitsForPhysicalWriteSettlement",
+        "TestDeviceWireParentCancellationClosesAndDrainsCarrier",
+        "TestDeviceWireRequiresExplicitValidBounds",
+        "TestDeviceWireContextAwareConsumerCancellationIsClean",
+        "TestDeviceWireLifetimeDeadlineHasOneTerminalClassification",
+        "TestDeviceWirePreservesOpaqueTextAndExactFrameLimit",
+        "TestDeviceWireIngressBoundsFailClosedAndDiscardUnreadFrames",
+        "TestDeviceWireReadingReleasesUnreadByteAndDepthBudgets",
+        "TestDeviceWireWaitCancellationKeepsLaterFramesAvailable",
+        "TestDeviceWireRetainsAdapterTerminalReasonAcrossPeerClose",
+        "TestDeviceWireNormalPeerCloseDiscardsUnreadFrames",
+        "TestDeviceWireReportsReadAndPhysicalCloseFailures",
+        "TestDeviceWireSendBudgetAndCanceledQueueReservation",
+        "TestDeviceWirePhysicalWriteFailureClosesWithoutReplay"
+      ]
+    },
+    {
+      "package": "./internal/computers",
+      "tests": [
+        "TestAccountObservationsExpireAndRefresh",
+        "TestAccountObservationsSharePendingReadsUntilSettlement",
+        "TestAccountInvalidationForcesOnlyItsTargetToRefresh",
+        "TestAccountObservationsKeepInstallationAndRevisionSeparate",
+        "TestAccountProbeFailureIsVisibleAndImmediatelyRetryable",
+        "TestUnavailableAccountObservationIsCacheable",
+        "TestAccountProbeFailureReachesEveryPendingWaiter",
+        "TestStaleAccountFailureCannotEvictReplacementProbe",
+        "TestStaleAccountSuccessCannotReplaceNewObservation",
+        "TestAccountWaiterCancellationDoesNotCancelSharedProbe",
+        "TestCanceledAccountReadDoesNotStartProbe"
+      ]
+    }
+  ],
+  "integrationTests": [],
+  "staticcheckTags": [
+    ""
+  ],
+  "race": true,
+  "testTimeout": "30s",
+  "sourceFiles": [
+    {
+      "path": "backend/internal/computers/README.md",
+      "blob": "ad97152034d545365799ba92fccc471c16a8754c"
+    },
+    {
+      "path": "backend/internal/computers/account_cache.go",
+      "blob": "c15729bcf0c89fdc508c545b3bf045f7c1170651"
+    },
+    {
+      "path": "backend/internal/computers/account_cache_test.go",
+      "blob": "daabccf121ed689feb58d64b03b84f1c2456bc98"
+    },
+    {
+      "path": "backend/internal/devices/README.md",
+      "blob": "e445661ca39a7e34bb179ee2be9cae471109ce70"
+    },
+    {
+      "path": "backend/internal/devices/wire.go",
+      "blob": "b08285071730a4ccb903b9e91e422fa3240a1e28"
+    },
+    {
+      "path": "backend/internal/devices/wire_lifecycle_test.go",
+      "blob": "7bb8745727fe30bdd54fc15981089dbf2968faa0"
+    },
+    {
+      "path": "backend/internal/devices/wire_test.go",
+      "blob": "8c319ab922bfce305719040b4a83b988d2da150e"
+    }
+  ],
+  "behavioralRedClaim": false,
+  "exclusions": [
+    "retained identity/placement/worker roots",
+    "DB",
+    "conformance",
+    "full suite",
+    "installation",
+    "pairing"
+  ]
+}

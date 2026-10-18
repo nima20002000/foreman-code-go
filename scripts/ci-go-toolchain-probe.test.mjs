@@ -215,3 +215,4 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+// Selected new wire/account package diagnostic at source 9d0f0633421bf4e8f4cc9a6d565737ddf97e835b.
