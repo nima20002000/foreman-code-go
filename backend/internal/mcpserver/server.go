@@ -36,10 +36,10 @@ type Options struct {
 
 // Registry collects lane tools before serving requests. Every invocation is authorized.
 type Registry struct {
-	opts       Options
-	mu         sync.RWMutex
-	tools      []registration
-	validation *mcp.Server
+	opts          Options
+	mu            sync.RWMutex
+	tools         []registration
+	validation    *mcp.Server
 	cancellations cancellationRegistry
 }
 

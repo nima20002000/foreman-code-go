@@ -25,9 +25,9 @@ type reauthenticationPrincipal struct{}
 // product principal replacements or new grants. State 0 is revoked; 1 and 2
 // stand for two distinct principals bound to the same fixture credential.
 type reauthenticationAccess struct {
-	state atomic.Int32
-	calls atomic.Int32
-	invocations atomic.Int32
+	state               atomic.Int32
+	calls               atomic.Int32
+	invocations         atomic.Int32
 	dispatchedPrincipal atomic.Int32
 }
 
@@ -41,9 +41,12 @@ func (access *reauthenticationAccess) Authenticate(request *http.Request) (conte
 
 func (*reauthenticationAccess) PrincipalID(ctx context.Context) (string, error) {
 	switch ctx.Value(reauthenticationPrincipal{}) {
-	case int32(1): return "\x00o\x00l\x00d", nil
-	case int32(2): return "\x00n\x00e\x00w", nil
-	default: return "", errors.New("fixture principal context was lost")
+	case int32(1):
+		return "\x00o\x00l\x00d", nil
+	case int32(2):
+		return "\x00n\x00e\x00w", nil
+	default:
+		return "", errors.New("fixture principal context was lost")
 	}
 }
 
@@ -59,11 +62,11 @@ func (*reauthenticationAccess) Authorize(ctx context.Context, name string, _ jso
 }
 
 type reauthenticationBody struct {
-	reader *strings.Reader
-	access *reauthenticationAccess
-	next int32
+	reader     *strings.Reader
+	access     *reauthenticationAccess
+	next       int32
 	authAtRead int32
-	once sync.Once
+	once       sync.Once
 }
 
 func (body *reauthenticationBody) Read(destination []byte) (int, error) {
@@ -81,22 +84,32 @@ func serveReauthenticationRequest(t *testing.T, next int32) (*reauthenticationAc
 	access := &reauthenticationAccess{}
 	access.state.Store(1)
 	application, err := app.New(app.Options{MCPAccess: access})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	application.RegisterTool(&mcp.Tool{Name: "fixture_identity", InputSchema: json.RawMessage(
 		`{"type":"object","properties":{},"additionalProperties":false}`)},
 		func(raw json.RawMessage) error {
 			var value map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &value); err != nil { return err }
-			if value == nil || len(value) != 0 { return errors.New("fixture arguments must be an empty object") }
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return err
+			}
+			if value == nil || len(value) != 0 {
+				return errors.New("fixture arguments must be an empty object")
+			}
 			return nil
 		},
 		func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			principal, ok := ctx.Value(reauthenticationPrincipal{}).(int32)
-			if !ok { return nil, errors.New("fixture dispatch lost principal") }
+			if !ok {
+				return nil, errors.New("fixture dispatch lost principal")
+			}
 			access.invocations.Add(1)
 			access.dispatchedPrincipal.Store(principal)
 			label := "old"
-			if principal == 2 { label = "new" }
+			if principal == 2 {
+				label = "new"
+			}
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "principal:" + label}}}, nil
 		})
 	const payload = `{"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"fixture_identity","arguments":{}}}`
@@ -124,7 +137,9 @@ func TestMCPReauthenticatesRevokedCredentialsAfterBodyAdmission(t *testing.T) {
 	response := recorder.Result()
 	defer response.Body.Close()
 	content, err := io.ReadAll(response.Body)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.StatusCode != 401 || !bytes.Contains(content, []byte(`"code":"AUTH_REQUIRED"`)) {
 		t.Fatalf("revoked credential did not retain the public auth denial: status%d %s", response.StatusCode, content)
 	}
@@ -144,7 +159,9 @@ func TestMCPRebindsPrincipalAfterBodyAdmission(t *testing.T) {
 	response := recorder.Result()
 	defer response.Body.Close()
 	content, err := io.ReadAll(response.Body)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.StatusCode != 200 || !bytes.Contains(content, []byte(`"text":"principal:new"`)) {
 		t.Fatalf("rebound principal did not retain successful public readback: status%d %s", response.StatusCode, content)
 	}
