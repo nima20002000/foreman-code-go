@@ -1,0 +1,35 @@
+{
+  "source": "69d252d525cf570866efbd2155d8232d39b13266",
+  "sourceTree": "3aff7dbef2eb1cdd22913d355d0adaeb8ab2009e",
+  "frozen": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "mode": "capture",
+  "unitTests": [],
+  "integrationTests": [],
+  "captureTests": [
+    "logging.stdout-nonfinite-structure",
+    "logging.stdout-selective-clone-cycles",
+    "logging.stdout-repeated-ordinary-values",
+    "logging.stdout-circular-source-bounds",
+    "logging.stdout-javascript-number-errors",
+    "logging.stdout-utf16-errors-and-fields",
+    "logging.capture-utf8-chunk-framing"
+  ],
+  "captureFile": "apps/api/test/i-logging-capture.test.ts",
+  "compileEntryPoints": [
+    "packages/contracts/src/index.ts"
+  ],
+  "runtimeImportClosure": [],
+  "analyzeProbe": true,
+  "sourceProvenance": {
+    "name": "logging-capture",
+    "sourceFile": "foreman-i-logging-001/probes/i-logging-capture.test.ts",
+    "overlay": "apps/api/test/i-logging-capture.test.ts",
+    "sha256": "f093d919e7b361415b9e5f8b2bfe82f9302f369308f29a008ecb183ec206a164",
+    "blob": "08458d16b6d3d06907831da63173826ef653fffd",
+    "candidate": "69d252d525cf570866efbd2155d8232d39b13266",
+    "tree": "3aff7dbef2eb1cdd22913d355d0adaeb8ab2009e",
+    "ref": "go/recipe-i-logging-capture",
+    "frozenProduction": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+  },
+  "noDatabase": true
+}
