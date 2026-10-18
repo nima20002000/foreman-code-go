@@ -5,13 +5,20 @@ package claude
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
 const SDKVersion = "0.3.284"
 
-var ErrClosed = errors.New("Claude bridge is closed")
+var ErrClosed error = &bridgeDiagnostic{message: "Claude bridge is closed"}
+
+// bridgeDiagnostic preserves existing bridge messages and error identity.
+// Ordinary failures use fresh pointers; ErrClosed retains one shared instance.
+type bridgeDiagnostic struct {
+	message string
+}
+
+func (e *bridgeDiagnostic) Error() string { return e.message }
 
 // RemoteError preserves failures returned by the SDK bridge without manufacturing
 // a successful tool decision, delivery receipt, or runtime-closure assertion.

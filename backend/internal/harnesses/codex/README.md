@@ -66,76 +66,133 @@ python backend/internal/harnesses/codex/protocol/generate_types.py \
   --output <owned-temporary-output>/types.gen.go
 ```
 
-The generator checks the captured input digests before writing source. Those
-checks are provenance for reproducible source generation. They are not runtime
+The generator checks the captured input digests and uses the pinned toolchain's
+formatter before writing source. The input checks are provenance for reproducible source generation. They are not runtime
 qualification, schema validation, or a substitute for the actual installation's
 emitted schema. Production admission must supply that validation through
 `Protocol`; the injected validator in the tests is only a fixture.
 
-## Current H-CODEX-002 generator verification — terminal Foreman CI only
+## Current producer/formatter repair — terminal Foreman CI only
 
-The current generator repair request consists only of the two named public CLI
-regressions below, followed on the corrected candidate by exact frozen-input
-generation to an owned temporary output and comparison with checked-in
-`protocol/types.gen.go`. Run the two cases on tests-only pre-fix candidate
-`557d759decb4cdf6accdcac4c800a22cf6c95e12` and on the corrected candidate identified
-by the repair ZIP's manifest. All execution is terminal-dispatched Foreman CI,
-from the repository root:
+The cumulative source checkpoint is
+`4c62661a55b7db3f2fcd9e3a3145bdfa834de102`, tree
+`9987cdfe2533de8b8ec5a16904d73f4de4d0e50f`. It retains the actual CI formatter
+postimages. Its uncorrected producer still emits 24,702 unformatted bytes with
+SHA-256 `65cb5d2cf043ad919e2a3e1036090c4491dbd43d2f39ba257e5e5037f629b315`.
+The retained `protocol/types.gen.go` is 30,940 bytes, Git blob
+`7fc2a587cb26656be14ef062d5739983197d2d43`, SHA-256
+`8a966f0c0a54c6e21e3b0513719032f95217564e3c984fd081c1bec4433eafda`.
+The current repair preserves that entire generated file.
 
-```text
-python backend/internal/harnesses/codex/protocol/generate_types_test.py -v GeneratorCLITests.test_frozen_native_inputs_generate_reproducibly GeneratorCLITests.test_added_newline_is_rejected_without_touching_output
-```
+The corrected producer requires the repository-pinned Go 1.27.2 on `PATH`.
+It queries that compiler with automatic toolchain selection and user Go
+configuration disabled, checks the exact version, and runs the `gofmt` in
+the compiler's own `GOROOT/bin`. It writes the full formatter output only
+after successful formatting. Missing or failed tools and a wrong compiler
+version leave existing output untouched. There is no formatter approximation
+or fallback to another formatter.
 
-They exercise exact-input acceptance, deterministic generation, rejection of an
-added newline, and preservation of existing output on rejection. They do not
-inspect generator source. The provenance repair changes only the generated
-file's schema-digest comment; its generated declarations are retained. Terminal
-CI must regenerate from the exact frozen inputs into an owned temporary output
-and compare that artifact to `protocol/types.gen.go` before reporting
-reproducibility. No generator or verification was run locally for the repair.
+Use fresh isolated CI checkouts of the test-only witness and corrected
+candidate recorded in the repair manifest. CI supplies its genuine pinned
+toolchain, private HOME/config/state/temporary paths, and the exact frozen
+input bytes. These affected commands need no database, port, worker pairing,
+provider installation, or credentials. All commands below run from the
+repository root through terminal Foreman CI; no execution is claimed here.
 
-## Original c62/0ace transport verification — separate outstanding gates
+### Pre-fix formatting witness
 
-This section retains the original H-CODEX-001 transport verification request for
-candidate `c62fb50521c798969e7cb434b856841641297bee` and cancellation witness
-`0ace55b2dc96fe898b82ce87c8fb2ba49b4d90d2`. These remain separate outstanding
-original gates. They are not part of the current H-CODEX-002 generator repair
-dispatch above.
-
-The original `foreman-h-codex-c62fb505-reviewed.zip` contains that cancellation
-witness and its unchanged public regression tests. The author has not run the
-original formatting, build, vet, lint, typecheck, unit, integration or conformance
-checks. No result is a CI pass until the controller records its actual ticket
-and output.
-
-For a separate original-transport CI dispatch, the retained affected commands
-are limited to these original packages and named tests in an isolated checkout:
+The test-only witness preserves the checkpoint producer and formatted output.
+Select only this new public CLI case on that witness:
 
 ```text
-# Original H-CODEX-001 transport gates only, from backend through terminal Foreman CI:
-go build ./internal/harnesses/codex ./internal/harnesses/codex/protocol
-go vet ./internal/harnesses/codex ./internal/harnesses/codex/protocol
-staticcheck ./internal/harnesses/codex ./internal/harnesses/codex/protocol
-go test -count=1 ./internal/harnesses/codex ./internal/harnesses/codex/protocol
-go test -race -count=1 -run '^TestTransport(CorrelatesOutOfOrderResponses|CancellationDuringValidationSendsNothing|QueuedRequestCancellationSendsNothing|CanceledResponseBeforeWriteIsDefinite|ResponseCancellationAfterWriteIsUncertain|CancellationReconcilesLateResponseWithoutReplay|InvalidResponseRetainsLateReconciliation)$' ./internal/harnesses/codex
-go test -tags=integration -count=1 -run '^TestScriptedAppServerSessionAndTurn$' ./internal/harnesses/codex
+python3 backend/internal/harnesses/codex/protocol/generate_types_test.py -v GeneratorCLITests.test_generated_output_is_already_gofmt_formatted
 ```
 
-The original transport formatting selection is its explicit changed Go-file
-manifest, including the generated native types. The original Node integration
-test copies the pinned repository fake app-server
-to an owned temporary directory and uses isolated HOME, CODEX_HOME, state, and
-temporary paths. It needs Node from the CI environment. No DB, port, worker
-pairing, installed provider, or credentials are required for that transport
-increment.
+The test invokes the existing CLI options, requires successful generation,
+verifies actual Go 1.27.2, and requires genuine formatter success before
+comparing all generated bytes with the formatter's output. Only the final
+byte comparison is the expected pre-fix assertion failure. An unavailable
+tool, wrong Go version, failed producer, or rejected option is not that witness.
+
+Also invoke that same original producer directly and compare its complete
+output with the retained formatted checkpoint file. Set `H_GENERATOR_OUTPUT`
+to an owned temporary file outside the checkout:
+
+```text
+python3 backend/internal/harnesses/codex/protocol/generate_types.py --schema apps/api/test/fixtures/codex-protocol.schemas.json --method-source scripts/generate-codex-method-types.mjs --output "$H_GENERATOR_OUTPUT"
+cmp -- "$H_GENERATOR_OUTPUT" backend/internal/harnesses/codex/protocol/types.gen.go
+```
+
+Generation must succeed; the subsequent `cmp` mismatch is the expected
+reproduction blocker. Retain both complete output artifacts and their actual
+SHA-256 values. The generated-output digest above is the prior controller's
+reported identity, not a replacement for this invocation's result.
+
+### Corrected-candidate gates
+
+Run these four affected public CLI cases on the corrected candidate:
+
+```text
+python3 backend/internal/harnesses/codex/protocol/generate_types_test.py -v GeneratorCLITests.test_frozen_native_inputs_generate_reproducibly GeneratorCLITests.test_added_newline_is_rejected_without_touching_output GeneratorCLITests.test_generated_output_is_already_gofmt_formatted GeneratorCLITests.test_missing_go_toolchain_preserves_existing_output
+```
+
+The first two retained cases are affected because valid generation now calls
+the formatter. The formatting case verifies the corrected public output.
+The missing-Go case is a new dependency/error-preservation guard; it is not
+evidence of the old formatting mismatch and is not selected for the pre-fix run.
+
+Repeat the direct generator invocation and full `cmp` above with a fresh owned
+output on the corrected candidate; both must succeed. Then use the same pinned
+formatter for the retained generated file's exact formatting scope:
+
+```text
+H_PINNED_GO_VERSION="$(env -u GOROOT GOENV=off GOWORK=off GOTOOLCHAIN=local GOFLAGS= go env GOVERSION)" &&
+test "$H_PINNED_GO_VERSION" = go1.27.2 &&
+H_PINNED_GO_ROOT="$(env -u GOROOT GOENV=off GOWORK=off GOTOOLCHAIN=local GOFLAGS= go env GOROOT)" &&
+H_PINNED_GOFMT="$H_PINNED_GO_ROOT/bin/gofmt" &&
+H_FORMATTED_PATHS="$("$H_PINNED_GOFMT" -l backend/internal/harnesses/codex/protocol/types.gen.go)" &&
+test -z "$H_FORMATTED_PATHS"
+```
+
+The command chain propagates toolchain and formatter failures before checking
+for nonempty formatting output. The entire chain must exit successfully.
+
+Preserve the raw CLI outcomes, exact source/test identities, formatter version,
+full reproduction artifacts and digests, and comparison/formatting results.
+The witness and these corrected gates remain pending until the terminal
+controller records actual outcomes. This repair requests no Codex transport
+behavior, package build/vet/lint, integration, or full-suite repetition.
+
+## Retained historical evidence — no repeat dispatch in this repair
+
+The earlier input-provenance repair used tests-only source
+`557d759decb4cdf6accdcac4c800a22cf6c95e12`; corrected source is
+`81bbcb80aaa4324d834b45b684d361e49cf62188`. The controller reported two assertion
+failures under ticket prefix `f5b7aac6`, then two passes under `0f0c0dbb` plus
+a successful full-output comparison. Those results preceded the formatter
+postimages and do not qualify the current producer/checked-in-output mismatch.
+
+Original transport source
+`c62fb50521c798969e7cb434b856841641297bee` and cancellation witness
+`0ace55b2dc96fe898b82ce87c8fb2ba49b4d90d2` remain retained source identities.
+The controller's authentic old cancellation run, ticket prefix `d3cb4cfa`,
+had three passes and one assertion failure. It was not four red outcomes.
+
+The controller subsequently reported ticket
+`c60c23f8-c0d6-44c1-a9fd-a7c30440aaa9` with 27 passing outcomes: 26 race outcomes
+and the sole fake Node app-server integration case. Build, vet, and Staticcheck
+were green; only nine file-format checks failed. All nine actual CI formatter
+postimages are preserved in the cumulative checkpoint and remain unchanged by
+this repair. These counts are retained controller evidence, not locally
+repeated execution. The original `foreman-h-codex-c62fb505-reviewed.zip` remains
+the historical transport/witness handoff.
 
 The exact existing Q-CONF scenario for subsequent Codex facade integration is
 `harness.codex-configuration-check`. This standalone package does not wire its
 route, so that scenario is pending shared contracts, qualification, and
 composition. Q-CONF owns the missing native transport correlation, framing,
 callback delivery, cancellation, and late reconciliation scenarios; do not
-invent IDs or edit expectations in this lane. Do not run a full conformance or
-backend suite for this development increment.
+invent IDs or edit expectations in this lane.
 
 ## Remaining lane work
 

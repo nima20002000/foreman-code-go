@@ -20,9 +20,18 @@ func (c *Client) Initialize(ctx context.Context, sdkEntrypoint string) (string, 
 		return "", err
 	}
 	if metadata.SDKVersion != SDKVersion {
-		return "", fmt.Errorf("Claude SDK version %q does not match pinned %s", metadata.SDKVersion, SDKVersion)
+		return "", &sdkVersionMismatchError{actual: metadata.SDKVersion}
 	}
 	return metadata.SDKVersion, nil
+}
+
+// Keep the observed SDK version separate from the stable public diagnostic.
+type sdkVersionMismatchError struct {
+	actual string
+}
+
+func (e *sdkVersionMismatchError) Error() string {
+	return fmt.Sprintf("Claude SDK version %q does not match pinned %s", e.actual, SDKVersion)
 }
 
 func (c *Client) sdkCall(ctx context.Context, method string, args ...any) (json.RawMessage, error) {

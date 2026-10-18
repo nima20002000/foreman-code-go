@@ -38,22 +38,69 @@ chosen by this package.
 
 ## Verification status and affected request
 
-All tests are authored and unrun. No test, build, race, lint, formatter, syntax
-check, or generator was executed during authoring. This is a new isolated port;
-an absent package on the base is not a pre-fix behavioral red result. Peer review
-identified a cancellation-order defect in the initial implementation. The three
-public regressions are retained with that unchanged implementation at tests-only
-pre-fix commit `94dd12d581d9626f4b5d41af316c293936596f4f`, tree
-`5e01036f253ca71d2d74d8286f07315b78f21301`. Terminal CI must establish the actual
-red result there and the fixed result on the reviewed successor before merge.
-The prior Claude bridge red witness and corrected candidate remain unchanged.
+The terminal controller reported these completed queue results:
+
+- Original cancellation witness source
+  `94dd12d581d9626f4b5d41af316c293936596f4f`, tree
+  `5e01036f253ca71d2d74d8286f07315b78f21301`, ticket
+  `295daf72-c293-4470-8107-93aa903be52a`: three roots and four subtests,
+  seven assertion failures.
+- Corrected source `7c23c4516a54634c2b3a50a05bfe11f095eb6aee`, ticket
+  `e21470a7-c79e-4648-9c60-be6e13c8cdf6`: sixteen roots and four subtests,
+  twenty passes in one race run; build and vet exited zero; both existing
+  Go files were formatting-clean, and cleanup succeeded. Staticcheck retained
+  two ST1005 findings on the closed and reader-exists sentinel declarations.
+
+Those are retained controller results, not execution performed during this
+authoring turn. The original twenty-case file stays unchanged. The current
+repair preserves the two public sentinel messages, error-interface types,
+identity, and wrapping behavior through explicit error representations. Its
+new compatibility guard is expected to pass before and after that repair;
+it is not a behavioral red witness. The Staticcheck repair remains unqualified
+until the terminal records a clean result on the corrected candidate.
+
+Source review also confirmed a distinct public capacity-diagnostic regression:
+`New` returned `invalid Claude queue capacity`, while the frozen constructor
+reports `Invalid Claude queue capacity`. The corrected sentinel restores that
+exact message. The test-only capacity witness identified in the cumulative
+manifest is based on `44a4a7e15249a295650027fd7682490aef73155d`, retains original
+queue blob `0e05f9e11d8f079fa8691c675690f475ad1e81bd`, and adds only the new public
+diagnostic tests. Its capacity assertion is a proposed pre-fix failure, not a
+claimed runtime result. The prior Claude bridge sources remain unchanged.
 
 Only terminal-dispatched Foreman CI MCP may execute the affected checks. From
 `backend`, the sole affected package is `./internal/harnesses/claude/queue`.
-Run its 16 named public-interface tests with `go test -count=1`, and the nine
-concurrent offer/reader tests selected in the handoff's CI request with `-race`.
-Build, vet and staticcheck should name that package explicitly. Formatting is
-limited to `queue.go` and `queue_test.go`.
+Use the existing pinned Go 1.27.2 and Staticcheck v0.8.2. On the test-only witness,
+select only the new capacity case:
+
+```text
+go test -json -count=1 -timeout=30s -run '^TestCapacityErrorPreservesFrozenMessage$' ./internal/harnesses/claude/queue
+```
+
+On the corrected candidate, select the capacity case and the new compatibility
+guard only, followed by package-scoped Staticcheck:
+
+```text
+go test -race -json -count=1 -timeout=30s -run '^(TestCapacityErrorPreservesFrozenMessage|TestQueuePublicErrorCompatibility)$' ./internal/harnesses/claude/queue
+staticcheck ./internal/harnesses/claude/queue
+```
+
+The corrected selection has two roots and two subtests. Do not repeat the prior
+twenty outcomes, package build/vet, or unrelated H checks for this repair.
+Formatting is limited to the two changed Go files. From `backend`, use the
+verified compiler's own formatter and propagate failure before checking output:
+
+```text
+H_QUEUE_GO_VERSION="$(env -u GOROOT GOENV=off GOWORK=off GOTOOLCHAIN=local GOFLAGS= go env GOVERSION)" &&
+test "$H_QUEUE_GO_VERSION" = go1.27.2 &&
+H_QUEUE_GO_ROOT="$(env -u GOROOT GOENV=off GOWORK=off GOTOOLCHAIN=local GOFLAGS= go env GOROOT)" &&
+H_QUEUE_FORMATTED_PATHS="$("$H_QUEUE_GO_ROOT/bin/gofmt" -l internal/harnesses/claude/queue/queue.go internal/harnesses/claude/queue/diagnostics_test.go)" &&
+test -z "$H_QUEUE_FORMATTED_PATHS"
+```
+
+All new capacity, compatibility, Staticcheck, and formatting gates remain pending
+terminal CI. No local test, build, race, lint, formatter, syntax check, or
+generator was run during this repair.
 
 Concurrency tests use Go 1.25's standard
 [`testing/synctest` API](https://pkg.go.dev/testing/synctest@go1.25.0) to wait for
