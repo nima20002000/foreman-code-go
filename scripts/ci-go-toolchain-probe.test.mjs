@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected H postmerge diagnostic: 172326db82a5a792f970bf6d2f858e6dd17bf8f5.
