@@ -49,6 +49,9 @@ type OpenOptions struct {
 // Adapters own protocol validation from that installation, guardian/recovery
 // registration, spawning, and native argument application. No default adapter
 // silently uses the current host's executable, environment, or credentials.
+// RunCommand must reap its owned command before returning. A failed Open must
+// clean its partial acquisition before returning; ownership transfers only when
+// it returns a non-nil Session without error.
 type Inspection struct {
 	Binary          string
 	ProviderVersion string

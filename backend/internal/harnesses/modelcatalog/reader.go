@@ -66,7 +66,7 @@ func ReadCodex(ctx context.Context, inspection Inspection, directory string, env
 	if failure != nil {
 		return nil, failure
 	}
-	if err := ctx.Err(); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return nil, err
 	}
 	if refreshFailed.Load() {
