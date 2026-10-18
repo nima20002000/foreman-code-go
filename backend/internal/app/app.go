@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nima20002000/foreman-code-go/backend/internal/builtweb"
 	"github.com/nima20002000/foreman-code-go/backend/internal/config"
 	"github.com/nima20002000/foreman-code-go/backend/internal/database"
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
@@ -79,11 +80,19 @@ func New(options Options) (*App, error) {
 			Access: options.MCPAccess, Logger: logger, MaxRequestBodyBytes: options.MCPMaxRequestBytes,
 		}),
 	}
-	application.Handle("/", func(http.ResponseWriter, *http.Request) error {
+	var fallback httpserver.Handler = func(http.ResponseWriter, *http.Request) error {
 		return domainerror.New("NOT_FOUND", "The requested API route was not found.", 404, nil)
-	})
+	}
+	if root := options.Config.Environment["FOREMAN_CODE_WEB_DIST"]; root != "" {
+		var err error
+		fallback, err = builtweb.New(root)
+		if err != nil {
+			return nil, err
+		}
+	}
+	application.mux.Handle("/", application.errors.Wrap(httpserver.BufferNotFoundBody(httpserver.DefaultBodyLimit, fallback)))
 	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
-		application.Handle(method+" /mcp", application.mcp.Handle)
+		application.mux.Handle(method+" /mcp", application.errors.Wrap(application.mcp.Handle))
 	}
 	return application, nil
 }
@@ -91,12 +100,23 @@ func New(options Options) (*App, error) {
 // Handle registers a method/path pattern using the common DomainError envelope.
 // A handler writes its success reply and returns failures before committing a response.
 func (a *App) Handle(pattern string, handler httpserver.Handler) {
-	a.mux.Handle(pattern, a.errors.Wrap(handler))
+	a.HandleWithBodyLimit(pattern, httpserver.DefaultBodyLimit, handler)
+}
+
+// HandleWithBodyLimit registers a buffered JSON/plain-text route with an explicit byte limit.
+func (a *App) HandleWithBodyLimit(pattern string, limit int64, handler httpserver.Handler) {
+	a.mux.Handle(pattern, a.errors.Wrap(httpserver.BufferBody(limit, handler)))
+}
+
+// HandleStreamingBody registers a raw upload without buffering it before the handler.
+// The route owns its media-type rules and must handle read failures before success.
+func (a *App) HandleStreamingBody(pattern string, limit int64, handler httpserver.Handler) {
+	a.mux.Handle(pattern, a.errors.Wrap(httpserver.StreamingBody(limit, handler)))
 }
 
 // RegisterStream applies the same error boundary to an SSE or WebSocket endpoint.
 func (a *App) RegisterStream(pattern string, handler httpserver.Handler) {
-	a.Handle(pattern, handler)
+	a.mux.Handle(pattern, a.errors.Wrap(handler))
 }
 
 // RegisterTool adds an authenticated tool and the validator generated from its shared schema.
@@ -106,5 +126,5 @@ func (a *App) RegisterTool(tool *mcp.Tool, validate func(json.RawMessage) error,
 
 // Handler exposes the composed app through the standard HTTP public interface.
 func (a *App) Handler() http.Handler {
-	return httpserver.WithRequestID(a.mux)
+	return httpserver.WithRequestID(httpserver.RequestLogger{Logger: a.Logger}.Wrap(a.mux))
 }
