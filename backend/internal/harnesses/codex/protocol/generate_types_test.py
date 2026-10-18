@@ -32,6 +32,9 @@ class GeneratorCLITests(unittest.TestCase):
             "TEMP": str(self.root),
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "GOENV": "off",
+            "GOWORK": "off",
+            "GOTOOLCHAIN": "local",
         }
 
     def invoke(self, name, schema):
@@ -66,6 +69,34 @@ class GeneratorCLITests(unittest.TestCase):
         self.assertEqual(first_result["native_types"], second_result["native_types"])
         self.assertNotEqual(first_output.read_bytes(), b"existing output must survive rejected input\n")
         self.assertEqual(first_output.read_bytes(), second_output.read_bytes())
+
+    def test_generated_output_is_already_gofmt_formatted(self):
+        result, output = self.invoke("formatted", self.schema)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        toolchain = subprocess.run(
+            ["go", "env", "-json", "GOVERSION", "GOROOT"],
+            cwd=self.root, env=self.environment, capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        self.assertEqual(toolchain.returncode, 0, toolchain.stderr)
+        settings = json.loads(toolchain.stdout)
+        self.assertEqual(settings["GOVERSION"], "go1.27.2")
+        executable = "gofmt.exe" if os.name == "nt" else "gofmt"
+        formatted = subprocess.run(
+            [str(Path(settings["GOROOT"]) / "bin" / executable)],
+            input=output.read_bytes(), cwd=self.root, env=self.environment,
+            capture_output=True, timeout=10, check=False,
+        )
+        self.assertEqual(formatted.returncode, 0, formatted.stderr)
+        self.assertEqual(output.read_bytes(), formatted.stdout)
+
+    def test_missing_go_toolchain_preserves_existing_output(self):
+        self.environment["PATH"] = str(self.root / "unavailable-tools")
+        result, output = self.invoke("missing-toolchain", self.schema)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("go", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(output.read_bytes(), b"existing output must survive rejected input\n")
 
     def test_added_newline_is_rejected_without_touching_output(self):
         result, output = self.invoke("wrong-bytes", self.schema + b"\n")
