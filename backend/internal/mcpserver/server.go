@@ -2,6 +2,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,9 @@ type Options struct {
 	Access              Access
 	Logger              *slog.Logger
 	MaxRequestBodyBytes int64
+	// JSONResponse forwards the official SDK's explicit JSON response mode.
+	// The default is SSE; both modes require the same Accept header.
+	JSONResponse bool
 }
 
 // Registry collects lane tools before serving requests. Every invocation is authorized.
@@ -105,21 +109,28 @@ func (r *Registry) Handle(w http.ResponseWriter, request *http.Request) error {
 			"error": map[string]any{"code": -32000, "message": "Method not allowed."},
 		})
 	}
-	name, err := requestedTool(w, request, r.opts.MaxRequestBodyBytes)
+	name, body, err := requestedTool(w, request, r.opts.MaxRequestBodyBytes)
 	if err != nil {
 		return err
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+		return r.serveBatch(w, request, body)
 	}
 	server, err := r.serverFor(ctx, name)
 	if err != nil {
 		return err
 	}
-	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
+	r.streamableHandler(server).ServeHTTP(w, request)
+	return nil
+}
+
+func (r *Registry) streamableHandler(server *mcp.Server) *mcp.StreamableHTTPHandler {
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{
 			Logger: r.opts.Logger, MaxRequestBodyBytes: r.opts.MaxRequestBodyBytes,
 			PropagateRequestCancellation: true,
+			JSONResponse:                 r.opts.JSONResponse,
 		})
-	transport.ServeHTTP(w, request)
-	return nil
 }
 
 func (r *Registry) serverFor(ctx context.Context, requested string) (*mcp.Server, error) {
