@@ -140,3 +140,14 @@ func TestBuiltWebRequiresAnAbsolutePresentBuild(t *testing.T) {
 		t.Fatalf("missing build error = %v", err)
 	}
 }
+
+func TestBuiltWebRelativeDirectoryRetainsPublicError(t *testing.T) {
+	handler, first := builtweb.New("dist")
+	if handler != nil || first == nil || first.Error() != "FOREMAN_CODE_WEB_DIST requires an absolute directory." {
+		t.Fatalf("relative directory returned handler=%v error=%v", handler != nil, first)
+	}
+	_, second := builtweb.New("dist")
+	if second == nil || second.Error() != first.Error() || errors.Is(first, second) {
+		t.Fatalf("separate invalid configurations returned errors %v and %v", first, second)
+	}
+}

@@ -304,6 +304,48 @@ func TestLoggingNonFiniteNumbersKeepOtherFields(t *testing.T) {
 	}
 }
 
+func TestLoggingFloatAttributesInGroupsAndBindings(t *testing.T) {
+	runtime, output := runtimeFor(t, nil)
+	child := runtime.Logger.With(slog.Float64("nan", math.NaN()), slog.Float64("token", math.Inf(1))).
+		WithGroup("details").With(slog.Float64("positive", math.Inf(1)))
+	child.Info("float attributes", slog.Float64("negative", math.Inf(-1)),
+		slog.Float64("zero", math.Copysign(0, -1)), slog.Float64("decimal", 1e-6), slog.Float64("exponent", 1e21),
+		slog.Group("", slog.Float64("inline", math.NaN())), slog.Group("child", slog.Float64("nan", math.NaN())))
+	if err := runtime.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	lines := readLines(t, output.Bytes())
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want one", len(lines))
+	}
+	line := lines[0]
+	if value, present := line["nan"]; !present || value != nil {
+		t.Errorf("bound nonfinite value = %#v, present %v; want JSON null", value, present)
+	}
+	if line["token"] != "[redacted]" {
+		t.Errorf("float secret bypassed redaction: %#v", line["token"])
+	}
+	details, ok := line["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("grouped float fields were lost: %#v", line["details"])
+	}
+	for key, want := range map[string]any{
+		"positive": nil, "negative": nil, "inline": nil,
+		"zero": json.Number("0"), "decimal": json.Number("0.000001"), "exponent": json.Number("1e+21"),
+	} {
+		if value, present := details[key]; !present || value != want {
+			t.Errorf("grouped %s = %#v, present %v; want %#v", key, value, present, want)
+		}
+	}
+	nested, ok := details["child"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested float group was lost: %#v", details["child"])
+	}
+	if value, present := nested["nan"]; !present || value != nil {
+		t.Errorf("nested nonfinite value = %#v, present %v; want JSON null", value, present)
+	}
+}
+
 func TestLoggingCircularJSONRetainsRedactedStructure(t *testing.T) {
 	runtime, output := runtimeFor(t, nil)
 	value := map[string]any{"safe": "retained", "token": "outside-source-paths"}
