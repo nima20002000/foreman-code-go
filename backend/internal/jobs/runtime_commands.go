@@ -23,11 +23,11 @@ const (
 )
 
 var (
-	ErrRuntimeControlDeadline error = runtimeControlDeadlineFailure
+	ErrRuntimeControlDeadline    error = runtimeControlDeadlineFailure
 	ErrRuntimeControlReplyBudget error = runtimeControlReplyBudgetFailure
-	ErrRuntimeExitUnconfirmed error = runtimeExitUnconfirmedFailure
-	ErrInvalidRuntimeArgv error = invalidRuntimeArgvFailure
-	ErrRuntimeLaunchUnavailable error = runtimeLaunchUnavailableFailure
+	ErrRuntimeExitUnconfirmed    error = runtimeExitUnconfirmedFailure
+	ErrInvalidRuntimeArgv        error = invalidRuntimeArgvFailure
+	ErrRuntimeLaunchUnavailable  error = runtimeLaunchUnavailableFailure
 )
 
 // runtimeCommandFailure identifies the fixed runtime failure conditions. Its

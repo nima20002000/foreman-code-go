@@ -57,14 +57,14 @@ func (r *RuntimeCommandRunner) Attach(ctx context.Context, argv []string) (Runti
 }
 
 type runtimeAttachment struct {
-	id string
+	id     string
 	stdout *runtimeAttachmentStream
 	stderr *runtimeAttachmentStream
-	done chan struct{}
-	exit runtimeExit
+	done   chan struct{}
+	exit   runtimeExit
 }
 
-func (attachment *runtimeAttachment) LaunchID() string { return attachment.id }
+func (attachment *runtimeAttachment) LaunchID() string      { return attachment.id }
 func (attachment *runtimeAttachment) Stdout() io.ReadCloser { return attachment.stdout }
 func (attachment *runtimeAttachment) Stderr() io.ReadCloser { return attachment.stderr }
 
@@ -115,11 +115,11 @@ func (attachment *runtimeAttachment) observe(ctx context.Context, process Runtim
 }
 
 type runtimeAttachmentStream struct {
-	reader io.ReadCloser
-	done chan struct{}
+	reader     io.ReadCloser
+	done       chan struct{}
 	finishOnce sync.Once
-	closeOnce sync.Once
-	err error
+	closeOnce  sync.Once
+	err        error
 	closeError error
 }
 

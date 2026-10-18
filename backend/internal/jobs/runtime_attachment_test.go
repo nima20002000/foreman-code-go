@@ -15,12 +15,12 @@ import (
 
 type runtimeAttachmentResult struct {
 	process jobs.RuntimeProcess
-	err error
+	err     error
 }
 
 type runtimeAttachmentRead struct {
 	data []byte
-	err error
+	err  error
 }
 
 func startRuntimeAttachment(runner *jobs.RuntimeCommandRunner, ctx context.Context, argv []string) <-chan runtimeAttachmentResult {
@@ -286,9 +286,9 @@ func TestRuntimeAttachmentReaderFailureRetainsLiveOwnership(t *testing.T) {
 func TestRuntimeAttachmentNativeUncertaintyUsesOriginalCleanup(t *testing.T) {
 	failure := errors.New("original native observation unavailable")
 	for _, fixture := range []struct {
-		name string
+		name        string
 		nativeError error
-		want error
+		want        error
 	}{
 		{"missing receipt", nil, jobs.ErrRuntimeExitUnconfirmed},
 		{"failed observation", failure, failure},
