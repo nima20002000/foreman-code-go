@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected transport diagnostic: logging-green at d3a0b55ffc9d6aab849ddb7c87f96b37985a31e1.
