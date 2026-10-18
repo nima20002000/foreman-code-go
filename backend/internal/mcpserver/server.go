@@ -116,7 +116,17 @@ func (r *Registry) Handle(w http.ResponseWriter, request *http.Request) error {
 	if err != nil {
 		return err
 	}
-	ctx = request.Context()
+	// Frozen POST authenticates in onRequest and again in its handler, after
+	// body admission. The credential may have been revoked or rebound while
+	// its body was being read; dispatch must use the fresh principal context.
+	ctx, err = r.opts.Access.Authenticate(request)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		return fmt.Errorf("MCP reauthentication returned no request context")
+	}
+	request = request.WithContext(ctx)
 	if info.tracks || info.cancellation {
 		principal, err := r.opts.Access.PrincipalID(ctx)
 		if err != nil {

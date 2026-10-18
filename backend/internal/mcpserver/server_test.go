@@ -150,7 +150,7 @@ func TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials(t *testing.T) {
 	}
 	status, readback := rpc(t, application, "reader", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"counter_get","arguments":{}}}`)
 	value := readback["result"].(map[string]any)["structuredContent"].(map[string]any)["value"]
-	if status != 200 || value != float64(1) || access.authentications.Load() != 5 {
+	if status != 200 || value != float64(1) || access.authentications.Load() != 10 {
 		t.Fatalf("persisted readback = %d %#v, authentications %d", status, readback, access.authentications.Load())
 	}
 }
