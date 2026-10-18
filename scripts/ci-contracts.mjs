@@ -11,7 +11,7 @@ const script = fileURLToPath(import.meta.url)
 function affectedPlan(root) {
   const inCi = ['true', '1'].includes(process.env.CI) || process.env.CI_HOST_RUNNER === '1'
     || process.env.FOREMAN_CODE_CI_HOST === '1' || process.env.FOREMAN_CODE_CI_LOCAL === '1'
-  if (!inCi || explicitRelease()) return null
+  if (!inCi || explicitRelease(process.env, root)) return null
   if (deferredHostIntegration()) return { entries: [], sources: [], deferred: true }
   const input = environmentRequest(process.env, root)
   const request = process.env.SUITE ? validateAffectedSuite(process.env.SUITE, input, root) : input

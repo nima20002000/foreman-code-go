@@ -69,7 +69,6 @@ jobs:
       CI_STATE: .logs/ci-state
       CGO_ENABLED: '1'
       SUITE: ${{ inputs.suite }}
-      GO_SUITE: ${{ contains(fromJSON('["typecheck","typecheck-api","lint","lint-api","unit","unit-api","build","build-api","integration"]'), inputs.suite) }}
       SLICE: ${{ inputs.slice }}
       SCOPE: ${{ inputs.scope }}
       SELECTED_FILES: ${{ inputs.files }}
@@ -93,11 +92,14 @@ jobs:
           mkdir -p .logs
           corepack enable && corepack install
       - name: Go native prerequisites
-        if: env.GO_SUITE == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
-          node scripts/ci-go-prerequisites.mjs native
+          GO_SUITE="$(node scripts/ci-cloud-native-prerequisites.mjs)"
+          printf 'GO_SUITE=%s\n' "$GO_SUITE" >> "$GITHUB_ENV"
+          if [ "$GO_SUITE" = true ]; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
+            node scripts/ci-go-prerequisites.mjs native
+          fi
       - name: PostgreSQL source-build and conformance prerequisites
         if: inputs.suite == 'integration'
         run: |

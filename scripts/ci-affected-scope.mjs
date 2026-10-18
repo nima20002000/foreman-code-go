@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from
 import { createHash } from 'node:crypto'
 import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { repositoryFileList, selectByIndexes } from './ci-files.mjs'
+import { integrationFileList, repositoryFileList, selectByIndexes } from './ci-files.mjs'
 
 export const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const kinds = ['typecheck', 'lint', 'unit', 'integration', 'build']
@@ -171,27 +171,36 @@ export function nativeSelectorBinding(selector, root = repositoryRoot) {
   return { suite: binding.suite, selection: binding.selection, request, requiredKinds }
 }
 
-/** Host setup exposes its nonempty selection beside the result destination. */
+function dispatchEnvironment(environment, root) {
+  if (!environment.CI_PARTITION?.startsWith('sha256:')) return environment
+  const bytes = readFileSync(join(root, 'ci-dispatch-inputs.json'))
+  if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== environment.CI_PARTITION) {
+    throw new Error('CI dispatch inputs hash mismatch')
+  }
+  const inputs = JSON.parse(bytes)
+  if (Object.keys(inputs).sort().join(',') !== 'commit,files,partition,slice'
+    || Object.values(inputs).some(value => typeof value !== 'string')
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(inputs.commit) || inputs.partition.startsWith('sha256:')) {
+    throw new Error('Invalid CI dispatch inputs')
+  }
+  return { ...environment, SLICE: inputs.slice, SELECTED_FILES: inputs.files, CI_PARTITION: inputs.partition,
+    CI_SELECTION_COMMIT: inputs.commit }
+}
+
+/** Host setup exposes exact indexes or a nonempty selection beside the result destination. */
 export function environmentRequest(environment = process.env, root = repositoryRoot) {
   if (environment.CI_AFFECTED_SELECTION_FILE) return readSelectionFile(environment.CI_AFFECTED_SELECTION_FILE, root)
+  const input = dispatchEnvironment(environment, root)
+  if (input.SELECTED_FILES) {
+    return readAffectedRequest(selectByIndexes(repositoryFileList(root), input.SELECTED_FILES), root)
+  }
+  if (input.SUITE === 'integration' && input.SLICE) {
+    return readAffectedRequest(selectByIndexes(integrationFileList(root), input.SLICE), root)
+  }
   if (environment.CI_PARTITION?.startsWith('sha256:')) {
-    const bytes = readFileSync(join(root, 'ci-dispatch-inputs.json'))
-    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== environment.CI_PARTITION) {
-      throw new Error('CI dispatch inputs hash mismatch')
-    }
-    const inputs = JSON.parse(bytes)
-    if (Object.keys(inputs).sort().join(',') !== 'commit,files,partition,slice'
-      || Object.values(inputs).some(value => typeof value !== 'string')
-      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(inputs.commit) || inputs.partition.startsWith('sha256:')) {
-      throw new Error('Invalid CI dispatch inputs')
-    }
-    if (!inputs.files) throw new Error('Hash-bound dispatch inputs contain no explicit affected file indexes.')
-    return readAffectedRequest(selectByIndexes(repositoryFileList(root), inputs.files), root)
+    throw new Error('Hash-bound dispatch inputs contain no explicit affected file indexes.')
   }
-  if (environment.SELECTED_FILES) {
-    return readAffectedRequest(selectByIndexes(repositoryFileList(root), environment.SELECTED_FILES), root)
-  }
-  const output = environment.TEST_RESULTS_OUTPUT || environment.FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT
+  const output = input.TEST_RESULTS_OUTPUT || input.FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT
   const selected = output && resolve(root, dirname(output), 'selected-files.json')
   if (selected && existsSync(selected)) return readSelectionFile(selected, root)
   throw new Error('Affected CI scope is unresolved; pass an explicit selection file or repository file indexes.')
@@ -200,14 +209,25 @@ export function environmentRequest(environment = process.env, root = repositoryR
 /** The frozen host supplies integration --files only after its setup phase. */
 export function deferredHostIntegration(environment = process.env) {
   return environment.CI_HOST_RUNNER === '1' && Boolean(environment.FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT)
-    && !environment.CI_AFFECTED_SELECTION_FILE && !environment.SELECTED_FILES && !environment.CI_PARTITION
+    && !environment.CI_AFFECTED_SELECTION_FILE && !environment.SELECTED_FILES && !environment.CI_PARTITION && !environment.SLICE
     && environment.SCOPE !== 'full'
 }
 
-export function explicitRelease(environment = process.env) {
-  if (environment.SCOPE !== 'full') return false
-  if (environment.FOREMAN_CODE_CI_RELEASE !== '1') throw new Error('Full CI scope is reserved for explicit release mode.')
-  return true
+export function executionScope(environment = process.env, root = repositoryRoot) {
+  const scope = environment.SCOPE || 'affected'
+  if (!['affected', 'full'].includes(scope)) throw new Error(`Unsupported CI scope: ${scope}`)
+  if (scope !== 'full') return scope
+  if (environment.FOREMAN_CODE_CI_RELEASE === '1') return 'full'
+  const input = dispatchEnvironment(environment, root)
+  if (input.SUITE === 'integration' && input.SLICE) {
+    validateAffectedSuite('integration', environmentRequest(input, root), root)
+    return 'affected'
+  }
+  throw new Error('Full CI scope is reserved for explicit release mode.')
+}
+
+export function explicitRelease(environment = process.env, root = repositoryRoot) {
+  return executionScope(environment, root) === 'full'
 }
 
 export function goPackages(request) {
@@ -218,6 +238,7 @@ export function goPackages(request) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [action, suite, output] = process.argv.slice(2)
   if (action === 'deferred-host-integration') process.exitCode = deferredHostIntegration() ? 0 : 1
+  else if (action === 'scope') process.stdout.write(executionScope())
   else if (action === 'prepare' && output) {
     const request = validateAffectedSuite(suite, environmentRequest())
     writeFileSync(output, JSON.stringify(request), { mode: 0o600 })

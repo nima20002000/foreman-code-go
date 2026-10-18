@@ -123,19 +123,25 @@ jobs:
             if [ "$SUITE" != install ]; then
               node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
             fi
+      - run:
+          name: Go native prerequisites
+          command: |
+            GO_SUITE="$(node scripts/ci-cloud-native-prerequisites.mjs)"
+            if [ "$GO_SUITE" = true ]; then
+              sudo apt-get update
+              sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
+              node scripts/ci-go-prerequisites.mjs native
+              node scripts/ci-go-prerequisites.mjs cache-key > .logs/ci-go-cache-key
+            else
+              # Compile-time cache steps still need a checksum when this bounded selection has no native work.
+              printf '%s\n' no-native-selection > .logs/ci-go-cache-key
+            fi
       - when:
           condition:
             matches:
               pattern: '^((typecheck|lint|unit|build)(-api)?|integration)$'
               value: << pipeline.parameters.suite >>
           steps:
-            - run:
-                name: Go native prerequisites
-                command: |
-                  sudo apt-get update
-                  sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
-                  node scripts/ci-go-prerequisites.mjs native
-                  node scripts/ci-go-prerequisites.mjs cache-key > .logs/ci-go-cache-key
             # start/prepare installs the pinned Go toolchain here, never into the system Go directory.
             - restore_cache:
                 keys:

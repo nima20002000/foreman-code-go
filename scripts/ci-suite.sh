@@ -137,13 +137,8 @@ go_selected=0
 conformance_part=0
 scripts_database=0
 retained_part=0
-case "${SCOPE:-affected}" in
-  full)
-    [ "${FOREMAN_CODE_CI_RELEASE:-}" = 1 ] || { echo 'Full CI scope is reserved for explicit release mode.' >&2; exit 2; }
-    affected=0 ;;
-  affected) ;;
-  *) echo "Unsupported CI scope: ${SCOPE:-}" >&2; exit 2 ;;
-esac
+execution_scope="$(TEST_RESULTS_OUTPUT="$test_results" node "$script_directory/ci-affected-scope.mjs" scope)" || exit 2
+if [ "$execution_scope" = full ]; then affected=0; fi
 if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
   TEST_RESULTS_OUTPUT="$test_results" node "$script_directory/ci-affected-scope.mjs" prepare "${SUITE:-}" "$state/affected-selection.json"
   export CI_AFFECTED_SELECTION_FILE="$state/affected-selection.json"

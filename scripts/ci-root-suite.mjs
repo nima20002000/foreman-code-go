@@ -17,7 +17,7 @@ let directory
 try {
   const environment = inCi ? { ...process.env, SUITE: suite } : process.env
   const command = inCi ? ['bash', fileURLToPath(new URL('./ci-suite.sh', import.meta.url))] : fallback
-  if (inCi && !explicitRelease() && suite === 'integration' && fallback.includes('--files')) {
+  if (inCi && !explicitRelease(environment) && suite === 'integration' && fallback.includes('--files')) {
     const index = fallback.indexOf('--files')
     const files = fallback.slice(index + 1)
     const request = validateAffectedSuite(suite, readAffectedRequest(files))
