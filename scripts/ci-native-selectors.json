@@ -1,0 +1,6 @@
+{
+  "apps/api/test/conformance-ts-reference.integration.test.ts": {
+    "suite": "integration",
+    "selection": "conformance/ci/ts-reference-selection.json"
+  }
+}

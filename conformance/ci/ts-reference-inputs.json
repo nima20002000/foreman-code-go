@@ -1,0 +1,24 @@
+{
+  "baselineSha": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+  "baselineTree": "0b8843295e54ed7830bbb276e782a8eff028b349",
+  "production": {
+    ".npmrc": "108ecb4e464ec01895554eb8931f510f2d4fa4cf",
+    "apps/api/src": "3dcba8c46ebbcaf36d9b85669e62152e1758ece7",
+    "apps/api/scripts": "e03d68d50d9d556f8c3d5093ad4dbbc3063ea76b",
+    "apps/api/package.json": "33f1295414654e648b75bcb7c5f6ff0c87c21179",
+    "apps/api/tsconfig.json": "00b8cc01263f16b955d22185f4a3032f208a41f3",
+    "apps/worker": "4c680ca9fe9b2cd8d16f554f6a8708eccb3cc1b0",
+    "packages": "5155c127f02ea44427cdb87be2fbb6378dfa063e",
+    "patches": "dfac1d54df4c9fa78b2c515e45be7fcd26ea3b8a",
+    "scripts/graphql-mcp.mjs": "a4b920457825c1fe0f8ed12bb1ef24ac4b7657bd"
+  },
+  "packageMetadata": {
+    "name": "foreman-code",
+    "version": "0.0.102",
+    "type": "module",
+    "packageManager": "pnpm@11.27.0",
+    "engines": { "node": ">=22.0.0", "pnpm": ">=11.27.0" }
+  },
+  "lockfileWithoutConformanceImporter": "aeebdcbd743dc5c3738d4f248929fffac6e3601e",
+  "workspaceWithoutConformancePackage": "3186f06e99345a914ed326089d45f7ab063b018e"
+}

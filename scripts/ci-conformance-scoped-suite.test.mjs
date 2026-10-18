@@ -35,7 +35,7 @@ for (const tsRequired of [false, true]) {
     assert.deepEqual(launches(fixture).map(call => call.target), tsRequired ? ['go', 'ts'] : ['go'])
     for (const launch of launches(fixture)) {
       assert.deepEqual(launch.args.slice(launch.args.indexOf('conformance', launch.args.indexOf('run')) + 1),
-        ['--scenario', health.id])
+        ['--target', launch.target, '--scenario', health.id])
       const raw = readReport(fixture, launch.target, 'json')
       const gate = readReport(fixture, launch.target, 'gate.json')
       assert.equal(raw.scope.completeSelection, false)
