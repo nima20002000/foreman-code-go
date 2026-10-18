@@ -1,0 +1,110 @@
+{
+  "source": "239b354e74b98fc6b91e394976e31920ba166465",
+  "sourceTree": "b57835a159527462177bdb18f57cbb6d84b493fa",
+  "mode": "tests-and-Staticcheck",
+  "packages": [
+    "./internal/jobs"
+  ],
+  "goFiles": [],
+  "unitTests": [
+    "TestRuntimeAttachmentStreamsBeyondControlReplyBudget",
+    "TestRuntimeAttachmentRemainsIndependentOfControlLane",
+    "TestRuntimeAttachmentJoinsNativeExitStreamsAndOriginalClosure",
+    "TestRuntimeAttachmentWaitCancellationPreservesOwnership",
+    "TestRuntimeAttachmentReaderFailureRetainsLiveOwnership",
+    "TestRuntimeAttachmentNativeUncertaintyUsesOriginalCleanup",
+    "TestRuntimeAttachmentClosureFailureRemainsVisible",
+    "TestRuntimeAttachmentRejectsMalformedLaunch",
+    "TestRuntimeAttachmentRejectsCanceledAndInvalidArgumentsBeforeLaunch",
+    "TestRuntimeAttachmentLaunchFailurePreservesNativeError",
+    "TestRuntimeCommandPreservesFailureDiagnostics"
+  ],
+  "integrationTests": [],
+  "staticcheckTags": [
+    ""
+  ],
+  "race": true,
+  "testTimeout": "30s",
+  "sourceFiles": [
+    {
+      "path": "backend/internal/jobs/runtime_attachment.go",
+      "blob": "51938538733bfad88ce1df645fcb114558ee3077"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_attachment_test.go",
+      "blob": "c05e422e4f59854831f3fc1b3ec182036e862a8a"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_commands.go",
+      "blob": "eb841f4842bdb9e7291dc8ebfd1a3fbdbb7c18ce"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_diagnostics_test.go",
+      "blob": "a5c36d23bc4e44b8b09f5953b909650c8c78c917"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_commands_test.go",
+      "blob": "c2962c107ab26511c7d2f4ea6eecb775e3a8a308"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_streams_test.go",
+      "blob": "9d772d850f6ccd87b3fbb859276e48f67e492878"
+    }
+  ],
+  "sourceProvenance": {
+    "base": "41708efc75099f486b31568d00d20f0db5304923",
+    "original_merged_base": "7fa547058109519a99c904493c916662fde6a474",
+    "exact_terminal_formatted_preimages": [
+      {
+        "path": "backend/internal/jobs/runtime_commands.go",
+        "blob": "93f34bbbbceeb033d6c3b904484b1191f025156b",
+        "bytes": 8649,
+        "sha256": "8f730827d81aafd4b1c4d654538594ff7522034a0e7f4828fc9041e24a9e6717"
+      },
+      {
+        "path": "backend/internal/jobs/runtime_commands_test.go",
+        "blob": "c2962c107ab26511c7d2f4ea6eecb775e3a8a308",
+        "bytes": 17294,
+        "sha256": "15c8a714c94fef8163d1f4a2b2603734a5b23ac68ad3583bb91906bdcf0ebab9"
+      },
+      {
+        "path": "backend/internal/jobs/runtime_streams_test.go",
+        "blob": "9d772d850f6ccd87b3fbb859276e48f67e492878",
+        "bytes": 3467,
+        "sha256": "babe13fad5af46565105df27a965a14fc269b565ac7beea12f3f4c877275c166"
+      }
+    ]
+  },
+  "behavioralRedClaim": false,
+  "purpose": "Previously unexecuted eleven roots once-race and package Staticcheck on reviewed fixture-only correction; no build/vet/fmt or old29",
+  "fixtureCorrection": {
+    "base": "55b3a477ffb62bc04e25202f06d40297070784ee",
+    "head": "239b354e74b98fc6b91e394976e31920ba166465",
+    "tree": "b57835a159527462177bdb18f57cbb6d84b493fa",
+    "path": "backend/internal/jobs/runtime_attachment_test.go",
+    "line": 269,
+    "beforeLine": "process.stdout = failingRuntimeReader{failure: failure}",
+    "afterLine": "process.stdout = io.NopCloser(failingRuntimeReader{failure: failure})",
+    "preimageBlob": "2b821a7352e663df6f5548e98ace53f26f1c1ec4",
+    "postimageBlob": "c05e422e4f59854831f3fc1b3ec182036e862a8a",
+    "preimageSHA256": "04d4324ad9549891442760c87ac7fc3b06fc9e8a4c8f14c7f46d8f22c0cc44df",
+    "postimageSHA256": "6e674c021583598f6382268cd7a1646fac60f4f44fc7e7954fd4083fb121b515",
+    "patchSHA256": "83a2db364b530bfefdea2f1c855494889a37dd3fba40e38f705e5fc9033a9a17",
+    "onlyOneTestFileOneLineChanged": true,
+    "allOtherRepositoryBlobsIncludingAllProductionIdentical": true,
+    "existingFixturePattern": "runtime_commands_test.go:452 io.NopCloser(failingRuntimeReader{failure: failure})",
+    "fixtureContract": "Read still returns the original failure; no resources or close behavior are owned by failingRuntimeReader. No-op Close satisfies the fake process io.ReadCloser port without changing registry/native cleanup assertions.",
+    "failingCI": "55f50957-ab12-42d4-8d2b-ad274ff1a9a1",
+    "CIReportBytes": 12304,
+    "CIReportSHA256": "f19f5511c1b751a9287755704ceae64d5ff6ea4113c5b6022b1b1ada764195c0",
+    "failureType": "Compile error; zero selected11 roots executed; not behavioral red",
+    "runtimeExecuted": false,
+    "noLocalFormatting": true,
+    "temporaryWorktreesCreated": 0,
+    "pr": "https://github.com/nima20002000/foreman-code-go/pull/22",
+    "headBranch": "go/intake-j-jobs",
+    "readbackConfirmed": true,
+    "guardedFastForward": true,
+    "oldSourceRef": "go/checkpoint-j-attachment-original-55b3a47"
+  }
+}

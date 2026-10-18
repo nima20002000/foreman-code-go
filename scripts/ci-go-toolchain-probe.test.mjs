@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic j-attachment-fixed at immutable source 239b354e74b98fc6b91e394976e31920ba166465.
