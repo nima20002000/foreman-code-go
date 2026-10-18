@@ -58,19 +58,23 @@ ci_go_test_stream() {
   local flags=(-json -count=1)
   if [ "$kind" = integration ]; then flags+=(-tags integration); fi
   if [ "${SCOPE:-affected}" = full ]; then
-    (cd backend && go test "${flags[@]}" "${ci_go_packages[@]}")
-    return $?
+    (cd backend && go test "${flags[@]}" "${ci_go_packages[@]}") || code=$?
+    printf '{"package":"./...","filter":null,"exit":%s}\n' "$code" > "$state/go/$kind.commands.jsonl" || return $?
+    return "$code"
   fi
   for package in "${ci_go_packages[@]}"; do
     roots="$(node scripts/ci-affected-scope.mjs go-roots "$CI_AFFECTED_SELECTION_FILE" "$package")" || return $?
-    (cd backend && go test "${flags[@]}" -run "$roots" "$package") \
-      || { status=$?; if [ "$code" = 0 ]; then code="$status"; fi; }
+    status=0
+    (cd backend && go test "${flags[@]}" -run "$roots" "$package") || status=$?
+    printf '{"package":"%s","filter":"%s","exit":%s}\n' "$package" "$roots" "$status" \
+      >> "$state/go/$kind.commands.jsonl" || return $?
+    if [ "$code" = 0 ]; then code="$status"; fi
   done
   return "$code"
 }
 
 ci_go_test() {
-  local kind="$1" code=0 module native_code=0
+  local kind="$1" code=0 module native_code=0 stderr_code=0 statuses=()
   case "$kind" in unit|integration) ;; *) echo 'Unsupported Go test kind.' >&2; return 2 ;; esac
   if [ -n "${CI_NATIVE_REPORTS_DIR:-}${CI_NATIVE_SELECTOR:-}" ]; then
     node scripts/ci-native-reports.mjs begin --kind "go-$kind" || return $?
@@ -78,24 +82,32 @@ ci_go_test() {
   ci_go_scope && ci_go_check_module || return $?
   module="$(cd backend && go list -m)" || return $?
   local report="$state/go-$kind.vitest.json" durations="$state/go-$kind.durations.json"
-  local raw="$state/go/$kind.jsonl" selection="$state/go/$kind.selection.json" arguments=()
+  local raw="$state/go/$kind.jsonl" errors="$state/go/$kind.stderr.log"
+  local selection="$state/go/$kind.selection.json" arguments=()
   mkdir -p "$state/go" || return $?
-  rm -f "$report" "$durations" "$raw" "$selection" || return $?
+  rm -f "$report" "$durations" "$raw" "$errors" "$selection" "$state/go/$kind.commands.jsonl" || return $?
   reports+=("$report")
   if [ "${SCOPE:-affected}" != full ]; then
     node scripts/ci-affected-scope.mjs go-selection "$CI_AFFECTED_SELECTION_FILE" "$selection" || return $?
     arguments+=(--selection "$selection")
   fi
   # Retain exact events and always convert: Go itself succeeds when a selected filter has no cases.
-  ci_go_test_stream "$kind" | tee "$raw" \
-    | node scripts/ci-go-test-results.mjs --module "$module" --output "$report" --durations "$durations" \
-      "${arguments[@]}" || code=$?
+  if ci_go_test_stream "$kind" 2> "$errors" | tee "$raw" \
+    | node scripts/ci-go-test-results.mjs --module "$module" --output "$report" --durations "$durations" "${arguments[@]}"; then
+    statuses=("${PIPESTATUS[@]}")
+  else
+    statuses=("${PIPESTATUS[@]}")
+  fi
+  cat "$errors" >&2 || stderr_code=$?
+  local status
+  for status in "${statuses[@]}" "$stderr_code"; do if [ "$code" = 0 ]; then code="$status"; fi; done
   if [ -f "$durations" ]; then duration_reports+=("$durations"); fi
   if [ -n "${CI_NATIVE_REPORTS_DIR:-}${CI_NATIVE_SELECTOR:-}" ]; then
     node scripts/ci-native-reports.mjs finish --kind "go-$kind" --input "$report" --exit-code "$code" || native_code=$?
     if [ "$code" = 0 ] && [ "$native_code" != 0 ]; then code="$native_code"; fi
   fi
-  printf '{"kind":"go-%s","actionExit":%s,"publicationExit":%s}\n' "$kind" "$code" "$native_code" \
+  printf '{"kind":"go-%s","nativeExit":%s,"captureExit":%s,"converterExit":%s,"stderrExit":%s,"publicationExit":%s,"actionExit":%s}\n' \
+    "$kind" "${statuses[0]}" "${statuses[1]}" "${statuses[2]}" "$stderr_code" "$native_code" "$code" \
     > "$state/go/$kind.action-status.json" || return $?
   return "$code"
 }

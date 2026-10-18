@@ -41,11 +41,20 @@ export function affectedCommands(suite, files, root = repositoryRoot) {
 }
 
 function typecheckCommands(project, files, root) {
-  if (project === 'scripts') return files.map(file => [process.execPath, '--check', file])
-  const node = ['--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node']
+  if (project === 'scripts') {
+    const typed = files.filter(file => /\.[cm]?tsx?$/.test(file))
+    const commands = files.filter(file => !typed.includes(file)).map(file => [process.execPath, '--check', file])
+    if (typed.length) commands.push(['corepack', 'pnpm', '--dir', 'packages/contracts', 'exec', process.execPath,
+      contractsCompiler(root), '--ignoreConfig', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2022',
+      '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node', ...typed.map(file => join(root, file))])
+    return commands
+  }
+  const node = ['--target', project === 'packages/contracts' ? 'ES2022' : 'ES2023',
+    '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--types', 'node']
   const web = ['--target', 'ES2022', '--module', 'ESNext', '--moduleResolution', 'Bundler', '--jsx', 'react-jsx',
     '--lib', 'ES2022,DOM,DOM.Iterable', '--types', 'vite/client,vitest/globals,node', '--esModuleInterop',
-    '--allowSyntheticDefaultImports', '--resolveJsonModule', '--isolatedModules']
+    '--allowSyntheticDefaultImports', '--resolveJsonModule', '--isolatedModules', '--forceConsistentCasingInFileNames',
+    '--useDefineForClassFields']
   const webConfig = ['--target', 'ES2023', '--lib', 'ES2023', '--module', 'ESNext', '--moduleResolution', 'Bundler',
     '--allowImportingTsExtensions', '--verbatimModuleSyntax', '--moduleDetection', 'force', '--types', 'node']
   const selected = project === 'apps/web' ? [files.filter(file => file.startsWith('apps/web/src/')),
@@ -91,7 +100,7 @@ export function readAffectedSelection(option, value, root = repositoryRoot) {
   return readInput(option, value, root).files
 }
 
-async function run(command, extraEnvironment = {}) {
+async function run(command, extraEnvironment = {}, onExit) {
   const environment = { ...process.env, CI: 'true' }
   for (const name of ['SCOPE', 'SELECTED_FILES', 'SLICE', 'CI_PARTITION', 'CI_SELECTION_COMMIT',
     'CI_DURATIONS', 'DEFAULT_BRANCH', 'CI_AFFECTED_SELECTION_FILE', 'FOREMAN_CODE_CI_RELEASE', 'NODE_TEST_CONTEXT',
@@ -102,7 +111,10 @@ async function run(command, extraEnvironment = {}) {
     env: { ...environment, ...extraEnvironment } })
   return new Promise((resolveExit, reject) => {
     child.once('error', reject)
-    child.once('exit', code => resolveExit(code ?? 1))
+    child.once('exit', (code, signal) => {
+      onExit?.({ exitCode: code, signal })
+      resolveExit(code ?? 1)
+    })
   })
 }
 
@@ -130,16 +142,25 @@ async function runReported(command, request, directory) {
     environment.CI_STATE = join(session, 'suite-state')
   }
   rmSync(report, { force: true })
-  const status = await run(reportedCommand(command, report), environment)
-  writeFileSync(join(session, 'wrapper-status.json'), JSON.stringify({ selector, wrapperExit: status }))
-  const original = JSON.parse(readFileSync(report, 'utf8'))
+  let termination, original, wrapperReadError
+  const status = await run(reportedCommand(command, report), environment, outcome => { termination = outcome })
+  writeFileSync(join(session, 'wrapper-status.json'), JSON.stringify({ selector, wrapperExit: status, termination }))
+  try { original = JSON.parse(readFileSync(report, 'utf8')) }
+  catch (error) {
+    if (!binding) throw error
+    wrapperReadError = error.message
+  }
   const executed = value => value.testResults?.some(file => file.assertionResults?.some(test => ['passed', 'failed'].includes(test.status)))
   if (!binding) return { status, report, empty: !executed(original) }
   const adopted = await adoptNativeReports(original, { directory: session, repository: repositoryRoot, selector, wrapperExit: status })
+  if (wrapperReadError) {
+    adopted.failed = true
+    adopted.diagnostics.unshift(`Cannot read the raw wrapper report: ${wrapperReadError}`)
+  }
   const output = join(session, 'adopted.json')
   writeFileSync(output, JSON.stringify(adopted.report))
   writeFileSync(join(session, 'metadata.json'), JSON.stringify({ selector, wrapperExit: status,
-    failed: adopted.failed, diagnostics: adopted.diagnostics, nativeCounts: adopted.nativeCounts }))
+    termination, wrapperReadError, failed: adopted.failed, diagnostics: adopted.diagnostics, nativeCounts: adopted.nativeCounts }))
   for (const diagnostic of adopted.diagnostics) console.error(diagnostic)
   return { status: status || Number(adopted.failed), report: output,
     empty: !executed(adopted.report) }

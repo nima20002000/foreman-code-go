@@ -40,6 +40,7 @@ if (args[0] === 'env') { console.log('go' + process.env.FIXTURE_GO_VERSION); pro
 if (args[0] === 'list') { console.log('example.test/backend'); process.exit(0); }
 if (args[0] === process.env.FAIL_GO_COMMAND) process.exit(9);
 if (args[0] !== 'test') process.exit(0);
+console.error('synthetic Go stderr: ' + (process.env.GO_TEST_MODE || 'normal'));
 const Package = 'example.test/backend/runtime';
 const event = value => console.log(JSON.stringify({ Time: '2026-10-10T00:00:00Z', Package, ...value }));
 event({ Action: 'start' });
@@ -79,6 +80,15 @@ async function runConformance() {
     options.coverage.http.missing = ['GET /fixture'];
     options.coverage.http.status = 'failed';
     options.coverage.complete = false;
+  }
+  const ids = args.flatMap((value, index) => value === '--scenario' ? [args[index + 1]] : []);
+  if (process.env.CI_AFFECTED_SELECTION_FILE && JSON.parse(fs.readFileSync(process.env.CI_AFFECTED_SELECTION_FILE, 'utf8')).conformanceScenarios?.length) {
+    options.inventoryScenarios = [conformanceScenario(), conformanceScenario({ id: 'fixture.event',
+      title: 'Fixture event response', lane: 'E' })];
+  }
+  if (ids.length && !args.includes('--list')) {
+    options.scenarios = (options.scenarios ?? [conformanceScenario()]).filter(scenario => ids.includes(scenario.id));
+    options.scope = { kind: 'full', lanes: [], scenarioIds: ids, completeSelection: false };
   }
   const { report, inventory } = conformanceFixture(options);
   if (args.includes('--list')) { console.log(JSON.stringify(inventory)); return; }
@@ -189,17 +199,26 @@ export function goCiFixture(t, overrides = {}) {
     scripts: { conformance: 'fixture', typecheck: 'fixture', lint: 'fixture', test: 'fixture' },
   }))
   writeFileSync(join(directory, 'apps/web/heavy-tests.json'), JSON.stringify({ files: ['src/heavy.test.tsx'] }))
+  // Synthetic runtime entries make the selected export planner observable without launching the product.
+  for (const file of ['conformance/src/main.ts', 'apps/api/src/server.ts', 'apps/api/src/cli/operatorCredentials.ts']) {
+    mkdirSync(dirname(join(directory, file)), { recursive: true })
+    writeFileSync(join(directory, file), '// Synthetic conformance launcher dependency fixture.\n')
+  }
   for (const name of ['ci-suite.sh', 'ci-runtime-state.sh', 'ci-root-suite.mjs', 'ci-go-toolchain.sh', 'ci-go-toolchain-module.mjs', 'ci-go-suite.sh', 'ci-go-versions.json',
     'ci-go-prerequisites.mjs', 'ci-go-test-results.mjs', 'ci-conformance-suite.sh', 'ci-conformance-results.mjs',
     'ci-conformance-report.mjs', 'ci-conformance-gate.mjs', 'test-support/conformance-report-fixture.mjs',
     'ci-go-test-report.mjs', 'ci-report-io.mjs', 'ci-typecheck-cache.mjs',
     'ci-test-results.mjs', 'ci-unit-files.mjs', 'ci-progress-reporter.mjs', 'ci-node-test-reporter.mjs', 'ci-contracts.mjs',
-    'ci-affected-run.mjs', 'ci-files.mjs',
+    'ci-affected-run.mjs', 'ci-affected-scope.mjs', 'ci-affected-contracts.mjs', 'ci-files.mjs',
+    'ci-native-reports.mjs', 'ci-go-selected-roots.mjs',
     'test-postgres-init.sql']) {
     // A copied CLI keeps its import.meta.url entry guard and repository root inside this fixture.
     mkdirSync(dirname(join(directory, 'scripts', name)), { recursive: true })
     copyFileSync(join(scripts, name), join(directory, 'scripts', name))
   }
+  mkdirSync(join(directory, 'packages/contracts/src'), { recursive: true })
+  copyFileSync(join(scripts, '../packages/contracts/src/ciImportGraph.mjs'),
+    join(directory, 'packages/contracts/src/ciImportGraph.mjs'))
   writeFileSync(join(directory, 'scripts/ci-postgres-toolchain.sh'), postgresToolchain)
   writeFileSync(calls, '')
   for (const name of ['go', 'db', 'postgres', 'scripts-db']) {
@@ -235,7 +254,8 @@ if (args[0] === 'ls-files') {
     FOREMAN_CODE_CI_POSTGRES_CACHE: postgresCache, FIXTURE_COMMIT_SHA: '1'.repeat(40),
     FIXTURE_CALLS: calls, FIXTURE_GO_VERSION: pins.go.version, PATH: `${bin}${delimiter}${imageBin}${delimiter}${process.env.PATH}`,
     FOREMAN_CODE_CI_HOST_RUN_ID: '',
-    SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: '', CI_PARTITION: '', CI_EXPECTED_DURATION_MS: '',
+    SCOPE: 'full', FOREMAN_CODE_CI_RELEASE: '1', SELECTED_FILES: '', SLICE: '', CI_PARTITION: '', CI_EXPECTED_DURATION_MS: '',
+    CI_AFFECTED_SELECTION_FILE: '', CI_AFFECTED_VITEST_OUTPUT: '', CI_NATIVE_REPORTS_DIR: '', CI_NATIVE_SELECTOR: '',
     CI_PREREQUISITES_UNTRACKED: '', CI_USER_SYSTEMD: '', CI_PROGRESS_FILE: '', FOREMAN_CODE_CI_CONTRACTS_CACHE: '',
     FOREMAN_CODE_CI_TYPECHECK_CACHE: '', TEST_RESULTS_OUTPUT: join(directory, 'results.json'),
     DURATIONS_OUTPUT: join(directory, 'durations.json'), FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT: '',

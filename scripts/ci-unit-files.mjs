@@ -8,14 +8,13 @@ import { readJsonReport, reportDuration, writeJsonReport } from './ci-report-io.
 const root = fileURLToPath(new URL('..', import.meta.url))
 
 export function unitFiles(files, suite, heavy = []) {
-  const prefix = suite === 'unit-api' ? 'apps/api/' : 'apps/web/'
+  const prefix = suite === 'unit-api' ? 'backend/' : 'apps/web/'
   if (suite !== 'unit-api' && suite !== 'unit-web') throw new Error(`Unknown unit suite: ${suite}`)
   return files.filter(file => {
     if (!file.startsWith(prefix) || /(?:^|\/)(?:node_modules|dist|\.git)\//.test(file)) return false
     const local = file.slice(prefix.length)
     if (suite === 'unit-api') {
-      return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(local)
-        && !/\.(?:integration|acceptance)\.test\.ts$/.test(local)
+      return /_test\.go$/.test(local)
     }
     return /^src\/.*\.(?:test|spec)\.tsx?$/.test(local)
       && !heavy.some(pattern => matchesGlob(local, pattern))
@@ -49,7 +48,7 @@ export function durationSlice(files, durations, slice = '') {
 }
 
 export function measuredUnitDurations(report, repository, suite) {
-  const prefixes = { 'unit-api': 'apps/api', 'unit-web': 'apps/web', go: 'backend', conformance: 'conformance' }
+  const prefixes = { 'unit-api': 'backend', 'unit-web': 'apps/web', go: 'backend', conformance: 'conformance' }
   const prefix = prefixes[suite]
   if (!prefix) throw new Error(`Unknown duration suite: ${suite}`)
   const durations = {}
@@ -91,12 +90,13 @@ if (process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`)
     if (!destination || !inputs.length) throw new Error('Usage: ci-unit-files.mjs merge <output> <durations.json>...')
     writeJsonReport(destination, mergeDurations(inputs.map(readJsonReport)))
   } else if (command === 'select') {
+    if (suite === 'unit-api') throw new Error('Go unit execution requires exact affected packages and named test roots.')
     const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0')
     const heavy = readDurations(resolve(root, 'apps/web/heavy-tests.json')).files
     const files = unitFiles(tracked, suite, heavy)
     const snapshot = process.env.DURATIONS_INPUT || resolve(root, 'scripts/ci-learned-durations.json')
     const durations = existsSync(snapshot) ? readDurations(snapshot) : JSON.parse(process.env.CI_DURATIONS || '{}')
-    const prefix = suite === 'unit-api' ? 'apps/api/' : 'apps/web/'
+    const prefix = 'apps/web/'
     const selected = durationSlice(files, durations, argument)
     if (!selected.length) throw new Error('This unit slice has no files')
     // NUL delimiters preserve paths as separate shell arguments.

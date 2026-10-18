@@ -21,7 +21,8 @@ function fixture(t) {
   writeFileSync(join(root, 'pnpm-lock.yaml'), 'dependencies-one')
   writeFileSync(join(root, '.gitignore'), 'packages/contracts/dist/\n')
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Test Author', GIT_COMMITTER_NAME: 'Test Author',
-    GIT_AUTHOR_EMAIL: 'author@example.test', GIT_COMMITTER_EMAIL: 'author@example.test' }
+    GIT_AUTHOR_EMAIL: 'author@example.test', GIT_COMMITTER_EMAIL: 'author@example.test',
+    SCOPE: 'full', FOREMAN_CODE_CI_RELEASE: '1', CI_AFFECTED_SELECTION_FILE: '', CI_NATIVE_REPORTS_DIR: '', CI_NATIVE_SELECTOR: '' }
   const git = (...args) => {
     const result = spawnSync('git', args, { cwd: root, env, encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr)

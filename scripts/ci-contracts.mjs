@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { affectedContracts, affectedContractsKey, contractsEmitCommand, contractsEntryOutputs } from './ci-affected-contracts.mjs'
-import { deferredHostIntegration, environmentRequest, explicitRelease } from './ci-affected-scope.mjs'
+import { deferredHostIntegration, environmentRequest, explicitRelease, validateAffectedSuite } from './ci-affected-scope.mjs'
 
 const script = fileURLToPath(import.meta.url)
 
@@ -13,7 +13,8 @@ function affectedPlan(root) {
     || process.env.FOREMAN_CODE_CI_HOST === '1' || process.env.FOREMAN_CODE_CI_LOCAL === '1'
   if (!inCi || explicitRelease()) return null
   if (deferredHostIntegration()) return { entries: [], sources: [], deferred: true }
-  const request = environmentRequest(process.env, root)
+  const input = environmentRequest(process.env, root)
+  const request = process.env.SUITE ? validateAffectedSuite(process.env.SUITE, input, root) : input
   if (!request.files.length) throw new Error('Contracts setup received an empty affected scope.')
   return affectedContracts(request, root)
 }
@@ -25,31 +26,54 @@ function selectedReady(root, plan, key) {
     && contractsEntryOutputs(plan).every(file => existsSync(join(output, file)))
 }
 
+function selectedReceipt(root, plan, details) {
+  if (!process.env.CI_STATE) return
+  const output = join(resolve(root, process.env.CI_STATE), 'go/contracts-preparation.json')
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, JSON.stringify({ schema: 1, entries: plan.entries, sources: plan.sources,
+    sourceSha256: Object.fromEntries(plan.sources.map(file => [file, createHash('sha256')
+      .update(readFileSync(join(root, file))).digest('hex')])), ...details }, null, 2), { mode: 0o600 })
+}
+
 function selectedBuild(root, cache, plan) {
   // Resolve this before cache keys, dist checks or the inherited full compiler command.
   if (!plan.entries.length) {
+    selectedReceipt(root, plan, { mode: plan.deferred ? 'deferred' : 'bypass', command: null, exitCode: 0 })
     console.log(plan.deferred ? '[ci-setup] contracts setup deferred until the host supplies exact integration files'
       : '[ci-cache] selected checks need no emitted contracts')
     return 0
   }
   const key = affectedContractsKey(root, plan)
   const output = join(root, 'packages/contracts/dist')
-  if (selectedReady(root, plan, key)) return 0
+  if (selectedReady(root, plan, key)) {
+    selectedReceipt(root, plan, { mode: 'ready', key, command: null, exitCode: 0 })
+    return 0
+  }
   const cached = join(cache, key)
   if (existsSync(join(cached, '.ci-cache-key')) && readFileSync(join(cached, '.ci-cache-key'), 'utf8') === key
     && contractsEntryOutputs(plan).every(file => existsSync(join(cached, file)))) {
     rmSync(output, { recursive: true, force: true })
     copy(cached, output)
+    selectedReceipt(root, plan, { mode: 'cache', key, command: null, exitCode: 0 })
     return 0
   }
   const temporary = join(cache, `${key}.${randomUUID()}`)
   mkdirSync(temporary, { recursive: true })
   try {
     const command = contractsEmitCommand(root, plan, temporary)
+    selectedReceipt(root, plan, { mode: 'compiling', key, command, exitCode: null })
     const result = spawnSync(command[0], command.slice(1), { cwd: join(root, 'packages/contracts'),
       stdio: 'inherit', env: process.env })
+    selectedReceipt(root, plan, { mode: 'compiler', key, command, exitCode: result.status,
+      signal: result.signal, error: result.error?.message ?? null })
     if (result.error) throw result.error
     if (result.status !== 0) return result.status ?? 1
+    for (const file of plan.sources.filter(file => /\.d\.[cm]?ts$/.test(file))) {
+      const destination = join(temporary, file.slice('packages/contracts/src/'.length))
+      // A handwritten companion can declare public types that JavaScript inference cannot emit.
+      mkdirSync(dirname(destination), { recursive: true })
+      copyFileSync(join(root, file), destination)
+    }
     if (!contractsEntryOutputs(plan).every(file => existsSync(join(temporary, file)))) {
       throw new Error('The selected contracts compiler omitted a required export.')
     }
