@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected frozen transport capture: capture-framing-red at ab17877444519f68a75bd9ccb94ed99ba9b30d4c.
