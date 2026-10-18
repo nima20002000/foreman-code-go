@@ -7,7 +7,7 @@ func TestQCIJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("round trip returned an error: %v", err)
 	}
-	expected := Message{Label: "qci-native-fixture", Sequence: 7}
+	expected := Message{Label: "qci-native-fixture", Sequence: 8}
 	if actual != expected {
 		t.Fatalf("decoded message = %#v, want %#v", actual, expected)
 	}
