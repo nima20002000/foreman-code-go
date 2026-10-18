@@ -266,7 +266,7 @@ func TestRuntimeAttachmentReaderFailureRetainsLiveOwnership(t *testing.T) {
 	runner := jobs.NewRuntimeCommandRunner(port)
 	failure := errors.New("attachment output transport failed")
 	process := runtimeProcess("live-after-reader-error", "", "remaining stderr")
-	process.stdout = failingRuntimeReader{failure: failure}
+	process.stdout = io.NopCloser(failingRuntimeReader{failure: failure})
 	attachment := acceptRuntimeAttachment(t, runner, port, context.Background(), process)
 	if _, err := io.ReadAll(attachment.Stdout()); !errors.Is(err, failure) {
 		t.Fatalf("native read failure hidden: %v", err)
