@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected transport diagnostic: tracker-red-1 at 515478afc4802474e4a820eb0cd233929ebfd3e1.
