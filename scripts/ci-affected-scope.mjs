@@ -70,7 +70,7 @@ export function readAffectedRequest(input, root = repositoryRoot) {
     throw new Error('Invalid conformance TS comparison decision.')
   }
   if (data.scriptsDatabaseRequired !== undefined && (typeof data.scriptsDatabaseRequired !== 'boolean'
-    || !files.some(file => file.startsWith('scripts/')))) throw new Error('Invalid selected scripts database requirement.')
+    || data.scriptsDatabaseRequired === true && !files.some(file => file.startsWith('scripts/')))) throw new Error('Invalid selected scripts database requirement.')
   if (data.nativeReports !== undefined && !object(data.nativeReports)) throw new Error('Invalid native report bindings.')
   const nativeReports = { ...data.nativeReports }
   for (const [selector, binding] of Object.entries(nativeReports)) {
