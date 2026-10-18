@@ -1,0 +1,139 @@
+{
+  "source": "fd0fad15411ed04f6003729c7a7688643e5f5804",
+  "sourceTree": "169aaf0c5d83578be5d76c4e677474ce35611565",
+  "mode": "tests-only",
+  "package": "./internal/mcpserver",
+  "packages": [
+    "./internal/mcpserver"
+  ],
+  "unitTests": [
+    "TestMCPCancelsAcrossAuthenticatedRequests"
+  ],
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "staticcheckTags": [
+    ""
+  ],
+  "goFiles": [],
+  "sourceProvenance": {
+    "source": "1be2ae14852b118305254666984beecc2aecec2e",
+    "composed": "91961639d3f67634da1448b815764de191f9b64a",
+    "tree": "06098eb77e37dbfa6c16b3c7c7da3f27eb02c4f9",
+    "preFix": [
+      {
+        "candidate": "fd0fad15411ed04f6003729c7a7688643e5f5804",
+        "command": [
+          "go",
+          "test",
+          "./internal/mcpserver",
+          "-run",
+          "^(TestMCPCancelsAcrossAuthenticatedRequests)$",
+          "-count=1"
+        ],
+        "intendedFailure": "authenticated 202 cancellation did not reach the already-running public tool context",
+        "deadline": "3-second assertion before separate12-second request/client deadline"
+      },
+      {
+        "candidate": "515478afc4802474e4a820eb0cd233929ebfd3e1",
+        "command": [
+          "go",
+          "test",
+          "./internal/mcpserver",
+          "-run",
+          "^TestMCPRejectsSourceInvalidNumericAndNullIDs$/^fraction$",
+          "-count=1"
+        ],
+        "intendedFailure": "actual HTTP response/dispatch for id1.5, admitted/truncated by old SDK"
+      }
+    ],
+    "green": {
+      "command": [
+        "go",
+        "test",
+        "./internal/mcpserver",
+        "-run",
+        "^(TestMCPCancelsAcrossAuthenticatedRequests|TestMCPCancellationSeparatesCallerAndTypedIDs|TestMCPRejectsDuplicateInFlightIDAndReusesFinishedID|TestMCPCancellationUsesECMANumberIDs|TestMCPCancellationOnlyTracksSourceRPCIDs|TestMCPCancellationPreservesUTF16StringIDs|TestMCPCancellationPreservesOpaquePrincipalIdentity|TestMCPCancellationDoesNotInterceptExtraEnvelopeFields|TestMCPCancellationFailsClosedWithoutPrincipalIdentity|TestMCPDisconnectedRequestReleasesIDBeforeToolReturns|TestMCPPreservesValidNumericRequestResponseIDs|TestMCPRejectsSourceInvalidNumericAndNullIDs|TestMCPNumericIDAdmissionPreservesHeaderAndAuthOrder|TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials|TestMCPRejectsMissingCredentialsBeforeReadingBody|TestMCPMethodRejectionStillAuthenticates)$",
+        "-count=1"
+      ],
+      "testRoots": [
+        "TestMCPCancelsAcrossAuthenticatedRequests",
+        "TestMCPCancellationSeparatesCallerAndTypedIDs",
+        "TestMCPRejectsDuplicateInFlightIDAndReusesFinishedID",
+        "TestMCPCancellationUsesECMANumberIDs",
+        "TestMCPCancellationOnlyTracksSourceRPCIDs",
+        "TestMCPCancellationPreservesUTF16StringIDs",
+        "TestMCPCancellationPreservesOpaquePrincipalIdentity",
+        "TestMCPCancellationDoesNotInterceptExtraEnvelopeFields",
+        "TestMCPCancellationFailsClosedWithoutPrincipalIdentity",
+        "TestMCPDisconnectedRequestReleasesIDBeforeToolReturns",
+        "TestMCPPreservesValidNumericRequestResponseIDs",
+        "TestMCPRejectsSourceInvalidNumericAndNullIDs",
+        "TestMCPNumericIDAdmissionPreservesHeaderAndAuthOrder",
+        "TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials",
+        "TestMCPRejectsMissingCredentialsBeforeReadingBody",
+        "TestMCPMethodRejectionStillAuthenticates"
+      ],
+      "newRoots": 13,
+      "existingBoundaryRoots": 3
+    },
+    "numericCancellationCases": [
+      "equivalent_lexemes",
+      "negative_zero",
+      "rounded_integer",
+      "underflow_zero",
+      "maximum_safe",
+      "minimum_safe"
+    ],
+    "numericResponseCases": [
+      "integer",
+      "decimal",
+      "exponent",
+      "negative_zero",
+      "rounded_integer",
+      "underflow_zero",
+      "maximum_safe",
+      "minimum_safe"
+    ],
+    "invalidIDCases": [
+      "fraction",
+      "negative_fraction",
+      "above_safe",
+      "below_safe",
+      "rounded_unsafe",
+      "large_integer",
+      "positive_overflow",
+      "negative_overflow",
+      "null"
+    ],
+    "orderingCases": [
+      "accept_before_id",
+      "body_before_accept",
+      "auth_before_body_and_accept"
+    ],
+    "frozenReference": {
+      "candidate": "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f",
+      "file": "apps/api/test/mcp-cancellation.test.ts",
+      "blob": "0aa459d9cad1348dc2c5dbadfe6e5f9d9d10b2fc",
+      "testName": "isolates cancellation by caller and typed request id, and safely reuses finished ids"
+    },
+    "analysisPackages": [
+      "./internal/mcpserver"
+    ],
+    "formatFiles": [
+      "backend/internal/mcpserver/server.go",
+      "backend/internal/mcpserver/request.go",
+      "backend/internal/mcpserver/cancellation.go",
+      "backend/internal/mcpserver/cancellation_test.go",
+      "backend/internal/mcpserver/request_id_test.go",
+      "backend/internal/mcpserver/server_test.go"
+    ],
+    "open": [
+      "lossless response IDs through Go SDK",
+      "second POST authentication after body parsing",
+      "separate frozen public HTTP numeric/null/string response captures"
+    ]
+  },
+  "noOrdinaryDuplicate": true,
+  "testPattern": "^(TestMCPCancelsAcrossAuthenticatedRequests)$"
+}
