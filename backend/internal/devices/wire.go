@@ -24,7 +24,7 @@ type WireError struct {
 }
 
 func (failure *WireError) Error() string { return failure.code }
-func (failure *WireError) Code() string { return failure.code }
+func (failure *WireError) Code() string  { return failure.code }
 func (failure *WireError) Unwrap() error { return failure.cause }
 
 func (failure *WireError) Is(target error) bool {
