@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected contract capture diagnostic: green source 42f604ddd7f3c88e4af104d74dec2058754b4e99.
