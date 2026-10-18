@@ -257,7 +257,7 @@ func (c *Client) receiveCallback(value frame) error {
 		return err
 	}
 	if value.ID == "" {
-		return errors.New("Claude callback has no request identity")
+		return &bridgeDiagnostic{message: "Claude callback has no request identity"}
 	}
 	c.mu.Lock()
 	if _, exists := c.callbacks[value.ID]; exists {
@@ -279,7 +279,7 @@ func (c *Client) receiveCallback(value frame) error {
 		var result json.RawMessage
 		var err error
 		if handler == nil {
-			err = errors.New("Claude callback is not registered")
+			err = &bridgeDiagnostic{message: "Claude callback is not registered"}
 		} else {
 			result, err = handler(ctx, params.Args)
 		}

@@ -3,7 +3,6 @@
 package discovery
 
 import (
-	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -22,7 +21,7 @@ func executableFile(path string) error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("Not a file")
+		return &discoveryDiagnostic{message: "Not a file"}
 	}
 	return nil
 }

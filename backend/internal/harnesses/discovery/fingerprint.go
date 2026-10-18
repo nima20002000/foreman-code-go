@@ -12,7 +12,7 @@ import (
 )
 
 // ErrPayloadChanged means the observed bytes cannot be bound to one file identity.
-var ErrPayloadChanged = errors.New("Payload changed during fingerprinting")
+var ErrPayloadChanged error = &discoveryDiagnostic{message: "Payload changed during fingerprinting"}
 
 type fingerprintIdentity struct {
 	Device              uint64
@@ -62,7 +62,7 @@ func (c *PayloadFingerprintCache) Fingerprint(ctx context.Context, file string, 
 		}
 	}
 	if !before.Mode().IsRegular() {
-		return "", errors.New("Payload is not a file")
+		return "", &discoveryDiagnostic{message: "Payload is not a file"}
 	}
 	identity, err := nativeFingerprintIdentity(before)
 	if err != nil {
