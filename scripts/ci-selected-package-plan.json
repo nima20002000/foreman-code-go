@@ -1,0 +1,73 @@
+{
+  "source": "990c49306a4aeff23c40f78f38b2d0e5e67941c3",
+  "sourceTree": "11faae08100185e92b2395587f85f1842be2136d",
+  "mode": "build-and-tests",
+  "packages": [
+    "./internal/jobs"
+  ],
+  "goFiles": [],
+  "unitTests": [
+    "TestRuntimeCommandCancellationClosesOriginalLaunch",
+    "TestRuntimeAttachmentJoinsNativeExitStreamsAndOriginalClosure"
+  ],
+  "expectedUnitNamedCount": 4,
+  "integrationTests": [],
+  "race": true,
+  "testTimeout": "30s",
+  "sourceFiles": [
+    {
+      "path": "backend/internal/jobs/runtime_attachment.go",
+      "blob": "828abe2902ab16041a007d385c6743edf9804ed1"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_attachment_test.go",
+      "blob": "2d807ebda2088a02b49a80113e50cb1a5a9bde51"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_commands.go",
+      "blob": "d572e6b2a678c9f73cad7b5408e6b4219a109123"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_commands_test.go",
+      "blob": "c2962c107ab26511c7d2f4ea6eecb775e3a8a308"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_diagnostics_test.go",
+      "blob": "a5c36d23bc4e44b8b09f5953b909650c8c78c917"
+    },
+    {
+      "path": "backend/internal/jobs/runtime_streams_test.go",
+      "blob": "9d772d850f6ccd87b3fbb859276e48f67e492878"
+    }
+  ],
+  "sourceProvenance": {
+    "base": "76174cc4676cb202d35c17a9bcbb24a01039ee45",
+    "baseTree": "04ece29d8643f461abd52e01ba3ba42a478d302a",
+    "source": "4b4631aa5a08d49d11c22bbc3088532da34b5c71",
+    "sourceTree": "bcd04db3ccfb2a699009cf63e752c87295f6cbf6",
+    "parents": [
+      "76174cc4676cb202d35c17a9bcbb24a01039ee45",
+      "4b4631aa5a08d49d11c22bbc3088532da34b5c71"
+    ],
+    "preservedMainEntries": 6133,
+    "allExistingMainEntriesExact": true,
+    "dependencyImpact": {
+      "newMainProductionConsumers": [],
+      "stdlibPlusExistingExternal": "golang.org/x/text/encoding/unicode v0.29.0 already pinned on main",
+      "moduleChanges": false,
+      "startupCmdAppConformanceChanges": false,
+      "databaseOrHarnessRequired": false
+    }
+  },
+  "priorEvidence": {
+    "original29Outcomes": "619b1f68-7481-43b2-a4e2-a7303ce35e9b on prior5aa source; retained, not rerun",
+    "new24RaceOutcomesAndStaticcheck0": "f2c09fc4-3b30-4869-b03d-581f28ca3342 on239b; retained, not rerun",
+    "sourceFormatGate": "Three-file zero-test4b readback pending lane_package_ci at composition time; no merge until green"
+  },
+  "formatGate": {
+    "ticket": "eeb1ea2b-98db-4ef4-a8b4-8d48e5ca61f7",
+    "source": "4b4631aa5a08d49d11c22bbc3088532da34b5c71",
+    "passed": true
+  },
+  "purpose": "ExactPR54 integrated jobs build plus two once-race roots/four outcomes; no29/24 replay, Staticcheck, formatting, other packages, startup/cmd, conformance or DB"
+}
