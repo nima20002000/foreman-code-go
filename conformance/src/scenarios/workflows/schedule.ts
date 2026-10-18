@@ -10,6 +10,7 @@ import {
   CurrentRunPageSchema, GraphDigestSchema, RunAcceptedInputValueSchema, RunRecordDetailSchema, RunVersionDetailSchema,
 } from '@foreman-code/contracts/wave25'
 import { assertResponse } from '../../assertions.js'
+import { parseSuccessResponse } from '../../clients/response.js'
 import type { Scenario, ScenarioContext } from '../../scenario.js'
 import { assertProtectedRead, readCoverage } from '../http/support.js'
 import { assertInvalidCallerDenied, callTool, mcpClaims, operatorClients } from '../mcp/support.js'
@@ -84,7 +85,9 @@ export const scheduledWorkflowScenarios: Scenario[] = [{
     })
     const configured = WorkflowScheduleSchema.parse({ ...body.schedule, workspaceId, workflowId, revision: 1, nextOccurrenceAt: dueAt })
     const savedResponse = await ctx.http.request('PUT', path, { body })
-    ScheduleSaveResultSchema.parse(savedResponse.body)
+    parseSuccessResponse(savedResponse, ScheduleSaveResultSchema, {
+      method: 'PUT', path, status: 200, contract: 'ScheduleSaveResult',
+    })
     assertResponse(savedResponse, { status: 200, body: { value: configured, replayed: false } })
     assertResponse(await ctx.http.request('PUT', path, { body }), { status: 200, body: { value: configured, replayed: true } })
     assertApiError(await ctx.http.request('PUT', path, { body: { ...body, commandId: randomUUID() } }),
@@ -123,7 +126,9 @@ export const scheduledWorkflowScenarios: Scenario[] = [{
     const disable = ScheduleDisableInputSchema.omit({ workspaceId: true, workflowId: true }).parse({ commandId: randomUUID(), expectedRevision: 1 })
     const disabled = WorkflowScheduleSchema.parse({ ...advanced, revision: 2, enabled: false, nextOccurrenceAt: null })
     const disabledResponse = await ctx.http.request('POST', `${path}/disable`, { body: disable })
-    ScheduleDisableResultSchema.parse(disabledResponse.body)
+    parseSuccessResponse(disabledResponse, ScheduleDisableResultSchema, {
+      method: 'POST', path: `${path}/disable`, status: 200, contract: 'ScheduleDisableResult',
+    })
     assertResponse(disabledResponse, { status: 200, body: { value: disabled, replayed: false } })
     assertResponse(await ctx.http.request('POST', `${path}/disable`, { body: disable }),
       { status: 200, body: { value: disabled, replayed: true } })
