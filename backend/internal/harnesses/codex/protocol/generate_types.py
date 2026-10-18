@@ -1,13 +1,15 @@
 """Convert the frozen, native-generated Codex schema into Go compile-time types.
 
 This does not launch Codex, validate an installation, or issue qualification evidence.
-Run source generation only with the two pinned inputs; CI owns Go verification.
+Run source generation only with the two pinned inputs and Go 1.27.2 in CI.
 """
 
 import argparse
 import hashlib
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -15,6 +17,7 @@ from pathlib import Path
 SCHEMA_SHA256 = "d71ddf3bf5484f8de2799f7a4793c2e66808a9ec1a330e2307accb088ab5948a"
 METHODS_SHA256 = "4eebdcaee1f4e3a7c9aad51e80825d1d74c5303cbeea51ec9e9fc8607b36add4"
 REFERENCE = "8d2ea76c5028ef4458bf8cd64ef8624422e71d9f"
+GO_VERSION = "go1.27.2"
 
 
 def pinned(path, expected):
@@ -22,6 +25,27 @@ def pinned(path, expected):
     if hashlib.sha256(data).hexdigest() != expected:
         raise ValueError(f"Unexpected source bytes: {path}")
     return data
+
+
+def formatted_source(source):
+    environment = os.environ.copy()
+    environment.update(GOENV="off", GOWORK="off", GOTOOLCHAIN="local", GOFLAGS="")
+    # Resolve the selected compiler's own root, never a separately inherited one.
+    environment.pop("GOROOT", None)
+    toolchain = subprocess.run(
+        ["go", "env", "-json", "GOVERSION", "GOROOT"],
+        env=environment, stdout=subprocess.PIPE, text=True, timeout=10, check=True,
+    )
+    settings = json.loads(toolchain.stdout)
+    if settings["GOVERSION"] != GO_VERSION:
+        raise ValueError(f"Expected {GO_VERSION} for source formatting; found {settings['GOVERSION']}")
+    executable = "gofmt.exe" if os.name == "nt" else "gofmt"
+    formatter = Path(settings["GOROOT"]) / "bin" / executable
+    result = subprocess.run(
+        [str(formatter)], input=source.encode("utf-8"), env=environment,
+        stdout=subprocess.PIPE, timeout=10, check=True,
+    )
+    return result.stdout
 
 
 def identifier(value):
@@ -170,9 +194,10 @@ def main():
     if not methods:
         raise ValueError("Pinned native method source contained no methods")
     generator = Generator(schema)
+    formatted = formatted_source(generator.render(methods))
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(generator.render(methods), encoding="utf-8")
+    output.write_bytes(formatted)
     print(json.dumps({"methods": len(methods), "native_types": len(generator.selected), "output": str(output)}))
 
 

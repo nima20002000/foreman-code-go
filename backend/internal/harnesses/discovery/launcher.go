@@ -144,7 +144,7 @@ func inspectLauncher(ctx context.Context, resolved string, directories, payloadP
 			return false, err
 		}
 		if !info.Mode().IsRegular() {
-			return false, errors.New("Payload is not a file")
+			return false, &discoveryDiagnostic{message: "Payload is not a file"}
 		}
 		fingerprint, err := fingerprints.Fingerprint(ctx, path, info)
 		if err != nil {
@@ -164,7 +164,7 @@ func inspectLauncher(ctx context.Context, resolved string, directories, payloadP
 
 func inspectInterpreter(words, directories []string) (string, error) {
 	if len(words) == 0 || words[0] == "" {
-		return "", errors.New("Missing shebang interpreter")
+		return "", &discoveryDiagnostic{message: "Missing shebang interpreter"}
 	}
 	interpreter := words[0]
 	if err := executablePath(interpreter); err != nil {
@@ -178,7 +178,7 @@ func inspectInterpreter(words, directories []string) (string, error) {
 		return resolved, nil
 	}
 	if len(words) < 2 || strings.HasPrefix(words[1], "-") {
-		return "", errors.New("Unsupported env shebang options")
+		return "", &discoveryDiagnostic{message: "Unsupported env shebang options"}
 	}
 	for _, directory := range directories {
 		path, err := filepath.EvalSymlinks(filepath.Join(directory, words[1]))
@@ -190,7 +190,7 @@ func inspectInterpreter(words, directories []string) (string, error) {
 		}
 		logDiscoveryError("inspect target interpreter candidate", err)
 	}
-	return "", errors.New("Missing env interpreter")
+	return "", &discoveryDiagnostic{message: "Missing env interpreter"}
 }
 
 // The native fingerprint format is JSON.stringify of an ordered payload list,
