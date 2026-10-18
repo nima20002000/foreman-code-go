@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nima20002000/foreman-code-go/backend/internal/app"
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
+	"github.com/nima20002000/foreman-code-go/backend/internal/jsonvalue"
 	"github.com/nima20002000/foreman-code-go/backend/internal/mcpserver"
 )
 
@@ -31,6 +32,15 @@ func (a *counterAccess) Authenticate(request *http.Request) (context.Context, er
 		return nil, domainerror.New("AUTH_INVALID", "The supplied credential is invalid.", 401, nil)
 	}
 	return context.WithValue(request.Context(), principalKey{}, token), nil
+}
+
+func (a *counterAccess) PrincipalID(ctx context.Context) (string, error) {
+	token, _ := ctx.Value(principalKey{}).(string)
+	text, err := jsonvalue.FromUTF8(token)
+	if err != nil {
+		return "", err
+	}
+	return text.IdentityKey(), nil
 }
 
 func (a *counterAccess) Visible(ctx context.Context, name string) (bool, error) {
@@ -140,7 +150,7 @@ func TestMCPAuthenticatesEveryRequestAndPreservesReadOnlyDenials(t *testing.T) {
 	}
 	status, readback := rpc(t, application, "reader", `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"counter_get","arguments":{}}}`)
 	value := readback["result"].(map[string]any)["structuredContent"].(map[string]any)["value"]
-	if status != 200 || value != float64(1) || access.authentications.Load() != 5 {
+	if status != 200 || value != float64(1) || access.authentications.Load() != 10 {
 		t.Fatalf("persisted readback = %d %#v, authentications %d", status, readback, access.authentications.Load())
 	}
 }
