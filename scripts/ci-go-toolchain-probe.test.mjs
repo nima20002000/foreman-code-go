@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected frozen transport capture: capture-logging at 69d252d525cf570866efbd2155d8232d39b13266.
