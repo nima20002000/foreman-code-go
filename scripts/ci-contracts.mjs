@@ -144,7 +144,8 @@ function build(root, cache, command) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const [action, root, cache, divider, ...command] = process.argv.slice(2)
+  const [action, root, cachePath, divider, ...command] = process.argv.slice(2)
+  const cache = root && cachePath ? resolve(root, cachePath) : null
   const plan = root ? affectedPlan(root) : null
   if (action === 'key' && root) console.log(plan ? affectedContractsKey(root, plan) : contractsCacheKey(root))
   else if (action === 'ready' && root) {
