@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected producer and public error compatibility diagnostic: a59ff0265ecd8525781a35b7bae94c72d20ab821.
