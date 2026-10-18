@@ -215,3 +215,5 @@ test('a cached public Go install fails on probe cleanup without downloading a re
   assert.equal(probes.length, 1)
   assertCallerPreserved(fixture)
 })
+
+// Selected package diagnostic: wire-files-merged at immutable source 76174cc4676cb202d35c17a9bcbb24a01039ee45.
