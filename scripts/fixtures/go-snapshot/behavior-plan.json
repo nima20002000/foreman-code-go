@@ -1,0 +1,26 @@
+{
+  "files": [
+    "backend/internal/sources/agent_snapshot_integrity_test.go",
+    "backend/internal/sources/agent_snapshot_lifecycle_test.go",
+    "backend/internal/sources/agent_snapshot_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/sources": [
+      "TestAgentSnapshotReusesUnchangedBase",
+      "TestAgentSnapshotReusesBaseAfterHeadAdvances",
+      "TestAgentSnapshotCapturesAndImportsCurrentFiles",
+      "TestAgentSnapshotRejectsInvalidInputs",
+      "TestAgentSnapshotOwnsBytesAndPreservesEmptyBundle",
+      "TestAgentSnapshotRejectsOversizedCapture",
+      "TestAgentSnapshotImportsExistingCommitOnlyForNilBundle",
+      "TestAgentSnapshotRejectsImportBeyondCallerLimit",
+      "TestAgentSnapshotVerifiesBundleIdentityAndIntegrity",
+      "TestAgentSnapshotRejectsImportedRefMismatch",
+      "TestAgentSnapshotCancellationCleansOwnedState",
+      "TestAgentSnapshotCancellationCleansImportScratch",
+      "TestAgentSnapshotPreservesPortAndCleanupErrors",
+      "TestAgentSnapshotPreservesImportBoundaryErrors",
+      "TestAgentSnapshotSanitizesGitFailures"
+    ]
+  }
+}
