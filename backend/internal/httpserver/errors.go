@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/nima20002000/foreman-code-go/backend/internal/contracts"
 	"github.com/nima20002000/foreman-code-go/backend/internal/domainerror"
 )
 
@@ -40,7 +41,19 @@ func (h ErrorHandler) Write(w http.ResponseWriter, r *http.Request, err error) {
 	failure := domainerror.DatabaseConnectionFailure(domainerror.DatabaseReadFailure(err))
 	domain, ok := domainerror.As(failure)
 	if !ok {
-		domain = domainerror.New("INTERNAL_ERROR", "The API could not complete the request.", http.StatusInternalServerError, nil)
+		// The frozen boundary recognizes a direct ZodError. A cause-wrapped
+		// validation error or schema/setup error remains an internal failure.
+		if validation, direct := failure.(*contracts.ValidationError); direct && validation != nil {
+			issues := make([]any, 0, len(validation.Issues))
+			for _, issue := range validation.Issues {
+				path := append([]any{}, issue.Path...)
+				issues = append(issues, map[string]any{"path": path, "message": issue.Message})
+			}
+			domain = domainerror.New("INVALID_REQUEST", "The request does not match its shared contract.", http.StatusBadRequest,
+				map[string]any{"issues": issues})
+		} else {
+			domain = domainerror.New("INTERNAL_ERROR", "The API could not complete the request.", http.StatusInternalServerError, nil)
+		}
 	}
 	if domain.Status >= 500 {
 		h.log(err, domain.Message)
