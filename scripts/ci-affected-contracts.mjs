@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join, posix, resolve } from 'node:path'
 import { resolveImport } from '../packages/contracts/src/ciImportGraph.mjs'
-import { conformanceTargets, repositoryRoot, validateFile } from './ci-affected-scope.mjs'
+import { conformanceTargets, nativeSelectorBinding, repositoryRoot, validateFile } from './ci-affected-scope.mjs'
 
 const code = /\.[cm]?[jt]sx?$/
 const contractsPackage = '@foreman-code/contracts'
 const isContracts = specifier => specifier === contractsPackage || specifier.startsWith(`${contractsPackage}/`)
+const isFrozenBackend = file => file.startsWith('apps/api/') || file.startsWith('apps/worker/')
 
 // Setup runs before dependency installation, so this lexical scan uses no parser package.
 // Strings, comments, regexp bodies and template text are data; template expressions remain code.
@@ -109,38 +110,49 @@ function literalModuleImports(source) {
 export function affectedContracts(request, root = repositoryRoot) {
   const manifest = join(root, 'packages/contracts/package.json')
   let exports
-  const visited = new Set(), entries = new Set(), edges = new Map()
-  const pending = request.files.filter(file => !file.startsWith('backend/'))
-  if (request.conformanceScenarios.length) pending.push('conformance/src/main.ts')
-  // The TS oracle starts these programs by path; its launcher imports do not expose their export dependencies.
-  const tsOracle = conformanceTargets(request).includes('ts')
-  if (tsOracle) pending.push('apps/api/src/server.ts', 'apps/api/src/cli/operatorCredentials.ts')
-  const paths = { has: file => !file.startsWith('../') && lstatSync(resolve(root, file), { throwIfNoEntry: false })?.isFile() }
-  while (pending.length) {
-    const file = pending.pop()
-    if (visited.has(file) || !code.test(file)) continue
-    validateFile(file, root)
-    visited.add(file)
-    if (file.startsWith('packages/contracts/src/') && /\.[cm]?js$/.test(file)) {
-      const declaration = file.replace(/\.([cm]?)js$/, '.d.$1ts')
-      if (paths.has(declaration)) {
-        edges.set(file, [...edges.get(file) ?? [], declaration])
-        pending.push(declaration)
-      }
-    }
-    for (const specifier of literalModuleImports(readFileSync(join(root, file), 'utf8'))) {
-      if (!specifier.startsWith('.') && !isContracts(specifier)) continue
-      if (isContracts(specifier) && !exports) exports = JSON.parse(readFileSync(manifest, 'utf8')).exports
-      const target = resolveImport(file, specifier, paths, exports ?? {})
-      if (!target) throw new Error(`Cannot resolve selected dependency ${specifier} from ${file}.`)
-      if (target.startsWith('apps/worker/') || target.startsWith('apps/api/') && !tsOracle) {
-        throw new Error(`Selected retained dependency crosses the frozen TypeScript backend: ${target}`)
-      }
-      if (isContracts(specifier)) entries.add(target)
-      edges.set(file, [...edges.get(file) ?? [], target])
-      pending.push(target)
+  const entries = new Set(), edges = new Map()
+  const selected = request.files.filter(file => !file.startsWith('backend/'))
+  for (const file of selected) {
+    const adapter = /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file)
+      && nativeSelectorBinding(file, root)?.suite === 'integration'
+    if (isFrozenBackend(file) && !adapter) {
+      throw new Error(`Selected retained dependency crosses the frozen TypeScript backend: ${file}`)
     }
   }
+  if (request.conformanceScenarios.length) selected.push('conformance/src/main.ts')
+  const paths = { has: file => !file.startsWith('../') && lstatSync(resolve(root, file), { throwIfNoEntry: false })?.isFile() }
+  function visit(roots, frozenRuntime = false) {
+    // The same module can be reached by both origins; runtime admission never covers a retained root.
+    const visited = new Set(), pending = [...roots]
+    while (pending.length) {
+      const file = pending.pop()
+      if (visited.has(file) || !code.test(file)) continue
+      validateFile(file, root)
+      visited.add(file)
+      if (file.startsWith('packages/contracts/src/') && /\.[cm]?js$/.test(file)) {
+        const declaration = file.replace(/\.([cm]?)js$/, '.d.$1ts')
+        if (paths.has(declaration)) {
+          edges.set(file, [...edges.get(file) ?? [], declaration])
+          pending.push(declaration)
+        }
+      }
+      for (const specifier of literalModuleImports(readFileSync(join(root, file), 'utf8'))) {
+        if (!specifier.startsWith('.') && !isContracts(specifier)) continue
+        if (isContracts(specifier) && !exports) exports = JSON.parse(readFileSync(manifest, 'utf8')).exports
+        const target = resolveImport(file, specifier, paths, exports ?? {})
+        if (!target) throw new Error(`Cannot resolve selected dependency ${specifier} from ${file}.`)
+        if (isFrozenBackend(target) && !frozenRuntime) {
+          throw new Error(`Selected retained dependency crosses the frozen TypeScript backend: ${target}`)
+        }
+        if (isContracts(specifier)) entries.add(target)
+        edges.set(file, [...edges.get(file) ?? [], target])
+        pending.push(target)
+      }
+    }
+  }
+  visit(selected)
+  // The TS oracle starts these programs by path. Only their transitive runtime inputs may cross this boundary.
+  if (conformanceTargets(request).includes('ts')) visit(['apps/api/src/server.ts', 'apps/api/src/cli/operatorCredentials.ts'], true)
   const closure = new Set(), remaining = [...entries]
   while (remaining.length) {
     const file = remaining.pop()
