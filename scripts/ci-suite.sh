@@ -42,6 +42,7 @@ chmod 700 "$state"
 # Keep only tool caches shared. Every check, including retained TS tests, gets this job's empty home.
 export FOREMAN_CODE_CI_GO_CACHE="$(realpath -m "${FOREMAN_CODE_CI_GO_CACHE:-$HOME/.cache/foreman-go}")"
 export FOREMAN_CODE_CI_POSTGRES_CACHE="$(realpath -m "${FOREMAN_CODE_CI_POSTGRES_CACHE:-$HOME/.cache/foreman-postgres}")"
+export FOREMAN_CODE_CI_OPENSSL_CACHE="$(realpath -m "${FOREMAN_CODE_CI_OPENSSL_CACHE:-$HOME/.cache/foreman-openssl}")"
 export COREPACK_HOME="$(realpath -m "${COREPACK_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/node/corepack}")"
 source "$script_directory/ci-runtime-state.sh"
 unset DATABASE_URL TEST_DATABASE_URL FOREMAN_CODE_DATABASE_URL FOREMAN_CODE_TEST_DATABASE_URL FOREMAN_CODE_CI_TEST_ADMIN_URL
@@ -118,7 +119,7 @@ cleanup() {
     node "$script_directory/ci-go-prerequisites.mjs" databases-stop || { if [ "$code" = 0 ]; then code=1; fi; }
   fi
   local tool
-  for tool in go postgres; do
+  for tool in go postgres openssl; do
     stop_tool_preparation "$tool" || { retain_home=1; if [ "$code" = 0 ]; then code=1; fi; }
   done
   if [ "$retain_home" = 0 ]; then ci_runtime_cleanup || { if [ "$code" = 0 ]; then code=1; fi; }; fi
@@ -136,6 +137,7 @@ affected=1
 go_selected=0
 conformance_part=0
 postgres_part=0
+openssl_part=0
 conformance_targets=()
 scripts_database=0
 retained_part=0
@@ -147,6 +149,7 @@ if [ "$affected" = 1 ] && [ "${SUITE:-}" != install ]; then
   export SCOPE=affected
   scope_flags="$(node "$script_directory/ci-affected-scope.mjs" flags "$CI_AFFECTED_SELECTION_FILE")"
   read -r go_selected conformance_part scripts_database retained_part postgres_part <<< "$scope_flags"
+  openssl_part="$(node "$script_directory/ci-affected-scope.mjs" openssl-required "$CI_AFFECTED_SELECTION_FILE")"
   if [ "$conformance_part" = 1 ]; then
     target_names="$(node "$script_directory/ci-affected-scope.mjs" conformance-targets "$CI_AFFECTED_SELECTION_FILE")" || exit 2
     read -r -a conformance_targets <<< "$target_names"
@@ -228,6 +231,13 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
       prepare_one postgres bash "$script_directory/ci-postgres-toolchain.sh" install
     fi
   fi
+  if [ "$openssl_part" = 1 ]; then
+    if [ "$1" = start ]; then
+      background openssl bash "$script_directory/ci-openssl-toolchain.sh" install
+    else
+      prepare_one openssl bash "$script_directory/ci-openssl-toolchain.sh" install
+    fi
+  fi
   if [ "$integration_database" = 1 ]; then
     if [ "$1" = start ]; then
       background db node "$script_directory/ci-go-prerequisites.mjs" database-start
@@ -271,6 +281,12 @@ ensure_preparation() {
 if [ "$go_part" = 1 ]; then
   ensure_preparation go bash "$script_directory/ci-go-toolchain.sh" install
   ci_go_verify
+fi
+if [ "$openssl_part" = 1 ]; then
+  ensure_preparation openssl bash "$script_directory/ci-openssl-toolchain.sh" install
+  openssl_environment="$(bash "$script_directory/ci-openssl-toolchain.sh" environment)"
+  eval "$openssl_environment"
+  bash "$script_directory/ci-openssl-toolchain.sh" verify
 fi
 if [ "$postgres_part" = 1 ]; then ensure_preparation postgres bash "$script_directory/ci-postgres-toolchain.sh" install; fi
 if [ "$integration_database" = 1 ]; then ensure_preparation db node "$script_directory/ci-go-prerequisites.mjs" database-start; fi

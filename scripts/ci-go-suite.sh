@@ -54,7 +54,7 @@ ci_go_lint() {
 }
 
 ci_go_test_stream() {
-  local kind="$1" code=0 status package roots
+  local kind="$1" code=0 status package roots race=0 openssl=0
   local flags=(-json -count=1)
   if [ "$kind" = integration ]; then flags+=(-tags integration); fi
   if [ "${SCOPE:-affected}" = full ]; then
@@ -62,12 +62,21 @@ ci_go_test_stream() {
     printf '{"package":"./...","filter":null,"exit":%s}\n' "$code" > "$state/go/$kind.commands.jsonl" || return $?
     return "$code"
   fi
+  race="$(node scripts/ci-affected-scope.mjs go-race "$CI_AFFECTED_SELECTION_FILE")" || return $?
+  openssl="$(node scripts/ci-affected-scope.mjs openssl-required "$CI_AFFECTED_SELECTION_FILE")" || return $?
+  if [ "$race" = 1 ]; then flags+=(-race); fi
+  if [ "$openssl" = 1 ]; then
+    flags+=(-exec "node \"$script_directory/ci-openssl-test-exec.mjs\"")
+  fi
   for package in "${ci_go_packages[@]}"; do
     roots="$(node scripts/ci-affected-scope.mjs go-roots "$CI_AFFECTED_SELECTION_FILE" "$package")" || return $?
     status=0
     (cd backend && go test "${flags[@]}" -run "$roots" "$package") || status=$?
-    printf '{"package":"%s","filter":"%s","exit":%s}\n' "$package" "$roots" "$status" \
-      >> "$state/go/$kind.commands.jsonl" || return $?
+    if [ "$race" = 1 ] || [ "$openssl" = 1 ]; then
+      printf '{"package":"%s","filter":"%s","race":%s,"openssl":%s,"exit":%s}\n' "$package" "$roots" "$race" "$openssl" "$status"
+    else
+      printf '{"package":"%s","filter":"%s","exit":%s}\n' "$package" "$roots" "$status"
+    fi >> "$state/go/$kind.commands.jsonl" || return $?
     if [ "$code" = 0 ]; then code="$status"; fi
   done
   return "$code"

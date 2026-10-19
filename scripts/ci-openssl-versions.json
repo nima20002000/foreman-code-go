@@ -1,0 +1,13 @@
+{
+  "openssl": {
+    "version": "3.5.7",
+    "released": "2026-06-09",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+    "sha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8",
+    "size": 53153930,
+    "source": "https://openssl-library.org/source/old/3.5/",
+    "checksumSource": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz.sha256",
+    "releaseMetadata": "https://api.github.com/repos/openssl/openssl/releases/tags/openssl-3.5.7",
+    "releaseAssetId": 442677812
+  }
+}

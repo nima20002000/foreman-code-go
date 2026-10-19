@@ -66,6 +66,7 @@ jobs:
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
       FOREMAN_CODE_CI_POSTGRES_CACHE: .logs/ci-postgres-cache
+      FOREMAN_CODE_CI_OPENSSL_CACHE: .logs/ci-openssl-cache
       CI_STATE: .logs/ci-state
       CGO_ENABLED: '1'
       SUITE: ${{ inputs.suite }}
@@ -95,6 +96,8 @@ jobs:
         run: |
           GO_SUITE="$(node scripts/ci-cloud-native-prerequisites.mjs)"
           printf 'GO_SUITE=%s\n' "$GO_SUITE" >> "$GITHUB_ENV"
+          OPENSSL_SUITE="$(node scripts/ci-cloud-native-prerequisites.mjs --openssl)"
+          printf 'OPENSSL_SUITE=%s\n' "$OPENSSL_SUITE" >> "$GITHUB_ENV"
           if [ "$GO_SUITE" = true ]; then
             sudo apt-get update
             sudo apt-get install --yes --no-install-recommends build-essential pkg-config libvips-dev
@@ -113,6 +116,10 @@ jobs:
           fi
           if [ "$GO_SUITE" = true ]; then
             echo "go=$(node scripts/ci-go-prerequisites.mjs cache-key)" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$OPENSSL_SUITE" = true ]; then
+            OPENSSL_CACHE_KEY="$(bash scripts/ci-openssl-toolchain.sh cache-key)"
+            printf 'openssl=%s\n' "$OPENSSL_CACHE_KEY" >> "$GITHUB_OUTPUT"
           fi
           if [ "$SUITE" = integration ]; then
             echo "postgres=$(bash scripts/ci-postgres-toolchain.sh cache-key)" >> "$GITHUB_OUTPUT"
@@ -137,6 +144,12 @@ jobs:
         with:
           path: .logs/ci-postgres-cache/toolchains
           key: postgres-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-inputs.outputs.postgres }}
+      - name: OpenSSL toolchain cache
+        if: env.OPENSSL_SUITE == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .logs/ci-openssl-cache/toolchains
+          key: openssl-toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache-inputs.outputs.openssl }}
       - id: go-cache
         if: env.GO_SUITE == 'true'
         uses: actions/cache/restore@v4

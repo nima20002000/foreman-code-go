@@ -1,5 +1,79 @@
 # Go CI in the migration fork
 
+## Current bounded requests
+
+The current fork resolves affected work from explicit existing files and named
+Go test roots. Full scope is reserved for an explicit release. Historical
+full-scope dispatch notes below describe earlier migration checkpoints and do
+not authorize repeating full suites for an affected change.
+
+An inner committed native-test selection can opt into the race detector with
+`"goRace": true`. The same request must select existing Go test files and
+nonempty `goTestRoots` for their exact packages. Only `unit` and `integration`
+actions accept race execution. The runner adds the fixed `-race` flag to its
+existing uncached JSON test command and retains the anchored root filter;
+there is no environment or arbitrary-command override. Opted-in command receipts
+record the requested race/profile state and actual command exit. Ordinary
+command receipts retain their existing shape. Real Go
+events, the native report lifecycle, missing-root checks, zero-test checks,
+and converter failures retain their existing behavior. Requested race state
+alone is not execution or race-detector qualification evidence.
+
+Ordinary Go build, typecheck and lint wrappers declare their prerequisites in
+`scripts/ci-native-actions.json`. Each entry maps a selected script test to
+an exact inner `suite` and committed `selection` file. The inner suite must be
+build, typecheck or lint, and its selection must contain only existing Go
+files. The cloud prerequisite decision follows only the wrapper selected for
+execution. Reading or checking that wrapper's source, or leaving a manifest
+entry unselected, does not request native preparation. These declarations
+are separate from `ci-native-selectors.json`: action wrappers keep ordinary
+JavaScript assertions and request zero Go test cases or native test reports.
+The production action registry starts empty; the terminal's exact-source
+probe composition supplies each actual bounded action declaration.
+
+A selected Go request may declare `"nativePrerequisites": ["openssl"]`.
+This finite profile selects the committed OpenSSL 3.5.7 helper and source
+checksum. It accepts no provider command, path, library version or environment
+override through the CI request. The helper installs into the private
+`FOREMAN_CODE_CI_OPENSSL_CACHE/toolchains/` cache; the suite captures that cache
+before isolating HOME and tracks its installation through the existing
+preparation lifecycle. CircleCI and GitHub Actions use the helper's exact
+cache identity and retain only the published toolchain directory.
+
+Before a selected provider loads, the profile isolates OpenSSL configuration
+and certificate-store paths, clears inherited key-log settings, and verifies
+CGO, headers, linked libraries, and runtime library identity. Selected tests
+receive the fixed CI-owned OpenSSL execution wrapper; its receipts describe
+the actual loaded libraries in each test process. The prerequisite receipt
+and test-process receipts are retained under `CI_STATE/go/openssl`, together
+with normal Go events and results. CLI version output alone does not prove
+the loaded provider. A disabled CGO build cannot qualify the provider.
+
+These additions are source changes awaiting terminal-dispatched explicit
+remote/cloud Foreman CI. Select only their new behavior cases and impacted
+existing cases. The S/H race and R provider requests require the terminal to
+compose their separately pinned product source and exact roots. Existing
+known-failing formatter/build/vet/Staticcheck action subjects remain held
+until their owners supply corrected source. Unsupported explicit remote
+lint/typecheck dispatch also remains held pending the separate deployed-app
+decision. No deployed application change or migration acceptance is claimed.
+
+The current source handoff is limited to `nima20002000/foreman-code-go` and
+one reviewable source ZIP. Q-CI does not publish source, push, open or update
+pull requests, or write Linear. The terminal alone dispatches actual CI and
+writes Linear under the current task instructions.
+
+## Historical checkpoint reference
+
+All sections below retain earlier migration checkpoint descriptions and
+evidence. Their full-suite commands, mandatory full-scope dispatch advice,
+mirror and PR publication instructions, and earlier result counts are
+superseded for this affected Q-CI handoff by **Current bounded requests**
+above. They provide historical implementation context and no authority to
+repeat suites, publish source, change repositories, or claim current-head
+verification. Full-scope examples apply only to an explicitly authorized
+release; use exact current selections for affected work.
+
 The fork keeps the existing Foreman CI suite and part names. The tested
 commit's scripts map backend parts to the complete `backend/` Go module and
 retain the web, contracts, and scripts checks. The frozen TypeScript API's
@@ -392,7 +466,7 @@ Only the controller publishes the approved mirror or writes Linear. Q-CI
 handles follow-up tooling fixes without changing other owners' scenarios or
 the deployed Foreman app.
 
-### Current verification evidence and limits
+### Historical verification evidence and limits
 
 The controller reported real CI for fork candidate
 `fc326c28fbea28d9964bdd25abef0c286faad65f`: Go unit results of **200 passed,

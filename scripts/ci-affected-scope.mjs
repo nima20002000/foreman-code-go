@@ -6,7 +6,7 @@ import { integrationFileList, repositoryFileList, selectByIndexes } from './ci-f
 
 export const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const kinds = ['typecheck', 'lint', 'unit', 'integration', 'build']
-const requestKeys = ['files', 'goTestRoots', 'conformanceScenarios', 'conformanceTsRequired', 'conformanceTarget', 'nativeReports', 'scriptsDatabaseRequired']
+const requestKeys = ['files', 'goTestRoots', 'goRace', 'nativePrerequisites', 'conformanceScenarios', 'conformanceTsRequired', 'conformanceTarget', 'nativeReports', 'scriptsDatabaseRequired']
 const nativeKinds = ['go-unit', 'go-integration', 'conformance-go', 'conformance-ts']
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const packageOf = file => posix.dirname(file) === 'backend' ? '.' : `./${posix.dirname(file).slice('backend/'.length)}`
@@ -61,6 +61,15 @@ export function readAffectedRequest(input, root = repositoryRoot) {
       throw new Error(`Invalid named Go test roots for ${pkg}.`)
     }
   }
+  if (data.goRace !== undefined && (typeof data.goRace !== 'boolean'
+    || data.goRace && !Object.keys(goTestRoots).length)) {
+    throw new Error('Go race execution requires an explicit boolean and selected named Go test roots.')
+  }
+  const nativePrerequisites = uniqueStrings(data.nativePrerequisites ?? [], 'native prerequisites')
+  if (nativePrerequisites.some(name => name !== 'openssl') || nativePrerequisites.length
+    && !files.some(file => /^backend\/.*\.go$/.test(file))) {
+    throw new Error('Native prerequisites must name the supported OpenSSL profile for selected Go files.')
+  }
   const conformanceScenarios = uniqueStrings(data.conformanceScenarios ?? [], 'conformance scenario IDs')
   if (conformanceScenarios.some(id => id.startsWith('-')) || conformanceScenarios.length
     && (typeof data.conformanceTsRequired !== 'boolean' || !files.some(file => file.startsWith('conformance/')))) {
@@ -91,7 +100,8 @@ export function readAffectedRequest(input, root = repositoryRoot) {
       throw new Error(`Invalid native report kinds for ${selector}.`)
     }
   }
-  return { files, goTestRoots, conformanceScenarios, conformanceTsRequired: data.conformanceTsRequired ?? false, nativeReports,
+  return { files, goTestRoots, goRace: data.goRace ?? false, nativePrerequisites,
+    conformanceScenarios, conformanceTsRequired: data.conformanceTsRequired ?? false, nativeReports,
     scriptsDatabaseRequired: data.scriptsDatabaseRequired ?? false,
     ...(data.conformanceTarget === undefined ? {} : { conformanceTarget: data.conformanceTarget }) }
 }
@@ -106,6 +116,8 @@ export function conformanceTargets(request) {
 function bindNativeReports(request, root) {
   const nativeReports = { ...request.nativeReports }
   for (const selector of request.files.filter(nativeSelector)) {
+    const action = nativeActionBinding(selector, root)
+    if (action && nativeReports[selector]) throw new Error(`An ordinary native action cannot request native test reports: ${selector}.`)
     const binding = nativeSelectorBinding(selector, root)
     if (!binding) continue
     const expected = { requiredKinds: binding.requiredKinds, optionalKinds: [] }
@@ -143,7 +155,7 @@ export function validateAffectedSuite(suite, input, root = repositoryRoot, loadB
       throw new Error(`Integration scope requires exact Go roots or conformance scenario IDs: ${file}`)
     }
   }
-  if (!['unit', 'integration'].includes(kind) && Object.keys(request.goTestRoots).length
+  if (!['unit', 'integration'].includes(kind) && (Object.keys(request.goTestRoots).length || request.goRace)
     || kind !== 'integration' && request.conformanceScenarios.length
     || !['unit', 'integration'].includes(kind) && Object.keys(request.nativeReports).length) {
     throw new Error(`The request contains test scope for ${suite}.`)
@@ -169,8 +181,11 @@ export function nativeSelectorBinding(selector, root = repositoryRoot) {
   }
   validateFile(binding.selection, root)
   const input = readSelectionFile(binding.selection, root)
+  const actionsPath = join(root, 'scripts/ci-native-actions.json')
+  const actions = existsSync(actionsPath) ? JSON.parse(readFileSync(actionsPath, 'utf8')) : {}
+  if (!object(actions)) throw new Error('Invalid native action manifest.')
   if (Object.keys(input.nativeReports).length || input.files.some(file => Object.hasOwn(manifest, file)
-    || file.startsWith('apps/api/'))) {
+    || Object.hasOwn(actions, file) || file.startsWith('apps/api/'))) {
     throw new Error(`A native selector cannot recursively select another adapter: ${selector}.`)
   }
   const request = validateAffectedSuite(binding.suite, input, root, false)
@@ -180,6 +195,42 @@ export function nativeSelectorBinding(selector, root = repositoryRoot) {
   requiredKinds.push(...conformanceTargets(request).map(target => `conformance-${target}`))
   if (!requiredKinds.length) throw new Error(`Native selector ${selector} has no native tests.`)
   return { suite: binding.suite, selection: binding.selection, request, requiredKinds }
+}
+
+/** Ordinary action wrappers declare preparation without adopting or inventing native test cases. */
+export function nativeActionBinding(selector, root = repositoryRoot) {
+  const path = join(root, 'scripts/ci-native-actions.json')
+  if (!existsSync(path)) return null
+  const manifest = JSON.parse(readFileSync(path, 'utf8'))
+  if (!object(manifest)) throw new Error('Invalid native action manifest.')
+  if (!Object.hasOwn(manifest, selector)) return null
+  const binding = manifest[selector]
+  if (!nativeSelector(selector) || !selector.startsWith('scripts/') || !object(binding)
+    || Object.keys(binding).sort().join(',') !== 'selection,suite' || typeof binding.selection !== 'string') {
+    throw new Error(`Invalid native action binding for ${selector}.`)
+  }
+  validateFile(selector, root)
+  validateFile(binding.selection, root)
+  if (nativeSelectorBinding(selector, root)) throw new Error(`A selector cannot bind both native tests and an action: ${selector}.`)
+  const kind = suiteKind(binding.suite)
+  const request = validateAffectedSuite(binding.suite, readSelectionFile(binding.selection, root), root, false)
+  if (!['typecheck', 'lint', 'build'].includes(kind) || !request.files.every(file => /^backend\/.*\.go$/.test(file))) {
+    throw new Error(`A native action must bind only exact Go files to build, typecheck or lint: ${selector}.`)
+  }
+  return { suite: binding.suite, selection: binding.selection, request, requiredKinds: [] }
+}
+
+/** Only an executed wrapper can request its inner native preparation; inspecting its source cannot. */
+export function selectedNativeRequests(suite, request, root = repositoryRoot) {
+  const requests = [request]
+  if (['unit', 'integration'].includes(suiteKind(suite))) {
+    for (const selector of request.files.filter(nativeSelector)) {
+      const action = nativeActionBinding(selector, root)
+      const binding = nativeSelectorBinding(selector, root) ?? action
+      if (binding) requests.push(binding.request)
+    }
+  }
+  return requests
 }
 
 function dispatchEnvironment(environment, root) {
@@ -265,6 +316,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.stdout.write(`^(${roots.join('|')})$`)
   } else if (action === 'go-selection' && output) {
     writeFileSync(output, JSON.stringify(readSelectionFile(suite).goTestRoots), { mode: 0o600 })
+  } else if (action === 'go-race') {
+    process.stdout.write(readSelectionFile(suite).goRace ? '1' : '0')
+  } else if (action === 'openssl-required') {
+    process.stdout.write(readSelectionFile(suite).nativePrerequisites.includes('openssl') ? '1' : '0')
   } else if (action === 'conformance-selection' && output) {
     const request = readSelectionFile(suite)
     if (!request.conformanceScenarios.length) throw new Error('Conformance scope has no exact scenario IDs.')

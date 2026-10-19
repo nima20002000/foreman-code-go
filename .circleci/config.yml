@@ -52,6 +52,7 @@ jobs:
       FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       FOREMAN_CODE_CI_GO_CACHE: .logs/ci-go-cache
       FOREMAN_CODE_CI_POSTGRES_CACHE: .logs/ci-postgres-cache
+      FOREMAN_CODE_CI_OPENSSL_CACHE: .logs/ci-openssl-cache
       CI_STATE: .logs/ci-state
       CGO_ENABLED: '1'
       SUITE: << pipeline.parameters.suite >>
@@ -136,6 +137,15 @@ jobs:
               # Compile-time cache steps still need a checksum when this bounded selection has no native work.
               printf '%s\n' no-native-selection > .logs/ci-go-cache-key
             fi
+            OPENSSL_SUITE="$(node scripts/ci-cloud-native-prerequisites.mjs --openssl)"
+            if [ "$OPENSSL_SUITE" = true ]; then
+              bash scripts/ci-openssl-toolchain.sh cache-key > .logs/ci-openssl-cache-key
+            else
+              printf '%s\n' no-openssl-selection > .logs/ci-openssl-cache-key
+            fi
+      - restore_cache:
+          keys:
+            - openssl-toolchain-v1-{{ arch }}-{{ checksum ".logs/ci-openssl-cache-key" }}
       - when:
           condition:
             matches:
@@ -256,6 +266,10 @@ jobs:
                 key: postgres-toolchain-v1-{{ arch }}-{{ checksum ".logs/ci-postgres-cache-key" }}
                 paths:
                   - .logs/ci-postgres-cache/toolchains
+      - save_cache:
+          key: openssl-toolchain-v1-{{ arch }}-{{ checksum ".logs/ci-openssl-cache-key" }}
+          paths:
+            - .logs/ci-openssl-cache/toolchains
       # Keep summaries and failing files' logs; the per-slot copies and the archive of them are successful-file noise.
       - run:
           name: Trim integration logs
