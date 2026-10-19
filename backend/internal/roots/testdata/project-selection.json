@@ -1,0 +1,20 @@
+{
+  "files": [
+    "backend/internal/roots/project_linux_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/roots": [
+      "TestOpenProjectPreservesProtectedDirectories",
+      "TestOpenProjectFollowsPrivatePrefixPermissions",
+      "TestOpenProjectRejectsTraversalAndAmbiguousNames",
+      "TestOpenProjectPreservesNativeNames",
+      "TestOpenProjectClassifiesMissingDirectoriesAndSymlinks",
+      "TestOpenProjectPreservesNativeOpenErrors",
+      "TestOpenProjectKeepsEmptyPathHandleIndependent",
+      "TestOpenProjectStaysPinnedAfterPathReplacement",
+      "TestOpenProjectReturnsIndependentDescendants",
+      "TestOpenProjectRejectsClosedBases",
+      "TestOpenProjectClosesTemporaryHandlesOnFailure"
+    ]
+  }
+}
