@@ -12,25 +12,25 @@ import (
 )
 
 // requestedTool reads only JSON-RPC transport fields; domain inputs use generated validators.
-func requestedTool(w http.ResponseWriter, request *http.Request, limit int64) (string, error) {
+func requestedTool(w http.ResponseWriter, request *http.Request, limit int64) (string, []byte, error) {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		return "", domainerror.New("UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported.", 415, nil)
+		return "", nil, domainerror.New("UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported.", 415, nil)
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, request.Body, limit))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return "", domainerror.New("REQUEST_TOO_LARGE", "The request body exceeds the allowed size.", 413, nil)
+			return "", nil, domainerror.New("REQUEST_TOO_LARGE", "The request body exceeds the allowed size.", 413, nil)
 		}
-		return "", err
+		return "", nil, err
 	}
 	if err := request.Body.Close(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	request.Body = io.NopCloser(bytes.NewReader(data))
 	if !json.Valid(data) {
-		return "", domainerror.New("INVALID_REQUEST", "The request body must contain valid JSON.", 400, nil)
+		return "", nil, domainerror.New("INVALID_REQUEST", "The request body must contain valid JSON.", 400, nil)
 	}
 	var call struct {
 		Method string `json:"method"`
@@ -40,10 +40,10 @@ func requestedTool(w http.ResponseWriter, request *http.Request, limit int64) (s
 	}
 	if err := json.Unmarshal(data, &call); err != nil {
 		// Valid JSON with the wrong RPC shape belongs to the SDK's protocol error boundary.
-		return "", nil
+		return "", data, nil
 	}
 	if call.Method == "tools/call" {
-		return call.Params.Name, nil
+		return call.Params.Name, data, nil
 	}
-	return "", nil
+	return "", data, nil
 }

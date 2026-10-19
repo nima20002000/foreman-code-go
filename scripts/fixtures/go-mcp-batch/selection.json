@@ -1,0 +1,17 @@
+{
+  "files": [
+    "backend/internal/mcpserver/batch_protocol_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/mcpserver": [
+      "TestMCPBatchInitializeRejectsSiblingBeforeCallbacks",
+      "TestMCPBatchInitializeGuardChecksOptionalFields",
+      "TestMCPBatchUnknownNotificationKeepsSiblingAndPersistedReadback",
+      "TestMCPBatchIgnoredNotificationPreservesSDKHTTPGates",
+      "TestMCPBatchCancellationTargetsPublicIDAndKeepsHTTPPending",
+      "TestMCPBatchDuplicateIDCompletionAndCancellation",
+      "TestMCPBatchCancellationIgnoresUnregisteredController",
+      "TestMCPBatchCallerCancellationDuringBlockedDelivery"
+    ]
+  }
+}
