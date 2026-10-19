@@ -1,0 +1,55 @@
+{
+  "files": [
+    "backend/internal/devices/tls_context_test.go",
+    "backend/internal/devices/tls_files_linux_test.go",
+    "backend/internal/devices/tls_hostname_test.go",
+    "backend/internal/devices/tls_materials_test.go",
+    "backend/internal/devices/tls_native_provider_test.go",
+    "backend/internal/devices/tls_pem_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/devices": [
+      "TestDeviceTLSMaterialsPreserveLoadSignatureMetadata",
+      "TestDeviceTLSMaterialsPreserveAuthorityIdentifierPresence",
+      "TestDeviceTLSMaterialsDoNotVerifySelfSignatureAtLoad",
+      "TestDeviceTLSMaterialsPreserveAuthoritySerialAndIssuerMetadata",
+      "TestDeviceTLSMaterialsCheckChainLoadStrengthBeforePrivateKey",
+      "TestDeviceTLSMaterialsPreserveNativeMLDSAParameters",
+      "TestDeviceTLSMaterialsAcceptNativeRSAKeySizes",
+      "TestDeviceTLSMaterialsRejectWeakLeafAndChainPublicKeys",
+      "TestDeviceTLSMaterialsPreserveIndependentCertificateAndKeySlots",
+      "TestDeviceTLSFileAllowsOwnedPrivateRegularMaterial",
+      "TestDeviceTLSFileRejectsSharedAndOversizedMaterial",
+      "TestDeviceTLSFileRejectsSymlinkTraversal",
+      "TestDeviceTLSFileAcceptsCanonicalRelativeAndHardLinkedMaterial",
+      "TestDeviceTLSFileRejectsSpecialFilesWithoutBlocking",
+      "TestDeviceTLSFileRejectsMissingMaterial",
+      "TestDeviceTLSFileDescriptorFailuresAndClosure",
+      "TestDeviceTLSFilePropagatesPathAndOpenErrors",
+      "TestDeviceTLSFileRejectsFinalSymlinkSwap",
+      "TestDeviceTLSFileCollectsShortDescriptorReads",
+      "TestDeviceTLSReadMaterialsClosesCertificateBeforeKey",
+      "TestDeviceTLSReadMaterialsPreservesReadAndParseErrorOrder",
+      "TestDeviceTLSHostnamePreservesFrozenDNSMatching",
+      "TestDeviceTLSHostnameUsesDNSNamesBeforeSubjectFallback",
+      "TestDeviceTLSHostnamePreservesIPAddressFamilies",
+      "TestDeviceTLSMaterialsValidateWithoutChangingInputs",
+      "TestDeviceTLSMaterialsRejectInvalidOrMismatchedMaterial",
+      "TestDeviceTLSMaterialsPreserveCertificateKeyAndHostErrorOrder",
+      "TestDeviceTLSMaterialsDoNotAddTrustTimeOrPurposePolicy",
+      "TestDeviceTLSMaterialsAcceptChainAndNonCertificateText",
+      "TestDeviceTLSMaterialsAcceptNativeProviderKeyForms",
+      "TestDeviceTLSMaterialsAcceptDSAPrivateKeyEncodings",
+      "TestDeviceTLSMaterialsAcceptExpandedMLDSAPrivateKeyForms",
+      "TestDeviceTLSMaterialsAcceptWeakPrivateKeyInIndependentSlot",
+      "TestDeviceTLSMaterialsIsolateConcurrentNativeFailures",
+      "TestDeviceTLSMaterialsPreservePEMLabelsAndAuxiliaryParsing",
+      "TestDeviceTLSMaterialsPreserveEmptyPasswordCallbacks",
+      "TestDeviceTLSMaterialsRejectMalformedPEMAndMatchingHeaders",
+      "TestDeviceTLSMaterialsPermitFrozenPEMPreambleAndLineEndings"
+    ]
+  },
+  "nativePrerequisites": [
+    "openssl"
+  ]
+}
