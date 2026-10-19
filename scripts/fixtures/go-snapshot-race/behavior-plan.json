@@ -1,0 +1,11 @@
+{
+  "files": [
+    "backend/internal/sources/agent_snapshot_lifecycle_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/sources": [
+      "TestAgentSnapshotConcurrentCapturesRetainIndependentRefs"
+    ]
+  },
+  "goRace": true
+}
