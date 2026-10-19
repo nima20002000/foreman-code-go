@@ -1,0 +1,26 @@
+{
+  "files": [
+    "backend/internal/provideraccounts/decode_test.go",
+    "backend/internal/provideraccounts/status_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/provideraccounts": [
+      "TestReadStatusCodexClassification",
+      "TestReadStatusCodexASCIIAndWhitespace",
+      "TestReadStatusClaudeClassification",
+      "TestReadStatusClaudeAuthMethodConversion",
+      "TestReadStatusClaudeIdentity",
+      "TestReadStatusClaudeQualifiedSubject",
+      "TestReadStatusClaudeSubjectAdapterRequired",
+      "TestReadStatusNativeCommandContract",
+      "TestReadStatusSelectionUnavailable",
+      "TestReadStatusPrepareFailure",
+      "TestReadStatusPrelaunchGate",
+      "TestReadStatusRunFailure",
+      "TestReadStatusCleanupFailurePrecedence",
+      "TestReadStatusPostCleanupSelection",
+      "TestReadStatusContextAndCleanup"
+    ]
+  },
+  "goRace": true
+}
