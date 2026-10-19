@@ -1,0 +1,32 @@
+{
+  "files": [
+    "backend/internal/mcpserver/batch_test.go",
+    "backend/internal/mcpserver/batch_json_test.go",
+    "backend/internal/mcpserver/batch_protocol_test.go"
+  ],
+  "goTestRoots": {
+    "./internal/mcpserver": [
+      "TestMCPFrozenBatchOracle",
+      "TestMCPBatchAuthenticationPrecedesBodyRead",
+      "TestMCPBatchBodyLimitIsAggregate",
+      "TestMCPBatchAdmitsLooseUTF16Params",
+      "TestMCPBatchSDKErrorKeepsPublicID",
+      "TestMCPBatchPreservesSDKCloseEvent",
+      "TestMCPBatchReadOnlyCatalogAndDenial",
+      "TestMCPBatchUnknownMethodKeepsOtherResponses",
+      "TestMCPBatchCancellationStaysWithinHTTPRequest",
+      "TestMCPBatchCompletionOrder",
+      "TestMCPFrozenBatchJSONOracle",
+      "TestMCPBatchJSONCompletionOrder",
+      "TestMCPBatchJSONUnknownMethodKeepsOtherResponses",
+      "TestMCPBatchInitializeRejectsSiblingBeforeCallbacks",
+      "TestMCPBatchInitializeGuardChecksOptionalFields",
+      "TestMCPBatchUnknownNotificationKeepsSiblingAndPersistedReadback",
+      "TestMCPBatchIgnoredNotificationPreservesSDKHTTPGates",
+      "TestMCPBatchCancellationTargetsPublicIDAndKeepsHTTPPending",
+      "TestMCPBatchDuplicateIDCompletionAndCancellation",
+      "TestMCPBatchCancellationIgnoresUnregisteredController",
+      "TestMCPBatchCallerCancellationDuringBlockedDelivery"
+    ]
+  }
+}
