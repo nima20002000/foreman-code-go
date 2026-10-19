@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { resolveProductEnvironment } from '@foreman-code/contracts/product-environment'
 
 export interface IsolatedEnvironment {
@@ -38,6 +38,21 @@ function processEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return environment
 }
 
+async function isolatedRootParent(repoRoot: string): Promise<string> {
+  const parent = await realpath(repoRoot)
+  for (const temporary of new Set(['/tmp', '/var/tmp', tmpdir()])) {
+    const canonical = await realpath(temporary).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return resolve(temporary)
+      throw error
+    })
+    const suffix = relative(canonical, parent)
+    if (suffix === '' || !isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith(`..${sep}`)) {
+      throw new Error('Conformance requires a source checkout outside system temporary directories')
+    }
+  }
+  return parent
+}
+
 async function removeOwnedDirectory(directory: string, token: string): Promise<void> {
   const stat = await lstat(directory)
   const marker = await lstat(join(directory, '.graphql-test-owner.json'))
@@ -59,7 +74,9 @@ export async function createIsolatedEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): Promise<IsolatedEnvironment> {
   if (process.getuid === undefined) throw new Error('Conformance requires Unix resource ownership support')
-  const directory = await mkdtemp(join(await realpath(tmpdir()), 'foreman-conformance-'))
+  // The real file store excludes system temporary roots. Keep every target resource
+  // under one owned checkout child; the short prefix leaves room for PostgreSQL sockets.
+  const directory = await mkdtemp(join(await isolatedRootParent(repoRoot), '.fc-'))
   const token = randomUUID()
   await writeFile(join(directory, '.graphql-test-owner.json'), JSON.stringify({ directory, token }),
     { mode: 0o600, flag: 'wx' })
